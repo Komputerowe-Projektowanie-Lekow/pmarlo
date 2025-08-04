@@ -1,0 +1,20 @@
+# Core dependencies
+numpy>=1.18.0
+scipy>=1.5.0
+matplotlib>=3.2.0
+pandas>=1.1.0
+scikit-learn>=0.23.0
+
+# Molecular dynamics and analysis
+mdtraj>=1.9.0
+openmm>=7.5.0
+pdbfixer>=1.7
+
+# Chemistry
+rdkit>=2020.09.1
+
+# Development dependencies (optional)
+pytest>=6.0.0
+pytest-cov>=2.10.0
+black>=20.8b1
+flake8>=3.8.0

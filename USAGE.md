@@ -245,8 +245,12 @@ from enhanced_msm import EnhancedMSM
 ### Backwards Compatibility
 ```python
 # Original workflow still works
-from main import controlMain
-controlMain()  # Runs your original pipeline
+from src.main import original_pipeline_with_dg
+original_pipeline_with_dg()  # Runs your original pipeline
+
+# OR use the new clean API:
+from src import run_pmarlo
+results = run_pmarlo("protein.pdb", temperatures=[300, 310, 320], steps=1000)
 
 # New enhanced workflow
 from main import run_remd_pipeline
@@ -309,7 +313,7 @@ msm.plot_implied_timescales()
 Make sure your file paths are correct:
 ```python
 from pathlib import Path
-pdb_file = Path("tests/3gd8-fixed.pdb")
+pdb_file = Path("tests/data/3gd8-fixed.pdb")
 assert pdb_file.exists(), f"File not found: {pdb_file}"
 ```
 

@@ -1,0 +1,23 @@
+# Include documentation
+include README.md
+include CONTRIBUTING.md
+include LICENSE
+
+# Include configuration files
+include pyproject.toml
+include requirements.txt
+include requirements-dev.txt
+
+# Include test data
+recursive-include tests/data *.pdb *.dcd
+
+# Include examples
+recursive-include examples *.py
+
+# Exclude development and runtime files
+global-exclude *.pyc
+global-exclude __pycache__
+global-exclude .pytest_cache
+global-exclude output
+global-exclude bias
+global-exclude .git*

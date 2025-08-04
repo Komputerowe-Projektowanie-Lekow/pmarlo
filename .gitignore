@@ -1,6 +1,34 @@
+# Runtime data and temporary files
+/output/
+/bias/
 final.xml
-pyproject.toml
-/bias
-/tests
-/.idea
-/output
+
+# IDE files
+/.idea/
+.vscode/
+
+# Python cache and build files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+build/
+dist/
+*.egg-info/
+
+# Environment files
+.env
+.venv/
+env/
+venv/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Jupyter notebooks
+.ipynb_checkpoints/
+
+# Development files (keep pyproject.toml tracked now)
+# pyproject.toml  # Removed this line so pyproject.toml is tracked
