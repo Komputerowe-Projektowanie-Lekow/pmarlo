@@ -216,7 +216,8 @@ class ReplicaExchange:
             logger.info(f"Replica {i:02d}: T = {temperature:.1f} K")
         
         logger.info("All replicas set up successfully")
-    
+
+
     def calculate_exchange_probability(self, replica_i: int, replica_j: int) -> float:
         """
         Calculate the probability of exchanging two replicas.
