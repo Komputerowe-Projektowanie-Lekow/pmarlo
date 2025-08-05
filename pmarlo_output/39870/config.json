@@ -1,0 +1,12 @@
+{
+  "pdb_file": "C:/Users/konrad_guest/Documents/GitHub/pmarlo/tests/data/3gd8.pdb",
+  "temperatures": [
+    300.0,
+    310.0,
+    320.0
+  ],
+  "steps": 1000,
+  "n_states": 50,
+  "use_replica_exchange": true,
+  "use_metadynamics": true
+}

@@ -15,25 +15,19 @@ else:
 
 # Read requirements
 requirements = [
-    'numpy>=1.18.0',
-    'scipy>=1.5.0',
-    'matplotlib>=3.2.0',
-    'pandas>=1.1.0',
-    'scikit-learn>=0.23.0',
+    'numpy>=1.24.0,<2.3.0',  # Compatible with numba and mordred
+    'scipy>=1.10.0',
+    'matplotlib>=3.6.0',
+    'pandas>=1.5.0',
+    'scikit-learn>=1.2.0',
     'mdtraj>=1.9.0',
-    'openmm>=7.5.0',
-    'pdbfixer>=1.7',
-    'rdkit>=2020.09.1',
+    'openmm>=8.0.0',
+    'rdkit>=2024.03.1',
 ]
 
 # Development requirements
 dev_requirements = [
     'pytest>=6.0.0',
-    'pytest-cov>=2.10.0',
-    'black>=20.8b1',
-    'flake8>=3.8.0',
-    'sphinx>=3.2.0',
-    'sphinx-rtd-theme>=0.5.0',
 ]
 
 setup(
@@ -51,7 +45,8 @@ setup(
     install_requires=requirements,
     extras_require={
         'dev': dev_requirements,
-        'all': requirements + dev_requirements,
+        'fixer': ['pdbfixer @ git+https://github.com/openmm/pdbfixer@v1.11'],
+        'all': requirements + dev_requirements + ['pdbfixer @ git+https://github.com/openmm/pdbfixer@v1.11'],
     },
     classifiers=[
         'Development Status :: 3 - Alpha',
@@ -70,7 +65,7 @@ setup(
     keywords='molecular dynamics, markov state models, replica exchange, protein simulation, biophysics',
     entry_points={
         'console_scripts': [
-            'pmarlo=src.main:main',
+            'pmarlo=pmarlo.main:main',
         ],
     },
     include_package_data=True,
