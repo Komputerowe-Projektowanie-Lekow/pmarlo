@@ -65,6 +65,7 @@ pmarlo = "pmarlo.main:main"
 # ─────────────────────────── setuptools-scm ───────────────────────────
 [tool.setuptools_scm]
 write_to = "src/pmarlo/_version.py"
+local_scheme = "no-local-version"
 
 # ──────────────────── Package discovery & data files ──────────────────
 [tool.setuptools.packages.find]
@@ -144,3 +145,4 @@ python_classes   = ["Test*"]
 # ────────── Poetry-dynamic-versioning ──────────
 [tool.poetry-dynamic-versioning]
 enable = true          # włącz plugin w tym projekcie
+metadata = false
