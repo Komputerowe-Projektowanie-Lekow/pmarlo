@@ -4,6 +4,11 @@
 /pmarlo_output/
 final.xml
 
+# Build and distribution files
+/build/
+/dist/
+
+
 # IDE files
 /.idea/
 .vscode/

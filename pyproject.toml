@@ -9,9 +9,11 @@ name            = "pmarlo"
 description     = "Protein Markov State Model Analysis with Replica Exchange"
 readme          = "README.md"
 requires-python = ">=3.11,<3.13"
-license         = { text = "MIT" }
+license = { file = "LICENSE" }
+
+
 authors = [
-  { name = "PMARLO Development Team", email = "pmarlo@example.com" },
+  { name = "PMARLO Development Team", email="konrad.jan.gorzelanczyk@gmail.com" },
 ]
 keywords = [
   "molecular dynamics",
@@ -23,7 +25,7 @@ keywords = [
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",
-  "License :: OSI Approved :: MIT License",
+  "License :: OSI Approved :: GNU GPLv3 License",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
@@ -52,10 +54,9 @@ fixer = [
 
 # ───────────────────── URLs & entry-points / CLI ──────────────────────
 [project.urls]
-Homepage      = "https://github.com/yourusername/pmarlo"
-Documentation = "https://pmarlo.readthedocs.io/"
-Repository    = "https://github.com/yourusername/pmarlo"
-Issues        = "https://github.com/yourusername/pmarlo/issues"
+Homepage      = "https://github.com/Komputerowe-Projektowanie-Lekow/pmarlo"
+Issues = "https://github.com/Komputerowe-Projektowanie-Lekow/pmarlo/issues"
+
 
 [project.scripts]
 pmarlo = "pmarlo.main:main"
@@ -138,3 +139,8 @@ addopts          = "-v --tb=short"
 python_files     = ["test_*.py"]
 python_functions = ["test_*"]
 python_classes   = ["Test*"]
+
+# ────────── Poetry-dynamic-versioning ──────────
+[tool.poetry-dynamic-versioning]
+preset = "scm"           # bierze wersję z tagów (domyślnie `v1.2.3`)
+fallback_version = "0.0.0"   # odkomentuj, jeśli repo nie ma jeszcze tagów

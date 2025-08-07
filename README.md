@@ -14,7 +14,7 @@ A Python package for protein simulation and Markov state model chain generation,
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/pmarlo.git
+git clone https://github.com/Komputerowe-Projektowanie-Lekow/pmarlo.git
 cd pmarlo
 
 # Install dependencies
