@@ -23,15 +23,15 @@ keywords = [
   "biophysics",
 ]
 classifiers = [
-  "Development Status :: 3 - Alpha",
-  "Intended Audience :: Science/Research",
-  "License :: OSI Approved :: GNU GPLv3 License",
-  "Operating System :: OS Independent",
-  "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3 :: Only",
-  "Topic :: Scientific/Engineering :: Bio-Informatics",
-  "Topic :: Scientific/Engineering :: Chemistry",
-  "Topic :: Scientific/Engineering :: Physics",
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Physics",
 ]
 dynamic = ["version"]            # ostateczną wersję dostarcza setuptools-scm
 
@@ -47,6 +47,7 @@ dependencies = [
 ]
 
 # ─────────────────────── Optional runtime extras ──────────────────────
+
 [project.optional-dependencies]
 fixer = [
   "pdbfixer @ git+https://github.com/openmm/pdbfixer@v1.11"
@@ -142,5 +143,4 @@ python_classes   = ["Test*"]
 
 # ────────── Poetry-dynamic-versioning ──────────
 [tool.poetry-dynamic-versioning]
-preset = "scm"           # bierze wersję z tagów (domyślnie `v1.2.3`)
-fallback_version = "0.0.0"   # odkomentuj, jeśli repo nie ma jeszcze tagów
+enable = true          # włącz plugin w tym projekcie

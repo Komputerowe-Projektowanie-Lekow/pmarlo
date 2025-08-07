@@ -11,5 +11,11 @@ git add -u
 poetry run pre-commit run --all-files
 poetry add --group dev mypy@^1.17
 
+poetry publish --build --repository testpypi
+git tag v0.0.8
+git push --tags
+poetry dynamic-versioning show
+
+
 
 ## need to run them before they are correct, not yet known
