@@ -68,14 +68,14 @@ test the methods in a modular way, so that
 - the equilibration and minimization are done in a modular/testable way
 
 
+make it a real distribution package with wheel and poetry build
+- dist(check if everything is correct as source)
+- build(check if everything is correct)
+
 things that need to be done:
 created a Python package;
 
 set up Poetry for dependency management;
-
-set up a GitHub repository to host the code;
-
-defined some pre-commit hooks to make sure we only make commits that meet certain criteria;
 
 added a (fairly permissive) license to the project;
 

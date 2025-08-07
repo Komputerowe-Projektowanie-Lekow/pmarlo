@@ -1,3 +1,6 @@
+# Copyright (c) 2025 PMARLO Development Team
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """
 Tests for the Pipeline class.
 """
@@ -7,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from pmarlo.pipeline import LegacyPipeline, Pipeline, run_pmarlo
+from tests.conftest import skip_if_no_openmm
 
 
 class TestPipeline:
@@ -71,7 +75,8 @@ class TestPipeline:
         assert "markov_state_model" in components
 
     @pytest.mark.skipif(
-        True, reason="Full pipeline run requires significant computational time"
+        "skip_if_no_openmm",
+        reason="Full pipeline run requires significant computational time",
     )
     def test_full_pipeline_run(self, test_pdb_file, temp_output_dir):
         """Test full pipeline execution (skipped by default)."""
@@ -117,7 +122,9 @@ class TestConvenienceFunctions:
         assert "steps" in params
         assert "n_states" in params
 
-    @pytest.mark.skipif(True, reason="Full run_pmarlo requires computational resources")
+    @pytest.mark.skipif(
+        "skip_if_no_openmm", reason="Full run_pmarlo requires computational resources"
+    )
     def test_run_pmarlo_execution(self, test_pdb_file, temp_output_dir):
         """Test run_pmarlo function execution (skipped by default)."""
         # This would run the full pipeline

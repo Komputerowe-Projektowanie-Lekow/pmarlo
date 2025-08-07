@@ -1,3 +1,6 @@
+# Copyright (c) 2025 PMARLO Development Team
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """
 Enhanced Markov State Model analysis with TRAM/dTRAM and comprehensive reporting.
 

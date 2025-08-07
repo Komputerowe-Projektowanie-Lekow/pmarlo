@@ -1,3 +1,6 @@
+# Copyright (c) 2025 PMARLO Development Team
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """
 Pytest configuration and fixtures for PMARLO tests.
 """

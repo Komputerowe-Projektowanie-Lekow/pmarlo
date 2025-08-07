@@ -1,3 +1,6 @@
+# Copyright (c) 2025 PMARLO Development Team
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """
 Pipeline orchestration module for PMARLO.
 

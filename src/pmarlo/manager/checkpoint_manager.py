@@ -1,3 +1,6 @@
+# Copyright (c) 2025 PMARLO Development Team
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """
 Checkpoint and Resume System for PMARLO
 Handles state management for long-running molecular dynamics simulations.

@@ -1,3 +1,6 @@
+# Copyright (c) 2025 PMARLO Development Team
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """
 Tests for the Simulation class.
 """
@@ -8,6 +11,7 @@ import numpy as np
 import pytest
 
 from pmarlo.simulation.simulation import Simulation, feature_extraction, prepare_system
+from tests.conftest import skip_if_no_openmm
 
 
 class TestSimulation:
@@ -28,7 +32,7 @@ class TestSimulation:
         assert sim.use_metadynamics == False
 
     @pytest.mark.skipif(
-        True, reason="Requires OpenMM and significant computational time"
+        "skip_if_no_openmm", reason="Requires OpenMM and significant computational time"
     )
     def test_system_preparation(self, test_fixed_pdb_file, temp_output_dir):
         """Test system preparation (skipped by default due to computational requirements)."""

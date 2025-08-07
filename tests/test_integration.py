@@ -1,3 +1,6 @@
+# Copyright (c) 2025 PMARLO Development Team
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """
 Integration tests for PMARLO package.
 
@@ -8,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from src import Pipeline, Protein
+from pmarlo import Pipeline, Protein
 
 
 class TestPackageImports:
@@ -16,7 +19,7 @@ class TestPackageImports:
 
     def test_main_imports(self):
         """Test importing main classes from package."""
-        from src import (
+        from pmarlo import (
             LegacyPipeline,
             MarkovStateModel,
             Pipeline,
@@ -87,7 +90,13 @@ class TestWorkflowIntegration:
 
     def test_five_line_api_setup(self, test_pdb_file):
         """Test the five-line API setup (without execution)."""
-        from src import MarkovStateModel, Pipeline, Protein, ReplicaExchange, Simulation
+        from pmarlo import (
+            MarkovStateModel,
+            Pipeline,
+            Protein,
+            ReplicaExchange,
+            Simulation,
+        )
 
         # Test that we can create all components (the 5-line API)
         protein = Protein(str(test_pdb_file), ph=7.0)

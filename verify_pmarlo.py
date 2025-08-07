@@ -1,3 +1,6 @@
+# Copyright (c) 2025 PMARLO Development Team
+# SPDX-License-Identifier: GNU GPLv3
+
 import logging
 import os
 from pathlib import Path
