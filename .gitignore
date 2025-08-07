@@ -7,6 +7,9 @@ final.xml
 # Build and distribution files
 /build/
 /dist/
+/experiments_output/msm/*
+/experiments_output/replica_exchange/*
+/experiments_output/simulation/*
 
 
 # IDE files
