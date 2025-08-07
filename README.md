@@ -4,12 +4,11 @@ A Python package for protein simulation and Markov state model chain generation,
 
 ## Features
 
-- **Simple API**: OpenMM-inspired interface for easy usage
 - **Protein Preparation**: Automated PDB cleanup and preparation
 - **Replica Exchange**: Enhanced sampling with temperature replica exchange
-- **Metadynamics**: Optional biased sampling for enhanced conformational exploration
-- **Markov State Models**: Advanced MSM analysis with TRAM/dTRAM
-- **Pipeline Orchestration**: Complete workflow coordination in just a few lines
+- **Simulation**: Single-temperature MD simulations
+- **Markov State Models**: MSM analysis
+- **Pipeline Orchestration**: Complete workflow coordination
 
 ## Installation
 
@@ -25,56 +24,28 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-## Quick Start
+## Verified Usage Example
 
-### Ultra-Simple One-Liner
-
-```python
-from pmarlo import run_pmarlo
-
-# Complete analysis in one line
-results = run_pmarlo("protein.pdb", temperatures=[300, 310, 320], steps=1000)
-```
-
-### Five-Line Usage (OpenMM-style)
+The following example demonstrates the verified functionality of PMARLO:
 
 ```python
 from pmarlo import Protein, ReplicaExchange, Simulation, MarkovStateModel, Pipeline
 
-# Setup components
-protein = Protein("protein.pdb", ph=7.0)
-replica_exchange = ReplicaExchange("protein.pdb", temperatures=[300, 310, 320])
+# Initialize components
+protein = Protein("protein.pdb", ph=7.0, auto_prepare=True)
+replica_exchange = ReplicaExchange("protein.pdb", temperatures=[300, 310, 320], auto_setup=False)
+replica_exchange.setup_replicas()
 simulation = Simulation("protein.pdb", temperature=300, steps=1000)
 markov_state_model = MarkovStateModel()
 
 # Run complete pipeline
-pipeline = Pipeline("protein.pdb")
-results = pipeline.run()
-```
-
-### Component-by-Component Control
-
-```python
-from pmarlo import Pipeline
-
-# Create pipeline with custom settings
 pipeline = Pipeline(
-    pdb_file="protein.pdb",
-    temperatures=[300.0, 310.0, 320.0],
-    steps=10000,
-    n_states=100,
-    use_replica_exchange=True,
-    use_metadynamics=True,
-    output_dir="my_analysis"
+    "protein.pdb",
+    temperatures=[300, 310, 320],
+    steps=1000,
+    auto_continue=True
 )
-
-# Run complete analysis
 results = pipeline.run()
-
-# Access individual components if needed
-components = pipeline.get_components()
-protein = components["protein"]
-replica_exchange = components["replica_exchange"]
 ```
 
 ## Package Structure
@@ -99,74 +70,19 @@ pmarlo/
 │   └── manager/
 │       ├── __init__.py
 │       └── checkpoint_manager.py # Checkpoint management
-├── examples/
-│   └── simple_usage.py          # Usage examples
-├── setup.py                     # Package setup
-└── README.md                    # This file
 ```
 
-## Examples
+## Verification
 
-### Running the Demos
+You can verify your PMARLO installation using the provided verification script:
 
 ```bash
-# Show the simple API demonstration
-python -m src.main --mode simple
-
-# Run a minimal demo (requires test files)
-python -m src.main --mode demo
-
-# Run legacy REMD pipeline
-python -m src.main --mode remd --steps 1000
-
-# Compare different methods
-python -m src.main --mode compare
+python verify_pmarlo.py
 ```
 
-### Advanced Usage
-
-```python
-from pmarlo import Pipeline
-
-# Custom pipeline for advanced users
-pipeline = Pipeline(
-    pdb_file="complex_protein.pdb",
-    temperatures=[298.0, 308.0, 318.0, 328.0],  # 4 replicas
-    n_replicas=4,
-    steps=100000,  # Longer simulation
-    n_states=200,  # More MSM states
-    use_replica_exchange=True,
-    use_metadynamics=True,
-    output_dir="advanced_analysis"
-)
-
-# Run with checkpointing
-results = pipeline.run()
-
-# Access detailed results
-print(f"Analysis completed: {results['pipeline']['status']}")
-print(f"Output directory: {results['pipeline']['output_dir']}")
-
-if 'replica_exchange' in results:
-    print(f"REMD trajectories: {results['replica_exchange']['trajectory_files']}")
-
-if 'msm' in results:
-    print(f"MSM analysis: {results['msm']['output_dir']}")
-```
-
-## API Reference
-
-### Classes
-
-- **`Protein`**: Handles protein preparation and cleanup
-- **`ReplicaExchange`**: Manages replica exchange molecular dynamics
-- **`Simulation`**: Single-temperature MD simulations with optional metadynamics
-- **`MarkovStateModel`**: Advanced MSM analysis and visualization
-- **`Pipeline`**: Orchestrates all components for complete workflow
-
-### Functions
-
-- **`run_pmarlo()`**: One-line function for complete analysis
+This will test:
+1. Component initialization (Protein, ReplicaExchange, Simulation, MarkovStateModel)
+2. Basic pipeline execution with default parameters
 
 ## Dependencies
 
@@ -179,34 +95,3 @@ if 'msm' in results:
 - openmm >= 7.5.0
 - pdbfixer >= 1.7
 - rdkit >= 2020.09.1
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Run tests
-5. Submit a pull request
-
-## License
-
-MIT License - see LICENSE file for details.
-
-## Citation
-
-If you use PMARLO in your research, please cite:
-
-```bibtex
-@software{pmarlo2024,
-  title={PMARLO: Protein Markov State Model Analysis with Replica Exchange},
-  author={PMARLO Development Team},
-  year={2024},
-  url={https://github.com/yourusername/pmarlo}
-}
-```
-
-## Support
-
-- Documentation: [https://pmarlo.readthedocs.io/](https://pmarlo.readthedocs.io/)
-- Issues: [https://github.com/yourusername/pmarlo/issues](https://github.com/yourusername/pmarlo/issues)
-- Discussions: [https://github.com/yourusername/pmarlo/discussions](https://github.com/yourusername/pmarlo/discussions)

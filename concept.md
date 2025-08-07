@@ -64,7 +64,8 @@ do the profiling of the module to find out how to optimize the performance
 
 
 is it possible to use openMM molecular dynamics to use markov state models to obtain freeenergy landscape and from that findout the conformation states of the protein(the population of the conformations states). so we get the conformations that were found in the simulations and maybe findout more about the conformation states that come from informaiton that is not precisely from the molecular dynamics.
-
+test the methods in a modular way, so that
+- the equilibration and minimization are done in a modular/testable way
 
 
 things that need to be done:
