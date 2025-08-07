@@ -49,9 +49,7 @@ dependencies = [
 # ─────────────────────── Optional runtime extras ──────────────────────
 
 [project.optional-dependencies]
-fixer = [
-  "pdbfixer @ git+https://github.com/openmm/pdbfixer@v1.11"
-]
+fixer = ["pdbfixer>=1.11"]
 
 # ───────────────────── URLs & entry-points / CLI ──────────────────────
 [project.urls]
