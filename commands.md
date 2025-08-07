@@ -16,6 +16,10 @@ git tag v0.0.8
 git push --tags
 poetry dynamic-versioning show
 
+poetry run scriv create
+
+
 
 
 ## need to run them before they are correct, not yet known
+poetry run scriv collect --version 0.3.0 --add

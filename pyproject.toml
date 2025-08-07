@@ -84,6 +84,7 @@ pre-commit = "^3.7"
 black      = "^25.0"
 isort      = "^5.10.1"
 mypy = "1.17"
+scriv      = { extras = ["toml"], version = "^1.7.0" }
 
 [tool.poetry.group.tests.dependencies]
 pytest     = "^8.2"
@@ -144,3 +145,10 @@ python_classes   = ["Test*"]
 [tool.poetry-dynamic-versioning]
 enable = true          # włącz plugin w tym projekcie
 metadata = false
+
+[tool.scriv]
+message_template   = "### {version}\n\n{sections}"
+format             = "md"
+changelog          = "CHANGELOG.md"
+fragment_directory = "changelog.d"
+version            = "literal"
