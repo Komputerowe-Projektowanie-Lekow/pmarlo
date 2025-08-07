@@ -2,10 +2,11 @@
 Pytest configuration and fixtures for PMARLO tests.
 """
 
-import pytest
-from pathlib import Path
-import tempfile
 import shutil
+import tempfile
+from pathlib import Path
+
+import pytest
 
 
 @pytest.fixture
@@ -45,6 +46,7 @@ def skip_if_no_openmm():
     """Skip tests if OpenMM is not available."""
     try:
         import openmm
+
         return False
     except ImportError:
         return True

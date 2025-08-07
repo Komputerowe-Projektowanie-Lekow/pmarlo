@@ -1,6 +1,7 @@
 # Runtime data and temporary files
 /output/
 /bias/
+/pmarlo_output/
 final.xml
 
 # IDE files
@@ -32,3 +33,8 @@ Thumbs.db
 
 # Development files (keep pyproject.toml tracked now)
 # pyproject.toml  # Removed this line so pyproject.toml is tracked
+
+USAGE.md
+concept.md
+commands.md
+README.md

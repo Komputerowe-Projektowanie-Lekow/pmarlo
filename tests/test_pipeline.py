@@ -2,14 +2,16 @@
 Tests for the Pipeline class.
 """
 
-import pytest
 from pathlib import Path
-from src.pipeline import Pipeline, run_pmarlo, LegacyPipeline
+
+import pytest
+
+from pmarlo.pipeline import LegacyPipeline, Pipeline, run_pmarlo
 
 
 class TestPipeline:
     """Test cases for Pipeline class."""
-    
+
     def test_pipeline_initialization(self, test_pdb_file):
         """Test pipeline initialization."""
         pipeline = Pipeline(
@@ -18,62 +20,59 @@ class TestPipeline:
             steps=100,
             n_states=10,
             use_replica_exchange=False,
-            output_dir="test_output"
+            output_dir="test_output",
         )
-        
+
         assert pipeline.pdb_file == str(test_pdb_file)
         assert pipeline.temperatures == [300.0, 310.0]
         assert pipeline.steps == 100
         assert pipeline.n_states == 10
         assert pipeline.use_replica_exchange == False
-    
+
     def test_pipeline_default_temperatures(self, test_pdb_file):
         """Test pipeline with default temperature settings."""
         # Test single temperature (no replica exchange)
-        pipeline = Pipeline(
-            pdb_file=str(test_pdb_file),
-            use_replica_exchange=False
-        )
+        pipeline = Pipeline(pdb_file=str(test_pdb_file), use_replica_exchange=False)
         assert pipeline.temperatures == [300.0]
-        
+
         # Test replica exchange with default temperatures
         pipeline = Pipeline(
-            pdb_file=str(test_pdb_file),
-            use_replica_exchange=True,
-            n_replicas=3
+            pdb_file=str(test_pdb_file), use_replica_exchange=True, n_replicas=3
         )
         assert len(pipeline.temperatures) == 3
         assert all(t >= 300.0 for t in pipeline.temperatures)
-    
+
     def test_pipeline_component_setup(self, test_pdb_file, temp_output_dir):
         """Test individual component setup."""
         pipeline = Pipeline(
             pdb_file=str(test_pdb_file),
             output_dir=str(temp_output_dir),
-            use_replica_exchange=False
+            use_replica_exchange=False,
         )
-        
+
         # Test protein setup
         try:
             protein = pipeline.setup_protein()
             assert protein is not None
-            assert hasattr(protein, 'get_properties')
+            assert hasattr(protein, "get_properties")
         except Exception as e:
             # If protein setup fails due to dependencies, that's expected
             assert "No module named" in str(e) or "ImportError" in str(type(e).__name__)
-    
+
     def test_pipeline_get_components(self, test_pdb_file):
         """Test getting pipeline components."""
         pipeline = Pipeline(pdb_file=str(test_pdb_file))
         components = pipeline.get_components()
-        
+
         assert isinstance(components, dict)
-        assert 'protein' in components
-        assert 'replica_exchange' in components
-        assert 'simulation' in components
-        assert 'markov_state_model' in components
-    
-    @pytest.mark.skipif(True, reason="Full pipeline run requires significant computational time")
+        assert "protein" in components
+        assert "replica_exchange" in components
+        assert "simulation" in components
+        assert "markov_state_model" in components
+
+    @pytest.mark.skipif(
+        True, reason="Full pipeline run requires significant computational time"
+    )
     def test_full_pipeline_run(self, test_pdb_file, temp_output_dir):
         """Test full pipeline execution (skipped by default)."""
         pipeline = Pipeline(
@@ -81,9 +80,9 @@ class TestPipeline:
             output_dir=str(temp_output_dir),
             steps=10,  # Very short for testing
             n_states=5,  # Few states for testing
-            use_replica_exchange=False
+            use_replica_exchange=False,
         )
-        
+
         # This would require significant computational resources
         # results = pipeline.run()
         # assert results['pipeline']['status'] == 'completed'
@@ -91,15 +90,13 @@ class TestPipeline:
 
 class TestLegacyPipeline:
     """Test cases for LegacyPipeline class."""
-    
+
     def test_legacy_pipeline_initialization(self, test_pdb_file):
         """Test legacy pipeline initialization."""
         legacy = LegacyPipeline(
-            pdb_file=str(test_pdb_file),
-            output_dir="test_output",
-            run_id="test123"
+            pdb_file=str(test_pdb_file), output_dir="test_output", run_id="test123"
         )
-        
+
         assert legacy.pdb_file == str(test_pdb_file)
         assert legacy.run_id == "test123"
         assert legacy.checkpoint_manager is None  # Not initialized until run
@@ -107,18 +104,19 @@ class TestLegacyPipeline:
 
 class TestConvenienceFunctions:
     """Test cases for convenience functions."""
-    
+
     def test_run_pmarlo_function_signature(self):
         """Test run_pmarlo function signature."""
         import inspect
+
         sig = inspect.signature(run_pmarlo)
         params = list(sig.parameters.keys())
-        
-        assert 'pdb_file' in params
-        assert 'temperatures' in params
-        assert 'steps' in params
-        assert 'n_states' in params
-    
+
+        assert "pdb_file" in params
+        assert "temperatures" in params
+        assert "steps" in params
+        assert "n_states" in params
+
     @pytest.mark.skipif(True, reason="Full run_pmarlo requires computational resources")
     def test_run_pmarlo_execution(self, test_pdb_file, temp_output_dir):
         """Test run_pmarlo function execution (skipped by default)."""

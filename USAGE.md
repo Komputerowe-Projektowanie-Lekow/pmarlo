@@ -148,8 +148,8 @@ msm_analysis/
 ```python
 # Automatic exponential spacing
 temperatures = remd._generate_temperature_ladder(
-    min_temp=300.0, 
-    max_temp=450.0, 
+    min_temp=300.0,
+    max_temp=450.0,
     n_replicas=8
 )
 # Result: [300.0, 315.4, 331.6, 348.5, 366.2, 384.8, 404.4, 425.0]
@@ -159,8 +159,8 @@ temperatures = remd._generate_temperature_ladder(
 ```python
 # Generate 2D FES in phi/psi space
 fes_data = msm.generate_free_energy_surface(
-    cv1_name="phi", 
-    cv2_name="psi", 
+    cv1_name="phi",
+    cv2_name="psi",
     bins=50,
     temperature=300.0
 )

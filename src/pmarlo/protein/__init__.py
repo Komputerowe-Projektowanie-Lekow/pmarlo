@@ -6,4 +6,4 @@ Handles protein preparation, cleanup, and property analysis.
 
 from .protein import Protein
 
-__all__ = ['Protein']
+__all__ = ["Protein"]

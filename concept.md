@@ -63,4 +63,39 @@ do the profiling of the module to find out how to optimize the performance
 - only for the cpu right now
 
 
-is it possible to use openMM molecular dynamics to use markov state models to obtain freeenergy landscape and from that findout the conformation states of the protein(the population of the conformations states). so we get the conformations that were found in the simulations and maybe findout more about the conformation states that come from informaiton that is not precisely from the molecular dynamics. 
+is it possible to use openMM molecular dynamics to use markov state models to obtain freeenergy landscape and from that findout the conformation states of the protein(the population of the conformations states). so we get the conformations that were found in the simulations and maybe findout more about the conformation states that come from informaiton that is not precisely from the molecular dynamics.
+
+
+
+things that need to be done:
+created a Python package;
+
+set up Poetry for dependency management;
+
+set up a GitHub repository to host the code;
+
+defined some pre-commit hooks to make sure we only make commits that meet certain criteria;
+
+added a (fairly permissive) license to the project;
+
+configured Poetry to allow uploading to PyPI and a test version of PyPI;
+
+tested uploading the package to a test version of PyPI;
+
+added Scriv to help us with changelog management and generation;
+
+tagged and published a release of our project;
+
+wrote a bunch of tests;
+
+automated testing and linting with tox;
+
+checked code coverage and got it to 100%;
+
+set up CI/CD with GitHub actions to run linting and testing;
+
+integrated with Codecov to get coverage reports in our pull requests;
+
+created a GitHub action to publish our package to PyPI automatically; and
+
+added some nifty badges to the README file.

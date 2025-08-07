@@ -7,7 +7,7 @@ A Python package for protein simulation and Markov state model chain generation,
 - **Simple API**: OpenMM-inspired interface for easy usage
 - **Protein Preparation**: Automated PDB cleanup and preparation
 - **Replica Exchange**: Enhanced sampling with temperature replica exchange
-- **Metadynamics**: Optional biased sampling for enhanced conformational exploration  
+- **Metadynamics**: Optional biased sampling for enhanced conformational exploration
 - **Markov State Models**: Advanced MSM analysis with TRAM/dTRAM
 - **Pipeline Orchestration**: Complete workflow coordination in just a few lines
 
@@ -43,7 +43,7 @@ from pmarlo import Protein, ReplicaExchange, Simulation, MarkovStateModel, Pipel
 
 # Setup components
 protein = Protein("protein.pdb", ph=7.0)
-replica_exchange = ReplicaExchange("protein.pdb", temperatures=[300, 310, 320])  
+replica_exchange = ReplicaExchange("protein.pdb", temperatures=[300, 310, 320])
 simulation = Simulation("protein.pdb", temperature=300, steps=1000)
 markov_state_model = MarkovStateModel()
 
