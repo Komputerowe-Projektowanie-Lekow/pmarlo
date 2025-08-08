@@ -1,4 +1,18 @@
 
+<a id='changelog-0.14.0'></a>
+# 0.14.0 — 2025-08-08
+
+## Added
+
+- psutils for the memory management.
+
+## Changed
+
+- changes in the pyproject.toml and experiments.
+- KPIs for the methods and algorithm testing suite upgrades.
+- docker now has a lock generations and not just distribution usage.
+- made deduplication effort in the probability calculation and logging info from all the modules
+
 <a id='changelog-0.13.0'></a>
 # 0.13.0 — 2025-08-08
 
