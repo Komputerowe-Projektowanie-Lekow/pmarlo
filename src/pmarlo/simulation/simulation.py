@@ -35,8 +35,6 @@ from typing import List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -55,7 +53,7 @@ class Simulation:
         pdb_file: str,
         temperature: float = 300.0,
         steps: int = 1000,
-        output_dir: str = "simulation_output",
+        output_dir: str = "output/simulation",
         use_metadynamics: bool = True,
     ):
         """
@@ -160,9 +158,11 @@ def prepare_system(
         )
 
         if output_dir is None:
-            bias_dir = BASE_DIR / "bias"
+            # Default all artifacts under unified output tree
+            output_dir = Path("output") / "simulation"
         else:
-            bias_dir = Path(output_dir) / "bias"
+            output_dir = Path(output_dir)
+        bias_dir = output_dir / "bias"
 
         # Clear existing bias files to avoid conflicts
         if bias_dir.exists():
@@ -208,9 +208,10 @@ def production_run(steps, simulation, meta, output_dir=None):
     print("Stage 3/5  –  production run...")
 
     if output_dir is None:
-        output_dir = TESTS_DIR
+        output_dir = Path("output") / "simulation"
     else:
         output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     dcd_filename = str(output_dir / "traj.dcd")
     dcd = DCDReporter(dcd_filename, 10)  # save every 10 steps

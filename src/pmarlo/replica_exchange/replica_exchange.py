@@ -20,8 +20,8 @@ import openmm
 from openmm import Platform, unit
 from openmm.app import PME, DCDReporter, ForceField, HBonds, PDBFile, Simulation
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
+from ..utils.replica_utils import exponential_temperature_ladder
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,7 +38,7 @@ class ReplicaExchange:
         pdb_file: str,
         forcefield_files: Optional[List[str]] = None,
         temperatures: Optional[List[float]] = None,
-        output_dir: str = "remd_output",
+        output_dir: str = "output/replica_exchange",
         exchange_frequency: int = 50,  # Very frequent exchanges for testing
         auto_setup: bool = False,
     ):  # Explicit opt-in for auto-setup
@@ -87,6 +87,9 @@ class ReplicaExchange:
         self.state_replicas = list(
             range(self.n_replicas)
         )  # Which replica is at each temperature
+        # Per-pair statistics (temperature index pairs)
+        self.pair_attempt_counts: dict[tuple[int, int], int] = {}
+        self.pair_accept_counts: dict[tuple[int, int], int] = {}
 
         # Simulation data - Fixed: Added proper type annotations
         self.trajectory_files: List[Path] = (
@@ -110,27 +113,14 @@ class ReplicaExchange:
     def _generate_temperature_ladder(
         self,
         min_temp: float = 300.0,
-        max_temp: float = 350.0,  # Smaller range for better overlap
+        max_temp: float = 350.0,
         n_replicas: int = 3,
-    ) -> List[float]:  # Even fewer replicas for testing
-        """
-        Generate an exponential temperature ladder for optimal exchange efficiency.
+    ) -> List[float]:
+        """Generate an exponential temperature ladder for optimal exchange efficiency.
 
-        Args:
-            min_temp: Minimum temperature in Kelvin
-            max_temp: Maximum temperature in Kelvin
-            n_replicas: Number of temperature replicas
-
-        Returns:
-            List of temperatures in Kelvin
+        Delegates to `utils.replica_utils.exponential_temperature_ladder` to avoid duplication.
         """
-        # Exponential spacing for better overlap
-        temperatures = min_temp * (max_temp / min_temp) ** (
-            np.arange(n_replicas) / (n_replicas - 1)
-        )
-        return list(
-            temperatures
-        )  # Fixed: Explicit conversion to list to avoid Any return type
+        return exponential_temperature_ladder(min_temp, max_temp, n_replicas)
 
     def setup_replicas(self, bias_variables: Optional[List] = None):
         """
@@ -504,27 +494,17 @@ class ReplicaExchange:
         temp_i = self.temperatures[self.replica_states[replica_i]]
         temp_j = self.temperatures[self.replica_states[replica_j]]
 
-        # Calculate exchange probability using Metropolis criterion
-        # Use molar gas constant since energies are per mole
-        RT_i = unit.MOLAR_GAS_CONSTANT_R * temp_i * unit.kelvin
-        RT_j = unit.MOLAR_GAS_CONSTANT_R * temp_j * unit.kelvin
+        # Calculate exchange probability using canonical Metropolis criterion
+        # delta = (beta_j - beta_i) * (U_i - U_j)
+        # where beta = 1 / (R T)
+        def safe_dimensionless(q):
+            if hasattr(q, "value_in_unit"):
+                return q.value_in_unit(unit.dimensionless)
+            return float(q)
 
-        # Calculate each term separately to ensure proper unit handling
-        # OpenMM sometimes returns float instead of Quantity for dimensionless results
-        def safe_dimensionless(quantity):
-            """Safely extract dimensionless value from OpenMM quantity or float."""
-            if hasattr(quantity, "value_in_unit"):
-                return quantity.value_in_unit(unit.dimensionless)
-            else:
-                # Already a dimensionless float
-                return float(quantity)
-
-        term1 = safe_dimensionless(energy_i / RT_j)
-        term2 = safe_dimensionless(energy_j / RT_i)
-        term3 = safe_dimensionless(energy_i / RT_i)
-        term4 = safe_dimensionless(energy_j / RT_j)
-
-        delta = (term1 + term2) - (term3 + term4)
+        beta_i = 1.0 / (unit.MOLAR_GAS_CONSTANT_R * temp_i * unit.kelvin)
+        beta_j = 1.0 / (unit.MOLAR_GAS_CONSTANT_R * temp_j * unit.kelvin)
+        delta = safe_dimensionless((beta_j - beta_i) * (energy_i - energy_j))
         prob = min(1.0, np.exp(-delta))
 
         # Debug logging for troubleshooting low acceptance rates
@@ -568,7 +548,15 @@ class ReplicaExchange:
         # Calculate exchange probability
         prob = self.calculate_exchange_probability(replica_i, replica_j)
 
-        # Accept or reject exchange
+        # Accept or reject exchange and track per-pair stats
+        # Build a fixed-size 2-tuple for dict keys to satisfy type checker
+        state_i_val = self.replica_states[replica_i]
+        state_j_val = self.replica_states[replica_j]
+        pair = (
+            min(state_i_val, state_j_val),
+            max(state_i_val, state_j_val),
+        )
+        self.pair_attempt_counts[pair] = self.pair_attempt_counts.get(pair, 0) + 1
         if np.random.random() < prob:
             # Perform exchange by swapping temperatures
             # Save current states
@@ -620,6 +608,7 @@ class ReplicaExchange:
             self.contexts[replica_j].setState(state_i)
 
             self.exchanges_accepted += 1
+            self.pair_accept_counts[pair] = self.pair_accept_counts.get(pair, 0) + 1
 
             logger.debug(
                 f"Exchange accepted: replica {replica_i} <-> {replica_j} (prob={prob:.3f})"
@@ -1196,6 +1185,13 @@ class ReplicaExchange:
                         round_trip_times.append(step - trip_start)
                         trip_start = step
 
+        # Per-pair acceptance rates
+        per_pair_acceptance = {}
+        for k, att in self.pair_attempt_counts.items():
+            acc = self.pair_accept_counts.get(k, 0)
+            rate = acc / max(1, att)
+            per_pair_acceptance[f"{k}"] = rate
+
         return {
             "total_exchange_attempts": self.exchange_attempts,
             "total_exchanges_accepted": self.exchanges_accepted,
@@ -1206,6 +1202,7 @@ class ReplicaExchange:
                 np.mean(round_trip_times) if round_trip_times else 0
             ),
             "round_trip_times": round_trip_times[:10],  # First 10 for brevity
+            "per_pair_acceptance": per_pair_acceptance,
         }
 
 
@@ -1257,7 +1254,7 @@ def setup_bias_variables(pdb_file: str) -> List:
 # Example usage function
 def run_remd_simulation(
     pdb_file: str,
-    output_dir: str = "remd_output",
+    output_dir: str = "output/replica_exchange",
     total_steps: int = 1000,  # VERY FAST for testing
     equilibration_steps: int = 100,  # Default equilibration steps
     temperatures: Optional[List[float]] = None,

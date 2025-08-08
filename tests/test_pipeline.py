@@ -16,7 +16,7 @@ from tests.conftest import skip_if_no_openmm
 class TestPipeline:
     """Test cases for Pipeline class."""
 
-    def test_pipeline_initialization(self, test_pdb_file):
+    def test_pipeline_initialization(self, test_pdb_file, temp_output_dir):
         """Test pipeline initialization."""
         pipeline = Pipeline(
             pdb_file=str(test_pdb_file),
@@ -24,7 +24,7 @@ class TestPipeline:
             steps=100,
             n_states=10,
             use_replica_exchange=False,
-            output_dir="test_output",
+            output_dir=str(temp_output_dir),
         )
 
         assert pipeline.pdb_file == str(test_pdb_file)
@@ -96,10 +96,12 @@ class TestPipeline:
 class TestLegacyPipeline:
     """Test cases for LegacyPipeline class."""
 
-    def test_legacy_pipeline_initialization(self, test_pdb_file):
+    def test_legacy_pipeline_initialization(self, test_pdb_file, temp_output_dir):
         """Test legacy pipeline initialization."""
         legacy = LegacyPipeline(
-            pdb_file=str(test_pdb_file), output_dir="test_output", run_id="test123"
+            pdb_file=str(test_pdb_file),
+            output_dir=str(temp_output_dir),
+            run_id="test123",
         )
 
         assert legacy.pdb_file == str(test_pdb_file)

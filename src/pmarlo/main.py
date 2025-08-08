@@ -171,8 +171,8 @@ def run_comparison_analysis():
             print("\n>>> Comparison Complete!")
             print("Check output directories for detailed results:")
             print(f"  - Original: {TESTS_DIR}")
-            print(f"  - REMD: {BASE_DIR / 'remd_output'}")
-            print(f"  - Enhanced MSM: {BASE_DIR / 'msm_analysis'}")
+            print(f"  - REMD: {BASE_DIR / 'output' / 'replica_exchange'}")
+            print(f"  - Enhanced MSM: {BASE_DIR / 'output' / 'msm_analysis'}")
 
     except Exception as e:
         print(f"Error in comparison analysis: {e}")
@@ -256,7 +256,7 @@ def run_simple_example():
             steps=100,  # Very short for demo
             n_states=10,  # Fewer states for demo
             use_replica_exchange=False,  # Simpler for demo
-            output_dir="demo_output",
+            output_dir=str(BASE_DIR / "output" / "demo"),
             auto_continue=True,  # Enable auto-continue
         )
 

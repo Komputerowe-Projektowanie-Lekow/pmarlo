@@ -44,6 +44,7 @@ dependencies = [
   "mdtraj>=1.9,<2.0",
   "openmm>=8.0,<9.0",
   "rdkit>=2024.03.1,<2025.0",
+  "psutil>=5.9,<6.1",
 ]
 
 # ─────────────────────── Optional runtime extras ──────────────────────

@@ -21,8 +21,6 @@ from .protein.protein import Protein
 from .replica_exchange.replica_exchange import ReplicaExchange, run_remd_simulation
 from .simulation.simulation import Simulation
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -37,7 +35,7 @@ class Pipeline:
     def __init__(
         self,
         pdb_file: str,
-        output_dir: str = "pmarlo_output",
+        output_dir: str = "output",
         temperatures: Optional[List[float]] = None,
         n_replicas: int = 3,
         steps: int = 1000,
@@ -552,7 +550,7 @@ def run_pmarlo(
     temperatures: Optional[List[float]] = None,
     steps: int = 1000,
     n_states: int = 50,
-    output_dir: str = "pmarlo_output",
+    output_dir: str = "output",
     checkpoint_id: Optional[str] = None,
     auto_continue: bool = True,
     **kwargs: Any,

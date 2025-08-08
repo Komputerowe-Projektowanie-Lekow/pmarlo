@@ -29,8 +29,6 @@ from scipy.constants import Boltzmann as kB
 from scipy.sparse import csc_matrix, issparse, load_npz, save_npz
 from sklearn.cluster import MiniBatchKMeans
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Suppress warnings for cleaner output
@@ -50,7 +48,7 @@ class EnhancedMSM:
         trajectory_files: Optional[Union[str, List[str]]] = None,
         topology_file: Optional[str] = None,
         temperatures: Optional[List[float]] = None,
-        output_dir: str = "msm_analysis",
+        output_dir: str = "output/msm_analysis",
     ):
         """
         Initialize the Enhanced MSM analyzer.
@@ -284,6 +282,13 @@ class EnhancedMSM:
         for (i, j), count in counts.items():
             count_matrix[i, j] = count
 
+        # Regularize zero rows to avoid non-stochastic rows (unvisited states)
+        row_sums_tmp = count_matrix.sum(axis=1)
+        zero_row_indices = np.where(row_sums_tmp == 0)[0]
+        if zero_row_indices.size > 0:
+            for idx in zero_row_indices:
+                count_matrix[idx, idx] = 1.0
+
         self.count_matrix = count_matrix
 
         # Build transition matrix (row-stochastic)
@@ -352,6 +357,13 @@ class EnhancedMSM:
         )  # Fix: Direct numpy array initialization
         for (i, j), count in combined_counts.items():
             count_matrix[i, j] = count
+
+        # Regularize zero rows to avoid non-stochastic rows (unvisited states)
+        row_sums_tmp = count_matrix.sum(axis=1)
+        zero_row_indices = np.where(row_sums_tmp == 0)[0]
+        if zero_row_indices.size > 0:
+            for idx in zero_row_indices:
+                count_matrix[idx, idx] = 1.0
 
         self.count_matrix = count_matrix
 
@@ -520,7 +532,11 @@ class EnhancedMSM:
         # Create 2D histogram weighted by stationary probabilities
         try:
             H, xedges, yedges = np.histogram2d(
-                cv1_data, cv2_data, bins=bins, weights=frame_weights, density=True
+                cv1_data,
+                cv2_data,
+                bins=bins,
+                weights=frame_weights_array,
+                density=True,
             )
 
             # Check for sufficient non-zero bins
@@ -1044,7 +1060,7 @@ class EnhancedMSM:
 def run_complete_msm_analysis(
     trajectory_files: Union[str, List[str]],
     topology_file: str,
-    output_dir: str = "msm_analysis",
+    output_dir: str = "output/msm_analysis",
     n_clusters: int = 100,
     lag_time: int = 20,
     feature_type: str = "phi_psi",

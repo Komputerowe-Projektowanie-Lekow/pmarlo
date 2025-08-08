@@ -7,7 +7,7 @@ from .msm import MSMConfig, run_msm_experiment
 from .replica_exchange import ReplicaExchangeConfig, run_replica_exchange_experiment
 from .simulation import SimulationConfig, run_simulation_experiment
 
-logging.basicConfig(level=logging.INFO)
+# CLI sets logging level; modules themselves do not configure basicConfig
 
 
 def _tests_data_dir() -> Path:
