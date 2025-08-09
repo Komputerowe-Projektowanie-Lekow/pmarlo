@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from pmarlo import Pipeline, Protein
+from pmarlo.protein.protein import HAS_PDBFIXER
 
 
 class TestPackageImports:
@@ -88,6 +89,7 @@ class TestWorkflowIntegration:
         except ImportError as e:
             pytest.skip(f"Workflow test skipped due to missing dependencies: {e}")
 
+    @pytest.mark.skipif(not HAS_PDBFIXER, reason="PDBFixer is required for this test")
     def test_five_line_api_setup(self, test_pdb_file):
         """Test the five-line API setup (without execution)."""
         from pmarlo import (
@@ -124,9 +126,17 @@ class TestErrorHandling:
         """Test handling of invalid PDB files across components."""
         invalid_pdb = "nonexistent_file.pdb"
 
-        # Protein should handle invalid files gracefully
+        # Test with auto_prepare=False first (should work without PDBFixer)
         with pytest.raises(Exception):
-            protein = Protein(invalid_pdb)
+            protein = Protein(invalid_pdb, auto_prepare=False)
+
+        # Test with auto_prepare=True (default)
+        if HAS_PDBFIXER:
+            with pytest.raises(Exception):
+                protein = Protein(invalid_pdb)
+        else:
+            with pytest.raises(ImportError, match="PDBFixer is required"):
+                protein = Protein(invalid_pdb)
 
         # Pipeline should also handle invalid files
         pipeline = Pipeline(invalid_pdb)
@@ -147,6 +157,7 @@ class TestErrorHandling:
 class TestDataPersistence:
     """Test that data is properly saved and can be reloaded."""
 
+    @pytest.mark.skipif(not HAS_PDBFIXER, reason="PDBFixer is required for this test")
     def test_protein_save_and_reload(self, test_pdb_file, temp_output_dir):
         """Test saving and reloading protein data."""
         # Save protein

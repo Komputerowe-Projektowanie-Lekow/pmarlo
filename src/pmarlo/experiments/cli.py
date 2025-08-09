@@ -21,6 +21,13 @@ def main():
         description="PMARLO Experiments Runner",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="count",
+        default=0,
+        help="Increase verbosity (-v: INFO, -vv: DEBUG)",
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     # 1) Simulation experiment
@@ -38,6 +45,24 @@ def main():
     remd.add_argument("--freq", type=int, default=50, help="Exchange frequency")
     remd.add_argument("--out", default="experiments_output/replica_exchange")
     remd.add_argument("--no-meta", action="store_true", help="Disable metadynamics")
+    remd.add_argument(
+        "--tmin",
+        type=float,
+        default=300.0,
+        help="Minimum temperature for ladder if --temps not given",
+    )
+    remd.add_argument(
+        "--tmax",
+        type=float,
+        default=350.0,
+        help="Maximum temperature for ladder if --temps not given",
+    )
+    remd.add_argument(
+        "--nrep",
+        type=int,
+        default=6,
+        help="Number of replicas for ladder if --temps not given",
+    )
 
     # 3) MSM experiment
     msm = sub.add_parser("msm", help="Run MSM experiment on trajectories")
@@ -53,6 +78,16 @@ def main():
     msm.add_argument("--out", default="experiments_output/msm")
 
     args = parser.parse_args()
+
+    # Configure logging early
+    log_level = logging.WARNING
+    if args.verbose == 1:
+        log_level = logging.INFO
+    elif args.verbose >= 2:
+        log_level = logging.DEBUG
+    logging.basicConfig(
+        level=log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
 
     if args.cmd == "simulation":
         cfg = SimulationConfig(
@@ -70,6 +105,9 @@ def main():
             equilibration_steps=args.equil,
             exchange_frequency=args.freq,
             use_metadynamics=not args.no_meta,
+            tmin=args.tmin,
+            tmax=args.tmax,
+            nreplicas=args.nrep,
         )
         result = run_replica_exchange_experiment(cfg)
     else:

@@ -12,6 +12,14 @@ from pathlib import Path
 import pytest
 
 
+def pytest_configure(config):
+    """Configure pytest with custom markers."""
+    config.addinivalue_line(
+        "markers",
+        "pdbfixer: mark test as requiring PDBFixer",
+    )
+
+
 @pytest.fixture
 def test_data_dir():
     """Path to test data directory."""

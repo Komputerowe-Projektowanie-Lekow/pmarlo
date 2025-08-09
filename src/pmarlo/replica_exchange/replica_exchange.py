@@ -41,6 +41,7 @@ class ReplicaExchange:
         output_dir: str = "output/replica_exchange",
         exchange_frequency: int = 50,  # Very frequent exchanges for testing
         auto_setup: bool = False,
+        dcd_stride: int = 1000,
     ):  # Explicit opt-in for auto-setup
         """
         Initialize the replica exchange simulation.
@@ -61,6 +62,7 @@ class ReplicaExchange:
         self.temperatures = temperatures or self._generate_temperature_ladder()
         self.output_dir = Path(output_dir)
         self.exchange_frequency = exchange_frequency
+        self.dcd_stride = dcd_stride
 
         # Create output directory
         self.output_dir.mkdir(exist_ok=True)
@@ -135,18 +137,17 @@ class ReplicaExchange:
         pdb = PDBFile(self.pdb_file)
         forcefield = ForceField(*self.forcefield_files)
 
-        # Create system (same for all replicas) with conservative settings
-        logger.info("Creating molecular system with conservative parameters...")
+        # Create system (same for all replicas) with HMR and tuned parameters for speed
+        logger.info("Creating molecular system with HMR and tuned parameters...")
         system = forcefield.createSystem(
             pdb.topology,
             nonbondedMethod=PME,
-            constraints=HBonds,  # Constrain bonds involving hydrogen
-            rigidWater=True,  # Keep water molecules rigid
-            nonbondedCutoff=1.0 * unit.nanometer,
-            ewaldErrorTolerance=5e-4,  # More conservative Ewald tolerance
-            hydrogenMass=1.5
-            * unit.amu,  # Slightly increase hydrogen mass for stability
-            removeCMMotion=True,  # Remove center-of-mass motion
+            constraints=HBonds,
+            rigidWater=True,
+            nonbondedCutoff=0.9 * unit.nanometer,
+            ewaldErrorTolerance=1e-4,
+            hydrogenMass=3.0 * unit.amu,  # HMR
+            removeCMMotion=True,
         )
 
         # Verify system was created successfully
@@ -179,33 +180,90 @@ class ReplicaExchange:
             )
 
         # Create replicas with different temperatures
-        # Use Reference platform for stability - it's slower but more robust
+        # Prefer fast GPU platforms, then CPU
+        platform_properties: Dict[str, str] = {}
         try:
-            platform = Platform.getPlatformByName("Reference")
-            logger.info("Using Reference platform for stability")
-        except:
+            platform = Platform.getPlatformByName("CUDA")
+            platform_properties = {
+                "Precision": "mixed",
+                "UseFastMath": "true",
+                "DeterministicForces": "false",
+            }
+            logger.info("Using CUDA (mixed precision, fast math)")
+        except Exception:
             try:
+                # Try HIP/ROCm or OpenCL
+                try:
+                    platform = Platform.getPlatformByName("HIP")
+                    logger.info("Using HIP (AMD GPU)")
+                except Exception:
+                    platform = Platform.getPlatformByName("OpenCL")
+                    logger.info("Using OpenCL")
+            except Exception:
                 platform = Platform.getPlatformByName("CPU")
-                logger.info("Using CPU platform")
-            except:
-                platform = Platform.getPlatformByName("CUDA")
-                logger.info("Using CUDA platform")
+                try:
+                    Platform.setPropertyDefaultValue(
+                        "CpuThreads", str(os.cpu_count() or 1)
+                    )
+                except Exception:
+                    pass
+                logger.info("Using CPU with all cores")
+
+        shared_minimized_positions = None
 
         for i, temperature in enumerate(self.temperatures):
             logger.info(f"Setting up replica {i} at {temperature}K...")
 
-            # Create integrator for this temperature with conservative timestep
+            # Create integrator for this temperature with 2 fs timestep (HMR)
             integrator = openmm.LangevinIntegrator(
                 temperature * unit.kelvin,
                 1.0 / unit.picosecond,
-                1.0 * unit.femtoseconds,  # Reduced from 2.0 fs for stability
+                2.0 * unit.femtoseconds,
             )
 
             # Create simulation
-            simulation = Simulation(pdb.topology, system, integrator, platform)
+            simulation = Simulation(
+                pdb.topology,
+                system,
+                integrator,
+                platform,
+                platform_properties or None,
+            )
             simulation.context.setPositions(pdb.positions)
 
             # Multi-stage energy minimization for stability with fallback strategies
+            # Reuse minimized coordinates from the first replica to speed up subsequent setups
+            if shared_minimized_positions is not None:
+                try:
+                    simulation.context.setPositions(shared_minimized_positions)
+                    # Quick touch-up minimization only
+                    simulation.minimizeEnergy(
+                        maxIterations=50,
+                        tolerance=10.0 * unit.kilojoules_per_mole / unit.nanometer,
+                    )
+                    logger.info(
+                        f"  Reused minimized coordinates for replica {i} (quick touch-up)"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"  Failed to reuse minimized coords for replica {i}: {e}; falling back to full minimization"
+                    )
+                else:
+                    # Set up trajectory reporter and store replica data, then continue
+                    traj_file = self.output_dir / f"replica_{i:02d}.dcd"
+                    dcd_reporter = DCDReporter(
+                        str(traj_file), int(max(1, self.dcd_stride))
+                    )
+                    simulation.reporters.append(dcd_reporter)
+
+                    self.replicas.append(simulation)
+                    self.integrators.append(integrator)
+                    self.contexts.append(simulation.context)
+                    self.trajectory_files.append(traj_file)
+
+                    logger.info(f"Replica {i:02d}: T = {temperature:.1f} K")
+                    continue
+
             logger.info(f"  Minimizing energy for replica {i}...")
 
             # Check initial energy
@@ -298,6 +356,16 @@ class ReplicaExchange:
 
                     logger.info(f"  Final energy for replica {i}: {energy}")
 
+                    # Cache minimized positions to accelerate remaining replicas
+                    if shared_minimized_positions is None:
+                        try:
+                            shared_minimized_positions = state.getPositions()
+                            logger.info(
+                                "  Cached minimized coordinates from replica 0 for reuse"
+                            )
+                        except Exception:
+                            shared_minimized_positions = None
+
                 except Exception as e:
                     logger.error(
                         f"  Stage 2 minimization or validation failed for replica {i}: {e}"
@@ -317,7 +385,7 @@ class ReplicaExchange:
 
             # Set up trajectory reporter
             traj_file = self.output_dir / f"replica_{i:02d}.dcd"
-            dcd_reporter = DCDReporter(str(traj_file), 10)  # Save every 10 steps
+            dcd_reporter = DCDReporter(str(traj_file), int(max(1, self.dcd_stride)))
             simulation.reporters.append(dcd_reporter)
 
             # Store replica data
@@ -508,13 +576,18 @@ class ReplicaExchange:
         prob = min(1.0, np.exp(-delta))
 
         # Debug logging for troubleshooting low acceptance rates
-        logger.info(
+        logger.debug(
             f"Exchange calculation: E_i={energy_i}, E_j={energy_j}, T_i={temp_i:.1f}K, T_j={temp_j:.1f}K, delta={delta:.3f}, prob={prob:.6f}"
         )
 
         return float(prob)  # Fixed: Explicit float conversion to avoid Any return type
 
-    def attempt_exchange(self, replica_i: int, replica_j: int) -> bool:
+    def attempt_exchange(
+        self,
+        replica_i: int,
+        replica_j: int,
+        energies: Optional[List[openmm.unit.quantity.Quantity]] = None,
+    ) -> bool:
         """
         Attempt to exchange two replicas.
 
@@ -545,8 +618,31 @@ class ReplicaExchange:
 
         self.exchange_attempts += 1
 
-        # Calculate exchange probability
-        prob = self.calculate_exchange_probability(replica_i, replica_j)
+        # Calculate exchange probability (use cached energies if provided)
+        if energies is not None:
+            temp_i = self.temperatures[self.replica_states[replica_i]]
+            temp_j = self.temperatures[self.replica_states[replica_j]]
+
+            beta_i = 1.0 / (unit.MOLAR_GAS_CONSTANT_R * temp_i * unit.kelvin)
+            beta_j = 1.0 / (unit.MOLAR_GAS_CONSTANT_R * temp_j * unit.kelvin)
+
+            # Ensure energies are Quantities in kJ/mol
+            e_i = energies[replica_i]
+            e_j = energies[replica_j]
+            if not hasattr(e_i, "value_in_unit"):
+                e_i = float(e_i) * unit.kilojoules_per_mole
+            if not hasattr(e_j, "value_in_unit"):
+                e_j = float(e_j) * unit.kilojoules_per_mole
+
+            delta_q = (beta_j - beta_i) * (e_i - e_j)
+            try:
+                delta = delta_q.value_in_unit(unit.dimensionless)
+            except Exception:
+                # Fallback if unit machinery not present
+                delta = float(delta_q)
+            prob = float(min(1.0, np.exp(-delta)))
+        else:
+            prob = self.calculate_exchange_probability(replica_i, replica_j)
 
         # Accept or reject exchange and track per-pair stats
         # Build a fixed-size 2-tuple for dict keys to satisfy type checker
@@ -558,14 +654,7 @@ class ReplicaExchange:
         )
         self.pair_attempt_counts[pair] = self.pair_attempt_counts.get(pair, 0) + 1
         if np.random.random() < prob:
-            # Perform exchange by swapping temperatures
-            # Save current states
-            state_i = self.contexts[replica_i].getState(
-                getPositions=True, getVelocities=True
-            )
-            state_j = self.contexts[replica_j].getState(
-                getPositions=True, getVelocities=True
-            )
+            # Perform exchange by swapping temperature assignments only
 
             # Update temperature mappings with bounds checking
             if replica_i >= len(self.replica_states):
@@ -603,9 +692,13 @@ class ReplicaExchange:
                 self.temperatures[old_state_i] * unit.kelvin
             )
 
-            # Set swapped states
-            self.contexts[replica_i].setState(state_j)
-            self.contexts[replica_j].setState(state_i)
+            # Rethermalize velocities instead of swapping full states
+            self.contexts[replica_i].setVelocitiesToTemperature(
+                self.temperatures[old_state_j] * unit.kelvin
+            )
+            self.contexts[replica_j].setVelocitiesToTemperature(
+                self.temperatures[old_state_i] * unit.kelvin
+            )
 
             self.exchanges_accepted += 1
             self.pair_accept_counts[pair] = self.pair_accept_counts.get(pair, 0) + 1
@@ -850,10 +943,24 @@ class ReplicaExchange:
                     else:
                         raise
 
-            # Attempt exchanges between adjacent temperatures
+            # Precompute energies once per sweep to avoid repeated getState calls
+            energies = []
+            for idx, ctx in enumerate(self.contexts):
+                try:
+                    e_state = ctx.getState(getEnergy=True)
+                    energies.append(e_state.getPotentialEnergy())
+                except Exception as e:
+                    logger.debug(f"Energy getState failed for replica {idx}: {e}")
+                    # Fallback to cached value if available; else 0.0
+                    last = self.energies[idx] if idx < len(self.energies) else 0.0
+                    energies.append(last)
+            # Cache energies for potential diagnostics
+            self.energies = energies
+
+            # Attempt exchanges between adjacent temperatures using cached energies
             for i in range(0, self.n_replicas - 1, 2):  # Even pairs
                 try:
-                    self.attempt_exchange(i, i + 1)
+                    self.attempt_exchange(i, i + 1, energies=energies)
                 except Exception as e:
                     logger.warning(
                         f"Exchange attempt failed between replicas {i} and {i+1}: {e}"
@@ -862,7 +969,7 @@ class ReplicaExchange:
 
             for i in range(1, self.n_replicas - 1, 2):  # Odd pairs
                 try:
-                    self.attempt_exchange(i, i + 1)
+                    self.attempt_exchange(i, i + 1, energies=energies)
                 except Exception as e:
                     logger.warning(
                         f"Exchange attempt failed between replicas {i} and {i+1}: {e}"
@@ -877,7 +984,7 @@ class ReplicaExchange:
             acceptance_rate = self.exchanges_accepted / max(1, self.exchange_attempts)
             completed_steps = (step + 1) * self.exchange_frequency + equilibration_steps
 
-            logger.info(
+            logger.debug(
                 f"   Production Progress: {progress_percent}% "
                 f"({step + 1}/{exchange_steps} exchanges, "
                 f"{completed_steps}/{total_steps} total steps) "
@@ -1009,7 +1116,7 @@ class ReplicaExchange:
             return None
 
         # DCD reporter settings (must match setup_replicas)
-        dcd_frequency = 10  # Frames saved every 10 MD steps (from setup_replicas)
+        dcd_frequency = int(max(1, getattr(self, "dcd_stride", 1000)))
 
         # Load all trajectories with proper error handling
         demux_frames = []
@@ -1041,90 +1148,52 @@ class ReplicaExchange:
             else:
                 logger.warning(f"  Replica {i}: {traj_file.name} does not exist")
 
+        # Plan frames per replica for batched loading
+        steps_plan: List[Tuple[int, int]] = []
+        frames_by_replica: Dict[int, set] = {}
         for step, replica_states in enumerate(self.exchange_history):
             try:
-                # Find which replica was at the target temperature at this step
                 replica_at_target = None
                 for replica_idx, temp_state in enumerate(replica_states):
                     if temp_state == target_temp_idx:
                         replica_at_target = replica_idx
                         break
-
                 if replica_at_target is None:
-                    logger.debug(
-                        f"No replica at target temperature {actual_temp}K at exchange step {step}"
-                    )
                     continue
-
-                # Calculate the correct frame number in the DCD file
-                # Exchange step corresponds to: equilibration_steps + step * exchange_frequency MD steps
                 md_step = equilibration_steps + step * self.exchange_frequency
                 frame_number = md_step // dcd_frequency
-
-                # Debug detailed frame calculation
-                if step < 3:  # Log first few calculations
-                    logger.info(f"Frame calculation debug - Exchange step {step}:")
-                    logger.info(
-                        f"  Replica {replica_at_target} at target T={actual_temp}K"
-                    )
-                    logger.info(
-                        f"  MD step = {equilibration_steps} (equilibration) + {step} * {self.exchange_frequency} = {md_step}"
-                    )
-                    logger.info(
-                        f"  Frame = {md_step} // {dcd_frequency} = {frame_number}"
-                    )
-                else:
-                    logger.debug(
-                        f"Exchange step {step}: Replica {replica_at_target} at target T={actual_temp}K, "
-                        f"MD step {md_step}, frame {frame_number}"
-                    )
-
-                # Get the trajectory file for this replica
-                traj_file = self.trajectory_files[replica_at_target]
-
-                if not traj_file.exists():
-                    logger.warning(f"Trajectory file not found: {traj_file}")
-                    continue
-
-                # Get frame count for this trajectory (with caching)
-                if str(traj_file) not in trajectory_frame_counts:
-                    try:
-                        # Load with topology for DCD files
-                        temp_traj = md.load(str(traj_file), top=self.pdb_file)
-                        trajectory_frame_counts[str(traj_file)] = temp_traj.n_frames
-                        logger.debug(
-                            f"Trajectory {traj_file.name} has {temp_traj.n_frames} frames"
-                        )
-                    except Exception as e:
-                        logger.warning(f"Could not load trajectory {traj_file}: {e}")
-                        trajectory_frame_counts[str(traj_file)] = 0
-                        continue
-
-                n_frames = trajectory_frame_counts[str(traj_file)]
-
-                # Check if the requested frame exists
-                if frame_number < n_frames:
-                    try:
-                        frame = md.load_frame(
-                            str(traj_file), frame_number, top=self.pdb_file
-                        )
-                        demux_frames.append(frame)
-                        logger.debug(
-                            f"Loaded frame {frame_number} from replica {replica_at_target} (T={actual_temp}K)"
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to load frame {frame_number} from {traj_file.name}: {e}"
-                        )
-                        continue
-                else:
-                    logger.debug(
-                        f"Frame {frame_number} not available in trajectory {traj_file.name} (has {n_frames} frames)"
-                    )
-
-            except Exception as e:
-                logger.warning(f"Error processing exchange step {step}: {e}")
+                steps_plan.append((replica_at_target, frame_number))
+                frames_by_replica.setdefault(replica_at_target, set()).add(frame_number)
+            except Exception:
                 continue
+
+        # Load each replica once and extract requested frames
+        per_replica_frames: Dict[int, Dict[int, md.Trajectory]] = {}
+        for replica_idx, frame_set in frames_by_replica.items():
+            traj_file = self.trajectory_files[replica_idx]
+            if not traj_file.exists():
+                logger.warning(f"Trajectory file not found: {traj_file}")
+                continue
+            try:
+                traj = md.load(str(traj_file), top=self.pdb_file)
+                n_frames = traj.n_frames
+                trajectory_frame_counts[str(traj_file)] = n_frames
+                selected: Dict[int, md.Trajectory] = {}
+                for fidx in sorted(frame_set):
+                    if 0 <= fidx < n_frames:
+                        selected[fidx] = traj[fidx]
+                per_replica_frames[replica_idx] = selected
+            except Exception as e:
+                logger.warning(
+                    f"Could not load trajectory for replica {replica_idx}: {e}"
+                )
+                continue
+
+        # Assemble in chronological order
+        for replica_idx, frame_number in steps_plan:
+            frame_map = per_replica_frames.get(replica_idx, {})
+            if frame_number in frame_map:
+                demux_frames.append(frame_map[frame_number])
 
         if demux_frames:
             try:
@@ -1143,17 +1212,17 @@ class ReplicaExchange:
                 logger.error(f"Error saving demultiplexed trajectory: {e}")
                 return None
         else:
-            logger.warning(
+            logger.debug(
                 "No frames found for demultiplexing - this may indicate frame indexing issues"
             )
-            logger.info("Debug info:")
-            logger.info(f"  Exchange steps: {len(self.exchange_history)}")
-            logger.info(f"  Exchange frequency: {self.exchange_frequency}")
-            logger.info(f"  Equilibration steps: {equilibration_steps}")
-            logger.info(f"  DCD frequency: {dcd_frequency}")
+            logger.debug("Debug info:")
+            logger.debug(f"  Exchange steps: {len(self.exchange_history)}")
+            logger.debug(f"  Exchange frequency: {self.exchange_frequency}")
+            logger.debug(f"  Equilibration steps: {equilibration_steps}")
+            logger.debug(f"  DCD frequency: {dcd_frequency}")
             for i, traj_file in enumerate(self.trajectory_files):
                 n_frames = trajectory_frame_counts.get(str(traj_file), 0)
-                logger.info(f"  Replica {i}: {n_frames} frames in {traj_file.name}")
+                logger.debug(f"  Replica {i}: {n_frames} frames in {traj_file.name}")
             return None
 
     def get_exchange_statistics(self) -> Dict[str, Any]:

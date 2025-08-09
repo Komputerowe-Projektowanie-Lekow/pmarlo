@@ -52,5 +52,11 @@ docker run --rm -it -v "${PWD}:/app" pmarlo-exp `
 ```
 docker run --rm -it pmarlo-exp python -m pmarlo.experiments.cli --help
 ```
+```
+poetry add --group dev tox==4.*
+poetry run tox
+
+```
+
 
 ## need to run them before they are correct, not yet known

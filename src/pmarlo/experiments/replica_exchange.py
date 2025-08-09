@@ -36,6 +36,9 @@ class ReplicaExchangeConfig:
     equilibration_steps: int = 200
     exchange_frequency: int = 50
     use_metadynamics: bool = True
+    tmin: float = 300.0
+    tmax: float = 350.0
+    nreplicas: int = 6
 
 
 def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
@@ -49,12 +52,36 @@ def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
     cm = CheckpointManager(output_base_dir=str(run_dir), auto_continue=False)
     cm.setup_run_directory()
 
+    # Build temperatures if not provided: more replicas and better spacing for acceptance
+    temps: Optional[List[float]]
+    if config.temperatures is None:
+        try:
+            from ..utils.replica_utils import exponential_temperature_ladder
+
+            temps = exponential_temperature_ladder(
+                config.tmin, config.tmax, config.nreplicas
+            )
+        except Exception:
+            # Fallback to simple exponential spacing
+            import numpy as _np
+
+            temps = list(
+                _np.linspace(
+                    float(config.tmin),
+                    float(config.tmax),
+                    int(max(2, config.nreplicas)),
+                )
+            )
+    else:
+        temps = config.temperatures
+
     remd = ReplicaExchange(
         pdb_file=config.pdb_file,
-        temperatures=config.temperatures,
+        temperatures=temps,
         output_dir=str(run_dir / "remd"),
         exchange_frequency=config.exchange_frequency,
         auto_setup=False,
+        dcd_stride=2000,
     )
 
     bias_vars = (

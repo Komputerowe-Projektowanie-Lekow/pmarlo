@@ -78,7 +78,7 @@ where = ["src"]
 
 # ────────────────────────── Dev-tooling groups ────────────────────────
 [tool.poetry]
-version = "0.0.0"        # placeholder dla package-mode; nadpisany przy buildzie
+version = "0.0.15"        # placeholder dla package-mode; nadpisany przy buildzie
 
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^3.7"
@@ -86,6 +86,7 @@ black      = "^25.0"
 isort      = "^5.10.1"
 mypy = "1.17"
 scriv      = { extras = ["toml"], version = "^1.7.0" }
+tox = "==4.*"
 
 [tool.poetry.group.tests.dependencies]
 pytest     = "^8.2"
@@ -131,7 +132,7 @@ warn_unused_configs      = true
 # no_implicit_optional   = false          # zostaw domyślne
 
 [[tool.mypy.overrides]]
-module = "rdkit.*"
+module = ["rdkit.*", "rdkit-stubs.*"]
 ignore_errors = true
 
 # ────────────────────────── Pytest defaults ───────────────────────────

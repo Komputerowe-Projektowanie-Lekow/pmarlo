@@ -14,14 +14,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Use relative path from the project root
-protein_path = os.path.join("tests", "data", "3gd8.pdb")
+protein_path = os.path.join("tests", "data", "3gd8-fixed.pdb")
 
 
 def verify_components():
     """Verify that all PMARLO components can be initialized."""
     print("\n=== Verifying PMARLO Components ===")
     try:
-        protein = Protein(protein_path, ph=7.0, auto_prepare=True)
+        protein = Protein(
+            protein_path, ph=7.0, auto_prepare=False
+        )  # Using pre-fixed PDB
         print("✔ Protein component initialized")
 
         replica_exchange = ReplicaExchange(
@@ -48,7 +50,7 @@ def run_pipeline():
     print("\n=== Running PMARLO Pipeline ===")
     try:
         pipeline = Pipeline(
-            protein_path, temperatures=[300, 310, 320], steps=1000, auto_continue=True
+            protein_path, temperatures=[300, 310, 320], steps=1000, auto_continue=False
         )
 
         print("Starting pipeline execution...")

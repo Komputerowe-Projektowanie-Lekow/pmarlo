@@ -13,7 +13,7 @@ import json
 import platform as _platform
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 
 def get_environment_info() -> Dict[str, Any]:
@@ -23,7 +23,6 @@ def get_environment_info() -> Dict[str, Any]:
     gpu_info: Optional[str] = None
     try:
         # Attempt to detect CUDA device via OpenMM if available
-        import openmm
         from openmm import Platform
 
         try:

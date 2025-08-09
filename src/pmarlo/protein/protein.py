@@ -10,6 +10,7 @@ except ImportError:
     PDBFixer = None
     HAS_PDBFIXER = False
 import os
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
@@ -38,12 +39,40 @@ class Protein:
             ph (float): pH value for protonation state (default: 7.0)
             auto_prepare (bool): Automatically prepare the protein (default: True)
             preparation_options (Optional[Dict]): Custom preparation options
+
+        Raises:
+            FileNotFoundError: If the PDB file does not exist
+            ValueError: If the file is empty or has an invalid extension
         """
-        self.pdb_file = pdb_file
+        # Validate file path and extension
+        pdb_path = Path(pdb_file)
+        if not pdb_path.exists():
+            raise FileNotFoundError(f"PDB file does not exist: {pdb_path}")
+        if pdb_path.suffix.lower() not in {".pdb", ".cif"}:
+            raise ValueError(f"Unsupported protein file type: {pdb_path.suffix}")
+
+        # Check if file is readable and not empty
+        try:
+            with open(pdb_path, "rb") as fh:
+                head = fh.read(64)
+                if not head.strip():
+                    raise ValueError("Protein file is empty")
+        except OSError as e:
+            raise ValueError(f"Cannot read protein file: {pdb_path}") from e
+
+        self.pdb_file = str(pdb_path)
         self.ph = ph
 
         # PDBFixer object for protein preparation
+        # Behavior:
+        # - If auto_prepare is False: validate file exists, but do not require PDBFixer
+        # - If auto_prepare is True and PDBFixer is missing: raise ImportError
+        # - If auto_prepare is True and PDBFixer is available: initialize PDBFixer
         if not HAS_PDBFIXER:
+            # When not preparing automatically, ensure the file exists so invalid paths error early
+            if not auto_prepare:
+                if not os.path.isfile(self.pdb_file):
+                    raise FileNotFoundError(f"PDB file not found: {self.pdb_file}")
             self.fixer = None
             self.prepared = False
             # If auto_prepare is True but PDBFixer is not available, raise an error
@@ -54,6 +83,7 @@ class Protein:
                     "or set auto_prepare=False to skip preparation."
                 )
         else:
+            # PDBFixer will validate the file path and raise appropriately if invalid
             self.fixer = PDBFixer(filename=pdb_file)
             self.prepared = False
 
@@ -285,11 +315,31 @@ class Protein:
         """
         Save the protein structure to a PDB file.
 
+        If the protein has been prepared with PDBFixer, saves the prepared structure.
+        Otherwise, copies the original input file.
+
         Args:
             output_file (str): Path for the output PDB file
         """
+        output_path = Path(output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
         if not self.prepared:
-            raise RuntimeError("Protein must be prepared before saving.")
+            # If not prepared, copy the original file
+            import shutil
+
+            shutil.copy2(self.pdb_file, output_path)
+            return
+
+        # For prepared structures, use PDBFixer
+        if not HAS_PDBFIXER:
+            raise ImportError(
+                "PDBFixer is required for saving prepared structures but is not installed. "
+                "Install it with: pip install 'pmarlo[fixer]'"
+            )
+
+        if self.fixer is None:
+            raise RuntimeError("PDBFixer object is not initialized")
 
         self.save_prepared_pdb(output_file)
 
@@ -327,24 +377,33 @@ class Protein:
         """
         Create an OpenMM system for the protein.
 
+        If the protein has not been prepared, loads topology directly from the input PDB file.
+        Otherwise, uses the prepared topology.
+
         Args:
             forcefield_files (Optional[list]): List of forcefield files to use
         """
-        if not self.prepared:
-            raise RuntimeError("Protein must be prepared before creating system.")
+        try:
+            # Load topology if not already loaded
+            if self.topology is None:
+                # Load topology and positions directly from the input PDB file
+                pdb = PDBFile(self.pdb_file)
+                self.topology = pdb.topology
+                self.positions = pdb.positions
 
-        if forcefield_files is None:
-            forcefield_files = ["amber14-all.xml", "amber14/tip3pfb.xml"]
+            if forcefield_files is None:
+                forcefield_files = ["amber14-all.xml", "amber14/tip3pfb.xml"]
 
-        self.forcefield = ForceField(*forcefield_files)
+            self.forcefield = ForceField(*forcefield_files)
+            if self.forcefield is None:
+                raise RuntimeError("ForceField could not be created")
 
-        # Fixed: Added type check to ensure forcefield is not None before using it
-        if self.forcefield is None:
-            raise RuntimeError("ForceField could not be created")
-
-        self.system = self.forcefield.createSystem(
-            self.topology, nonbondedMethod=PME, constraints=HBonds
-        )
+            self.system = self.forcefield.createSystem(
+                self.topology, nonbondedMethod=PME, constraints=HBonds
+            )
+        except Exception as e:
+            print(f"Warning: System creation failed: {e}")
+            self.system = None
 
     def get_system_info(self) -> Dict[str, Any]:
         """

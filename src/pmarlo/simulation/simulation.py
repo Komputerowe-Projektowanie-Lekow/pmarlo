@@ -55,6 +55,7 @@ class Simulation:
         steps: int = 1000,
         output_dir: str = "output/simulation",
         use_metadynamics: bool = True,
+        dcd_stride: int = 1000,
     ):
         """
         Initialize the Simulation.
@@ -71,6 +72,7 @@ class Simulation:
         self.steps = steps
         self.output_dir = Path(output_dir)
         self.use_metadynamics = use_metadynamics
+        self.dcd_stride = dcd_stride
 
         # OpenMM objects
         self.openmm_simulation = None
@@ -132,7 +134,14 @@ def prepare_system(
     forcefield = ForceField("amber14-all.xml", "amber14/tip3pfb.xml")
 
     system = forcefield.createSystem(
-        pdb.topology, nonbondedMethod=PME, constraints=HBonds
+        pdb.topology,
+        nonbondedMethod=PME,
+        constraints=HBonds,
+        rigidWater=True,
+        nonbondedCutoff=openmm.unit.Quantity(0.9, openmm.unit.nanometer),
+        ewaldErrorTolerance=1e-4,
+        hydrogenMass=openmm.unit.Quantity(3.0, openmm.unit.amu),  # HMR
+        removeCMMotion=True,
     )
 
     meta = None
@@ -186,15 +195,40 @@ def prepare_system(
         )
 
     integrator = LangevinIntegrator(
-        temperature * kelvin, 1 / picosecond, 2 * femtoseconds  # T  # γ
-    )  # Δt
+        temperature * kelvin, 1 / picosecond, 2 * femtoseconds
+    )
 
-    # DO *NOT* add phi_force to the System – Metadynamics will own it.
-    platform = Platform.getPlatformByName("CPU")  # or "CPU", "OpenCL", etc.
+    # Prefer fast GPU platforms, fallback to CPU
+    platform_properties = {}
+    try:
+        platform = Platform.getPlatformByName("CUDA")
+        platform_properties = {
+            "Precision": "mixed",
+            "UseFastMath": "true",
+            "DeterministicForces": "false",
+        }
+        logger.info("Using CUDA (mixed precision, fast math)")
+    except Exception:
+        try:
+            try:
+                platform = Platform.getPlatformByName("HIP")
+                logger.info("Using HIP (AMD GPU)")
+            except Exception:
+                platform = Platform.getPlatformByName("OpenCL")
+                logger.info("Using OpenCL")
+        except Exception:
+            platform = Platform.getPlatformByName("CPU")
+            try:
+                Platform.setPropertyDefaultValue("CpuThreads", str(os.cpu_count() or 1))
+            except Exception:
+                pass
+            logger.info("Using CPU with all cores")
 
     from openmm.app import Simulation as OpenMMSimulation
 
-    simulation = OpenMMSimulation(pdb.topology, system, integrator, platform)
+    simulation = OpenMMSimulation(
+        pdb.topology, system, integrator, platform, platform_properties or None
+    )
     simulation.context.setPositions(pdb.positions)
 
     simulation.minimizeEnergy(maxIterations=100)
@@ -214,7 +248,12 @@ def production_run(steps, simulation, meta, output_dir=None):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     dcd_filename = str(output_dir / "traj.dcd")
-    dcd = DCDReporter(dcd_filename, 10)  # save every 10 steps
+    # Respect Simulation.dcd_stride if available via bound simulation.owner; default 1000
+    try:
+        stride = getattr(getattr(simulation, "_owner", None), "dcd_stride", 1000)
+    except Exception:
+        stride = 1000
+    dcd = DCDReporter(dcd_filename, int(max(1, stride)))
     simulation.reporters.append(dcd)
 
     total_steps = steps
