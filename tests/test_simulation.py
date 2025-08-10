@@ -5,13 +5,12 @@
 Tests for the Simulation class.
 """
 
-from pathlib import Path
+from importlib.util import find_spec
 
 import numpy as np
 import pytest
 
 from pmarlo.simulation.simulation import Simulation, feature_extraction, prepare_system
-from tests.conftest import skip_if_no_openmm
 
 
 class TestSimulation:
@@ -29,14 +28,15 @@ class TestSimulation:
         assert sim.pdb_file == str(test_fixed_pdb_file)
         assert sim.temperature == 300.0
         assert sim.steps == 100
-        assert sim.use_metadynamics == False
+        assert sim.use_metadynamics is False
 
     @pytest.mark.skipif(
-        "skip_if_no_openmm", reason="Requires OpenMM and significant computational time"
+        find_spec("openmm") is None,
+        reason=("Requires OpenMM and significant computational time"),
     )
     def test_system_preparation(self, test_fixed_pdb_file, temp_output_dir):
-        """Test system preparation (skipped by default due to computational requirements)."""
-        sim = Simulation(
+        """Test system preparation (skipped by default)."""
+        Simulation(
             pdb_file=str(test_fixed_pdb_file),
             temperature=300.0,
             steps=10,
@@ -53,7 +53,8 @@ class TestSimulation:
         # This test uses the provided trajectory file
         try:
             states = feature_extraction(
-                str(test_trajectory_file), str(test_fixed_pdb_file)
+                str(test_trajectory_file),
+                str(test_fixed_pdb_file),
             )
             assert isinstance(states, np.ndarray)
             assert len(states) > 0
@@ -84,7 +85,9 @@ class TestSimulationFunctions:
         """Test simulation configuration validation."""
         # Test that simulation accepts basic parameters (validation happens during execution)
         sim = Simulation(
-            pdb_file="nonexistent.pdb", temperature=300, steps=100  # Valid temperature
+            pdb_file="nonexistent.pdb",
+            temperature=300,
+            steps=100,  # Valid temperature
         )
         # Configuration is accepted during initialization
         # Errors typically occur during execution when files are accessed
@@ -95,7 +98,7 @@ class TestSimulationFunctions:
         """Test output directory creation."""
         output_dir = temp_output_dir / "simulation_test"
 
-        sim = Simulation(
+        Simulation(
             pdb_file="dummy.pdb",  # Won't be used for this test
             output_dir=str(output_dir),
         )

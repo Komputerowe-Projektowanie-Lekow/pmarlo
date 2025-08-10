@@ -4,20 +4,18 @@
 """
 Simulation module for PMARLO.
 
-Provides molecular dynamics simulation capabilities with metadynamics and system preparation.
+Provides molecular dynamics simulation capabilities with metadynamics and
+system preparation.
 """
 
 from collections import defaultdict
 
 import mdtraj as md
 import numpy as np
-import openmm.unit
-from openmm import *
-from openmm import Platform
-from openmm.app import *
-from openmm.app import Modeller
-from openmm.app.metadynamics import Metadynamics
-from openmm.unit import *
+import openmm
+import openmm.app as app
+import openmm.unit as unit
+from openmm.app.metadynamics import BiasVariable, Metadynamics
 from sklearn.cluster import MiniBatchKMeans
 
 # PDBFixer is optional - users can install with: pip install "pmarlo[fixer]"
@@ -31,12 +29,10 @@ except ImportError:
 import logging
 import os
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 import matplotlib.pyplot as plt
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -55,8 +51,9 @@ class Simulation:
         pdb_file: str,
         temperature: float = 300.0,
         steps: int = 1000,
-        output_dir: str = "simulation_output",
+        output_dir: str = "output/simulation",
         use_metadynamics: bool = True,
+        dcd_stride: int = 1000,
     ):
         """
         Initialize the Simulation.
@@ -73,6 +70,7 @@ class Simulation:
         self.steps = steps
         self.output_dir = Path(output_dir)
         self.use_metadynamics = use_metadynamics
+        self.dcd_stride = dcd_stride
 
         # OpenMM objects
         self.openmm_simulation = None
@@ -127,80 +125,166 @@ class Simulation:
 
 
 def prepare_system(
-    pdb_file_name, temperature=300.0, use_metadynamics=True, output_dir=None
-):
+    pdb_file_name: str,
+    temperature: float = 300.0,
+    use_metadynamics: bool = True,
+    output_dir: Optional[Path] = None,
+) -> Tuple["openmm.app.Simulation", Optional["Metadynamics"]]:
     """Prepare the molecular system with forcefield and optional metadynamics."""
-    pdb = PDBFile(pdb_file_name)
-    forcefield = ForceField("amber14-all.xml", "amber14/tip3pfb.xml")
-
-    system = forcefield.createSystem(
-        pdb.topology, nonbondedMethod=PME, constraints=HBonds
+    pdb = _load_pdb(pdb_file_name)
+    forcefield = _create_forcefield()
+    system = _create_system(pdb, forcefield)
+    meta = _maybe_create_metadynamics(
+        system, pdb_file_name, use_metadynamics, output_dir
     )
-
-    meta = None
-    if use_metadynamics:
-        traj0 = md.load_pdb(pdb_file_name)
-        phi_indices, _ = md.compute_phi(traj0)
-        if len(phi_indices) == 0:
-            raise RuntimeError(
-                "No φ dihedral found in the PDB structure – cannot set up CV."
-            )
-
-        phi_atoms = [int(i) for i in phi_indices[0]]
-
-        phi_force = CustomTorsionForce("theta")
-        phi_force.addTorsion(*phi_atoms, [])
-
-        phi_cv = BiasVariable(
-            phi_force,
-            minValue=-np.pi,
-            maxValue=np.pi,
-            biasWidth=0.35,  # ~20°
-            periodic=True,
-        )
-
-        if output_dir is None:
-            bias_dir = BASE_DIR / "bias"
-        else:
-            bias_dir = Path(output_dir) / "bias"
-
-        # Clear existing bias files to avoid conflicts
-        if bias_dir.exists():
-            for file in bias_dir.glob("bias_*.npy"):
-                try:
-                    file.unlink()
-                except Exception:
-                    pass
-
-        os.makedirs(str(bias_dir), exist_ok=True)
-
-        meta = Metadynamics(
-            system,
-            [phi_cv],
-            temperature=temperature * kelvin,
-            biasFactor=10.0,
-            height=1.0 * kilojoules_per_mole,
-            frequency=500,  # hill every 1 ps (500 × 2 fs)
-            biasDir=str(bias_dir),
-            saveFrequency=1000,
-        )
-
-    integrator = LangevinIntegrator(
-        temperature * kelvin, 1 / picosecond, 2 * femtoseconds  # T  # γ
-    )  # Δt
-
-    # DO *NOT* add phi_force to the System – Metadynamics will own it.
-    platform = Platform.getPlatformByName("CPU")  # or "CPU", "OpenCL", etc.
-
-    from openmm.app import Simulation as OpenMMSimulation
-
-    simulation = OpenMMSimulation(pdb.topology, system, integrator, platform)
-    simulation.context.setPositions(pdb.positions)
-
-    simulation.minimizeEnergy(maxIterations=100)
-    simulation.step(1000)
+    integrator = _create_integrator(temperature)
+    platform, platform_properties = _select_platform()
+    simulation = _create_openmm_simulation(
+        pdb, system, integrator, platform, platform_properties
+    )
+    _minimize_and_equilibrate(simulation)
     print("✔ Build & equilibration complete\n")
     return simulation, meta
+
+
+# -------------------------- Helper functions --------------------------
+
+
+def _load_pdb(pdb_file_name: str) -> app.PDBFile:
+    return app.PDBFile(pdb_file_name)
+
+
+def _create_forcefield() -> app.ForceField:
+    return app.ForceField("amber14-all.xml", "amber14/tip3pfb.xml")
+
+
+def _create_system(pdb: app.PDBFile, forcefield: app.ForceField) -> openmm.System:
+    return forcefield.createSystem(
+        pdb.topology,
+        nonbondedMethod=app.PME,
+        constraints=app.HBonds,
+        rigidWater=True,
+        nonbondedCutoff=unit.Quantity(0.9, unit.nanometer),
+        ewaldErrorTolerance=1e-4,
+        hydrogenMass=unit.Quantity(3.0, unit.amu),  # HMR
+        removeCMMotion=True,
+    )
+
+
+def _maybe_create_metadynamics(
+    system: openmm.System,
+    pdb_file_name: str,
+    use_metadynamics: bool,
+    output_dir: Optional[Path],
+) -> Optional[Metadynamics]:
+    if not use_metadynamics:
+        return None
+    traj0 = md.load_pdb(pdb_file_name)
+    phi_indices, _ = md.compute_phi(traj0)
+    if len(phi_indices) == 0:
+        raise RuntimeError(
+            "No φ dihedral found in the PDB structure – cannot set up CV."
+        )
+    phi_atoms = [int(i) for i in phi_indices[0]]
+    phi_force = openmm.CustomTorsionForce("theta")
+    phi_force.addTorsion(*phi_atoms, [])
+    phi_cv = BiasVariable(
+        phi_force,
+        minValue=-np.pi,
+        maxValue=np.pi,
+        biasWidth=0.35,  # ~20°
+        periodic=True,
+    )
+    bias_dir = _ensure_bias_dir(output_dir)
+    _clear_existing_bias_files(bias_dir)
+    return Metadynamics(
+        system,
+        [phi_cv],
+        temperature=temperature_quantity(300.0),
+        biasFactor=10.0,
+        height=1.0 * unit.kilojoules_per_mole,
+        frequency=500,  # hill every 1 ps (500 × 2 fs)
+        biasDir=str(bias_dir),
+        saveFrequency=1000,
+    )
+
+
+def temperature_quantity(value_kelvin: float) -> unit.Quantity:
+    return value_kelvin * unit.kelvin
+
+
+def _ensure_bias_dir(output_dir: Optional[Path]) -> Path:
+    if output_dir is None:
+        base = Path("output") / "simulation"
+    else:
+        base = Path(output_dir)
+    bias_dir = base / "bias"
+    os.makedirs(str(bias_dir), exist_ok=True)
+    return bias_dir
+
+
+def _clear_existing_bias_files(bias_dir: Path) -> None:
+    if bias_dir.exists():
+        for file in bias_dir.glob("bias_*.npy"):
+            try:
+                file.unlink()
+            except Exception:
+                pass
+
+
+def _create_integrator(temperature: float) -> openmm.Integrator:
+    return openmm.LangevinIntegrator(
+        temperature * unit.kelvin, 1 / unit.picosecond, 2 * unit.femtoseconds
+    )
+
+
+def _select_platform() -> Tuple[openmm.Platform, dict]:
+    platform_properties: dict = {}
+    try:
+        platform = openmm.Platform.getPlatformByName("CUDA")
+        platform_properties = {
+            "Precision": "mixed",
+            "UseFastMath": "true",
+            "DeterministicForces": "false",
+        }
+        logger.info("Using CUDA (mixed precision, fast math)")
+    except Exception:
+        try:
+            try:
+                platform = openmm.Platform.getPlatformByName("HIP")
+                logger.info("Using HIP (AMD GPU)")
+            except Exception:
+                platform = openmm.Platform.getPlatformByName("OpenCL")
+                logger.info("Using OpenCL")
+        except Exception:
+            platform = openmm.Platform.getPlatformByName("CPU")
+            try:
+                openmm.Platform.setPropertyDefaultValue(
+                    "CpuThreads", str(os.cpu_count() or 1)
+                )
+            except Exception:
+                pass
+            logger.info("Using CPU with all cores")
+    return platform, platform_properties
+
+
+def _create_openmm_simulation(
+    pdb: app.PDBFile,
+    system: openmm.System,
+    integrator: openmm.Integrator,
+    platform: openmm.Platform,
+    platform_properties: Optional[dict],
+) -> app.Simulation:
+    simulation = app.Simulation(
+        pdb.topology, system, integrator, platform, platform_properties or None
+    )
+    simulation.context.setPositions(pdb.positions)
+    return simulation
+
+
+def _minimize_and_equilibrate(simulation: app.Simulation) -> None:
+    simulation.minimizeEnergy(maxIterations=100)
+    simulation.step(1000)
 
 
 def production_run(steps, simulation, meta, output_dir=None):
@@ -208,12 +292,19 @@ def production_run(steps, simulation, meta, output_dir=None):
     print("Stage 3/5  –  production run...")
 
     if output_dir is None:
-        output_dir = TESTS_DIR
+        output_dir = Path("output") / "simulation"
     else:
         output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     dcd_filename = str(output_dir / "traj.dcd")
-    dcd = DCDReporter(dcd_filename, 10)  # save every 10 steps
+    # Respect Simulation.dcd_stride if available via bound simulation.owner;
+    # default 1000
+    try:
+        stride = getattr(getattr(simulation, "_owner", None), "dcd_stride", 1000)
+    except Exception:
+        stride = 1000
+    dcd = app.DCDReporter(dcd_filename, int(max(1, stride)))
     simulation.reporters.append(dcd)
 
     total_steps = steps
@@ -250,7 +341,8 @@ def production_run(steps, simulation, meta, output_dir=None):
         bias_file = output_dir / "bias_for_run.npy"
         np.save(str(bias_file), bias_array)
         print(
-            f"[INFO] Saved bias array for this run to {bias_file} (length: {len(bias_array)})"
+            f"[INFO] Saved bias array for this run to {bias_file} "
+            f"(length: {len(bias_array)})"
         )
 
     return dcd_filename
@@ -285,7 +377,8 @@ def build_transition_model(states, bias=None):
     n_transitions = len(states) - tau
     if bias is not None and len(bias) != len(states):
         raise ValueError(
-            f"Bias array length ({len(bias)}) does not match number of states ({len(states)})"
+            f"Bias array length ({len(bias)}) does not match number of states "
+            f"({len(states)})"
         )
     for i in range(n_transitions):
         if bias is not None:

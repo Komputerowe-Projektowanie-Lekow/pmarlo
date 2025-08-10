@@ -16,15 +16,10 @@ import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-import numpy as np
 import openmm
 import pytest
 
-from pmarlo.protein.protein import Protein
-from pmarlo.replica_exchange.replica_exchange import (
-    ReplicaExchange,
-    setup_bias_variables,
-)
+from pmarlo.replica_exchange.replica_exchange import ReplicaExchange
 
 
 class TestReplicaExchangeInitialization:
@@ -310,6 +305,7 @@ class TestErrorRecovery:
             output_dir=temp_output_dir,
             auto_setup=False,
         )
+        assert remd.n_replicas == 2
 
         # Mock minimization failure and recovery
         with patch(
@@ -332,7 +328,8 @@ class TestErrorRecovery:
             mock_sim.context.getState.return_value = mock_state
 
             # Should not raise exception due to fallback logic
-            # Note: This is a simplified test - full implementation would need more mocking
+            # Note: This is a simplified test – full implementation would need
+            # more mocking
             # remd.setup_replicas()
 
 

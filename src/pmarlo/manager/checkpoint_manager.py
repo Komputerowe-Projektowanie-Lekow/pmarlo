@@ -216,56 +216,97 @@ class CheckpointManager:
         return False
 
     def get_next_step(self) -> Optional[str]:
-        """Get the next step to execute."""
-        completed_steps = self.life_data["completed_steps"]
-        failed_steps = self.life_data["failed_steps"]
+        """Get the next step to execute.
 
-        completed_names: List[str] = []
-        failed_names: List[str] = []
+        Delegates to smaller helpers to reduce complexity while preserving
+        behavior.
+        """
+        completed_names = self._get_completed_step_names()
+        failed_names = self._get_failed_step_names()
 
-        if isinstance(completed_steps, list):
-            for s in completed_steps:
-                if isinstance(s, dict):
-                    name = s.get("name")
-                    if isinstance(name, str):
-                        completed_names.append(name)
+        # First priority: retry failed steps (most recent first)
+        if self._has_failed_steps(failed_names):
+            return self._select_failed_step_to_retry(failed_names)
 
-        if isinstance(failed_steps, list):
-            for s in failed_steps:
-                if isinstance(s, dict):
-                    name = s.get("name")
-                    if isinstance(name, str):
-                        failed_names.append(name)
-
-        # First priority: retry failed steps
-        if failed_names:
-            # Return the most recently failed step to retry
-            return failed_names[-1]
-
-        # Second priority: continue with next uncompleted step
-        # But be smarter about it - find the next logical step after the last completed one
-        total_steps = self.life_data["total_steps"]
-        if not isinstance(total_steps, list):
+        # Second priority: continue with next uncompleted step.
+        # Find the next logical step after the last completed one.
+        total_steps = self._get_total_steps_list()
+        if total_steps is None:
             return None
 
-        if completed_names:
-            # Find the index of the last completed step
-            last_completed_idx = -1
-            for i, step in enumerate(total_steps):
-                if isinstance(step, str) and step in completed_names:
-                    last_completed_idx = max(last_completed_idx, i)
+        if self._has_completed_steps(completed_names):
+            last_completed_idx = self._find_last_completed_index(
+                total_steps, completed_names
+            )
+            return self._next_step_after_index(total_steps, last_completed_idx)
 
-            # Return the next step after the last completed one
-            if last_completed_idx + 1 < len(total_steps):
-                next_step = total_steps[last_completed_idx + 1]
-                return next_step if isinstance(next_step, str) else None
-        else:
-            # No steps completed yet, start from the beginning
-            if total_steps:
-                first_step = total_steps[0]
-                return first_step if isinstance(first_step, str) else None
+        # No steps completed yet, start from the beginning
+        return self._first_step_if_any(total_steps)
 
-        return None  # All steps completed
+    # --- Helper methods for get_next_step ---
+
+    def _extract_names_from_step_dicts(self, steps: Any) -> List[str]:
+        """Extract valid step names from a list of step dicts."""
+        names: List[str] = []
+        if isinstance(steps, list):
+            for step in steps:
+                if isinstance(step, dict):
+                    name = step.get("name")
+                    if isinstance(name, str):
+                        names.append(name)
+        return names
+
+    def _get_completed_step_names(self) -> List[str]:
+        """Return names of completed steps from life_data."""
+        return self._extract_names_from_step_dicts(self.life_data["completed_steps"])
+
+    def _get_failed_step_names(self) -> List[str]:
+        """Return names of failed steps from life_data."""
+        return self._extract_names_from_step_dicts(self.life_data["failed_steps"])
+
+    def _has_failed_steps(self, failed_names: List[str]) -> bool:
+        """True if there is at least one failed step name."""
+        return bool(failed_names)
+
+    def _select_failed_step_to_retry(self, failed_names: List[str]) -> Optional[str]:
+        """Select the most recent failed step to retry."""
+        return failed_names[-1] if failed_names else None
+
+    def _get_total_steps_list(self) -> Optional[List[str]]:
+        """Return the configured total steps list, or None if invalid."""
+        total_steps = self.life_data.get("total_steps")
+        return total_steps if isinstance(total_steps, list) else None
+
+    def _has_completed_steps(self, completed_names: List[str]) -> bool:
+        """True if there is at least one completed step name."""
+        return bool(completed_names)
+
+    def _find_last_completed_index(
+        self, total_steps: List[Any], completed_names: List[str]
+    ) -> int:
+        """Return highest index in total_steps that appears in completed_names."""
+        last_completed_idx = -1
+        for index, step in enumerate(total_steps):
+            if isinstance(step, str) and step in completed_names:
+                last_completed_idx = max(last_completed_idx, index)
+        return last_completed_idx
+
+    def _next_step_after_index(
+        self, total_steps: List[Any], last_completed_idx: int
+    ) -> Optional[str]:
+        """Return the step name immediately after last_completed_idx if valid."""
+        next_index = last_completed_idx + 1
+        if next_index < len(total_steps):
+            next_step = total_steps[next_index]
+            return next_step if isinstance(next_step, str) else None
+        return None
+
+    def _first_step_if_any(self, total_steps: List[Any]) -> Optional[str]:
+        """Return the first step if the list is non-empty and valid."""
+        if total_steps:
+            first_step = total_steps[0]
+            return first_step if isinstance(first_step, str) else None
+        return None
 
     def save_state(self, state_data: Dict[str, Any]) -> None:
         """Save arbitrary state data to pickle file."""
@@ -351,27 +392,27 @@ class CheckpointManager:
 
         completed_steps = self.life_data.get("completed_steps", [])
         if isinstance(completed_steps, list) and completed_steps:
-            print(f"\nCompleted Steps:")
+            print("\nCompleted Steps:")
             for step in completed_steps:
                 if isinstance(step, dict):
-                    print(
-                        f"  ✓ {step.get('name', 'unknown')} ({step.get('completed_at', 'unknown')})"
-                    )
+                    name = step.get("name", "unknown")
+                    completed_at = step.get("completed_at", "unknown")
+                    print(f"  ✓ {name} ({completed_at})")
 
         failed_steps = self.life_data.get("failed_steps", [])
         if isinstance(failed_steps, list) and failed_steps:
-            print(f"\nFailed Steps:")
+            print("\nFailed Steps:")
             for step in failed_steps:
                 if isinstance(step, dict):
-                    print(
-                        f"  ✗ {step.get('name', 'unknown')} - {step.get('error', 'unknown error')}"
-                    )
+                    name = step.get("name", "unknown")
+                    error = step.get("error", "unknown error")
+                    print(f"  ✗ {name} - {error}")
 
         next_step = self.get_next_step()
         if next_step:
             print(f"\nNext Step: {next_step}")
         else:
-            print(f"\nAll steps completed!")
+            print("\nAll steps completed!")
 
         print(f"{'='*60}\n")
         return summary
@@ -462,9 +503,12 @@ def list_runs(output_base_dir: str = "output") -> None:
             summary = cm.get_run_summary()
 
             print(
-                f"ID: {run_id} | Status: {summary['status'].upper()} | "
-                f"Progress: {summary['progress']} ({summary['progress_percent']:.1f}%) | "
-                f"Stage: {summary['current_stage']}"
+                (
+                    f"ID: {run_id} | Status: {summary['status'].upper()} | "
+                    f"Progress: {summary['progress']} "
+                    f"({summary['progress_percent']:.1f}%) | "
+                    f"Stage: {summary['current_stage']}"
+                )
             )
         except Exception as e:
             print(f"ID: {run_id} | Error loading run: {e}")

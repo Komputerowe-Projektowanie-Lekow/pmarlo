@@ -72,6 +72,10 @@ make it a real distribution package with wheel and poetry build
 - dist(check if everything is correct as source)
 - build(check if everything is correct)
 
+
+monkey patching on the protein class to make it work with openMM
+psutil to make it efficient
+
 things that need to be done:
 created a Python package;
 
