@@ -12,7 +12,7 @@ import logging
 import os
 import pickle
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 import mdtraj as md
 import numpy as np
@@ -104,7 +104,10 @@ class ReplicaExchange:
 
         logger.info(f"Initialized REMD with {self.n_replicas} replicas")
         logger.info(
-            f"Temperature range: {min(self.temperatures):.1f} - {max(self.temperatures):.1f} K"
+            (
+                f"Temperature range: {min(self.temperatures):.1f} - "
+                f"{max(self.temperatures):.1f} K"
+            )
         )
 
         # Auto-setup if requested (for API consistency)
@@ -118,9 +121,13 @@ class ReplicaExchange:
         max_temp: float = 350.0,
         n_replicas: int = 3,
     ) -> List[float]:
-        """Generate an exponential temperature ladder for optimal exchange efficiency.
+        """
+        Generate an exponential temperature ladder for optimal exchange
+        efficiency.
 
-        Delegates to `utils.replica_utils.exponential_temperature_ladder` to avoid duplication.
+        Delegates to
+        `utils.replica_utils.exponential_temperature_ladder` to avoid
+        duplication.
         """
         return exponential_temperature_ladder(min_temp, max_temp, n_replicas)
 
@@ -133,11 +140,60 @@ class ReplicaExchange:
         """
         logger.info("Setting up replica simulations...")
 
-        # Load PDB and create forcefield
+        pdb, forcefield = self._load_pdb_and_forcefield()
+        system = self._create_system(pdb, forcefield)
+        self._log_system_info(system)
+        self._setup_metadynamics(system, bias_variables)
+        platform, platform_properties = self._select_platform_and_properties()
+
+        shared_minimized_positions = None
+
+        for i, temperature in enumerate(self.temperatures):
+            logger.info(f"Setting up replica {i} at {temperature}K...")
+
+            integrator = self._create_integrator_for_temperature(temperature)
+            simulation = self._create_simulation(
+                pdb, system, integrator, platform, platform_properties
+            )
+            simulation.context.setPositions(pdb.positions)
+
+            if (
+                shared_minimized_positions is not None
+                and self._reuse_minimized_positions_quick_minimize(
+                    simulation, shared_minimized_positions, i
+                )
+            ):
+                traj_file = self._add_dcd_reporter(simulation, i)
+                self._store_replica_data(simulation, integrator, traj_file)
+                logger.info(f"Replica {i:02d}: T = {temperature:.1f} K")
+                continue
+
+            logger.info(f"  Minimizing energy for replica {i}...")
+            self._check_initial_energy(simulation, i)
+            minimization_success = self._perform_stage1_minimization(simulation, i)
+
+            if minimization_success:
+                shared_minimized_positions = (
+                    self._perform_stage2_minimization_and_validation(
+                        simulation, i, shared_minimized_positions
+                    )
+                )
+
+            traj_file = self._add_dcd_reporter(simulation, i)
+            self._store_replica_data(simulation, integrator, traj_file)
+            logger.info(f"Replica {i:02d}: T = {temperature:.1f} K")
+
+        logger.info("All replicas set up successfully")
+        self._is_setup = True
+
+    # --- Helper methods for setup_replicas ---
+
+    def _load_pdb_and_forcefield(self) -> Tuple[PDBFile, ForceField]:
         pdb = PDBFile(self.pdb_file)
         forcefield = ForceField(*self.forcefield_files)
+        return pdb, forcefield
 
-        # Create system (same for all replicas) with HMR and tuned parameters for speed
+    def _create_system(self, pdb: PDBFile, forcefield: ForceField) -> openmm.System:
         logger.info("Creating molecular system with HMR and tuned parameters...")
         system = forcefield.createSystem(
             pdb.topology,
@@ -146,41 +202,42 @@ class ReplicaExchange:
             rigidWater=True,
             nonbondedCutoff=0.9 * unit.nanometer,
             ewaldErrorTolerance=1e-4,
-            hydrogenMass=3.0 * unit.amu,  # HMR
+            hydrogenMass=3.0 * unit.amu,
             removeCMMotion=True,
         )
+        return system
 
-        # Verify system was created successfully
+    def _log_system_info(self, system: openmm.System) -> None:
         logger.info(f"System created with {system.getNumParticles()} particles")
         logger.info(f"System has {system.getNumForces()} force terms")
-
-        # Add extra stability checks
         for force_idx in range(system.getNumForces()):
             force = system.getForce(force_idx)
             logger.info(f"  Force {force_idx}: {force.__class__.__name__}")
 
-        # Set up metadynamics if bias variables provided
-        metadynamics = None
-        if bias_variables:
-            from openmm.app.metadynamics import Metadynamics
+    def _setup_metadynamics(
+        self, system: openmm.System, bias_variables: Optional[List]
+    ) -> None:
+        self.metadynamics = None
+        if not bias_variables:
+            return
+        from openmm.app.metadynamics import Metadynamics
 
-            bias_dir = self.output_dir / "bias"
-            bias_dir.mkdir(exist_ok=True)
+        bias_dir = self.output_dir / "bias"
+        bias_dir.mkdir(exist_ok=True)
+        self.metadynamics = Metadynamics(
+            system,
+            bias_variables,
+            temperature=self.temperatures[0] * unit.kelvin,
+            biasFactor=10.0,
+            height=1.0 * unit.kilojoules_per_mole,
+            frequency=500,
+            biasDir=str(bias_dir),
+            saveFrequency=1000,
+        )
 
-            metadynamics = Metadynamics(
-                system,
-                bias_variables,
-                temperature=self.temperatures[0]
-                * unit.kelvin,  # Will be updated for each replica
-                biasFactor=10.0,
-                height=1.0 * unit.kilojoules_per_mole,
-                frequency=500,
-                biasDir=str(bias_dir),
-                saveFrequency=1000,
-            )
-
-        # Create replicas with different temperatures
-        # Prefer fast GPU platforms, then CPU
+    def _select_platform_and_properties(
+        self,
+    ) -> Tuple[Platform, Dict[str, str]]:
         platform_properties: Dict[str, str] = {}
         try:
             platform = Platform.getPlatformByName("CUDA")
@@ -192,7 +249,6 @@ class ReplicaExchange:
             logger.info("Using CUDA (mixed precision, fast math)")
         except Exception:
             try:
-                # Try HIP/ROCm or OpenCL
                 try:
                     platform = Platform.getPlatformByName("HIP")
                     logger.info("Using HIP (AMD GPU)")
@@ -208,196 +264,229 @@ class ReplicaExchange:
                 except Exception:
                     pass
                 logger.info("Using CPU with all cores")
+        return platform, platform_properties
 
-        shared_minimized_positions = None
+    def _create_integrator_for_temperature(
+        self, temperature: float
+    ) -> openmm.Integrator:
+        return openmm.LangevinIntegrator(
+            temperature * unit.kelvin,
+            1.0 / unit.picosecond,
+            2.0 * unit.femtoseconds,
+        )
 
-        for i, temperature in enumerate(self.temperatures):
-            logger.info(f"Setting up replica {i} at {temperature}K...")
+    def _create_simulation(
+        self,
+        pdb: PDBFile,
+        system: openmm.System,
+        integrator: openmm.Integrator,
+        platform: Platform,
+        platform_properties: Dict[str, str],
+    ) -> Simulation:
+        return Simulation(
+            pdb.topology, system, integrator, platform, platform_properties or None
+        )
 
-            # Create integrator for this temperature with 2 fs timestep (HMR)
-            integrator = openmm.LangevinIntegrator(
-                temperature * unit.kelvin,
-                1.0 / unit.picosecond,
-                2.0 * unit.femtoseconds,
+    def _reuse_minimized_positions_quick_minimize(
+        self,
+        simulation: Simulation,
+        shared_minimized_positions,
+        replica_index: int,
+    ) -> bool:
+        try:
+            simulation.context.setPositions(shared_minimized_positions)
+            simulation.minimizeEnergy(
+                maxIterations=50,
+                tolerance=10.0 * unit.kilojoules_per_mole / unit.nanometer,
+            )
+            logger.info(
+                (
+                    f"  Reused minimized coordinates for replica {replica_index} "
+                    f"(quick touch-up)"
+                )
+            )
+            return True
+        except Exception as exc:
+            logger.warning(
+                (
+                    f"  Failed to reuse minimized coords for replica "
+                    f"{replica_index}: {exc}; falling back to full minimization"
+                )
+            )
+            return False
+
+    def _check_initial_energy(self, simulation: Simulation, replica_index: int) -> None:
+        try:
+            initial_state = simulation.context.getState(getEnergy=True)
+            initial_energy = initial_state.getPotentialEnergy()
+            logger.info(
+                f"  Initial energy for replica {replica_index}: {initial_energy}"
+            )
+            energy_val = initial_energy.value_in_unit(unit.kilojoules_per_mole)
+            if abs(energy_val) > 1e6:
+                logger.warning(
+                    (
+                        "  Very high initial energy ("
+                        f"{energy_val:.2e} kJ/mol) detected for replica "
+                        f"{replica_index}"
+                    )
+                )
+        except Exception as exc:
+            logger.warning(
+                f"  Could not check initial energy for replica {replica_index}: {exc}"
             )
 
-            # Create simulation
-            simulation = Simulation(
-                pdb.topology,
-                system,
-                integrator,
-                platform,
-                platform_properties or None,
-            )
-            simulation.context.setPositions(pdb.positions)
-
-            # Multi-stage energy minimization for stability with fallback strategies
-            # Reuse minimized coordinates from the first replica to speed up subsequent setups
-            if shared_minimized_positions is not None:
-                try:
-                    simulation.context.setPositions(shared_minimized_positions)
-                    # Quick touch-up minimization only
-                    simulation.minimizeEnergy(
-                        maxIterations=50,
-                        tolerance=10.0 * unit.kilojoules_per_mole / unit.nanometer,
-                    )
-                    logger.info(
-                        f"  Reused minimized coordinates for replica {i} (quick touch-up)"
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"  Failed to reuse minimized coords for replica {i}: {e}; falling back to full minimization"
-                    )
-                else:
-                    # Set up trajectory reporter and store replica data, then continue
-                    traj_file = self.output_dir / f"replica_{i:02d}.dcd"
-                    dcd_reporter = DCDReporter(
-                        str(traj_file), int(max(1, self.dcd_stride))
-                    )
-                    simulation.reporters.append(dcd_reporter)
-
-                    self.replicas.append(simulation)
-                    self.integrators.append(integrator)
-                    self.contexts.append(simulation.context)
-                    self.trajectory_files.append(traj_file)
-
-                    logger.info(f"Replica {i:02d}: T = {temperature:.1f} K")
-                    continue
-
-            logger.info(f"  Minimizing energy for replica {i}...")
-
-            # Check initial energy
+    def _perform_stage1_minimization(
+        self, simulation: Simulation, replica_index: int
+    ) -> bool:
+        minimization_success = False
+        schedule = [(50, 100.0), (100, 50.0), (200, 10.0)]
+        for attempt, (max_iter, tolerance_val) in enumerate(schedule):
             try:
-                initial_state = simulation.context.getState(getEnergy=True)
-                initial_energy = initial_state.getPotentialEnergy()
-                logger.info(f"  Initial energy for replica {i}: {initial_energy}")
-
-                # Check for extremely high initial energy
-                energy_val = initial_energy.value_in_unit(unit.kilojoules_per_mole)
-                if abs(energy_val) > 1e6:
-                    logger.warning(
-                        f"  Very high initial energy ({energy_val:.2e} kJ/mol) detected for replica {i}"
+                tolerance = tolerance_val * unit.kilojoules_per_mole / unit.nanometer
+                simulation.minimizeEnergy(maxIterations=max_iter, tolerance=tolerance)
+                logger.info(
+                    (
+                        "  Stage 1 minimization completed for replica "
+                        f"{replica_index} (attempt {attempt + 1})"
                     )
-
-            except Exception as e:
-                logger.warning(f"  Could not check initial energy for replica {i}: {e}")
-
-            # Stage 1: Gentle initial minimization with relaxed tolerance
-            minimization_success = False
-            for attempt, (max_iter, tolerance_val) in enumerate(
-                [
-                    (50, 100.0),  # Very gentle first attempt
-                    (100, 50.0),  # Moderate second attempt
-                    (200, 10.0),  # Stricter third attempt
-                ]
-            ):
-                try:
-                    tolerance = (
-                        tolerance_val * unit.kilojoules_per_mole / unit.nanometer
+                )
+                minimization_success = True
+                break
+            except Exception as exc:
+                logger.warning(
+                    (
+                        "  Stage 1 minimization attempt "
+                        f"{attempt + 1} failed for replica {replica_index}: {exc}"
                     )
-                    simulation.minimizeEnergy(
-                        maxIterations=max_iter, tolerance=tolerance
-                    )
-                    logger.info(
-                        f"  Stage 1 minimization completed for replica {i} (attempt {attempt + 1})"
-                    )
-                    minimization_success = True
-                    break
-                except Exception as e:
-                    logger.warning(
-                        f"  Stage 1 minimization attempt {attempt + 1} failed for replica {i}: {e}"
-                    )
-                    if attempt == 2:  # Last attempt
-                        logger.error(
-                            f"  All minimization attempts failed for replica {i}"
-                        )
-                        raise RuntimeError(
-                            f"Energy minimization failed for replica {i} after 3 attempts. "
-                            f"Structure may be too distorted. Consider: 1) Better initial structure, "
-                            f"2) Different forcefield, 3) Manual structure preparation"
-                        )
-
-            # Stage 2: Refined minimization with NaN checking
-            if minimization_success:
-                try:
-                    simulation.minimizeEnergy(
-                        maxIterations=100,
-                        tolerance=1.0 * unit.kilojoules_per_mole / unit.nanometer,
-                    )
-                    logger.info(f"  Stage 2 minimization completed for replica {i}")
-
-                    # Comprehensive post-minimization validation
-                    state = simulation.context.getState(
-                        getPositions=True, getEnergy=True, getVelocities=True
-                    )
-                    energy = state.getPotentialEnergy()
-                    positions = state.getPositions()
-
-                    # Check for NaN in energy
-                    energy_str = str(energy).lower()
-                    if "nan" in energy_str or "inf" in energy_str:
-                        raise ValueError(
-                            f"Invalid energy ({energy}) detected after minimization for replica {i}"
-                        )
-
-                    # Check for reasonable energy range
-                    energy_val = energy.value_in_unit(unit.kilojoules_per_mole)
-                    if abs(energy_val) > 1e5:
-                        logger.warning(
-                            f"  High final energy ({energy_val:.2e} kJ/mol) for replica {i}"
-                        )
-
-                    # Check for NaN in positions
-                    pos_array = positions.value_in_unit(unit.nanometer)
-                    if np.any(np.isnan(pos_array)) or np.any(np.isinf(pos_array)):
-                        raise ValueError(
-                            f"Invalid positions detected after minimization for replica {i}"
-                        )
-
-                    logger.info(f"  Final energy for replica {i}: {energy}")
-
-                    # Cache minimized positions to accelerate remaining replicas
-                    if shared_minimized_positions is None:
-                        try:
-                            shared_minimized_positions = state.getPositions()
-                            logger.info(
-                                "  Cached minimized coordinates from replica 0 for reuse"
-                            )
-                        except Exception:
-                            shared_minimized_positions = None
-
-                except Exception as e:
+                )
+                if attempt == len(schedule) - 1:
                     logger.error(
-                        f"  Stage 2 minimization or validation failed for replica {i}: {e}"
+                        f"  All minimization attempts failed for replica {replica_index}"
                     )
-                    # Try to recover by using the Stage 1 result
-                    logger.warning(
-                        f"  Attempting to continue with Stage 1 result for replica {i}"
-                    )
-                    try:
-                        state = simulation.context.getState(getEnergy=True)
-                        energy = state.getPotentialEnergy()
-                        logger.info(f"  Using Stage 1 energy for replica {i}: {energy}")
-                    except:
-                        raise RuntimeError(
-                            f"Complete minimization failure for replica {i}"
+                    raise RuntimeError(
+                        (
+                            f"Energy minimization failed for replica {replica_index} "
+                            "after 3 attempts. Structure may be too distorted. "
+                            "Consider: 1) Better initial structure, 2) Different "
+                            "forcefield, 3) Manual structure preparation"
                         )
+                    )
+        return minimization_success
 
-            # Set up trajectory reporter
-            traj_file = self.output_dir / f"replica_{i:02d}.dcd"
-            dcd_reporter = DCDReporter(str(traj_file), int(max(1, self.dcd_stride)))
-            simulation.reporters.append(dcd_reporter)
+    def _perform_stage2_minimization_and_validation(
+        self,
+        simulation: Simulation,
+        replica_index: int,
+        shared_minimized_positions,
+    ):
+        try:
+            self._stage2_minimize(simulation, replica_index)
+            state = self._get_state_with_positions(simulation)
+            energy = state.getPotentialEnergy()
+            positions = state.getPositions()
+            self._validate_energy(energy, replica_index)
+            self._validate_positions(positions, replica_index)
+            logger.info(f"  Final energy for replica {replica_index}: {energy}")
+            if shared_minimized_positions is None:
+                shared_minimized_positions = self._cache_minimized_positions_safe(state)
+            return shared_minimized_positions
+        except Exception as exc:
+            self._log_stage2_failure(replica_index, exc)
+            self._log_using_stage1_energy(simulation, replica_index)
+            return shared_minimized_positions
 
-            # Store replica data
-            self.replicas.append(simulation)
-            self.integrators.append(integrator)
-            self.contexts.append(simulation.context)
-            self.trajectory_files.append(traj_file)
+    # ---- Helpers for stage 2 minimization (split for C901) ----
 
-            logger.info(f"Replica {i:02d}: T = {temperature:.1f} K")
+    def _stage2_minimize(self, simulation: Simulation, replica_index: int) -> None:
+        simulation.minimizeEnergy(
+            maxIterations=100, tolerance=1.0 * unit.kilojoules_per_mole / unit.nanometer
+        )
+        logger.info(f"  Stage 2 minimization completed for replica {replica_index}")
 
-        logger.info("All replicas set up successfully")
-        self._is_setup = True
+    def _get_state_with_positions(self, simulation: Simulation):
+        return simulation.context.getState(
+            getPositions=True, getEnergy=True, getVelocities=True
+        )
+
+    def _validate_energy(self, energy, replica_index: int) -> None:
+        energy_str = str(energy).lower()
+        if "nan" in energy_str or "inf" in energy_str:
+            raise ValueError(
+                (
+                    "Invalid energy ("
+                    f"{energy}) detected after minimization for replica "
+                    f"{replica_index}"
+                )
+            )
+        energy_val = energy.value_in_unit(unit.kilojoules_per_mole)
+        if abs(energy_val) > 1e5:
+            logger.warning(
+                (
+                    f"  High final energy ({energy_val:.2e} kJ/mol) for "
+                    f"replica {replica_index}"
+                )
+            )
+
+    def _validate_positions(self, positions, replica_index: int) -> None:
+        pos_array = positions.value_in_unit(unit.nanometer)
+        if np.any(np.isnan(pos_array)) or np.any(np.isinf(pos_array)):
+            raise ValueError(
+                (
+                    "Invalid positions detected after minimization for "
+                    f"replica {replica_index}"
+                )
+            )
+
+    def _cache_minimized_positions_safe(self, state):
+        try:
+            logger.info("  Cached minimized coordinates from replica 0 for reuse")
+            return state.getPositions()
+        except Exception:
+            return None
+
+    def _log_stage2_failure(self, replica_index: int, exc: Exception) -> None:
+        logger.error(
+            (
+                "  Stage 2 minimization or validation failed for replica "
+                f"{replica_index}: {exc}"
+            )
+        )
+        logger.warning(
+            (
+                "  Attempting to continue with Stage 1 result for replica "
+                f"{replica_index}"
+            )
+        )
+
+    def _log_using_stage1_energy(
+        self, simulation: Simulation, replica_index: int
+    ) -> None:
+        try:
+            state = simulation.context.getState(getEnergy=True)
+            energy = state.getPotentialEnergy()
+            logger.info(f"  Using Stage 1 energy for replica {replica_index}: {energy}")
+        except Exception:
+            raise RuntimeError(
+                f"Complete minimization failure for replica {replica_index}"
+            )
+
+    def _add_dcd_reporter(self, simulation: Simulation, replica_index: int) -> Path:
+        traj_file = self.output_dir / f"replica_{replica_index:02d}.dcd"
+        dcd_reporter = DCDReporter(str(traj_file), int(max(1, self.dcd_stride)))
+        simulation.reporters.append(dcd_reporter)
+        return traj_file
+
+    def _store_replica_data(
+        self,
+        simulation: Simulation,
+        integrator: openmm.Integrator,
+        traj_file: Path,
+    ) -> None:
+        self.replicas.append(simulation)
+        self.integrators.append(integrator)
+        self.contexts.append(simulation.context)
+        self.trajectory_files.append(traj_file)
 
     def is_setup(self) -> bool:
         """
@@ -527,7 +616,8 @@ class ReplicaExchange:
                         # Continue with default state
 
         logger.info(
-            f"Checkpoint restoration complete. Exchange stats: {self.exchanges_accepted}/{self.exchange_attempts}"
+            "Checkpoint restoration complete. Exchange stats: "
+            f"{self.exchanges_accepted}/{self.exchange_attempts}"
         )
 
     def calculate_exchange_probability(self, replica_i: int, replica_j: int) -> float:
@@ -577,7 +667,11 @@ class ReplicaExchange:
 
         # Debug logging for troubleshooting low acceptance rates
         logger.debug(
-            f"Exchange calculation: E_i={energy_i}, E_j={energy_j}, T_i={temp_i:.1f}K, T_j={temp_j:.1f}K, delta={delta:.3f}, prob={prob:.6f}"
+            (
+                f"Exchange calculation: E_i={energy_i}, E_j={energy_j}, "
+                f"T_i={temp_i:.1f}K, T_j={temp_j:.1f}K, "
+                f"delta={delta:.3f}, prob={prob:.6f}"
+            )
         )
 
         return float(prob)  # Fixed: Explicit float conversion to avoid Any return type
@@ -599,6 +693,46 @@ class ReplicaExchange:
             True if exchange was accepted, False otherwise
         """
         # BOUNDS CHECKING: Ensure replica indices are valid
+        self._validate_replica_indices(replica_i, replica_j)
+
+        self.exchange_attempts += 1
+
+        # Calculate exchange probability (use cached energies if provided)
+        prob = (
+            self._calculate_probability_from_cached(replica_i, replica_j, energies)
+            if energies is not None
+            else self.calculate_exchange_probability(replica_i, replica_j)
+        )
+
+        # Track per-pair stats and perform the exchange if accepted
+        state_i_val = self.replica_states[replica_i]
+        state_j_val = self.replica_states[replica_j]
+        pair = (min(state_i_val, state_j_val), max(state_i_val, state_j_val))
+        self.pair_attempt_counts[pair] = self.pair_attempt_counts.get(pair, 0) + 1
+
+        if np.random.random() < prob:
+            self._perform_exchange(replica_i, replica_j)
+            self.exchanges_accepted += 1
+            self.pair_accept_counts[pair] = self.pair_accept_counts.get(pair, 0) + 1
+            logger.debug(
+                (
+                    f"Exchange accepted: replica {replica_i} <-> {replica_j} "
+                    f"(prob={prob:.3f})"
+                )
+            )
+            return True
+
+        logger.debug(
+            (
+                f"Exchange rejected: replica {replica_i} <-> {replica_j} "
+                f"(prob={prob:.3f})"
+            )
+        )
+        return False
+
+    # --- Helper methods for attempt_exchange ---
+
+    def _validate_replica_indices(self, replica_i: int, replica_j: int) -> None:
         if replica_i < 0 or replica_i >= self.n_replicas:
             raise ValueError(
                 f"replica_i={replica_i} is out of bounds [0, {self.n_replicas})"
@@ -616,102 +750,80 @@ class ReplicaExchange:
                 f"replica_j={replica_j} >= len(contexts)={len(self.contexts)}"
             )
 
-        self.exchange_attempts += 1
+    def _calculate_probability_from_cached(
+        self,
+        replica_i: int,
+        replica_j: int,
+        energies: List[openmm.unit.quantity.Quantity],
+    ) -> float:
+        temp_i = self.temperatures[self.replica_states[replica_i]]
+        temp_j = self.temperatures[self.replica_states[replica_j]]
 
-        # Calculate exchange probability (use cached energies if provided)
-        if energies is not None:
-            temp_i = self.temperatures[self.replica_states[replica_i]]
-            temp_j = self.temperatures[self.replica_states[replica_j]]
+        beta_i = 1.0 / (unit.MOLAR_GAS_CONSTANT_R * temp_i * unit.kelvin)
+        beta_j = 1.0 / (unit.MOLAR_GAS_CONSTANT_R * temp_j * unit.kelvin)
 
-            beta_i = 1.0 / (unit.MOLAR_GAS_CONSTANT_R * temp_i * unit.kelvin)
-            beta_j = 1.0 / (unit.MOLAR_GAS_CONSTANT_R * temp_j * unit.kelvin)
+        e_i = energies[replica_i]
+        e_j = energies[replica_j]
+        if not hasattr(e_i, "value_in_unit"):
+            e_i = float(e_i) * unit.kilojoules_per_mole
+        if not hasattr(e_j, "value_in_unit"):
+            e_j = float(e_j) * unit.kilojoules_per_mole
 
-            # Ensure energies are Quantities in kJ/mol
-            e_i = energies[replica_i]
-            e_j = energies[replica_j]
-            if not hasattr(e_i, "value_in_unit"):
-                e_i = float(e_i) * unit.kilojoules_per_mole
-            if not hasattr(e_j, "value_in_unit"):
-                e_j = float(e_j) * unit.kilojoules_per_mole
+        delta_q = (beta_j - beta_i) * (e_i - e_j)
+        try:
+            delta = delta_q.value_in_unit(unit.dimensionless)
+        except Exception:
+            delta = float(delta_q)
+        return float(min(1.0, np.exp(-delta)))
 
-            delta_q = (beta_j - beta_i) * (e_i - e_j)
-            try:
-                delta = delta_q.value_in_unit(unit.dimensionless)
-            except Exception:
-                # Fallback if unit machinery not present
-                delta = float(delta_q)
-            prob = float(min(1.0, np.exp(-delta)))
-        else:
-            prob = self.calculate_exchange_probability(replica_i, replica_j)
+    def _perform_exchange(self, replica_i: int, replica_j: int) -> None:
+        if replica_i >= len(self.replica_states):
+            raise RuntimeError(
+                (
+                    "replica_states array too small: "
+                    f"{len(self.replica_states)}, need {replica_i + 1}"
+                )
+            )
+        if replica_j >= len(self.replica_states):
+            raise RuntimeError(
+                (
+                    "replica_states array too small: "
+                    f"{len(self.replica_states)}, need {replica_j + 1}"
+                )
+            )
 
-        # Accept or reject exchange and track per-pair stats
-        # Build a fixed-size 2-tuple for dict keys to satisfy type checker
-        state_i_val = self.replica_states[replica_i]
-        state_j_val = self.replica_states[replica_j]
-        pair = (
-            min(state_i_val, state_j_val),
-            max(state_i_val, state_j_val),
+        old_state_i = self.replica_states[replica_i]
+        old_state_j = self.replica_states[replica_j]
+        if old_state_i >= len(self.state_replicas) or old_state_j >= len(
+            self.state_replicas
+        ):
+            raise RuntimeError(
+                (
+                    "Invalid state indices: "
+                    f"{old_state_i}, {old_state_j} vs array size "
+                    f"{len(self.state_replicas)}"
+                )
+            )
+
+        self.replica_states[replica_i] = old_state_j
+        self.replica_states[replica_j] = old_state_i
+
+        self.state_replicas[old_state_i] = replica_j
+        self.state_replicas[old_state_j] = replica_i
+
+        self.integrators[replica_i].setTemperature(
+            self.temperatures[old_state_j] * unit.kelvin
         )
-        self.pair_attempt_counts[pair] = self.pair_attempt_counts.get(pair, 0) + 1
-        if np.random.random() < prob:
-            # Perform exchange by swapping temperature assignments only
+        self.integrators[replica_j].setTemperature(
+            self.temperatures[old_state_i] * unit.kelvin
+        )
 
-            # Update temperature mappings with bounds checking
-            if replica_i >= len(self.replica_states):
-                raise RuntimeError(
-                    f"replica_states array too small: {len(self.replica_states)}, need {replica_i + 1}"
-                )
-            if replica_j >= len(self.replica_states):
-                raise RuntimeError(
-                    f"replica_states array too small: {len(self.replica_states)}, need {replica_j + 1}"
-                )
-
-            old_state_i = self.replica_states[replica_i]
-            old_state_j = self.replica_states[replica_j]
-
-            # Validate state indices
-            if old_state_i >= len(self.state_replicas) or old_state_j >= len(
-                self.state_replicas
-            ):
-                raise RuntimeError(
-                    f"Invalid state indices: {old_state_i}, {old_state_j} vs array size {len(self.state_replicas)}"
-                )
-
-            # Perform the swap
-            self.replica_states[replica_i] = old_state_j
-            self.replica_states[replica_j] = old_state_i
-
-            self.state_replicas[old_state_i] = replica_j
-            self.state_replicas[old_state_j] = replica_i
-
-            # Update integrator temperatures
-            self.integrators[replica_i].setTemperature(
-                self.temperatures[old_state_j] * unit.kelvin
-            )
-            self.integrators[replica_j].setTemperature(
-                self.temperatures[old_state_i] * unit.kelvin
-            )
-
-            # Rethermalize velocities instead of swapping full states
-            self.contexts[replica_i].setVelocitiesToTemperature(
-                self.temperatures[old_state_j] * unit.kelvin
-            )
-            self.contexts[replica_j].setVelocitiesToTemperature(
-                self.temperatures[old_state_i] * unit.kelvin
-            )
-
-            self.exchanges_accepted += 1
-            self.pair_accept_counts[pair] = self.pair_accept_counts.get(pair, 0) + 1
-
-            logger.debug(
-                f"Exchange accepted: replica {replica_i} <-> {replica_j} (prob={prob:.3f})"
-            )
-            return True
-        else:
-            logger.debug(
-                f"Exchange rejected: replica {replica_i} <-> {replica_j} (prob={prob:.3f})"
-            )
-            return False
+        self.contexts[replica_i].setVelocitiesToTemperature(
+            self.temperatures[old_state_j] * unit.kelvin
+        )
+        self.contexts[replica_j].setVelocitiesToTemperature(
+            self.temperatures[old_state_i] * unit.kelvin
+        )
 
     def run_simulation(
         self,
@@ -729,273 +841,319 @@ class ReplicaExchange:
             save_state_frequency: Frequency to save simulation states
             checkpoint_manager: CheckpointManager instance for state tracking
         """
-        # CRITICAL VALIDATION: Ensure replicas are properly initialized
+        self._validate_setup_state()
+        self._log_run_start(total_steps)
+        if equilibration_steps > 0:
+            self._run_equilibration_phase(equilibration_steps, checkpoint_manager)
+        if self._skip_production_if_completed(checkpoint_manager):
+            return
+        self._mark_production_started(checkpoint_manager)
+        self._run_production_phase(
+            total_steps, equilibration_steps, save_state_frequency, checkpoint_manager
+        )
+        self._mark_production_completed(
+            total_steps, equilibration_steps, checkpoint_manager
+        )
+        self._close_dcd_files()
+        self._log_final_stats()
+        self.save_results()
+
+    # --- Helpers for run_simulation ---
+
+    def _validate_setup_state(self) -> None:
         if not self._is_setup:
             raise RuntimeError(
                 "Replicas not properly initialized! Call setup_replicas() first."
             )
-
         if not self.contexts or len(self.contexts) != self.n_replicas:
             raise RuntimeError(
-                f"Replicas not properly initialized! Expected {self.n_replicas} contexts, "
-                f"but got {len(self.contexts)}. setup_replicas() may have failed."
+                (
+                    "Replicas not properly initialized! Expected "
+                    f"{self.n_replicas} contexts, but got {len(self.contexts)}. "
+                    "setup_replicas() may have failed."
+                )
             )
-
         if not self.replicas or len(self.replicas) != self.n_replicas:
             raise RuntimeError(
-                f"Replicas not properly initialized! Expected {self.n_replicas} replicas, "
-                f"but got {len(self.replicas)}. setup_replicas() may have failed."
+                (
+                    "Replicas not properly initialized! Expected "
+                    f"{self.n_replicas} replicas, but got {len(self.replicas)}. "
+                    "setup_replicas() may have failed."
+                )
             )
 
+    def _log_run_start(self, total_steps: int) -> None:
         logger.info(f"Starting REMD simulation: {total_steps} steps")
         logger.info(f"Exchange attempts every {self.exchange_frequency} steps")
 
-        # Gradual heating and equilibration phase
-        if equilibration_steps > 0:
-            # Check if gradual heating is already completed
-            if checkpoint_manager and checkpoint_manager.is_step_completed(
-                "gradual_heating"
-            ):
-                logger.info("Gradual heating already completed ✓")
-            else:
-                if checkpoint_manager:
-                    checkpoint_manager.mark_step_started("gradual_heating")
-                logger.info(
-                    f"Equilibration with gradual heating: {equilibration_steps} steps"
+    def _run_equilibration_phase(
+        self, equilibration_steps: int, checkpoint_manager
+    ) -> None:
+        if checkpoint_manager and checkpoint_manager.is_step_completed(
+            "gradual_heating"
+        ):
+            logger.info("Gradual heating already completed ✓")
+        else:
+            self._run_gradual_heating(equilibration_steps, checkpoint_manager)
+
+        if checkpoint_manager and checkpoint_manager.is_step_completed("equilibration"):
+            logger.info("Temperature equilibration already completed ✓")
+        else:
+            self._run_temperature_equilibration(equilibration_steps, checkpoint_manager)
+
+    def _run_gradual_heating(
+        self, equilibration_steps: int, checkpoint_manager
+    ) -> None:
+        if checkpoint_manager:
+            checkpoint_manager.mark_step_started("gradual_heating")
+        logger.info(f"Equilibration with gradual heating: {equilibration_steps} steps")
+        heating_steps = max(100, equilibration_steps * 40 // 100)
+        logger.info(f"   Phase 1: Gradual heating over {heating_steps} steps")
+        heating_chunk_size = max(10, heating_steps // 20)
+        for heat_step in range(0, heating_steps, heating_chunk_size):
+            current_steps = min(heating_chunk_size, heating_steps - heat_step)
+            progress_fraction = (heat_step + current_steps) / heating_steps
+            for replica_idx, replica in enumerate(self.replicas):
+                target_temp = self.temperatures[self.replica_states[replica_idx]]
+                current_temp = 50.0 + (target_temp - 50.0) * progress_fraction
+                replica.integrator.setTemperature(current_temp * unit.kelvin)
+                self._step_with_recovery(
+                    replica, current_steps, replica_idx, current_temp
                 )
+            progress = min(40, (heat_step + current_steps) * 40 // heating_steps)
+            temps_preview = [
+                50.0
+                + (self.temperatures[self.replica_states[i]] - 50.0) * progress_fraction
+                for i in range(len(self.replicas))
+            ]
+            logger.info(
+                f"   Heating Progress: {progress}% - Current temps: {temps_preview}"
+            )
+        if checkpoint_manager:
+            checkpoint_manager.mark_step_completed(
+                "gradual_heating",
+                {
+                    "heating_steps": heating_steps,
+                    "final_temperatures": [
+                        self.temperatures[state] for state in self.replica_states
+                    ],
+                },
+            )
 
-                # Phase 1: Gradual heating (first 40% of equilibration)
-                heating_steps = max(100, equilibration_steps * 40 // 100)
-                logger.info(f"   Phase 1: Gradual heating over {heating_steps} steps")
-
-                heating_chunk_size = max(10, heating_steps // 20)  # Heat in 20 stages
-                for heat_step in range(0, heating_steps, heating_chunk_size):
-                    current_steps = min(heating_chunk_size, heating_steps - heat_step)
-
-                    # Calculate gradual temperature scaling (start from 50K, ramp to target)
-                    progress_fraction = (heat_step + current_steps) / heating_steps
-
-                    for replica_idx, replica in enumerate(self.replicas):
-                        target_temp = self.temperatures[
-                            self.replica_states[replica_idx]
-                        ]
-                        current_temp = 50.0 + (target_temp - 50.0) * progress_fraction
-
-                        # Update integrator temperature gradually
-                        replica.integrator.setTemperature(current_temp * unit.kelvin)
-
-                        # Run with error recovery
-                        try:
-                            replica.step(current_steps)
-                        except Exception as e:
-                            if "NaN" in str(e) or "nan" in str(e).lower():
-                                logger.warning(
-                                    f"   NaN detected in replica {replica_idx} during heating, attempting recovery..."
-                                )
-
-                                # Attempt recovery by resetting velocities and reducing step size
-                                replica.context.setVelocitiesToTemperature(
-                                    current_temp * unit.kelvin
-                                )
-
-                                # Try smaller steps
-                                small_steps = max(1, current_steps // 5)
-                                for recovery_attempt in range(5):
-                                    try:
-                                        replica.step(small_steps)
-                                        break
-                                    except:
-                                        if recovery_attempt == 4:  # Last attempt failed
-                                            raise RuntimeError(
-                                                f"Failed to recover from NaN in replica {replica_idx}"
-                                            )
-                                        replica.context.setVelocitiesToTemperature(
-                                            current_temp * unit.kelvin * 0.9
-                                        )
-                            else:
-                                raise
-
-                    progress = min(
-                        40, (heat_step + current_steps) * 40 // heating_steps
+    def _step_with_recovery(
+        self, replica: Simulation, steps: int, replica_idx: int, temp_k: float
+    ) -> None:
+        try:
+            replica.step(steps)
+        except Exception as exc:
+            if "nan" in str(exc).lower():
+                logger.warning(
+                    (
+                        f"   NaN detected in replica {replica_idx} during heating, "
+                        "attempting recovery..."
                     )
-                    logger.info(
-                        f"   Heating Progress: {progress}% - Current temps: {[50.0 + (self.temperatures[self.replica_states[i]] - 50.0) * progress_fraction for i in range(len(self.replicas))]}"
-                    )
-
-                # Mark heating as completed
-                if checkpoint_manager:
-                    checkpoint_manager.mark_step_completed(
-                        "gradual_heating",
-                        {
-                            "heating_steps": heating_steps,
-                            "final_temperatures": [
-                                self.temperatures[state]
-                                for state in self.replica_states
-                            ],
-                        },
-                    )
-
-            # Phase 2: Temperature equilibration (remaining 60% of equilibration)
-            if checkpoint_manager and checkpoint_manager.is_step_completed(
-                "equilibration"
-            ):
-                logger.info("Temperature equilibration already completed ✓")
-            else:
-                if checkpoint_manager:
-                    checkpoint_manager.mark_step_started("equilibration")
-
-                temp_equil_steps = max(
-                    100, equilibration_steps * 60 // 100
-                )  # Calculate correctly
-                logger.info(
-                    f"   Phase 2: Temperature equilibration at target temperatures over {temp_equil_steps} steps"
                 )
+                replica.context.setVelocitiesToTemperature(temp_k * unit.kelvin)
+                small_steps = max(1, steps // 5)
+                for recovery_attempt in range(5):
+                    try:
+                        replica.step(small_steps)
+                        break
+                    except Exception:
+                        if recovery_attempt == 4:
+                            raise RuntimeError(
+                                f"Failed to recover from NaN in replica {replica_idx}"
+                            )
+                        replica.context.setVelocitiesToTemperature(
+                            temp_k * unit.kelvin * 0.9
+                        )
+            else:
+                raise
 
-                # Set all replicas to their final target temperatures
-                for replica_idx, replica in enumerate(self.replicas):
-                    target_temp = self.temperatures[self.replica_states[replica_idx]]
-                    replica.integrator.setTemperature(target_temp * unit.kelvin)
-                    replica.context.setVelocitiesToTemperature(
-                        target_temp * unit.kelvin
-                    )
+    def _run_temperature_equilibration(
+        self, equilibration_steps: int, checkpoint_manager
+    ) -> None:
+        if checkpoint_manager:
+            checkpoint_manager.mark_step_started("equilibration")
+        temp_equil_steps = max(100, equilibration_steps * 60 // 100)
+        logger.info(
+            (
+                "   Phase 2: Temperature equilibration at target temperatures over "
+                f"{temp_equil_steps} steps"
+            )
+        )
+        for replica_idx, replica in enumerate(self.replicas):
+            target_temp = self.temperatures[self.replica_states[replica_idx]]
+            replica.integrator.setTemperature(target_temp * unit.kelvin)
+            replica.context.setVelocitiesToTemperature(target_temp * unit.kelvin)
+        equil_chunk_size = max(1, temp_equil_steps // 10)
+        for i in range(0, temp_equil_steps, equil_chunk_size):
+            current_steps = min(equil_chunk_size, temp_equil_steps - i)
+            for replica_idx, replica in enumerate(self.replicas):
+                try:
+                    replica.step(current_steps)
+                except Exception as exc:
+                    if "nan" in str(exc).lower():
+                        logger.error(
+                            (
+                                f"   NaN detected in replica {replica_idx} during "
+                                "equilibration - simulation unstable"
+                            )
+                        )
+                        if checkpoint_manager:
+                            checkpoint_manager.mark_step_failed(
+                                "equilibration", str(exc)
+                            )
+                        raise RuntimeError(
+                            (
+                                "Simulation became unstable for replica "
+                                f"{replica_idx}. Try: 1) Better initial structure, "
+                                "2) Smaller timestep, 3) More minimization"
+                            )
+                        )
+                    else:
+                        raise
+            progress = min(100, 40 + (i + current_steps) * 60 // temp_equil_steps)
+            logger.info(
+                (
+                    f"   Equilibration Progress: {progress}% "
+                    f"({equilibration_steps - temp_equil_steps + i + current_steps}/"
+                    f"{equilibration_steps} steps)"
+                )
+            )
+        if checkpoint_manager:
+            checkpoint_manager.mark_step_completed(
+                "equilibration",
+                {
+                    "equilibration_steps": temp_equil_steps,
+                    "total_equilibration": equilibration_steps,
+                },
+            )
+        logger.info("   Equilibration Complete ✓")
 
-                equil_chunk_size = max(1, temp_equil_steps // 10)  # 10% chunks
-                for i in range(0, temp_equil_steps, equil_chunk_size):
-                    current_steps = min(equil_chunk_size, temp_equil_steps - i)
-
-                    for replica_idx, replica in enumerate(self.replicas):
-                        try:
-                            replica.step(current_steps)
-                        except Exception as e:
-                            if "NaN" in str(e) or "nan" in str(e).lower():
-                                logger.error(
-                                    f"   NaN detected in replica {replica_idx} during equilibration - simulation unstable"
-                                )
-                                if checkpoint_manager:
-                                    checkpoint_manager.mark_step_failed(
-                                        "equilibration", str(e)
-                                    )
-                                raise RuntimeError(
-                                    f"Simulation became unstable for replica {replica_idx}. Try: 1) Better initial structure, 2) Smaller timestep, 3) More minimization"
-                                )
-                            else:
-                                raise
-
-                    progress = min(
-                        100, 40 + (i + current_steps) * 60 // temp_equil_steps
-                    )
-                    logger.info(
-                        f"   Equilibration Progress: {progress}% ({equilibration_steps - temp_equil_steps + i + current_steps}/{equilibration_steps} steps)"
-                    )
-
-                if checkpoint_manager:
-                    checkpoint_manager.mark_step_completed(
-                        "equilibration",
-                        {
-                            "equilibration_steps": temp_equil_steps,
-                            "total_equilibration": equilibration_steps,
-                        },
-                    )
-
-                logger.info("   Equilibration Complete ✓")
-
-        # Production phase with exchanges
+    def _skip_production_if_completed(self, checkpoint_manager) -> bool:
         if checkpoint_manager and checkpoint_manager.is_step_completed(
             "production_simulation"
         ):
             logger.info("Production simulation already completed ✓")
-            return  # Skip production phase
+            return True
+        return False
 
+    def _mark_production_started(self, checkpoint_manager) -> None:
         if checkpoint_manager:
             checkpoint_manager.mark_step_started("production_simulation")
 
+    def _run_production_phase(
+        self,
+        total_steps: int,
+        equilibration_steps: int,
+        save_state_frequency: int,
+        checkpoint_manager,
+    ) -> None:
         production_steps = total_steps - equilibration_steps
         exchange_steps = production_steps // self.exchange_frequency
-
         logger.info(
-            f"Production: {production_steps} steps with {exchange_steps} exchange attempts"
+            (
+                f"Production: {production_steps} steps with "
+                f"{exchange_steps} exchange attempts"
+            )
         )
-
         for step in range(exchange_steps):
-            # Run MD for all replicas with error recovery
-            for replica_idx, replica in enumerate(self.replicas):
-                try:
-                    replica.step(self.exchange_frequency)
-                except Exception as e:
-                    if "NaN" in str(e) or "nan" in str(e).lower():
-                        logger.error(
-                            f"NaN detected in replica {replica_idx} during production phase"
-                        )
-                        # Try to save trajectory data before failing
-                        try:
-                            state = replica.context.getState(
-                                getPositions=True, getVelocities=True
-                            )
-                            logger.info(
-                                f"Attempting to save current state before failure..."
-                            )
-                        except:
-                            pass
-                        raise RuntimeError(
-                            f"Simulation became unstable for replica {replica_idx} at production step {step}. "
-                            f"Consider: 1) Longer equilibration, 2) Smaller timestep, 3) Different initial structure"
-                        )
-                    else:
-                        raise
-
-            # Precompute energies once per sweep to avoid repeated getState calls
-            energies = []
-            for idx, ctx in enumerate(self.contexts):
-                try:
-                    e_state = ctx.getState(getEnergy=True)
-                    energies.append(e_state.getPotentialEnergy())
-                except Exception as e:
-                    logger.debug(f"Energy getState failed for replica {idx}: {e}")
-                    # Fallback to cached value if available; else 0.0
-                    last = self.energies[idx] if idx < len(self.energies) else 0.0
-                    energies.append(last)
-            # Cache energies for potential diagnostics
-            self.energies = energies
-
-            # Attempt exchanges between adjacent temperatures using cached energies
-            for i in range(0, self.n_replicas - 1, 2):  # Even pairs
-                try:
-                    self.attempt_exchange(i, i + 1, energies=energies)
-                except Exception as e:
-                    logger.warning(
-                        f"Exchange attempt failed between replicas {i} and {i+1}: {e}"
-                    )
-                    # Continue with other exchanges
-
-            for i in range(1, self.n_replicas - 1, 2):  # Odd pairs
-                try:
-                    self.attempt_exchange(i, i + 1, energies=energies)
-                except Exception as e:
-                    logger.warning(
-                        f"Exchange attempt failed between replicas {i} and {i+1}: {e}"
-                    )
-                    # Continue with other exchanges
-
-            # Save exchange history
+            self._production_step_all_replicas(step, checkpoint_manager)
+            energies = self._precompute_energies()
+            self._attempt_all_exchanges(energies)
             self.exchange_history.append(self.replica_states.copy())
+            self._log_production_progress(
+                step, exchange_steps, total_steps, equilibration_steps
+            )
+            if (step + 1) * self.exchange_frequency % save_state_frequency == 0:
+                self.save_checkpoint(step + 1)
 
-            # Enhanced progress reporting - show every step for fast runs
-            progress_percent = (step + 1) * 100 // exchange_steps
-            acceptance_rate = self.exchanges_accepted / max(1, self.exchange_attempts)
-            completed_steps = (step + 1) * self.exchange_frequency + equilibration_steps
+    def _production_step_all_replicas(self, step: int, checkpoint_manager) -> None:
+        for replica_idx, replica in enumerate(self.replicas):
+            try:
+                replica.step(self.exchange_frequency)
+            except Exception as exc:
+                if "nan" in str(exc).lower():
+                    logger.error(
+                        "NaN detected in replica %d during production phase",
+                        replica_idx,
+                    )
+                    try:
+                        _ = replica.context.getState(
+                            getPositions=True, getVelocities=True
+                        )
+                        logger.info(
+                            "Attempting to save current state before failure..."
+                        )
+                    except Exception:
+                        pass
+                    raise RuntimeError(
+                        (
+                            "Simulation became unstable for replica "
+                            f"{replica_idx} at production step {step}. "
+                            "Consider: 1) Longer equilibration, 2) Smaller timestep, "
+                            "3) Different initial structure"
+                        )
+                    )
+                else:
+                    raise
 
-            logger.debug(
+    def _precompute_energies(self) -> List[Any]:
+        energies: List[Any] = []
+        for idx, ctx in enumerate(self.contexts):
+            try:
+                e_state = ctx.getState(getEnergy=True)
+                energies.append(e_state.getPotentialEnergy())
+            except Exception as exc:
+                logger.debug(f"Energy getState failed for replica {idx}: {exc}")
+                last = self.energies[idx] if idx < len(self.energies) else 0.0
+                energies.append(last)
+        self.energies = energies
+        return energies
+
+    def _attempt_all_exchanges(self, energies: List[Any]) -> None:
+        for i in range(0, self.n_replicas - 1, 2):
+            try:
+                self.attempt_exchange(i, i + 1, energies=energies)
+            except Exception as exc:
+                logger.warning(
+                    (
+                        f"Exchange attempt failed between replicas {i} and {i+1}: "
+                        f"{exc}"
+                    )
+                )
+        for i in range(1, self.n_replicas - 1, 2):
+            try:
+                self.attempt_exchange(i, i + 1, energies=energies)
+            except Exception as exc:
+                logger.warning(
+                    (
+                        f"Exchange attempt failed between replicas {i} and {i+1}: "
+                        f"{exc}"
+                    )
+                )
+
+    def _log_production_progress(
+        self, step: int, exchange_steps: int, total_steps: int, equilibration_steps: int
+    ) -> None:
+        progress_percent = (step + 1) * 100 // exchange_steps
+        acceptance_rate = self.exchanges_accepted / max(1, self.exchange_attempts)
+        completed_steps = (step + 1) * self.exchange_frequency + equilibration_steps
+        logger.debug(
+            (
                 f"   Production Progress: {progress_percent}% "
                 f"({step + 1}/{exchange_steps} exchanges, "
                 f"{completed_steps}/{total_steps} total steps) "
                 f"| Acceptance: {acceptance_rate:.3f}"
             )
+        )
 
-            # Save states periodically
-            if (step + 1) * self.exchange_frequency % save_state_frequency == 0:
-                self.save_checkpoint(step + 1)
-
-        # Mark production as completed
+    def _mark_production_completed(
+        self, total_steps: int, equilibration_steps: int, checkpoint_manager
+    ) -> None:
+        production_steps = total_steps - equilibration_steps
+        exchange_steps = production_steps // self.exchange_frequency
         if checkpoint_manager:
             checkpoint_manager.mark_step_completed(
                 "production_simulation",
@@ -1007,10 +1165,7 @@ class ReplicaExchange:
                 },
             )
 
-        # Close and flush DCD files to ensure all data is written
-        self._close_dcd_files()
-
-        # Final statistics
+    def _log_final_stats(self) -> None:
         final_acceptance = self.exchanges_accepted / max(1, self.exchange_attempts)
         logger.info("=" * 60)
         logger.info("🎉 REPLICA EXCHANGE SIMULATION COMPLETED! 🎉")
@@ -1018,9 +1173,6 @@ class ReplicaExchange:
         logger.info(f"Total exchanges attempted: {self.exchange_attempts}")
         logger.info(f"Total exchanges accepted: {self.exchanges_accepted}")
         logger.info("=" * 60)
-
-        # Save final data
-        self.save_results()
 
     def _close_dcd_files(self):
         """Close and flush all DCD files to ensure data is written."""
@@ -1124,7 +1276,10 @@ class ReplicaExchange:
 
         logger.info(f"Processing {len(self.exchange_history)} exchange steps...")
         logger.info(
-            f"Exchange frequency: {self.exchange_frequency} MD steps, DCD frequency: {dcd_frequency} MD steps"
+            (
+                f"Exchange frequency: {self.exchange_frequency} MD steps, "
+                f"DCD frequency: {dcd_frequency} MD steps"
+            )
         )
 
         # Debug: Check files exist and get basic info
@@ -1133,7 +1288,10 @@ class ReplicaExchange:
             if traj_file.exists():
                 file_size = traj_file.stat().st_size
                 logger.info(
-                    f"  Replica {i}: {traj_file.name} exists, size: {file_size:,} bytes"
+                    (
+                        f"  Replica {i}: {traj_file.name} exists, size: "
+                        f"{file_size:,} bytes"
+                    )
                 )
 
                 # Try a simple frame count using mdtraj
@@ -1213,7 +1371,10 @@ class ReplicaExchange:
                 return None
         else:
             logger.debug(
-                "No frames found for demultiplexing - this may indicate frame indexing issues"
+                (
+                    "No frames found for demultiplexing - this may indicate "
+                    "frame indexing issues"
+                )
             )
             logger.debug("Debug info:")
             logger.debug(f"  Exchange steps: {len(self.exchange_history)}")

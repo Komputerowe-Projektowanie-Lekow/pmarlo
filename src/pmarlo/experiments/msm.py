@@ -6,7 +6,6 @@ from typing import Dict, List
 
 from ..markov_state_model.markov_state_model import run_complete_msm_analysis
 from .benchmark_utils import (
-    build_baseline_object,
     build_msm_baseline_object,
     compute_threshold_comparison,
     get_environment_info,
@@ -43,13 +42,13 @@ class MSMConfig:
     temperatures: List[float] | None = None
 
 
-def run_msm_experiment(config: MSMConfig) -> Dict:
-    """
-    Runs Stage 3: MSM construction on provided trajectories.
-    Returns a dict with key result file paths.
-    """
-    run_dir = timestamp_dir(config.output_dir)
+def _create_run_directory(output_dir: str) -> Path:
+    """Create a new timestamped run directory under the given output path."""
+    return timestamp_dir(output_dir)
 
+
+def _perform_msm_analysis_with_tracking(config: MSMConfig, run_dir: Path):
+    """Run MSM analysis while tracking runtime and memory usage."""
     with RuntimeMemoryTracker() as tracker:
         msm = run_complete_msm_analysis(
             trajectory_files=config.trajectory_files,
@@ -60,26 +59,36 @@ def run_msm_experiment(config: MSMConfig) -> Dict:
             feature_type=config.feature_type,
             temperatures=config.temperatures,
         )
+    return msm, tracker
 
-    # Persist config and small summary
+
+def _persist_config_and_summary(config: MSMConfig, msm, run_dir: Path) -> Dict:
+    """Persist the configuration and a short summary to JSON files."""
     summary = {
         "n_states": int(msm.n_states),
         "analysis_dir": str(run_dir / "msm"),
     }
-    with open(run_dir / "config.json", "w") as f:
+    with open(run_dir / "config.json", "w", encoding="utf-8") as f:
         json.dump(asdict(config), f, indent=2)
-    with open(run_dir / "summary.json", "w") as f:
+    with open(run_dir / "summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
+    return summary
 
-    # Write standardized input description
-    input_desc = {"parameters": asdict(config), "description": "MSM analysis input"}
-    with open(run_dir / "input.json", "w") as f:
+
+def _write_input_description(config: MSMConfig, run_dir: Path) -> None:
+    """Write a standardized input description JSON for the run."""
+    input_desc = {
+        "parameters": asdict(config),
+        "description": "MSM analysis input",
+    }
+    with open(run_dir / "input.json", "w", encoding="utf-8") as f:
         json.dump(input_desc, f, indent=2)
 
-    # KPI benchmark JSON
-    # Flatten dtrajs if present to estimate coverage and count frames
+
+def _extract_dtrajs_and_frame_count(msm) -> tuple[list[int], int]:
+    """Flatten discrete trajectories if available and count total frames."""
     try:
-        dtrajs = []
+        dtrajs: list[int] = []
         total_frames = 0
         if hasattr(msm, "dtrajs") and msm.dtrajs:
             for arr in msm.dtrajs:
@@ -88,12 +97,17 @@ def run_msm_experiment(config: MSMConfig) -> Dict:
                     dtrajs.extend(seq)
                     total_frames += len(seq)
                 except Exception:
+                    # Ignore non-iterable or malformed arrays
                     pass
     except Exception:
         dtrajs = []
         total_frames = 0
+    return dtrajs, total_frames
 
-    kpis = default_kpi_metrics(
+
+def _build_kpis(dtrajs: list[int], msm, tracker) -> Dict:
+    """Compute core KPI metrics for the MSM analysis."""
+    return default_kpi_metrics(
         conformational_coverage=compute_conformational_coverage(
             dtrajs, getattr(msm, "n_states", None)
         ),
@@ -104,7 +118,10 @@ def run_msm_experiment(config: MSMConfig) -> Dict:
         runtime_seconds=getattr(tracker, "runtime_seconds", None),
         memory_mb=getattr(tracker, "max_rss_mb", None),
     )
-    # Enrich input with environment and MSM diagnostics
+
+
+def _compute_msm_diagnostics(msm) -> Dict:
+    """Compute diagnostic statistics from the MSM object."""
     spectral_gap = compute_spectral_gap(getattr(msm, "transition_matrix", None))
     stationary_entropy = compute_stationary_entropy(
         getattr(msm, "stationary_distribution", None)
@@ -119,9 +136,20 @@ def run_msm_experiment(config: MSMConfig) -> Dict:
     its_convergence_score = compute_its_convergence_score(
         getattr(msm, "implied_timescales", None)
     )
+    return {
+        "spectral_gap": spectral_gap,
+        "stationary_entropy": stationary_entropy,
+        "row_stochasticity_mad": row_stochasticity_mad,
+        "detailed_balance_mad": detailed_balance_mad,
+        "its_convergence_score": its_convergence_score,
+    }
 
-    # CK test (factor 2): compare T^2 vs empirical T at 2*lag
-    ck_mse_factor2 = None
+
+def _compute_ck_test_mse(msm) -> float | None:
+    """
+    Compute CK test MSE at factor 2 by comparing T^2 with the empirical
+    transition matrix at 2*lag.
+    """
     try:
         import numpy as np
 
@@ -136,11 +164,9 @@ def run_msm_experiment(config: MSMConfig) -> Dict:
             and isinstance(lag_local, int)
             and n_states_local > 0
         ):
-            # Theoretical T^2
-            T = np.asarray(T, dtype=float)
-            T2_theory = T @ T
+            T_array = np.asarray(T, dtype=float)
+            T2_theory = T_array @ T_array
 
-            # Empirical T at 2*lag
             lag2 = 2 * int(lag_local)
             counts = np.zeros((n_states_local, n_states_local), dtype=float)
             for arr in dtrajs_local:
@@ -157,25 +183,33 @@ def run_msm_experiment(config: MSMConfig) -> Dict:
             row_sums[row_sums == 0] = 1.0
             T2_emp = counts / row_sums[:, None]
 
-            # MSE between T^2 and T_{2tau}
             diff = T2_theory - T2_emp
-            ck_mse_factor2 = float(np.mean(diff * diff))
+            return float(np.mean(diff * diff))
     except Exception:
-        ck_mse_factor2 = None
+        return None
+    return None
 
-    enriched_input = {
+
+def _build_enriched_input(
+    config: MSMConfig,
+    msm,
+    tracker,
+    total_frames: int,
+    diagnostics: Dict,
+    ck_mse_factor2: float | None,
+) -> Dict:
+    """Build enriched input metadata that accompanies the benchmark record."""
+    return {
         **asdict(config),
         **get_environment_info(),
         "n_states": int(msm.n_states),
-        "spectral_gap": spectral_gap,
-        "stationary_entropy": stationary_entropy,
-        "row_stochasticity_mad": row_stochasticity_mad,
-        "detailed_balance_mad": detailed_balance_mad,
-        "its_convergence_score": its_convergence_score,
+        "spectral_gap": diagnostics["spectral_gap"],
+        "stationary_entropy": diagnostics["stationary_entropy"],
+        "row_stochasticity_mad": diagnostics["row_stochasticity_mad"],
+        "detailed_balance_mad": diagnostics["detailed_balance_mad"],
+        "its_convergence_score": diagnostics["its_convergence_score"],
         "ck_mse_factor2": ck_mse_factor2,
-        # MSM-specific: frames analyzed
         "num_frames": int(total_frames),
-        # Not applicable fields
         "frames_per_second": compute_frames_per_second(
             int(total_frames) if isinstance(total_frames, int) else None,
             getattr(tracker, "runtime_seconds", None),
@@ -186,9 +220,14 @@ def run_msm_experiment(config: MSMConfig) -> Dict:
         "seed": None,
     }
 
+
+def _write_benchmark_json(
+    run_dir: Path, experiment_id: str, enriched_input: Dict, kpis: Dict
+) -> None:
+    """Create and write the benchmark record JSON file."""
     record = build_benchmark_record(
         algorithm="msm",
-        experiment_id=run_dir.name,
+        experiment_id=experiment_id,
         input_parameters=enriched_input,
         kpi_metrics=kpis,
         notes="MSM analysis run",
@@ -196,8 +235,11 @@ def run_msm_experiment(config: MSMConfig) -> Dict:
     )
     write_benchmark_json(run_dir, record)
 
-    # Baseline and trend at MSM root
-    root_dir = Path(config.output_dir)
+
+def _update_baseline_and_trend(
+    root_dir: Path, enriched_input: Dict, kpis: Dict
+) -> None:
+    """Update baseline and trend artifacts at the MSM root directory."""
     baseline_object = build_msm_baseline_object(
         input_parameters=enriched_input,
         results=kpis,
@@ -205,7 +247,9 @@ def run_msm_experiment(config: MSMConfig) -> Dict:
     initialize_baseline_if_missing(root_dir, baseline_object)
     update_trend(root_dir, baseline_object)
 
-    # Comparison with previous trend entry
+
+def _compare_with_previous_trend_entry(root_dir: Path, run_dir: Path) -> None:
+    """Compare the latest trend entry with the previous one and persist diff."""
     try:
         trend_path = root_dir / "trend.json"
         if trend_path.exists():
@@ -218,7 +262,48 @@ def run_msm_experiment(config: MSMConfig) -> Dict:
                 with open(run_dir / "comparison.json", "w", encoding="utf-8") as cf:
                     json.dump(comparison, cf, indent=2)
     except Exception:
+        # Comparison is best-effort; ignore failures
         pass
+
+
+def run_msm_experiment(config: MSMConfig) -> Dict:
+    """
+    Run Stage 3: MSM construction on provided trajectories and write outputs.
+
+    Returns a dictionary pointing to the run directory and summary file content.
+    """
+    run_dir = _create_run_directory(config.output_dir)
+
+    msm, tracker = _perform_msm_analysis_with_tracking(config, run_dir)
+
+    summary = _persist_config_and_summary(config, msm, run_dir)
+    _write_input_description(config, run_dir)
+
+    dtrajs, total_frames = _extract_dtrajs_and_frame_count(msm)
+    kpis = _build_kpis(dtrajs, msm, tracker)
+
+    diagnostics = _compute_msm_diagnostics(msm)
+    ck_mse_factor2 = _compute_ck_test_mse(msm)
+
+    enriched_input = _build_enriched_input(
+        config=config,
+        msm=msm,
+        tracker=tracker,
+        total_frames=total_frames,
+        diagnostics=diagnostics,
+        ck_mse_factor2=ck_mse_factor2,
+    )
+
+    _write_benchmark_json(
+        run_dir=run_dir,
+        experiment_id=run_dir.name,
+        enriched_input=enriched_input,
+        kpis=kpis,
+    )
+
+    root_dir = Path(config.output_dir)
+    _update_baseline_and_trend(root_dir, enriched_input, kpis)
+    _compare_with_previous_trend_entry(root_dir, run_dir)
 
     logger.info(f"MSM experiment complete: {run_dir}")
     return {"run_dir": str(run_dir), "summary": summary}

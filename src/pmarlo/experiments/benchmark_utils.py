@@ -17,53 +17,148 @@ from typing import Any, Dict, List, Optional
 
 
 def get_environment_info() -> Dict[str, Any]:
-    """Capture environment details for reproducibility."""
-    # CPU info via platform; psutil for more details if available
-    cpu_info = _platform.processor() or _platform.machine()
-    gpu_info: Optional[str] = None
-    try:
-        # Attempt to detect CUDA device via OpenMM if available
-        from openmm import Platform
+    """Capture environment details for reproducibility.
 
+    This function orchestrates the environment capture by delegating to
+    several small helpers, preserving the original behavior while improving
+    maintainability.
+    """
+
+    base_cpu = _get_base_cpu_string()
+    gpu_info = _get_gpu_info_via_openmm()
+    os_name = _get_os_name()
+    python_version = _get_python_version()
+    cpu_count = _get_cpu_count_via_psutil()
+    cpu_info = _format_cpu_info(base_cpu, cpu_count)
+    openmm_platform_name = _detect_best_openmm_platform()
+
+    return _build_environment_payload(
+        platform_name=openmm_platform_name,
+        cpu_info=cpu_info,
+        gpu_info=gpu_info,
+        os_name=os_name,
+        python_version=python_version,
+    )
+
+
+def _get_base_cpu_string() -> Optional[str]:
+    """Return a base CPU descriptor from platform, if available."""
+    try:
+        return _platform.processor() or _platform.machine() or None
+    except Exception:
+        return None
+
+
+def _get_gpu_info_via_openmm() -> Optional[str]:
+    """Return a short GPU descriptor using OpenMM if CUDA is available."""
+    platform = _import_openmm_platform()
+    if platform is None:
+        return None
+    try:
+        if _openmm_platform_by_name_exists(platform, "CUDA"):
+            return "CUDA available"
+    except Exception:
+        # Mirror original behavior: treat errors as unavailable
+        return None
+    return None
+
+
+def _get_os_name() -> str:
+    """Return a compact OS name, e.g., 'Linux 6.8.0'."""
+    try:
+        return f"{_platform.system()} {_platform.release()}"
+    except Exception:
+        return "unknown"
+
+
+def _get_python_version() -> str:
+    """Return 'major.minor.patch' of the running Python."""
+    try:
+        return sys.version.split()[0]
+    except Exception:
+        return "unknown"
+
+
+def _get_cpu_count_via_psutil() -> Optional[int]:
+    """Return logical CPU count via psutil if available."""
+    try:
+        import psutil  # type: ignore
+
+        count = psutil.cpu_count(logical=True)
+        return int(count) if isinstance(count, int) else None
+    except Exception:
+        return None
+
+
+def _format_cpu_info(
+    base_cpu: Optional[str], cpu_count: Optional[int]
+) -> Optional[str]:
+    """Combine base CPU string and count into a human-readable summary."""
+    if cpu_count is not None and cpu_count > 0:
+        if base_cpu:
+            return f"{base_cpu} ({cpu_count} CPUs)"
+        return f"{cpu_count} CPUs"
+    return base_cpu
+
+
+def _import_openmm_platform():
+    """Return OpenMM Platform class if importable, else None."""
+    try:
+        from openmm import Platform  # type: ignore
+
+        return Platform
+    except Exception:
+        return None
+
+
+def _preferred_openmm_platform_order() -> List[str]:
+    """Return the preferred probing order for OpenMM platforms."""
+    return ["CUDA", "CPU", "Reference", "OpenCL"]
+
+
+def _openmm_platform_by_name_exists(platform_cls: Any, name: str) -> bool:
+    """True if an OpenMM platform with the given name is available."""
+    try:
+        platform_cls.getPlatformByName(name)
+        return True
+    except Exception:
+        return False
+
+
+def _first_available_openmm_platform(
+    platform_cls: Any, order: List[str]
+) -> Optional[str]:
+    """Return the first available platform name, respecting the provided order."""
+    for name in order:
         try:
-            Platform.getPlatformByName("CUDA")
-            gpu_info = "CUDA available"
+            if _openmm_platform_by_name_exists(platform_cls, name):
+                return name
         except Exception:
-            gpu_info = None
-    except Exception:
-        gpu_info = None
+            # Continue probing on any unexpected error
+            continue
+    return None
 
-    # OS and Python version
-    os_name = f"{_platform.system()} {_platform.release()}"
-    python_version = sys.version.split()[0]
 
-    # Optional psutil memory and cpu details
-    try:
-        import psutil
+def _detect_best_openmm_platform() -> Optional[str]:
+    """Detect the most suitable OpenMM platform name, or None if unavailable."""
+    platform_cls = _import_openmm_platform()
+    if platform_cls is None:
+        return None
+    order = _preferred_openmm_platform_order()
+    return _first_available_openmm_platform(platform_cls, order)
 
-        cpu_count = psutil.cpu_count(logical=True)
-        cpu_info = f"{cpu_info} ({cpu_count} CPUs)" if cpu_info else f"{cpu_count} CPUs"
-    except Exception:
-        pass
 
-    # OpenMM platform (best-effort)
-    openmm_platform_name: Optional[str] = None
-    try:
-        from openmm import Platform
-
-        # Prefer Reference/CPU/CUDA availability order is environment-dependent
-        for name in ("CUDA", "CPU", "Reference", "OpenCL"):
-            try:
-                Platform.getPlatformByName(name)
-                openmm_platform_name = name
-                break
-            except Exception:
-                continue
-    except Exception:
-        openmm_platform_name = None
-
+def _build_environment_payload(
+    *,
+    platform_name: Optional[str],
+    cpu_info: Optional[str],
+    gpu_info: Optional[str],
+    os_name: str,
+    python_version: str,
+) -> Dict[str, Any]:
+    """Assemble the environment payload with sane fallbacks."""
     return {
-        "platform": openmm_platform_name or "unknown",
+        "platform": platform_name or "unknown",
         "cpu_info": cpu_info or "unknown",
         "gpu_info": gpu_info,
         "os": os_name,

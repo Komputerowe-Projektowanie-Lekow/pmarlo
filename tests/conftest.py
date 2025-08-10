@@ -7,6 +7,7 @@ Pytest configuration and fixtures for PMARLO tests.
 
 import shutil
 import tempfile
+from importlib.util import find_spec
 from pathlib import Path
 
 import pytest
@@ -55,9 +56,4 @@ def temp_output_dir():
 @pytest.fixture(scope="session")
 def skip_if_no_openmm():
     """Skip tests if OpenMM is not available."""
-    try:
-        import openmm
-
-        return False
-    except ImportError:
-        return True
+    return find_spec("openmm") is None

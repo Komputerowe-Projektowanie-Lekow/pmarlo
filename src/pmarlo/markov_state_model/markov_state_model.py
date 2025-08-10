@@ -25,8 +25,7 @@ import mdtraj as md
 import numpy as np
 import pandas as pd
 from scipy import constants
-from scipy.constants import Boltzmann as kB
-from scipy.sparse import csc_matrix, issparse, load_npz, save_npz
+from scipy.sparse import csc_matrix, issparse, save_npz
 from sklearn.cluster import MiniBatchKMeans
 
 logger = logging.getLogger(__name__)
@@ -136,72 +135,100 @@ class EnhancedMSM:
         Compute features from trajectory data.
 
         Args:
-            feature_type: Type of features to compute ('phi_psi', 'distances', 'contacts')
+            feature_type: Type of features to compute
+                ('phi_psi', 'distances', 'contacts')
             n_features: Number of features to compute (auto if None)
         """
+        self._log_compute_features_start(feature_type)
+        all_features: List[np.ndarray] = []
+        for traj in self.trajectories:
+            traj_features = self._compute_features_for_traj(
+                traj, feature_type, n_features
+            )
+            all_features.append(traj_features)
+        self.features = self._combine_all_features(all_features)
+        self._log_features_shape()
+
+    # ---------------- Feature computation helper methods ----------------
+
+    def _log_compute_features_start(self, feature_type: str) -> None:
         logger.info(f"Computing {feature_type} features...")
 
-        all_features = []
+    def _compute_features_for_traj(
+        self, traj: md.Trajectory, feature_type: str, n_features: Optional[int]
+    ) -> np.ndarray:
+        if feature_type == "phi_psi":
+            return self._compute_phi_psi_features(traj)
+        if feature_type == "distances":
+            return self._compute_distance_features(traj, n_features)
+        if feature_type == "contacts":
+            return self._compute_contact_features(traj)
+        raise ValueError(f"Unknown feature type: {feature_type}")
 
-        for traj in self.trajectories:
-            if feature_type == "phi_psi":
-                phi_angles, _ = md.compute_phi(traj)
-                psi_angles, _ = md.compute_psi(traj)
+    def _compute_phi_psi_features(self, traj: md.Trajectory) -> np.ndarray:
+        phi_angles, _ = md.compute_phi(traj)
+        psi_angles, _ = md.compute_psi(traj)
+        features: List[np.ndarray] = []
+        self._maybe_extend_with_trig(features, phi_angles)
+        self._maybe_extend_with_trig(features, psi_angles)
+        if features:
+            return np.hstack(features)
+        logger.warning("No dihedral angles found, using Cartesian coordinates")
+        return self._fallback_cartesian_features(traj)
 
-                # Convert to cosine/sine representation for periodicity
-                features = []
-                if phi_angles.shape[1] > 0:
-                    features.extend([np.cos(phi_angles), np.sin(phi_angles)])
-                if psi_angles.shape[1] > 0:
-                    features.extend([np.cos(psi_angles), np.sin(psi_angles)])
+    def _maybe_extend_with_trig(
+        self, features: List[np.ndarray], angles: np.ndarray
+    ) -> None:
+        if angles.shape[1] > 0:
+            features.extend([np.cos(angles), np.sin(angles)])
 
-                if features:
-                    traj_features = np.hstack(features)
-                else:
-                    logger.warning(
-                        "No dihedral angles found, using Cartesian coordinates"
-                    )
-                    traj_features = traj.xyz.reshape(traj.n_frames, -1)
+    def _fallback_cartesian_features(self, traj: md.Trajectory) -> np.ndarray:
+        return traj.xyz.reshape(traj.n_frames, -1)
 
-            elif feature_type == "distances":
-                # Compute all Cα-Cα distances
-                ca_indices = traj.topology.select("name CA")
-                if len(ca_indices) < 2:
-                    raise ValueError("Insufficient Cα atoms for distance features")
+    def _compute_distance_features(
+        self, traj: md.Trajectory, n_features: Optional[int]
+    ) -> np.ndarray:
+        ca_indices = traj.topology.select("name CA")
+        self._validate_distance_atoms(ca_indices)
+        n_pairs = self._determine_num_pairs(ca_indices, n_features)
+        pairs = self._select_distance_pairs(ca_indices, n_pairs)
+        return md.compute_distances(traj, pairs)
 
-                # Select pairs (every 3rd residue to reduce dimensionality)
-                if n_features:
-                    n_pairs = min(
-                        n_features, len(ca_indices) * (len(ca_indices) - 1) // 2
-                    )
-                else:
-                    n_pairs = min(200, len(ca_indices) * (len(ca_indices) - 1) // 2)
+    def _validate_distance_atoms(self, ca_indices: np.ndarray) -> None:
+        if len(ca_indices) < 2:
+            raise ValueError("Insufficient Cα atoms for distance features")
 
-                pairs = []
-                for i in range(0, len(ca_indices), 3):
-                    for j in range(i + 3, len(ca_indices), 3):
-                        pairs.append([ca_indices[i], ca_indices[j]])
-                        if len(pairs) >= n_pairs:
-                            break
-                    if len(pairs) >= n_pairs:
-                        break
+    def _determine_num_pairs(
+        self, ca_indices: np.ndarray, n_features: Optional[int]
+    ) -> int:
+        total_pairs = len(ca_indices) * (len(ca_indices) - 1) // 2
+        if n_features:
+            return min(n_features, total_pairs)
+        return min(200, total_pairs)
 
-                traj_features = md.compute_distances(traj, pairs)
+    def _select_distance_pairs(
+        self, ca_indices: np.ndarray, n_pairs: int
+    ) -> List[List[int]]:
+        pairs: List[List[int]] = []
+        for i in range(0, len(ca_indices), 3):
+            for j in range(i + 3, len(ca_indices), 3):
+                pairs.append([int(ca_indices[i]), int(ca_indices[j])])
+                if len(pairs) >= n_pairs:
+                    break
+            if len(pairs) >= n_pairs:
+                break
+        return pairs
 
-            elif feature_type == "contacts":
-                # Compute native contacts
-                ca_indices = traj.topology.select("name CA")
-                contacts, pairs = md.compute_contacts(traj, contacts="all", scheme="ca")
-                traj_features = contacts
+    def _compute_contact_features(self, traj: md.Trajectory) -> np.ndarray:
+        contacts, _pairs = md.compute_contacts(traj, contacts="all", scheme="ca")
+        return contacts
 
-            else:
-                raise ValueError(f"Unknown feature type: {feature_type}")
+    def _combine_all_features(self, feature_blocks: List[np.ndarray]) -> np.ndarray:
+        return np.vstack(feature_blocks)
 
-            all_features.append(traj_features)
-
-        # Combine all features
-        self.features = np.vstack(all_features)
-        logger.info(f"Features computed: {self.features.shape}")
+    def _log_features_shape(self) -> None:
+        if self.features is not None:
+            logger.info(f"Features computed: {self.features.shape}")
 
     def cluster_features(self, n_clusters: int = 100, algorithm: str = "kmeans"):
         """
@@ -396,7 +423,10 @@ class EnhancedMSM:
         self.free_energies -= np.min(self.free_energies)
 
         logger.info(
-            f"Free energies computed (range: 0 - {np.max(self.free_energies):.2f} kJ/mol)"
+            (
+                "Free energies computed (range: 0 - "
+                f"{np.max(self.free_energies):.2f} kJ/mol)"
+            )
         )
 
     def compute_implied_timescales(
@@ -462,7 +492,7 @@ class EnhancedMSM:
         cv2_name: str = "psi",
         bins: int = 50,
         temperature: float = 300.0,
-    ) -> Dict[str, np.ndarray]:
+    ) -> Dict[str, Any]:
         """
         Generate 2D free energy surface from MSM data.
 
@@ -476,122 +506,164 @@ class EnhancedMSM:
             Dictionary containing FES data
         """
         logger.info(f"Generating free energy surface: {cv1_name} vs {cv2_name}")
+        self._validate_fes_prerequisites()
+        cv1_data, cv2_data = self._extract_collective_variables(cv1_name, cv2_name)
+        frame_weights_array = self._map_stationary_to_frame_weights()
+        total_frames, cv_points = self._log_data_cardinality(
+            cv1_data, frame_weights_array
+        )
+        bins = self._maybe_adjust_bins_for_sparsity(bins, total_frames)
+        cv1_data, cv2_data, frame_weights_array = self._align_data_lengths(
+            cv1_data, cv2_data, frame_weights_array
+        )
+        H, xedges, yedges = self._compute_weighted_histogram(
+            cv1_data, cv2_data, frame_weights_array, bins
+        )
+        F = self._histogram_to_free_energy(H, temperature)
+        self._log_fes_statistics(F, H)
+        self._store_fes_result(F, xedges, yedges, cv1_name, cv2_name, temperature)
+        logger.info("Free energy surface generated")
+        assert self.fes_data is not None
+        return self.fes_data
 
+    # ---------------- FES helper methods (split for C901) ----------------
+
+    def _validate_fes_prerequisites(self) -> None:
         if self.features is None or self.stationary_distribution is None:
             raise ValueError("Features and MSM must be computed first")
 
-        # Map features to collective variables
-        cv1_data, cv2_data = self._extract_collective_variables(cv1_name, cv2_name)
-
-        # Map stationary distribution to frames
-        frame_weights = []
+    def _map_stationary_to_frame_weights(self) -> np.ndarray:
+        frame_weights: list[float] = []
+        station = self.stationary_distribution
+        if station is None:
+            raise ValueError("Stationary distribution not available")
         for dtraj in self.dtrajs:
             for state in dtraj:
-                frame_weights.append(self.stationary_distribution[state])
+                frame_weights.append(float(station[state]))
+        return np.array(frame_weights)
 
-        frame_weights_array = np.array(
-            frame_weights
-        )  # Fix: Use different name to avoid mypy confusion
-
-        # Validate data sufficiency for meaningful analysis
-        total_frames = len(frame_weights_array)  # Fix: Use the numpy array
-        cv_points = len(cv1_data)
-
+    def _log_data_cardinality(
+        self, cv1_data: np.ndarray, frame_weights_array: np.ndarray
+    ) -> tuple[int, int]:
+        total_frames = int(len(frame_weights_array))
+        cv_points = int(len(cv1_data))
         logger.info(
-            f"MSM Analysis data: {cv_points} CV points, {total_frames} trajectory frames"
+            (
+                "MSM Analysis data: "
+                f"{cv_points} CV points, {total_frames} trajectory frames"
+            )
         )
+        return total_frames, cv_points
 
-        # Check if we have sufficient data for meaningful free energy surface
-        min_frames_required = (
-            bins // 4
-        )  # At least bins/4 frames for meaningful histogram
+    def _maybe_adjust_bins_for_sparsity(self, bins: int, total_frames: int) -> int:
+        min_frames_required = bins // 4
         if total_frames < min_frames_required:
             logger.warning(
-                f"Insufficient data for {bins}x{bins} FES: {total_frames} frames < {min_frames_required} required"
+                (
+                    f"Insufficient data for {bins}x{bins} FES: "
+                    f"{total_frames} frames < {min_frames_required} required"
+                )
             )
             logger.info(
-                f"Reducing bins from {bins} to {max(10, total_frames // 2)} for sparse data"
+                (
+                    "Reducing bins from "
+                    f"{bins} to {max(10, total_frames // 2)} for sparse data"
+                )
             )
-            bins = max(10, total_frames // 2)
+            return max(10, total_frames // 2)
+        return bins
 
-        # Ensure weights and data arrays have the same length
-        min_length = min(
-            len(cv1_data), len(cv2_data), len(frame_weights_array)
-        )  # Fix: Use numpy array
-        if len(cv1_data) != len(frame_weights_array):  # Fix: Use numpy array
+    def _align_data_lengths(
+        self,
+        cv1_data: np.ndarray,
+        cv2_data: np.ndarray,
+        frame_weights_array: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        min_length = min(len(cv1_data), len(cv2_data), len(frame_weights_array))
+        if len(cv1_data) != len(frame_weights_array):
             logger.warning(
-                f"Length mismatch: CV data ({len(cv1_data)}) vs weights ({len(frame_weights_array)}). "  # Fix: Use numpy array
-                f"Truncating to {min_length} points."
+                (
+                    f"Length mismatch: CV data ({len(cv1_data)}) vs weights "
+                    f"({len(frame_weights_array)}). Truncating to {min_length} "
+                    "points."
+                )
             )
             cv1_data = cv1_data[:min_length]
             cv2_data = cv2_data[:min_length]
-            frame_weights_array = frame_weights_array[
-                :min_length
-            ]  # Fix: Use numpy array
+            frame_weights_array = frame_weights_array[:min_length]
+        return cv1_data, cv2_data, frame_weights_array
 
-        # Create 2D histogram weighted by stationary probabilities
+    def _compute_weighted_histogram(
+        self,
+        cv1_data: np.ndarray,
+        cv2_data: np.ndarray,
+        frame_weights_array: np.ndarray,
+        bins: int,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         try:
             H, xedges, yedges = np.histogram2d(
-                cv1_data,
-                cv2_data,
-                bins=bins,
-                weights=frame_weights_array,
-                density=True,
+                cv1_data, cv2_data, bins=bins, weights=frame_weights_array, density=True
             )
-
-            # Check for sufficient non-zero bins
-            non_zero_bins = np.sum(H > 0)
+            non_zero_bins = int(np.sum(H > 0))
             logger.info(
-                f"Histogram: {non_zero_bins} non-zero bins out of {bins*bins} total"
+                (
+                    "Histogram: "
+                    f"{non_zero_bins} non-zero bins out of {bins*bins} total"
+                )
             )
-
             if non_zero_bins < 3:
                 logger.warning("Very sparse histogram - results may not be meaningful")
-
+            return H, xedges, yedges
         except Exception as e:
             logger.error(f"Histogram generation failed: {e}")
             raise ValueError(f"Could not generate histogram for FES: {e}")
 
-        # Convert to free energy
-        kT = constants.k * temperature * constants.Avogadro / 1000.0  # kJ/mol
-
-        # Handle sparse histograms more carefully
-        # Only convert non-zero bins to free energy
-        F = np.full_like(H, np.inf)  # Initialize with inf
-        mask = H > 1e-12  # Only bins with reasonable probability
-
-        if np.sum(mask) == 0:
+    def _histogram_to_free_energy(
+        self, H: np.ndarray, temperature: float
+    ) -> np.ndarray:
+        kT = constants.k * temperature * constants.Avogadro / 1000.0
+        F = np.full_like(H, np.inf)
+        mask = H > 1e-12
+        if int(np.sum(mask)) == 0:
             logger.error(
-                "No populated bins in histogram - cannot generate meaningful FES"
+                ("No populated bins in histogram - cannot generate " "meaningful FES")
             )
             raise ValueError(
                 "Histogram too sparse for free energy calculation. "
                 "Try: 1) Longer simulation, 2) Fewer bins, 3) Different CVs"
             )
-
-        # Calculate free energy only for populated bins
         F[mask] = -kT * np.log(H[mask])
-
-        # Set relative to minimum (only consider finite values)
         finite_mask = np.isfinite(F)
-        if np.sum(finite_mask) == 0:
+        if int(np.sum(finite_mask)) == 0:
             logger.error("No finite free energy values - calculation failed")
             raise ValueError(
                 "All free energy values are infinite - histogram too sparse"
             )
-
-        F_min = np.min(F[finite_mask])
+        F_min = float(np.min(F[finite_mask]))
         F[finite_mask] -= F_min
+        return F
 
-        # Log statistics about the FES
-        n_finite = np.sum(finite_mask)
-        n_total = H.size
+    def _log_fes_statistics(self, F: np.ndarray, H: np.ndarray) -> None:
+        n_finite = int(np.sum(np.isfinite(F)))
+        n_total = int(H.size)
+        F_min = float(np.min(F[np.isfinite(F)]))
+        F_max = float(np.max(F[np.isfinite(F)]))
         logger.info(
-            f"Free energy surface: {n_finite}/{n_total} finite bins, "
-            f"range: {F_min:.2f} to {np.max(F[finite_mask]):.2f} kJ/mol"
+            (
+                f"Free energy surface: {n_finite}/{n_total} finite bins, "
+                f"range: {F_min:.2f} to {F_max:.2f} kJ/mol"
+            )
         )
 
-        # Store FES data - Fix: Direct assignment to dict
+    def _store_fes_result(
+        self,
+        F: np.ndarray,
+        xedges: np.ndarray,
+        yedges: np.ndarray,
+        cv1_name: str,
+        cv2_name: str,
+        temperature: float,
+    ) -> None:
         self.fes_data = {
             "free_energy": F,
             "xedges": xedges,
@@ -600,9 +672,6 @@ class EnhancedMSM:
             "cv2_name": cv2_name,
             "temperature": temperature,
         }
-
-        logger.info("Free energy surface generated")
-        return self.fes_data
 
     def _extract_collective_variables(
         self, cv1_name: str, cv2_name: str
@@ -657,12 +726,30 @@ class EnhancedMSM:
     def create_state_table(self) -> pd.DataFrame:
         """Create comprehensive state summary table."""
         logger.info("Creating state summary table...")
+        self._validate_state_table_prerequisites()
+        state_data = self._build_basic_state_info()
+        frame_counts, total_frames = self._count_frames_per_state()
+        state_data["frame_count"] = frame_counts.astype(int)
+        state_data["frame_percentage"] = 100 * frame_counts / max(total_frames, 1)
+        representative_frames, centroid_features = self._find_representatives()
+        rep_traj_array, rep_frame_array = self._representative_arrays(
+            representative_frames
+        )
+        state_data["representative_traj"] = rep_traj_array
+        state_data["representative_frame"] = rep_frame_array
+        self._attach_cluster_centers(state_data)
+        self.state_table = pd.DataFrame(state_data)
+        logger.info(f"State table created with {len(self.state_table)} states")
+        return self.state_table
 
+    # -------------- State table helper methods (split for C901) --------------
+
+    def _validate_state_table_prerequisites(self) -> None:
         if self.stationary_distribution is None:
             raise ValueError("MSM must be built before creating state table")
 
-        # Basic state information
-        state_data = {
+    def _build_basic_state_info(self) -> Dict[str, Any]:
+        return {
             "state_id": range(self.n_states),
             "population": self.stationary_distribution,
             "free_energy_kJ_mol": (
@@ -674,70 +761,57 @@ class EnhancedMSM:
                 self.free_energies * 0.239006
                 if self.free_energies is not None
                 else np.zeros(self.n_states)
-            ),  # Convert kJ/mol to kcal/mol
+            ),
         }
 
-        # Count frames per state
+    def _count_frames_per_state(self) -> tuple[np.ndarray, int]:
         frame_counts = np.zeros(self.n_states)
         total_frames = 0
         for dtraj in self.dtrajs:
             for state in dtraj:
                 frame_counts[state] += 1
                 total_frames += 1
+        return frame_counts, total_frames
 
-        state_data["frame_count"] = frame_counts.astype(int)
-        state_data["frame_percentage"] = 100 * frame_counts / total_frames
-
-        # Find representative frames (centroid of each state)
-        representative_frames = []
-        centroid_features = []
-
+    def _find_representatives(
+        self,
+    ) -> tuple[list[tuple[int, int]], list[Optional[np.ndarray]]]:
+        representative_frames: list[tuple[int, int]] = []
+        centroid_features: list[Optional[np.ndarray]] = []
         for state in range(self.n_states):
-            # Find all frames in this state
-            state_frames = []
-            state_features = []
-
+            state_frames: list[tuple[int, int]] = []
+            state_features: list[np.ndarray] = []
             frame_idx = 0
             for traj_idx, dtraj in enumerate(self.dtrajs):
-                for local_frame, assigned_state in enumerate(dtraj):
+                for _local_frame, assigned_state in enumerate(dtraj):
                     if assigned_state == state:
-                        state_frames.append((traj_idx, local_frame))
+                        state_frames.append((traj_idx, _local_frame))
                         if self.features is not None:
                             state_features.append(self.features[frame_idx])
                     frame_idx += 1
-
             if state_features:
-                # Find centroid frame
                 state_features_array = np.array(state_features)
                 centroid = np.mean(state_features_array, axis=0)
-
-                # Find closest frame to centroid
                 distances = np.linalg.norm(state_features_array - centroid, axis=1)
-                closest_idx = np.argmin(distances)
+                closest_idx = int(np.argmin(distances))
                 representative_frames.append(state_frames[closest_idx])
                 centroid_features.append(centroid)
             else:
-                representative_frames.append((-1, -1))  # No frames in this state
+                representative_frames.append((-1, -1))
                 centroid_features.append(None)
+        return representative_frames, centroid_features
 
-        # Convert representative frame data to numpy arrays
+    def _representative_arrays(
+        self, representative_frames: list[tuple[int, int]]
+    ) -> tuple[np.ndarray, np.ndarray]:
         rep_traj_array = np.array([int(rf[0]) for rf in representative_frames])
         rep_frame_array = np.array([int(rf[1]) for rf in representative_frames])
+        return rep_traj_array, rep_frame_array
 
-        state_data["representative_traj"] = rep_traj_array
-        state_data["representative_frame"] = rep_frame_array
-
-        # Add cluster center information if available
+    def _attach_cluster_centers(self, state_data: Dict[str, Any]) -> None:
         if self.cluster_centers is not None:
             for i, center in enumerate(self.cluster_centers.T):
                 state_data[f"cluster_center_{i}"] = center
-
-        self.state_table = pd.DataFrame(
-            state_data
-        )  # Fix: Direct assignment to DataFrame
-
-        logger.info(f"State table created with {len(self.state_table)} states")
-        return self.state_table
 
     def _create_matrix_intelligent(
         self, shape: Tuple[int, int], use_sparse: Optional[bool] = None
@@ -828,11 +902,17 @@ class EnhancedMSM:
                         self.output_dir / f"{prefix}_{filename_base}.npz", sparse_matrix
                     )
                     logger.info(
-                        f"Converted {filename_base} to sparse format (sparsity: {(1-sparsity)*100:.1f}% zeros)"
+                        (
+                            f"Converted {filename_base} to sparse format (sparsity: "
+                            f"{(1-sparsity)*100:.1f}% zeros)"
+                        )
                     )
                 else:
                     logger.debug(
-                        f"Keeping {filename_base} as dense (sparsity: {(1-sparsity)*100:.1f}% zeros)"
+                        (
+                            f"Keeping {filename_base} as dense (sparsity: "
+                            f"{(1-sparsity)*100:.1f}% zeros)"
+                        )
                     )
 
     def save_analysis_results(self, prefix: str = "msm_analysis"):
@@ -1081,72 +1161,84 @@ def run_complete_msm_analysis(
     Returns:
         EnhancedMSM object with completed analysis
     """
-    # Initialize analyzer
-    msm = EnhancedMSM(
+    msm = _initialize_msm_analyzer(
+        trajectory_files, topology_file, temperatures, output_dir
+    )
+    _load_and_prepare(msm, feature_type, n_clusters)
+    _build_and_validate_msm(msm, temperatures, lag_time)
+    fes_success = _maybe_generate_fes(msm, feature_type)
+    _finalize_results_and_plots(msm, fes_success)
+    logger.info("Complete MSM analysis finished")
+    return msm
+
+
+# ---------------- Pipeline helper functions (split for C901) ----------------
+
+
+def _initialize_msm_analyzer(
+    trajectory_files: Union[str, List[str]],
+    topology_file: str,
+    temperatures: Optional[List[float]],
+    output_dir: str,
+) -> EnhancedMSM:
+    return EnhancedMSM(
         trajectory_files=trajectory_files,
         topology_file=topology_file,
         temperatures=temperatures,
         output_dir=output_dir,
     )
 
-    # Load trajectories
-    msm.load_trajectories()
 
-    # Compute features and cluster
+def _load_and_prepare(msm: EnhancedMSM, feature_type: str, n_clusters: int) -> None:
+    msm.load_trajectories()
     msm.compute_features(feature_type=feature_type)
     msm.cluster_features(n_clusters=n_clusters)
 
-    # Build MSM
+
+def _build_and_validate_msm(
+    msm: EnhancedMSM, temperatures: Optional[List[float]], lag_time: int
+) -> None:
     method = "tram" if temperatures and len(temperatures) > 1 else "standard"
     msm.build_msm(lag_time=lag_time, method=method)
-
-    # Compute implied timescales
     msm.compute_implied_timescales()
 
-    # Generate free energy surface (with graceful handling for small datasets)
-    fes_success = False
+
+def _maybe_generate_fes(msm: EnhancedMSM, feature_type: str) -> bool:
+    success = False
     try:
         if feature_type == "phi_psi":
             msm.generate_free_energy_surface(cv1_name="phi", cv2_name="psi")
         else:
             msm.generate_free_energy_surface(cv1_name="CV1", cv2_name="CV2")
-        fes_success = True
-        logger.info("✓ Free energy surface generation completed")
+        success = True
+        logger.info("\u2713 Free energy surface generation completed")
     except ValueError as e:
-        logger.warning(f"⚠ Free energy surface generation failed: {e}")
+        logger.warning(f"\u26a0 Free energy surface generation failed: {e}")
         logger.info("Continuing with analysis without FES plots...")
+    return success
 
-    # Create state table
+
+def _finalize_results_and_plots(msm: EnhancedMSM, fes_success: bool) -> None:
     msm.create_state_table()
-
-    # Extract representative structures
     msm.extract_representative_structures()
-
-    # Save all results
     msm.save_analysis_results()
-
-    # Generate plots (skip FES plots if generation failed)
     if fes_success:
         try:
             msm.plot_free_energy_surface(save_file="free_energy_surface")
-            logger.info("✓ Free energy surface plot saved")
+            logger.info("\u2713 Free energy surface plot saved")
         except Exception as e:
-            logger.warning(f"⚠ Free energy surface plotting failed: {e}")
+            logger.warning(f"\u26a0 Free energy surface plotting failed: {e}")
     else:
-        logger.info("⚠ Skipping free energy surface plots due to insufficient data")
-
-    # Always try these plots as they don't depend on FES
+        logger.info(
+            "\u26a0 Skipping free energy surface plots due to insufficient data"
+        )
     try:
         msm.plot_implied_timescales(save_file="implied_timescales")
-        logger.info("✓ Implied timescales plot saved")
+        logger.info("\u2713 Implied timescales plot saved")
     except Exception as e:
-        logger.warning(f"⚠ Implied timescales plotting failed: {e}")
-
+        logger.warning(f"\u26a0 Implied timescales plotting failed: {e}")
     try:
         msm.plot_free_energy_profile(save_file="free_energy_profile")
-        logger.info("✓ Free energy profile plot saved")
+        logger.info("\u2713 Free energy profile plot saved")
     except Exception as e:
-        logger.warning(f"⚠ Free energy profile plotting failed: {e}")
-
-    logger.info("Complete MSM analysis finished")
-    return msm
+        logger.warning(f"\u26a0 Free energy profile plotting failed: {e}")

@@ -5,12 +5,14 @@
 Tests for the Pipeline class.
 """
 
-from pathlib import Path
+from importlib.util import find_spec
 
 import pytest
 
 from pmarlo.pipeline import LegacyPipeline, Pipeline, run_pmarlo
-from tests.conftest import skip_if_no_openmm
+
+# Evaluated by pytest.mark.skipif when using string condition
+skip_if_no_openmm = find_spec("openmm") is None
 
 
 class TestPipeline:
@@ -31,7 +33,7 @@ class TestPipeline:
         assert pipeline.temperatures == [300.0, 310.0]
         assert pipeline.steps == 100
         assert pipeline.n_states == 10
-        assert pipeline.use_replica_exchange == False
+        assert not pipeline.use_replica_exchange
 
     def test_pipeline_default_temperatures(self, test_pdb_file):
         """Test pipeline with default temperature settings."""
@@ -80,17 +82,16 @@ class TestPipeline:
     )
     def test_full_pipeline_run(self, test_pdb_file, temp_output_dir):
         """Test full pipeline execution (skipped by default)."""
-        pipeline = Pipeline(
-            pdb_file=str(test_pdb_file),
-            output_dir=str(temp_output_dir),
-            steps=10,  # Very short for testing
-            n_states=5,  # Few states for testing
-            use_replica_exchange=False,
-        )
-
         # This would require significant computational resources
-        # results = pipeline.run()
+        # results = Pipeline(
+        #     pdb_file=str(test_pdb_file),
+        #     output_dir=str(temp_output_dir),
+        #     steps=10,  # Very short for testing
+        #     n_states=5,  # Few states for testing
+        #     use_replica_exchange=False,
+        # ).run()
         # assert results['pipeline']['status'] == 'completed'
+        pass
 
 
 class TestLegacyPipeline:

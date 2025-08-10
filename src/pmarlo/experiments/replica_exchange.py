@@ -7,7 +7,6 @@ from typing import Dict, List, Optional
 from ..manager.checkpoint_manager import CheckpointManager
 from ..replica_exchange.replica_exchange import ReplicaExchange, setup_bias_variables
 from .benchmark_utils import (
-    build_baseline_object,
     build_remd_baseline_object,
     compute_threshold_comparison,
     get_environment_info,
@@ -52,7 +51,8 @@ def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
     cm = CheckpointManager(output_base_dir=str(run_dir), auto_continue=False)
     cm.setup_run_directory()
 
-    # Build temperatures if not provided: more replicas and better spacing for acceptance
+    # Build temperatures if not provided:
+    # prefer more replicas and better spacing for acceptance rates
     temps: Optional[List[float]]
     if config.temperatures is None:
         try:

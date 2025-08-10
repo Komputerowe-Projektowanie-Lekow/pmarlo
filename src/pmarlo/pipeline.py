@@ -10,7 +10,7 @@ simulation, and Markov state model analysis.
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -130,7 +130,7 @@ class Pipeline:
         # Create output directory
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        logger.info(f"PMARLO Pipeline initialized")
+        logger.info("PMARLO Pipeline initialized")
         logger.info(f"  PDB file: {self.pdb_file}")
         logger.info(f"  Output directory: {self.output_dir}")
         logger.info(f"  Temperatures: {self.temperatures}")
@@ -157,7 +157,9 @@ class Pipeline:
 
         properties = self.protein.get_properties()
         logger.info(
-            f"Protein prepared: {properties['num_atoms']} atoms, {properties['num_residues']} residues"
+            "Protein prepared: "
+            f"{properties['num_atoms']} atoms, "
+            f"{properties['num_residues']} residues"
         )
 
         return self.protein
@@ -218,7 +220,7 @@ class Pipeline:
         )
 
         logger.info(
-            f"Simulation setup for {self.steps} steps at {self.temperatures[0]}K"
+            "Simulation setup for " f"{self.steps} steps at {self.temperatures[0]}K"
         )
         return self.simulation
 
@@ -251,260 +253,270 @@ class Pipeline:
 
         results: Dict[str, Any] = {}
 
-        # Setup checkpoint manager run directory
-        if self.checkpoint_manager:
-            self.checkpoint_manager.setup_run_directory()
-            # Save pipeline configuration
-            config = {
-                "pdb_file": self.pdb_file,
-                "temperatures": self.temperatures,
-                "steps": self.steps,
-                "n_states": self.n_states,
-                "use_replica_exchange": self.use_replica_exchange,
-                "use_metadynamics": self.use_metadynamics,
-            }
-            self.checkpoint_manager.save_config(config)
+        self._ensure_checkpoint_dir()
+        self._save_pipeline_config()
 
         try:
-            # Stage 1: Protein preparation
-            if (
-                not self.checkpoint_manager
-                or not self.checkpoint_manager.is_step_completed("protein_preparation")
-            ):
-                if self.checkpoint_manager:
-                    self.checkpoint_manager.mark_step_started("protein_preparation")
-
-                protein = self.setup_protein()
-
-                if self.checkpoint_manager:
-                    self.checkpoint_manager.mark_step_completed(
-                        "protein_preparation",
-                        {
-                            "prepared_pdb": str(self.prepared_pdb),
-                            "properties": protein.get_properties(),
-                        },
-                    )
-            else:
-                logger.info("Protein preparation already completed, skipping...")
-                # Load prepared protein path from checkpoint
-                state = self.checkpoint_manager.load_state()
-                prepared_pdb_str = state.get(
-                    "prepared_pdb", str(self.output_dir / "prepared_protein.pdb")
-                )
-                self.prepared_pdb = Path(prepared_pdb_str)
-                protein = Protein(str(self.prepared_pdb))
-
+            protein = self._stage_protein()
             results["protein"] = {
                 "prepared_pdb": str(self.prepared_pdb),
                 "properties": protein.get_properties(),
             }
 
-            # Stage 2: Run simulations
             if self.use_replica_exchange:
-                step_name = "replica_exchange_simulation"
-                if (
-                    not self.checkpoint_manager
-                    or not self.checkpoint_manager.is_step_completed(step_name)
-                ):
-                    if self.checkpoint_manager:
-                        self.checkpoint_manager.mark_step_started(step_name)
-
-                    # Setup and run replica exchange
-                    remd = self.setup_replica_exchange()
-                    if remd is not None:
-                        trajectory_files = remd.run_simulation(self.steps)
-                    else:
-                        trajectory_files = {}
-
-                    if self.checkpoint_manager:
-                        self.checkpoint_manager.save_state(
-                            {
-                                "prepared_pdb": str(self.prepared_pdb),
-                                "trajectory_files": trajectory_files,
-                            }
-                        )
-                        self.checkpoint_manager.mark_step_completed(
-                            step_name, {"trajectory_files": trajectory_files}
-                        )
-                else:
-                    logger.info(
-                        "Replica exchange simulation already completed, loading results..."
-                    )
-                    state = self.checkpoint_manager.load_state()
-                    trajectory_files = state.get("trajectory_files", {})
-
-                # Use demultiplexed trajectory for MSM analysis
-                if isinstance(trajectory_files, dict) and "demuxed" in trajectory_files:
-                    self.trajectory_files = [trajectory_files["demuxed"]]
-                    analysis_temperatures = [self.temperatures[0]]
-                else:
-                    # Use all replica trajectories
-                    self.trajectory_files = (
-                        list(trajectory_files.values())
-                        if isinstance(trajectory_files, dict)
-                        else trajectory_files
-                    )
-                    analysis_temperatures = self.temperatures
-
+                trajectory_files = self._stage_replica_exchange_simulation()
+                analysis_temperatures = self._determine_analysis_temperatures(
+                    trajectory_files
+                )
                 results["replica_exchange"] = {
                     "trajectory_files": self.trajectory_files,
-                    "temperatures": [
-                        str(t) for t in self.temperatures
-                    ],  # Convert to strings
+                    "temperatures": [str(t) for t in self.temperatures],
                     "output_dir": str(self.output_dir / "replica_exchange"),
                 }
-
             else:
-                step_name = "simulation"
-                if (
-                    not self.checkpoint_manager
-                    or not self.checkpoint_manager.is_step_completed(step_name)
-                ):
-                    if self.checkpoint_manager:
-                        self.checkpoint_manager.mark_step_started(step_name)
-
-                    # Setup and run single simulation
-                    sim = self.setup_simulation()
-                    trajectory_file, states = sim.run_complete_simulation()
-                    self.trajectory_files = [trajectory_file]
-                    analysis_temperatures = [self.temperatures[0]]
-
-                    if self.checkpoint_manager:
-                        self.checkpoint_manager.save_state(
-                            {
-                                "prepared_pdb": str(self.prepared_pdb),
-                                "trajectory_file": trajectory_file,
-                                "states": states,
-                            }
-                        )
-                        self.checkpoint_manager.mark_step_completed(
-                            step_name,
-                            {"trajectory_file": trajectory_file, "states": states},
-                        )
-                else:
-                    logger.info("Simulation already completed, loading results...")
-                    state = self.checkpoint_manager.load_state()
-                    trajectory_file_from_state = state.get("trajectory_file")
-                    states_from_state = state.get("states")
-                    if trajectory_file_from_state is not None:
-                        trajectory_file = str(trajectory_file_from_state)
-                    else:
-                        trajectory_file = ""
-                    if states_from_state is not None:
-                        states = np.array(states_from_state)
-                    else:
-                        states = np.array([])
-                    self.trajectory_files = [trajectory_file]
-                    analysis_temperatures = [self.temperatures[0]]
-
+                trajectory_file, states = self._stage_single_simulation()
+                analysis_temperatures = [self.temperatures[0]]
                 results["simulation"] = {
                     "trajectory_file": trajectory_file,
                     "states": states.tolist() if len(states) > 0 else [],
                     "output_dir": str(self.output_dir / "simulation"),
                 }
 
-            # Stage 3: MSM Analysis
-            step_name = "msm_analysis"
-            if (
-                not self.checkpoint_manager
-                or not self.checkpoint_manager.is_step_completed(step_name)
-            ):
-                if self.checkpoint_manager:
-                    self.checkpoint_manager.mark_step_started(step_name)
+            msm_results = self._stage_msm_analysis(analysis_temperatures)
+            results["msm"] = {
+                "output_dir": str(self.output_dir / "msm_analysis"),
+                "n_states": str(self.n_states),
+                "results": msm_results,
+            }
 
-                msm = self.setup_markov_state_model()
+            self._finalize_success(results)
+            return results
+        except Exception as e:  # noqa: BLE001 - broad to record and checkpoint
+            return self._handle_run_exception(e, results)
 
-                # Run MSM analysis with collected trajectories
-                if hasattr(msm, "run_complete_analysis"):
-                    msm_results = msm.run_complete_analysis(
+    # ---- Helper methods to reduce complexity of run() ----
+
+    def _ensure_checkpoint_dir(self) -> None:
+        if self.checkpoint_manager:
+            self.checkpoint_manager.setup_run_directory()
+
+    def _save_pipeline_config(self) -> None:
+        if not self.checkpoint_manager:
+            return
+        config = {
+            "pdb_file": self.pdb_file,
+            "temperatures": self.temperatures,
+            "steps": self.steps,
+            "n_states": self.n_states,
+            "use_replica_exchange": self.use_replica_exchange,
+            "use_metadynamics": self.use_metadynamics,
+        }
+        self.checkpoint_manager.save_config(config)
+
+    def _stage_protein(self) -> Protein:
+        if (
+            not self.checkpoint_manager
+            or not self.checkpoint_manager.is_step_completed("protein_preparation")
+        ):
+            if self.checkpoint_manager:
+                self.checkpoint_manager.mark_step_started("protein_preparation")
+            protein = self.setup_protein()
+            if self.checkpoint_manager:
+                self.checkpoint_manager.mark_step_completed(
+                    "protein_preparation",
+                    {
+                        "prepared_pdb": str(self.prepared_pdb),
+                        "properties": protein.get_properties(),
+                    },
+                )
+            return protein
+        logger.info("Protein preparation already completed, skipping...")
+        state = self.checkpoint_manager.load_state() if self.checkpoint_manager else {}
+        prepared_pdb_str = state.get(
+            "prepared_pdb", str(self.output_dir / "prepared_protein.pdb")
+        )
+        self.prepared_pdb = Path(prepared_pdb_str)
+        return Protein(str(self.prepared_pdb))
+
+    def _stage_replica_exchange_simulation(self) -> Dict[str, Any] | List[str]:
+        step_name = "replica_exchange_simulation"
+        if (
+            not self.checkpoint_manager
+            or not self.checkpoint_manager.is_step_completed(step_name)
+        ):
+            if self.checkpoint_manager:
+                self.checkpoint_manager.mark_step_started(step_name)
+            remd = self.setup_replica_exchange()
+            trajectory_files: Dict[str, Any] | List[str]
+            if remd is not None:
+                # demux path or None is returned; downstream handles both dict/list
+                trajectory_files = remd.run_simulation(self.steps)
+            else:
+                trajectory_files = {}
+            if self.checkpoint_manager:
+                self.checkpoint_manager.save_state(
+                    {
+                        "prepared_pdb": str(self.prepared_pdb),
+                        "trajectory_files": trajectory_files,
+                    }
+                )
+                self.checkpoint_manager.mark_step_completed(
+                    step_name, {"trajectory_files": trajectory_files}
+                )
+        else:
+            logger.info(
+                "Replica exchange simulation " "already completed, loading results..."
+            )
+            state = (
+                self.checkpoint_manager.load_state() if self.checkpoint_manager else {}
+            )
+            from typing import cast
+
+            trajectory_files = cast(
+                Dict[str, Any] | List[str], state.get("trajectory_files", {})
+            )
+        return trajectory_files
+
+    def _determine_analysis_temperatures(
+        self, trajectory_files: Dict[str, Any] | List[str]
+    ) -> List[float]:
+        if isinstance(trajectory_files, dict) and "demuxed" in trajectory_files:
+            self.trajectory_files = [trajectory_files["demuxed"]]
+            return [self.temperatures[0]]
+        self.trajectory_files = (
+            list(trajectory_files.values())
+            if isinstance(trajectory_files, dict)
+            else trajectory_files
+        )
+        return self.temperatures
+
+    def _stage_single_simulation(self):
+        step_name = "simulation"
+        if (
+            not self.checkpoint_manager
+            or not self.checkpoint_manager.is_step_completed(step_name)
+        ):
+            if self.checkpoint_manager:
+                self.checkpoint_manager.mark_step_started(step_name)
+            sim = self.setup_simulation()
+            trajectory_file, states = sim.run_complete_simulation()
+            self.trajectory_files = [trajectory_file]
+            if self.checkpoint_manager:
+                self.checkpoint_manager.save_state(
+                    {
+                        "prepared_pdb": str(self.prepared_pdb),
+                        "trajectory_file": trajectory_file,
+                        "states": states,
+                    }
+                )
+                self.checkpoint_manager.mark_step_completed(
+                    step_name,
+                    {"trajectory_file": trajectory_file, "states": states},
+                )
+            return trajectory_file, states
+        logger.info("Simulation already completed, loading results...")
+        state = self.checkpoint_manager.load_state() if self.checkpoint_manager else {}
+        trajectory_file_from_state = state.get("trajectory_file")
+        states_from_state = state.get("states")
+        trajectory_file: str = (
+            str(trajectory_file_from_state)
+            if trajectory_file_from_state is not None
+            else ""
+        )
+        states = (
+            np.array(states_from_state)
+            if states_from_state is not None
+            else np.array([])
+        )
+        self.trajectory_files = [trajectory_file]
+        return trajectory_file, states
+
+    def _stage_msm_analysis(self, analysis_temperatures: List[float]) -> Dict[str, Any]:
+        step_name = "msm_analysis"
+        if (
+            not self.checkpoint_manager
+            or not self.checkpoint_manager.is_step_completed(step_name)
+        ):
+            if self.checkpoint_manager:
+                self.checkpoint_manager.mark_step_started(step_name)
+            msm = self.setup_markov_state_model()
+            # Ensure prepared PDB exists before analysis
+            if self.prepared_pdb is None:
+                raise RuntimeError("Prepared PDB not set before MSM analysis")
+            msm_results: Dict[str, Any]
+            if hasattr(msm, "run_complete_analysis"):
+                from typing import cast
+
+                msm_results = cast(
+                    Dict[str, Any],
+                    msm.run_complete_analysis(
                         trajectory_files=self.trajectory_files,
                         topology_file=str(self.prepared_pdb),
                         n_clusters=self.n_states,
                         temperatures=analysis_temperatures,
-                    )
-                else:
-                    # Fallback for basic analysis
-                    logger.warning("Using basic MSM analysis")
-                    msm_results = {"warning": "Basic analysis only"}
-
-                if self.checkpoint_manager:
-                    self.checkpoint_manager.mark_step_completed(
-                        step_name,
-                        {
-                            "n_clusters": str(self.n_states),
-                            "analysis_results": msm_results,
-                        },
-                    )
+                    ),
+                )
             else:
-                logger.info("MSM analysis already completed, loading results...")
-                checkpoint_data = None
-                for step in self.checkpoint_manager.life_data["completed_steps"]:
-                    if step["name"] == step_name:
-                        checkpoint_data = step["metadata"]
-                        break
-                msm_results = (
-                    checkpoint_data.get("analysis_results", {})
-                    if checkpoint_data
-                    else {}
-                )
-
-            results["msm"] = {
-                "output_dir": str(self.output_dir / "msm_analysis"),
-                "n_states": str(self.n_states),  # Convert to string
-                "results": msm_results,
-            }
-
-            # Final summary
-            results["pipeline"] = {
-                "status": "completed",
-                "output_dir": str(self.output_dir),
-                "use_replica_exchange": str(
-                    self.use_replica_exchange
-                ),  # Convert to string
-                "use_metadynamics": str(self.use_metadynamics),  # Convert to string
-                "steps": str(self.steps),  # Convert to string
-                "temperatures": [
-                    str(t) for t in self.temperatures
-                ],  # Convert to strings
-            }
-
-            # Mark pipeline as completed
+                logger.warning("Using basic MSM analysis")
+                msm_results = {"warning": "Basic analysis only"}
             if self.checkpoint_manager:
-                self.checkpoint_manager.life_data["status"] = "completed"
-                self.checkpoint_manager.save_life_data()
-
-            logger.info("=" * 60)
-            logger.info("PMARLO PIPELINE COMPLETED SUCCESSFULLY!")
-            logger.info(f"Results saved to: {self.output_dir}")
-            logger.info("=" * 60)
-
-            return results
-
-        except Exception as e:
-            logger.error(f"Pipeline failed: {e}")
-            import traceback
-
-            traceback.print_exc()
-
-            # Mark current step as failed
-            if self.checkpoint_manager:
-                current_stage = self.checkpoint_manager.life_data.get(
-                    "current_stage", "unknown"
+                self.checkpoint_manager.mark_step_completed(
+                    step_name,
+                    {
+                        "n_clusters": str(self.n_states),
+                        "analysis_results": msm_results,
+                    },
                 )
-                self.checkpoint_manager.mark_step_failed(current_stage, str(e))
+            return msm_results
+        logger.info("MSM analysis already completed, loading results...")
+        checkpoint_data: Optional[Dict[str, Any]] = None
+        if not self.checkpoint_manager:
+            return {}
+        for step in self.checkpoint_manager.life_data.get("completed_steps", []):
+            if step.get("name") == step_name:
+                checkpoint_data = step.get("metadata")
+                break
+        return checkpoint_data.get("analysis_results", {}) if checkpoint_data else {}
 
-            results["pipeline"] = {
-                "status": "failed",
-                "error": str(e),
-                "output_dir": str(self.output_dir),
-                "checkpoint_id": (
-                    self.checkpoint_manager.run_id
-                    if self.checkpoint_manager
-                    else str(None)
-                ),
-            }
+    def _finalize_success(self, results: Dict[str, Any]) -> None:
+        results["pipeline"] = {
+            "status": "completed",
+            "output_dir": str(self.output_dir),
+            "use_replica_exchange": str(self.use_replica_exchange),
+            "use_metadynamics": str(self.use_metadynamics),
+            "steps": str(self.steps),
+            "temperatures": [str(t) for t in self.temperatures],
+        }
+        if self.checkpoint_manager:
+            cm = self.checkpoint_manager
+            cm.life_data["status"] = "completed"
+            cm.save_life_data()
+        logger.info("=" * 60)
+        logger.info("PMARLO PIPELINE COMPLETED SUCCESSFULLY!")
+        logger.info(f"Results saved to: {self.output_dir}")
+        logger.info("=" * 60)
 
-            return results
+    def _handle_run_exception(
+        self, e: Exception, results: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        logger.error(f"Pipeline failed: {e}")
+        import traceback
+
+        traceback.print_exc()
+        if self.checkpoint_manager:
+            current_stage = self.checkpoint_manager.life_data.get(
+                "current_stage", "unknown"
+            )
+            self.checkpoint_manager.mark_step_failed(current_stage, str(e))
+        results["pipeline"] = {
+            "status": "failed",
+            "error": str(e),
+            "output_dir": str(self.output_dir),
+            "checkpoint_id": (
+                self.checkpoint_manager.run_id if self.checkpoint_manager else str(None)
+            ),
+        }
+        return results
 
     def get_components(self) -> Dict[str, Any]:
         """
@@ -620,76 +632,31 @@ class LegacyPipeline:
     ) -> Optional[Path]:
         """Run the legacy REMD + Enhanced MSM pipeline with checkpoint support."""
 
-        # Set up logging
-        logging.basicConfig(
-            level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-        )
-
-        if self.continue_run and self.run_id:
-            # Load existing run
-            try:
-                self.checkpoint_manager = CheckpointManager.load_existing_run(
-                    self.run_id, str(self.output_base_dir)
-                )
-                print(f"Resuming run {self.run_id}...")
-                self.checkpoint_manager.print_status()
-            except FileNotFoundError:
-                print(f"Error: No existing run found with ID {self.run_id}")
-                print(f"Looking in: {self.output_base_dir}")
-                from .manager.checkpoint_manager import list_runs
-
-                list_runs(str(self.output_base_dir))
-                return None
-        elif self.continue_run and not self.run_id:
-            # List available runs and ask user to specify
-            print("Error: --continue requires --id to specify which run to continue")
-            from .manager.checkpoint_manager import list_runs
-
-            list_runs(str(self.output_base_dir))
+        self._legacy_setup_logging()
+        cm = self._legacy_load_or_start_run()
+        if cm is None:
             return None
-        else:
-            # Start new run
-            self.checkpoint_manager = CheckpointManager(
-                self.run_id, str(self.output_base_dir)
-            )
-            self.checkpoint_manager.setup_run_directory()
-            print(f"Started new run with ID: {self.checkpoint_manager.run_id}")
+        self.checkpoint_manager = cm
 
-        # File paths
-        pdb_file = Path(self.pdb_file)
-        pdb_fixed_path = self.checkpoint_manager.run_dir / "inputs" / "prepared.pdb"
-        remd_output_dir = self.checkpoint_manager.run_dir / "trajectories"
-        msm_output_dir = self.checkpoint_manager.run_dir / "analysis"
+        (
+            pdb_file,
+            pdb_fixed_path,
+            remd_output_dir,
+            msm_output_dir,
+        ) = self._legacy_init_paths()
 
-        # Save configuration
-        config = {
-            "pdb_file": str(pdb_file),
-            "steps": steps,
-            "n_states": n_states,
-            "temperatures": [
-                300.0,
-                310.0,
-                320.0,
-            ],  # 3 replicas with small 10K gaps for high exchange rates
-            "use_metadynamics": True,
-            "created_at": self.checkpoint_manager.life_data["created"],
-        }
-        self.checkpoint_manager.save_config(config)
+        config = self._legacy_save_config(steps, n_states, pdb_file)
 
         try:
             print("=" * 60)
             print("LEGACY REPLICA EXCHANGE + ENHANCED MSM PIPELINE")
             print("=" * 60)
 
-            # Use checkpoint manager to determine what to run next
             while True:
                 next_step = self.checkpoint_manager.get_next_step()
-
                 if next_step is None:
                     print("\n🎉 All steps completed!")
                     break
-
-                # Clear failed status when retrying a step
                 if next_step in [
                     s.get("name")
                     for s in self.checkpoint_manager.life_data["failed_steps"]
@@ -697,150 +664,246 @@ class LegacyPipeline:
                     print(f"\n🔄 Retrying failed step: {next_step}")
                     self.checkpoint_manager.clear_failed_step(next_step)
 
-                # Execute the appropriate step
-                if next_step == "protein_preparation":
-                    self.checkpoint_manager.mark_step_started("protein_preparation")
-                    print("\n[Stage 1/6] Protein Preparation...")
+                self._legacy_dispatch_step(
+                    next_step,
+                    pdb_file,
+                    pdb_fixed_path,
+                    remd_output_dir,
+                    msm_output_dir,
+                    steps,
+                    n_states,
+                    config,
+                )
 
-                    protein = Protein(str(pdb_file), ph=7.0)
-
-                    # Ensure the inputs directory exists before saving
-                    pdb_fixed_path.parent.mkdir(parents=True, exist_ok=True)
-
-                    protein.save(str(pdb_fixed_path))
-                    properties = protein.get_properties()
-                    print(
-                        f"Protein prepared: {properties['num_atoms']} atoms, {properties['num_residues']} residues"
-                    )
-
-                    # Copy input files for reproducibility
-                    self.checkpoint_manager.copy_input_files([str(pdb_file)])
-
-                    self.checkpoint_manager.mark_step_completed(
-                        "protein_preparation",
-                        {
-                            "num_atoms": properties["num_atoms"],
-                            "num_residues": properties["num_residues"],
-                            "pdb_fixed_path": str(pdb_fixed_path),
-                        },
-                    )
-
-                elif next_step == "system_setup":
-                    self.checkpoint_manager.mark_step_started("system_setup")
-                    print("\n[Stage 2/6] System Setup...")
-                    print("Setting up temperature ladder for enhanced sampling...")
-
-                    # Just mark as completed - the actual setup happens in replica_initialization
-                    self.checkpoint_manager.mark_step_completed(
-                        "system_setup",
-                        {
-                            "temperatures": config["temperatures"],
-                            "use_metadynamics": config["use_metadynamics"],
-                        },
-                    )
-
-                elif next_step in [
-                    "replica_initialization",
-                    "energy_minimization",
-                    "gradual_heating",
-                    "equilibration",
-                    "production_simulation",
-                    "trajectory_demux",
-                ]:
-                    print("\n[Stage 3/6] Replica Exchange Molecular Dynamics...")
-
-                    # Run REMD simulation with checkpoint integration
-                    demux_trajectory = run_remd_simulation(
-                        pdb_file=str(pdb_fixed_path),
-                        output_dir=str(remd_output_dir),
-                        total_steps=steps,
-                        temperatures=config["temperatures"],
-                        use_metadynamics=config["use_metadynamics"],
-                        checkpoint_manager=self.checkpoint_manager,  # Pass checkpoint manager
-                    )
-
-                    print(
-                        f"REMD completed. Demultiplexed trajectory: {demux_trajectory}"
-                    )
-                    # The REMD function handles its own checkpoints, so we continue the loop
-
-                elif next_step == "trajectory_analysis":
-                    self.checkpoint_manager.mark_step_started("trajectory_analysis")
-                    print("\n[Stage 4/6] Enhanced Markov State Model Analysis...")
-
-                    # Reconstruct demux trajectory path
-                    demux_trajectory = str(remd_output_dir / "demuxed_trajectory.dcd")
-
-                    # Use demultiplexed trajectory if available, otherwise use all trajectories
-                    if demux_trajectory and Path(demux_trajectory).exists():
-                        trajectory_files = [demux_trajectory]
-                        analysis_temperatures = [300.0]  # Only target temperature
-                    else:
-                        # Use all replica trajectories for TRAM analysis
-                        trajectory_files = [
-                            str(remd_output_dir / f"replica_{i:02d}.dcd")
-                            for i in range(len(config["temperatures"]))
-                        ]
-                        trajectory_files = [
-                            f for f in trajectory_files if Path(f).exists()
-                        ]
-                        analysis_temperatures = config["temperatures"]
-
-                    if not trajectory_files:
-                        raise ValueError("No trajectory files found for analysis")
-
-                    print(f"Analyzing {len(trajectory_files)} trajectories...")
-
-                    # Run complete MSM analysis
-                    msm = run_complete_msm_analysis(
-                        trajectory_files=trajectory_files,
-                        topology_file=str(pdb_fixed_path),
-                        output_dir=str(msm_output_dir),
-                        n_clusters=n_states,
-                        lag_time=10,
-                        feature_type="phi_psi",
-                        temperatures=analysis_temperatures,
-                    )
-
-                    self.checkpoint_manager.mark_step_completed(
-                        "trajectory_analysis",
-                        {
-                            "n_trajectories": len(trajectory_files),
-                            "n_clusters": n_states,
-                            "analysis_output": str(msm_output_dir),
-                        },
-                    )
-
-                else:
-                    print(f"Unknown step: {next_step}")
-                    break
-
-            # Final summary
-            print("\n[Stage 5/6] Pipeline Complete!")
-            print(f"✓ Results saved to: {self.checkpoint_manager.run_dir}")
-            print("✓ Ready for analysis and visualization")
-
-            # Mark pipeline as completed
-            self.checkpoint_manager.life_data["status"] = "completed"
-            self.checkpoint_manager.save_life_data()
-
-            # Print final status
-            self.checkpoint_manager.print_status()
-
+            self._legacy_finalize_success()
             return self.checkpoint_manager.run_dir
-
-        except Exception as e:
-            if self.checkpoint_manager:
-                self.checkpoint_manager.mark_step_failed(
-                    self.checkpoint_manager.life_data["current_stage"], str(e)
-                )
-            print(f"An error occurred in REMD pipeline: {e}")
-            import traceback
-
-            traceback.print_exc()
-            print("\nCheckpoint saved. You can resume with:")
-            if self.checkpoint_manager:
-                print(
-                    f"python main.py --mode remd --id {self.checkpoint_manager.run_id} --continue"
-                )
+        except Exception as e:  # noqa: BLE001
+            self._legacy_handle_exception(e)
             return None
+
+    # ---- Legacy helpers to reduce complexity ----
+
+    def _legacy_setup_logging(self) -> None:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s - %(levelname)s - %(message)s",
+        )
+
+    def _legacy_load_or_start_run(self) -> Optional[CheckpointManager]:
+        if self.continue_run and self.run_id:
+            try:
+                cm = CheckpointManager.load_existing_run(
+                    self.run_id, str(self.output_base_dir)
+                )
+                print(f"Resuming run {self.run_id}...")
+                cm.print_status()
+                return cm
+            except FileNotFoundError:
+                print(f"Error: No existing run found with ID {self.run_id}")
+                print(f"Looking in: {self.output_base_dir}")
+                from .manager.checkpoint_manager import list_runs
+
+                list_runs(str(self.output_base_dir))
+                return None
+        if self.continue_run and not self.run_id:
+            print("Error: --continue requires --id to specify which run to continue")
+            from .manager.checkpoint_manager import list_runs
+
+            list_runs(str(self.output_base_dir))
+            return None
+        cm = CheckpointManager(self.run_id, str(self.output_base_dir))
+        cm.setup_run_directory()
+        print(f"Started new run with ID: {cm.run_id}")
+        return cm
+
+    def _legacy_init_paths(self):
+        pdb_file = Path(self.pdb_file)
+        cm = self.checkpoint_manager
+        if cm is None:
+            # Fallback to default directories under output_dir when no CM
+            pdb_fixed_path = self.output_dir / "inputs" / "prepared.pdb"
+            remd_output_dir = self.output_dir / "trajectories"
+            msm_output_dir = self.output_dir / "analysis"
+            return pdb_file, pdb_fixed_path, remd_output_dir, msm_output_dir
+        pdb_fixed_path = cm.run_dir / "inputs" / "prepared.pdb"
+        remd_output_dir = cm.run_dir / "trajectories"
+        msm_output_dir = cm.run_dir / "analysis"
+        return pdb_file, pdb_fixed_path, remd_output_dir, msm_output_dir
+
+    def _legacy_save_config(self, steps: int, n_states: int, pdb_file: Path) -> Dict:
+        cm = self.checkpoint_manager
+        base_config: Dict[str, Any] = {
+            "pdb_file": str(pdb_file),
+            "steps": steps,
+            "n_states": n_states,
+            "temperatures": [300.0, 310.0, 320.0],
+            # 3 replicas with small 10K gaps for high exchange rates
+            "use_metadynamics": True,
+        }
+        if cm is None:
+            return {**base_config, "created_at": ""}
+        config = {**base_config, "created_at": cm.life_data["created"]}
+        cm.save_config(config)
+        return config
+
+    def _legacy_dispatch_step(
+        self,
+        next_step: str,
+        pdb_file: Path,
+        pdb_fixed_path: Path,
+        remd_output_dir: Path,
+        msm_output_dir: Path,
+        steps: int,
+        n_states: int,
+        config: Dict,
+    ) -> None:
+        if next_step == "protein_preparation":
+            self._legacy_step_protein_preparation(pdb_file, pdb_fixed_path)
+        elif next_step == "system_setup":
+            self._legacy_step_system_setup(config)
+        elif next_step in [
+            "replica_initialization",
+            "energy_minimization",
+            "gradual_heating",
+            "equilibration",
+            "production_simulation",
+            "trajectory_demux",
+        ]:
+            demux_trajectory = self._legacy_run_remd(
+                pdb_fixed_path, remd_output_dir, steps, config
+            )
+            print("REMD completed. Demultiplexed trajectory: " f"{demux_trajectory}")
+        elif next_step == "trajectory_analysis":
+            self._legacy_step_trajectory_analysis(
+                pdb_fixed_path, remd_output_dir, msm_output_dir, n_states, config
+            )
+        else:
+            print(f"Unknown step: {next_step}")
+
+    def _legacy_step_protein_preparation(
+        self, pdb_file: Path, pdb_fixed_path: Path
+    ) -> None:
+        cm = self.checkpoint_manager
+        if cm is not None:
+            cm.mark_step_started("protein_preparation")
+        print("\n[Stage 1/6] Protein Preparation...")
+        protein = Protein(str(pdb_file), ph=7.0)
+        pdb_fixed_path.parent.mkdir(parents=True, exist_ok=True)
+        protein.save(str(pdb_fixed_path))
+        properties = protein.get_properties()
+        print(
+            "Protein prepared: "
+            f"{properties['num_atoms']} atoms, "
+            f"{properties['num_residues']} residues"
+        )
+        if cm is not None:
+            cm.copy_input_files([str(pdb_file)])
+            cm.mark_step_completed(
+                "protein_preparation",
+                {
+                    "num_atoms": properties["num_atoms"],
+                    "num_residues": properties["num_residues"],
+                    "pdb_fixed_path": str(pdb_fixed_path),
+                },
+            )
+
+    def _legacy_step_system_setup(self, config: Dict) -> None:
+        cm = self.checkpoint_manager
+        if cm is not None:
+            cm.mark_step_started("system_setup")
+        print("\n[Stage 2/6] System Setup...")
+        print("Setting up temperature ladder for enhanced sampling...")
+        # Just mark as completed - actual setup happens in replica_initialization
+        if cm is not None:
+            cm.mark_step_completed(
+                "system_setup",
+                {
+                    "temperatures": config["temperatures"],
+                    "use_metadynamics": config["use_metadynamics"],
+                },
+            )
+
+    def _legacy_run_remd(
+        self, pdb_fixed_path: Path, remd_output_dir: Path, steps: int, config: Dict
+    ) -> Optional[str]:
+        demux_trajectory = run_remd_simulation(
+            pdb_file=str(pdb_fixed_path),
+            output_dir=str(remd_output_dir),
+            total_steps=steps,
+            temperatures=config["temperatures"],
+            use_metadynamics=config["use_metadynamics"],
+            checkpoint_manager=self.checkpoint_manager,
+        )
+        return demux_trajectory
+
+    def _legacy_step_trajectory_analysis(
+        self,
+        pdb_fixed_path: Path,
+        remd_output_dir: Path,
+        msm_output_dir: Path,
+        n_states: int,
+        config: Dict,
+    ) -> None:
+        cm = self.checkpoint_manager
+        if cm is not None:
+            cm.mark_step_started("trajectory_analysis")
+        print("\n[Stage 4/6] Enhanced Markov State Model Analysis...")
+        demux_trajectory = str(remd_output_dir / "demuxed_trajectory.dcd")
+        if demux_trajectory and Path(demux_trajectory).exists():
+            trajectory_files = [demux_trajectory]
+            analysis_temperatures = [300.0]
+        else:
+            trajectory_files = [
+                str(remd_output_dir / f"replica_{i:02d}.dcd")
+                for i in range(len(config["temperatures"]))
+            ]
+            trajectory_files = [f for f in trajectory_files if Path(f).exists()]
+            analysis_temperatures = config["temperatures"]
+        if not trajectory_files:
+            raise ValueError("No trajectory files found for analysis")
+        print(f"Analyzing {len(trajectory_files)} trajectories...")
+        run_complete_msm_analysis(
+            trajectory_files=trajectory_files,
+            topology_file=str(pdb_fixed_path),
+            output_dir=str(msm_output_dir),
+            n_clusters=n_states,
+            lag_time=10,
+            feature_type="phi_psi",
+            temperatures=analysis_temperatures,
+        )
+        if cm is not None:
+            cm.mark_step_completed(
+                "trajectory_analysis",
+                {
+                    "n_trajectories": len(trajectory_files),
+                    "n_clusters": n_states,
+                    "analysis_output": str(msm_output_dir),
+                },
+            )
+
+    def _legacy_finalize_success(self) -> None:
+        print("\n[Stage 5/6] Pipeline Complete!")
+        cm = self.checkpoint_manager
+        if cm is not None:
+            print(f"✓ Results saved to: {cm.run_dir}")
+            print("✓ Ready for analysis and visualization")
+            cm.life_data["status"] = "completed"
+            cm.save_life_data()
+            cm.print_status()
+        else:
+            print("(No checkpoint manager available)")
+
+    def _legacy_handle_exception(self, e: Exception) -> None:
+        cm = self.checkpoint_manager
+        if cm is not None:
+            cm.mark_step_failed(cm.life_data["current_stage"], str(e))
+        print(f"An error occurred in REMD pipeline: {e}")
+        import traceback
+
+        traceback.print_exc()
+        print("\nCheckpoint saved. You can resume with:")
+        if self.checkpoint_manager:
+            print(
+                "python main.py --mode remd --id "
+                f"{self.checkpoint_manager.run_id} --continue"
+            )

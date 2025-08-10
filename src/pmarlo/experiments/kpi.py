@@ -110,7 +110,8 @@ def compute_transition_matrix_accuracy(transition_matrix: Any) -> Optional[float
     Returns value in [0, 1], or None if matrix is unavailable.
     """
     try:
-        import numpy as np  # Local import to avoid hard dependency at module import time
+        # Local import to avoid hard dependency at module import time
+        import numpy as np
 
         if transition_matrix is None:
             return None
@@ -249,9 +250,8 @@ def compute_spectral_gap(transition_matrix: Any) -> Optional[float]:
         eigenvals = np.linalg.eigvals(mat)
         eigenvals = np.real(eigenvals)
         eigenvals.sort()
-        lam_max = eigenvals[-1]
-        # Guard: stochastic matrices should have lam_max ~ 1
-        # lambda_2 is the second largest
+        # For stochastic matrices, the largest eigenvalue is ~1.0
+        # lambda_2 is the second largest eigenvalue
         lam2 = eigenvals[-2] if len(eigenvals) >= 2 else np.nan
         if np.isnan(lam2):
             return None

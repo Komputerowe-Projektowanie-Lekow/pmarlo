@@ -5,7 +5,6 @@
 Tests for the Protein class.
 """
 
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -49,8 +48,9 @@ class TestProtein:
 
     def test_protein_save_without_pdbfixer(self, test_pdb_file, temp_output_dir):
         """Test that saving without PDBFixer raises appropriate error."""
-        with patch("pmarlo.protein.protein.HAS_PDBFIXER", False), patch(
-            "pmarlo.protein.protein.PDBFixer", None
+        with (
+            patch("pmarlo.protein.protein.HAS_PDBFIXER", False),
+            patch("pmarlo.protein.protein.PDBFixer", None),
         ):
             protein = Protein(str(test_pdb_file), auto_prepare=False)
             output_file = temp_output_dir / "test_output.pdb"
@@ -155,8 +155,9 @@ class TestProteinIntegration:
 
     def test_protein_workflow_without_pdbfixer(self, test_pdb_file, temp_output_dir):
         """Test basic protein workflow without PDBFixer."""
-        with patch("pmarlo.protein.protein.HAS_PDBFIXER", False), patch(
-            "pmarlo.protein.protein.PDBFixer", None
+        with (
+            patch("pmarlo.protein.protein.HAS_PDBFIXER", False),
+            patch("pmarlo.protein.protein.PDBFixer", None),
         ):
             # Initialize protein without preparation
             protein = Protein(str(test_pdb_file), auto_prepare=False)
@@ -198,7 +199,5 @@ class TestProteinIntegration:
         protein2 = Protein(str(output_file), ph=7.0)
         properties2 = protein2.get_properties()
 
-        # Properties should be similar (allowing for small differences due to preparation)
-        assert (
-            abs(properties["num_atoms"] - properties2["num_atoms"]) < 100
-        )  # Allow some flexibility
+        # Properties should be similar (allowing for small differences)
+        assert abs(properties["num_atoms"] - properties2["num_atoms"]) < 100

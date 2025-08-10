@@ -11,15 +11,12 @@ except ImportError:
     HAS_PDBFIXER = False
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
-
-import numpy as np
-from openmm import unit
+from typing import Any, Dict, Optional
 
 # Fixed: Added missing imports for PME and HBonds
 from openmm.app import PME, ForceField, HBonds, PDBFile
 from rdkit import Chem
-from rdkit.Chem import Descriptors, rdMolDescriptors
+from rdkit.Chem import Descriptors
 from rdkit.Chem.rdMolDescriptors import CalcExactMolWt
 
 
@@ -31,71 +28,99 @@ class Protein:
         auto_prepare: bool = True,
         preparation_options: Optional[Dict[str, Any]] = None,
     ):
-        """
-        Initialize a Protein object with a PDB file.
+        """Initialize a Protein object with a PDB file.
 
         Args:
-            pdb_file (str): Path to the PDB file
-            ph (float): pH value for protonation state (default: 7.0)
-            auto_prepare (bool): Automatically prepare the protein (default: True)
-            preparation_options (Optional[Dict]): Custom preparation options
+            pdb_file: Path to the PDB file
+            ph: pH value for protonation state (default: 7.0)
+            auto_prepare: Automatically prepare the protein (default: True)
+            preparation_options: Custom preparation options
 
         Raises:
-            FileNotFoundError: If the PDB file does not exist
-            ValueError: If the file is empty or has an invalid extension
+            ValueError: If the PDB file does not exist, is empty, or has an invalid
+                extension
         """
-        # Validate file path and extension
-        pdb_path = Path(pdb_file)
+        # If automatic preparation is requested but PDBFixer is unavailable,
+        # raise ImportError immediately to match expected behavior.
+        if auto_prepare and not HAS_PDBFIXER:
+            raise ImportError(
+                "PDBFixer is required for protein preparation but is not installed. "
+                "Install it with: pip install 'pmarlo[fixer]' or set auto_prepare=False to skip preparation."
+            )
+
+        pdb_path = self._resolve_pdb_path(pdb_file)
+        self._validate_file_exists(pdb_path)
+        self._validate_extension(pdb_path)
+        self._validate_readable_nonempty(pdb_path)
+        self._assign_basic_fields(pdb_path, ph)
+        self._initialize_fixer(auto_prepare, pdb_file)
+        self._initialize_storage()
+        self._initialize_properties_dict()
+        self._maybe_prepare(auto_prepare, preparation_options, ph)
+
+    # --- Initialization helpers to reduce complexity ---
+
+    def _resolve_pdb_path(self, pdb_file: str) -> Path:
+        return Path(pdb_file)
+
+    def _validate_file_exists(self, pdb_path: Path) -> None:
         if not pdb_path.exists():
-            raise FileNotFoundError(f"PDB file does not exist: {pdb_path}")
+            raise ValueError(f"Invalid PDB path: {pdb_path}")
+
+    def _validate_extension(self, pdb_path: Path) -> None:
         if pdb_path.suffix.lower() not in {".pdb", ".cif"}:
             raise ValueError(f"Unsupported protein file type: {pdb_path.suffix}")
 
-        # Check if file is readable and not empty
+    def _validate_readable_nonempty(self, pdb_path: Path) -> None:
         try:
             with open(pdb_path, "rb") as fh:
                 head = fh.read(64)
                 if not head.strip():
                     raise ValueError("Protein file is empty")
-        except OSError as e:
-            raise ValueError(f"Cannot read protein file: {pdb_path}") from e
+        except OSError as exc:
+            raise ValueError(f"Cannot read protein file: {pdb_path}") from exc
 
+    def _assign_basic_fields(self, pdb_path: Path, ph: float) -> None:
         self.pdb_file = str(pdb_path)
         self.ph = ph
 
-        # PDBFixer object for protein preparation
-        # Behavior:
-        # - If auto_prepare is False: validate file exists, but do not require PDBFixer
-        # - If auto_prepare is True and PDBFixer is missing: raise ImportError
-        # - If auto_prepare is True and PDBFixer is available: initialize PDBFixer
+    def _initialize_fixer(self, auto_prepare: bool, pdb_file: str) -> None:
         if not HAS_PDBFIXER:
-            # When not preparing automatically, ensure the file exists so invalid paths error early
-            if not auto_prepare:
-                if not os.path.isfile(self.pdb_file):
-                    raise FileNotFoundError(f"PDB file not found: {self.pdb_file}")
-            self.fixer = None
-            self.prepared = False
-            # If auto_prepare is True but PDBFixer is not available, raise an error
-            if auto_prepare:
-                raise ImportError(
-                    "PDBFixer is required for protein preparation but is not installed. "
-                    "Install it with: pip install 'pmarlo[fixer]' "
+            self._configure_state_no_fixer(auto_prepare)
+        else:
+            self._initialize_fixer_instance(pdb_file)
+
+    def _configure_state_no_fixer(self, auto_prepare: bool) -> None:
+        # When not preparing automatically, ensure the file exists so
+        # invalid paths error early.
+        if not auto_prepare and not os.path.isfile(self.pdb_file):
+            raise ValueError(f"Invalid PDB path: {self.pdb_file}")
+        self.fixer = None
+        self.prepared = False
+        if auto_prepare:
+            raise ImportError(
+                (
+                    "PDBFixer is required for protein preparation but is not "
+                    "installed. Install it with: pip install 'pmarlo[fixer]' "
                     "or set auto_prepare=False to skip preparation."
                 )
-        else:
-            # PDBFixer will validate the file path and raise appropriately if invalid
-            self.fixer = PDBFixer(filename=pdb_file)
-            self.prepared = False
+            )
 
+    def _initialize_fixer_instance(self, pdb_file: str) -> None:
+        # PDBFixer will validate the file path and raise appropriately if invalid.
+        self.fixer = PDBFixer(filename=pdb_file)
+        self.prepared = False
+
+    def _initialize_storage(self) -> None:
         # Store protein data
         self.topology = None
         self.positions = None
         self.forcefield = None
         self.system = None
-
         # RDKit molecule object for property calculations
         self.rdkit_mol = None
 
+    def _initialize_properties_dict(self) -> None:
         # Protein properties
         self.properties = {
             "num_atoms": 0,
@@ -112,6 +137,12 @@ class Protein:
             "heavy_atoms": 0,
         }
 
+    def _maybe_prepare(
+        self,
+        auto_prepare: bool,
+        preparation_options: Optional[Dict[str, Any]],
+        ph: float,
+    ) -> None:
         if auto_prepare:
             prep_options = preparation_options or {}
             prep_options.setdefault("ph", ph)
@@ -137,8 +168,10 @@ class Protein:
             keep_water (bool): Keep water molecules if True (default: False)
             add_missing_atoms (bool): Add missing atoms to residues (default: True)
             add_missing_hydrogens (bool): Add missing hydrogens (default: True)
-            replace_nonstandard_residues (bool): Replace non-standard residues (default: True)
-            find_missing_residues (bool): Find and handle missing residues (default: True)
+            replace_nonstandard_residues (bool): Replace non-standard residues
+                (default: True)
+            find_missing_residues (bool): Find and handle missing residues
+                (default: True)
             **kwargs: Additional preparation options
 
         Returns:
@@ -192,7 +225,7 @@ class Protein:
         if not self.prepared:
             raise RuntimeError("Protein must be prepared before loading data.")
 
-        # Fixed: Added type check to ensure fixer is not None before accessing its attributes
+        # Fixed: Ensure fixer is not None before using it
         if self.fixer is None:
             raise RuntimeError("PDBFixer object is not initialized")
 
@@ -244,7 +277,7 @@ class Protein:
         """Clean up temporary file."""
         try:
             os.unlink(tmp_file)
-        except:
+        except Exception:
             pass
 
     def _compute_rdkit_descriptors(self):
@@ -334,8 +367,10 @@ class Protein:
         # For prepared structures, use PDBFixer
         if not HAS_PDBFIXER:
             raise ImportError(
-                "PDBFixer is required for saving prepared structures but is not installed. "
-                "Install it with: pip install 'pmarlo[fixer]'"
+                (
+                    "PDBFixer is required for saving prepared structures but is "
+                    "not installed. Install it with: pip install 'pmarlo[fixer]'"
+                )
             )
 
         if self.fixer is None:
@@ -365,7 +400,7 @@ class Protein:
                 "Install it with: pip install 'pmarlo[fixer]'"
             )
 
-        # Fixed: Added type check to ensure fixer is not None before accessing its attributes
+        # Fixed: Ensure fixer is not None before using it
         if self.fixer is None:
             raise RuntimeError("PDBFixer object is not initialized")
 
@@ -377,8 +412,8 @@ class Protein:
         """
         Create an OpenMM system for the protein.
 
-        If the protein has not been prepared, loads topology directly from the input PDB file.
-        Otherwise, uses the prepared topology.
+        If the protein has not been prepared, loads topology directly from the
+        input PDB file. Otherwise, uses the prepared topology.
 
         Args:
             forcefield_files (Optional[list]): List of forcefield files to use
