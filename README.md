@@ -1,5 +1,11 @@
 # PMARLO: Protein Markov State Model Analysis with Replica Exchange
 
+[![PyPI Version][pypi-image]][pypi-url]
+[![Build Status][build-image]][build-url]
+[![Python Versions][versions-image]][versions-url]
+[![][stars-image]][stars-url]
+[![License][license-image]][license-url]
+
 A Python package for protein simulation and Markov state model chain generation, providing an OpenMM-like interface for molecular dynamics simulations.
 
 ## Features
@@ -95,3 +101,16 @@ This will test:
 - openmm >= 7.5.0
 - pdbfixer >= 1.7
 - rdkit >= 2020.09.1
+
+<!-- Badges: -->
+
+[pypi-image]: https://img.shields.io/pypi/v/pmarlo
+[pypi-url]: https://pypi.org/project/pmarlo/
+[build-image]: https://github.com/Komputerowe-Projektowanie-Lekow/pmarlo/actions/workflows/publish.yml/badge.svg
+[build-url]: https://github.com/Komputerowe-Projektowanie-Lekow/pmarlo/actions/workflows/publish.yml
+[versions-image]: https://img.shields.io/pypi/pyversions/pmarlo
+[versions-url]: https://pypi.org/project/pmarlo/
+[stars-image]: https://img.shields.io/github/stars/Komputerowe-Projektowanie-Lekow/pmarlo
+[stars-url]: https://github.com/Komputerowe-Projektowanie-Lekow/pmarlo
+[license-image]: https://img.shields.io/pypi/l/pmarlo
+[license-url]: https://github.com/Komputerowe-Projektowanie-Lekow/pmarlo/blob/main/LICENSE
