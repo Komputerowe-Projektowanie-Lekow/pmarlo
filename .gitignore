@@ -3,6 +3,8 @@
 /bias/
 /pmarlo_output/
 final.xml
+/example_programs/programs_outputs/free_energy_landscape/*
+/example_programs/programs_outputs/free_energy_landscape_long/*
 
 # Build and distribution files
 /build/

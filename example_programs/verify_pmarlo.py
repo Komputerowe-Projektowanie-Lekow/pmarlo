@@ -14,7 +14,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Use relative path from the project root
-protein_path = os.path.join("tests", "data", "3gd8-fixed.pdb")
+protein_path = os.path.join("../tests", "data", "3gd8-fixed.pdb")
 
 
 def verify_components():

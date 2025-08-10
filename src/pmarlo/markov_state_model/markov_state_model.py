@@ -677,17 +677,21 @@ class EnhancedMSM:
         self, cv1_name: str, cv2_name: str
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Extract collective variables from trajectory data."""
-        cv1_data = []
-        cv2_data = []
+        cv1_data: list[float] = []
+        cv2_data: list[float] = []
 
         for traj in self.trajectories:
             if cv1_name == "phi" and cv2_name == "psi":
                 phi_angles, _ = md.compute_phi(traj)
                 psi_angles, _ = md.compute_psi(traj)
 
-                if phi_angles.shape[1] > 0 and psi_angles.shape[1] > 0:
-                    cv1_data.extend(phi_angles[:, 0])  # First phi angle
-                    cv2_data.extend(psi_angles[:, 0])  # First psi angle
+                # Ensure arrays are 1D by selecting the first available dihedral or fallback
+                if phi_angles.size > 0 and psi_angles.size > 0:
+                    phi_vec = phi_angles[:, 0] if phi_angles.ndim == 2 else phi_angles
+                    psi_vec = psi_angles[:, 0] if psi_angles.ndim == 2 else psi_angles
+                    # Flatten to 1D python floats
+                    cv1_data.extend([float(v) for v in np.array(phi_vec).reshape(-1)])
+                    cv2_data.extend([float(v) for v in np.array(psi_vec).reshape(-1)])
                 else:
                     raise ValueError("No phi/psi angles found in trajectory")
 
@@ -721,7 +725,7 @@ class EnhancedMSM:
                 else:
                     raise ValueError("Insufficient feature dimensions")
 
-        return np.array(cv1_data), np.array(cv2_data)
+        return np.array(cv1_data, dtype=float), np.array(cv2_data, dtype=float)
 
     def create_state_table(self) -> pd.DataFrame:
         """Create comprehensive state summary table."""
@@ -940,7 +944,20 @@ class EnhancedMSM:
 
         # Save discrete trajectories
         if self.dtrajs:
-            np.save(self.output_dir / f"{prefix}_dtrajs.npy", self.dtrajs)
+            try:
+                # Save as an object array to support variable-length per-trajectory sequences
+                dtrajs_obj = np.array(self.dtrajs, dtype=object)
+                np.save(self.output_dir / f"{prefix}_dtrajs.npy", dtrajs_obj)
+            except Exception:
+                # Fallback: save each trajectory separately
+                for idx, dtraj in enumerate(self.dtrajs):
+                    try:
+                        np.save(
+                            self.output_dir / f"{prefix}_dtrajs_traj{idx:02d}.npy",
+                            np.asarray(dtraj),
+                        )
+                    except Exception:
+                        continue
 
         # Save state table
         if self.state_table is not None:
