@@ -18,6 +18,9 @@ jobs:
           # Required for setuptools_scm to find tags and compute the version
           fetch-depth: 0
 
+      - name: Ensure tags are available
+        run: git fetch --tags --force
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -28,6 +31,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install poetry
+
+      - name: Install Poetry dynamic versioning plugin
+        run: poetry self add "poetry-dynamic-versioning[plugin]"
 
       - name: Configure Poetry with PyPI token
         env:
