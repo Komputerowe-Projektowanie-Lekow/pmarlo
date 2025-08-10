@@ -7,11 +7,10 @@ Integration tests for PMARLO package.
 These tests verify that different components work together correctly.
 """
 
-from pathlib import Path
-
 import pytest
 
 from pmarlo import Pipeline, Protein
+from pmarlo.protein.protein import HAS_PDBFIXER
 
 
 class TestPackageImports:
@@ -88,6 +87,7 @@ class TestWorkflowIntegration:
         except ImportError as e:
             pytest.skip(f"Workflow test skipped due to missing dependencies: {e}")
 
+    @pytest.mark.skipif(not HAS_PDBFIXER, reason="PDBFixer is required for this test")
     def test_five_line_api_setup(self, test_pdb_file):
         """Test the five-line API setup (without execution)."""
         from pmarlo import (
@@ -124,9 +124,17 @@ class TestErrorHandling:
         """Test handling of invalid PDB files across components."""
         invalid_pdb = "nonexistent_file.pdb"
 
-        # Protein should handle invalid files gracefully
+        # Test with auto_prepare=False first (should work without PDBFixer)
         with pytest.raises(Exception):
-            protein = Protein(invalid_pdb)
+            Protein(invalid_pdb, auto_prepare=False)
+
+        # Test with auto_prepare=True (default)
+        if HAS_PDBFIXER:
+            with pytest.raises(Exception):
+                Protein(invalid_pdb)
+        else:
+            with pytest.raises(ImportError, match="PDBFixer is required"):
+                Protein(invalid_pdb)
 
         # Pipeline should also handle invalid files
         pipeline = Pipeline(invalid_pdb)
@@ -135,7 +143,8 @@ class TestErrorHandling:
 
     def test_missing_dependencies_handling(self):
         """Test behavior when optional dependencies are missing."""
-        # This is more of a documentation test since we can't easily mock missing imports
+        # This is more of a documentation test since we can't easily mock
+        # missing imports
         # But we can verify that our code structure handles ImportError gracefully
         from pmarlo.simulation.simulation import Simulation
 
@@ -147,6 +156,7 @@ class TestErrorHandling:
 class TestDataPersistence:
     """Test that data is properly saved and can be reloaded."""
 
+    @pytest.mark.skipif(not HAS_PDBFIXER, reason="PDBFixer is required for this test")
     def test_protein_save_and_reload(self, test_pdb_file, temp_output_dir):
         """Test saving and reloading protein data."""
         # Save protein
@@ -161,7 +171,8 @@ class TestDataPersistence:
         props1 = protein1.get_properties()
         props2 = protein2.get_properties()
 
-        # Should have similar number of atoms (allowing for small differences in preparation)
+        # Should have similar number of atoms (allowing for small differences
+        # in preparation)
         assert abs(props1["num_atoms"] - props2["num_atoms"]) < 100
 
     def test_output_directory_structure(self, test_pdb_file, temp_output_dir):

@@ -10,14 +10,7 @@ Main entry point demonstrating both the legacy interface and the new clean API.
 # New clean API imports
 try:
     # Try package imports first (when installed)
-    from pmarlo import (
-        LegacyPipeline,
-        MarkovStateModel,
-        Pipeline,
-        Protein,
-        ReplicaExchange,
-        Simulation,
-    )
+    from pmarlo import LegacyPipeline, Pipeline, Protein
     from pmarlo.manager.checkpoint_manager import CheckpointManager, list_runs
     from pmarlo.pipeline import run_pmarlo
     from pmarlo.simulation.simulation import (
@@ -32,9 +25,6 @@ except ImportError:
     # Fall back to relative imports (when running from source)
     from . import (
         Protein,
-        ReplicaExchange,
-        Simulation,
-        MarkovStateModel,
         Pipeline,
         LegacyPipeline,
     )
@@ -50,10 +40,9 @@ except ImportError:
     from .manager.checkpoint_manager import CheckpointManager, list_runs
 
 import argparse
-import logging
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, cast
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 TESTS_DIR = BASE_DIR / "tests" / "data"
@@ -78,7 +67,8 @@ def original_pipeline_with_dg():
         # Get protein properties
         properties = protein.get_properties()
         print(
-            f"Protein prepared: {properties['num_atoms']} atoms, {properties['num_residues']} residues"
+            f"Protein prepared: {properties['num_atoms']} atoms, "
+            f"{properties['num_residues']} residues"
         )
 
         # Prepare system and metadynamics
@@ -171,8 +161,8 @@ def run_comparison_analysis():
             print("\n>>> Comparison Complete!")
             print("Check output directories for detailed results:")
             print(f"  - Original: {TESTS_DIR}")
-            print(f"  - REMD: {BASE_DIR / 'remd_output'}")
-            print(f"  - Enhanced MSM: {BASE_DIR / 'msm_analysis'}")
+            print(f"  - REMD: {BASE_DIR / 'output' / 'replica_exchange'}")
+            print(f"  - Enhanced MSM: {BASE_DIR / 'output' / 'msm_analysis'}")
 
     except Exception as e:
         print(f"Error in comparison analysis: {e}")
@@ -189,8 +179,15 @@ def demo_simple_api():
     print(
         """
 protein = Protein("tests/data/3gd8.pdb", ph=7.0)
-replica_exchange = ReplicaExchange("tests/data/3gd8-fixed.pdb", temperatures=[300, 310, 320])
-simulation = Simulation("tests/data/3gd8-fixed.pdb", temperature=300, steps=1000)
+replica_exchange = ReplicaExchange(
+    "tests/data/3gd8-fixed.pdb",
+    temperatures=[300, 310, 320],
+)
+simulation = Simulation(
+    "tests/data/3gd8-fixed.pdb",
+    temperature=300,
+    steps=1000,
+)
 markov_state_model = MarkovStateModel()
 pipeline = Pipeline("tests/data/3gd8.pdb").run()  # Orchestrates everything
     """
@@ -215,7 +212,13 @@ results = run_pmarlo('protein.pdb', checkpoint_id='12345')
 
     print("\nUltra-simple one-liner with checkpoints:")
     print(
-        "results = run_pmarlo('protein.pdb', temperatures=[300, 310, 320], steps=1000, auto_continue=True)"
+        "results = run_pmarlo("
+        "'protein.pdb',"
+        "\n"
+        "    temperatures=[300, 310, 320],\n"
+        "    steps=1000,\n"
+        "    auto_continue=True,\n"
+        ")"
     )
 
 
@@ -256,7 +259,7 @@ def run_simple_example():
             steps=100,  # Very short for demo
             n_states=10,  # Fewer states for demo
             use_replica_exchange=False,  # Simpler for demo
-            output_dir="demo_output",
+            output_dir=str(BASE_DIR / "output" / "demo"),
             auto_continue=True,  # Enable auto-continue
         )
 
@@ -264,7 +267,9 @@ def run_simple_example():
         if pipeline.can_continue():
             status = pipeline.get_checkpoint_status()
             print(
-                f"📁 Found existing run - Progress: {status['progress']} ({status['progress_percent']:.1f}%)"
+                "📁 Found existing run - Progress: "
+                f"{status['progress']} "
+                f"({status['progress_percent']:.1f}%)"
             )
             print(f"🔄 Auto-continuing from: {status['current_stage']}")
         else:
@@ -287,7 +292,7 @@ def run_simple_example():
         simulation = pipeline.setup_simulation()
         print(f"✓ Simulation setup complete for {simulation.steps} steps")
 
-        msm = pipeline.setup_markov_state_model()
+        pipeline.setup_markov_state_model()
         print(f"✓ MSM setup complete for {pipeline.n_states} states")
 
         print("\n📋 Current checkpoint status:")
@@ -315,14 +320,19 @@ def demo_new_vs_legacy():
         """
 # Ultra-simple one-liner with auto-resume
 from pmarlo import run_pmarlo
-results = run_pmarlo("protein.pdb", temperatures=[300, 310, 320], steps=1000, auto_continue=True)
+results = run_pmarlo(
+    "protein.pdb",
+    temperatures=[300, 310, 320],
+    steps=1000,
+    auto_continue=True,
+)
 
 # Programmatic checkpoint handling
 from pmarlo import Pipeline
 pipeline = Pipeline("protein.pdb", auto_continue=True)
 if pipeline.can_continue():
     status = pipeline.get_checkpoint_status()
-    print(f"Resuming from {status['current_stage']} ({status['progress']})")
+    print(f"Resuming from {status['current_stage']} (" f"{status['progress']})")
 results = pipeline.run()
 
 # Specific checkpoint control
@@ -360,12 +370,15 @@ python main.py --mode remd --id 12345 --continue
     print("   ✅ Better error handling and recovery")
 
 
-def main():
-    """Main entry point with command-line argument parsing."""
+def _build_argument_parser() -> argparse.ArgumentParser:
+    """Create the CLI argument parser for PMARLO."""
     parser = argparse.ArgumentParser(
-        description="PMARLO: Protein Markov State Model Analysis with Replica Exchange",
+        description=(
+            "PMARLO: Protein Markov State Model Analysis with Replica Exchange"
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+        epilog=(
+            """
 Examples:
   python main.py --mode original          # Run original single-T pipeline
   python main.py --mode remd             # Run new REMD + enhanced MSM pipeline
@@ -375,9 +388,20 @@ Examples:
   python main.py --mode demo             # Run simple demo with new API
   python main.py --mode comparison       # Compare new vs legacy APIs
   python main.py --mode checkpoint-demo  # Demonstrate checkpoint functionality
-        """,
+            """
+        ),
     )
+    _add_mode_argument(parser)
+    _add_steps_argument(parser)
+    _add_states_argument(parser)
+    _add_id_argument(parser)
+    _add_continue_argument(parser)
+    _add_no_auto_continue_argument(parser)
+    _add_list_runs_argument(parser)
+    return parser
 
+
+def _add_mode_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--mode",
         choices=[
@@ -394,6 +418,8 @@ Examples:
         help="Analysis mode to run (default: simple)",
     )
 
+
+def _add_steps_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--steps",
         type=int,
@@ -401,14 +427,23 @@ Examples:
         help="Number of simulation steps (default: 1000 for fast testing)",
     )
 
+
+def _add_states_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "--states", type=int, default=50, help="Number of MSM states (default: 50)"
+        "--states",
+        type=int,
+        default=50,
+        help="Number of MSM states (default: 50)",
     )
 
+
+def _add_id_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--id", type=str, help="5-digit run ID for checkpoint management"
     )
 
+
+def _add_continue_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--continue",
         dest="continue_run",
@@ -416,56 +451,107 @@ Examples:
         help="Continue from last successful checkpoint (legacy mode only)",
     )
 
+
+def _add_no_auto_continue_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--no-auto-continue",
         action="store_true",
         help="Disable automatic continuation of interrupted runs",
     )
 
+
+def _add_list_runs_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--list-runs",
         action="store_true",
         help="List all available runs and their status",
     )
 
-    # Parse arguments, but handle the case where script is imported
+
+def _parse_args_or_default(parser: argparse.ArgumentParser):
+    """Parse CLI args, defaulting to remd mode if none provided."""
     if len(sys.argv) == 1:
-        # No arguments provided, run default
-        args = parser.parse_args(["--mode", "remd"])
-    else:
-        args = parser.parse_args()
+        return parser.parse_args(["--mode", "remd"])
+    return parser.parse_args()
 
-    # Handle list-runs command
-    if args.list_runs:
+
+def _handle_list_runs_flag(args) -> bool:
+    """Handle the --list-runs flag; return True if handled and program should exit."""
+    if getattr(args, "list_runs", False):
         list_runs()
-        return
+        return True
+    return False
 
+
+def _print_program_header(mode: str) -> None:
     print("PMARLO - Protein Markov State Model Analysis")
     print("https://github.com/yourusername/pmarlo")
-    print(f"Mode: {args.mode}")
+    print(f"Mode: {mode}")
     print()
 
-    if args.mode == "test":
-        test_protein()
-    elif args.mode == "original":
-        original_pipeline_with_dg()
-    elif args.mode == "remd":
-        run_remd_pipeline(
-            run_id=args.id,
-            continue_run=args.continue_run,
-            steps=args.steps,
-            n_states=args.states,
-        )
-    elif args.mode == "compare":
-        run_comparison_analysis()
-    elif args.mode == "simple":
-        demo_simple_api()
-    elif args.mode == "demo":
-        run_simple_example()
-    elif args.mode == "checkpoint-demo":
-        demo_checkpoint_functionality()
-    elif args.mode == "comparison":
-        demo_new_vs_legacy()
+
+def _run_mode_test(_args) -> None:
+    test_protein()
+
+
+def _run_mode_original(_args) -> None:
+    original_pipeline_with_dg()
+
+
+def _run_mode_remd(args) -> None:
+    run_remd_pipeline(
+        run_id=args.id,
+        continue_run=args.continue_run,
+        steps=args.steps,
+        n_states=args.states,
+    )
+
+
+def _run_mode_compare(_args) -> None:
+    run_comparison_analysis()
+
+
+def _run_mode_simple(_args) -> None:
+    demo_simple_api()
+
+
+def _run_mode_demo(_args) -> None:
+    run_simple_example()
+
+
+def _run_mode_checkpoint_demo(_args) -> None:
+    demo_checkpoint_functionality()
+
+
+def _run_mode_comparison(_args) -> None:
+    demo_new_vs_legacy()
+
+
+def _get_mode_handlers():
+    return {
+        "test": _run_mode_test,
+        "original": _run_mode_original,
+        "remd": _run_mode_remd,
+        "compare": _run_mode_compare,
+        "simple": _run_mode_simple,
+        "demo": _run_mode_demo,
+        "checkpoint-demo": _run_mode_checkpoint_demo,
+        "comparison": _run_mode_comparison,
+    }
+
+
+def main():
+    """Main entry point with command-line argument parsing and dispatch."""
+    parser = _build_argument_parser()
+    args = _parse_args_or_default(parser)
+    if _handle_list_runs_flag(args):
+        return
+    _print_program_header(args.mode)
+    handlers = _get_mode_handlers()
+    handler = handlers.get(args.mode)
+    if handler is None:
+        raise ValueError(f"Unknown mode: {args.mode}")
+    handler(args)
 
 
 def demo_checkpoint_functionality():
@@ -561,13 +647,16 @@ def continue_run_programmatically(
         # Continue specific run
         try:
             cm = CheckpointManager.load_existing_run(run_id)
-            config = cm.load_config()
+            config: Dict[str, Any] = cm.load_config()
             pdb_file = config.get("pdb_file") or pdb_file
 
             if not pdb_file:
                 raise ValueError("PDB file not found in config and not provided")
 
-            return run_pmarlo(pdb_file, checkpoint_id=run_id, auto_continue=True)
+            return cast(
+                Dict[str, Any],
+                run_pmarlo(pdb_file, checkpoint_id=run_id, auto_continue=True),
+            )
         except FileNotFoundError:
             return {"error": f"Run {run_id} not found"}
     else:
@@ -575,7 +664,7 @@ def continue_run_programmatically(
         if not pdb_file:
             raise ValueError("PDB file must be provided for auto-continue")
 
-        return run_pmarlo(pdb_file, auto_continue=True)
+        return cast(Dict[str, Any], run_pmarlo(pdb_file, auto_continue=True))
 
 
 if __name__ == "__main__" or Path(__file__).stem == "__main__":
