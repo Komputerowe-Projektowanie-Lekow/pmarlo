@@ -50,7 +50,9 @@ dependencies = [
 # ─────────────────────── Optional runtime extras ──────────────────────
 
 [project.optional-dependencies]
-fixer = ["pdbfixer>=1.11"]
+# PDBFixer currently lacks wheels for Python >= 3.12 on PyPI; make it optional
+# and only installable on Python versions that have compatible builds.
+fixer = ["pdbfixer>=1.9 ; python_version < '3.12'"]
 
 # ───────────────────── URLs & entry-points / CLI ──────────────────────
 [project.urls]
