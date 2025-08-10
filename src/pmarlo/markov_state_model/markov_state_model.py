@@ -920,67 +920,123 @@ class EnhancedMSM:
                     )
 
     def save_analysis_results(self, prefix: str = "msm_analysis"):
-        """Save all analysis results to files."""
+        """
+        Save all analysis results to files.
+
+        This method orchestrates saving all artifacts by delegating to smaller
+        helpers to reduce complexity while preserving exact behavior.
+        """
         logger.info("Saving analysis results...")
 
-        # Save transition matrix with intelligent format selection
+        # Core matrices
+        self._save_transition_matrix(prefix)
+        self._save_count_matrix(prefix)
+
+        # Scalars and distributions
+        self._save_free_energies(prefix)
+        self._save_stationary_distribution(prefix)
+
+        # Trajectories and tables
+        self._save_discrete_trajectories(prefix)
+        self._save_state_table_file(prefix)
+
+        # FES and metadata
+        self._save_fes_array(prefix)
+        self._save_fes_metadata(prefix)
+
+        # Analysis artifacts
+        self._save_implied_timescales_file(prefix)
+
+        # Final message
+        self._log_save_completion()
+
+    # ---------------- Save helpers (split to address C901) ----------------
+
+    def _save_transition_matrix(self, prefix: str) -> None:
+        """Save the transition matrix using intelligent format selection."""
         self._save_matrix_intelligent(
             self.transition_matrix, "transition_matrix", prefix
         )
 
-        # Save count matrix with intelligent format selection
+    def _save_count_matrix(self, prefix: str) -> None:
+        """Save the count matrix using intelligent format selection."""
         self._save_matrix_intelligent(self.count_matrix, "count_matrix", prefix)
 
-        # Save free energies
+    def _save_free_energies(self, prefix: str) -> None:
+        """Save free energies if available."""
         if self.free_energies is not None:
-            np.save(self.output_dir / f"{prefix}_free_energies.npy", self.free_energies)
+            np.save(
+                self.output_dir / f"{prefix}_free_energies.npy",
+                self.free_energies,
+            )
 
-        # Save stationary distribution
+    def _save_stationary_distribution(self, prefix: str) -> None:
+        """Save stationary distribution if available."""
         if self.stationary_distribution is not None:
             np.save(
                 self.output_dir / f"{prefix}_stationary_distribution.npy",
                 self.stationary_distribution,
             )
 
-        # Save discrete trajectories
-        if self.dtrajs:
-            try:
-                # Save as an object array to support variable-length per-trajectory sequences
-                dtrajs_obj = np.array(self.dtrajs, dtype=object)
-                np.save(self.output_dir / f"{prefix}_dtrajs.npy", dtrajs_obj)
-            except Exception:
-                # Fallback: save each trajectory separately
-                for idx, dtraj in enumerate(self.dtrajs):
-                    try:
-                        np.save(
-                            self.output_dir / f"{prefix}_dtrajs_traj{idx:02d}.npy",
-                            np.asarray(dtraj),
-                        )
-                    except Exception:
-                        continue
+    def _save_discrete_trajectories(self, prefix: str) -> None:
+        """Save discrete trajectories with object-array optimization and fallback."""
+        if not self.dtrajs:
+            return
+        try:
+            dtrajs_obj = self._convert_dtrajs_to_object_array()
+            np.save(self.output_dir / f"{prefix}_dtrajs.npy", dtrajs_obj)
+        except Exception:
+            self._save_dtrajs_individually(prefix)
 
-        # Save state table
+    def _convert_dtrajs_to_object_array(self) -> np.ndarray:
+        """Convert list of variable-length trajectories to an object ndarray."""
+        return np.array(self.dtrajs, dtype=object)
+
+    def _save_dtrajs_individually(self, prefix: str) -> None:
+        """Fallback saver for discrete trajectories, each as a separate file."""
+        for idx, dtraj in enumerate(self.dtrajs):
+            try:
+                np.save(
+                    self.output_dir / f"{prefix}_dtrajs_traj{idx:02d}.npy",
+                    np.asarray(dtraj),
+                )
+            except Exception:
+                continue
+
+    def _save_state_table_file(self, prefix: str) -> None:
+        """Save state table to CSV if available."""
         if self.state_table is not None:
             self.state_table.to_csv(
-                self.output_dir / f"{prefix}_state_table.csv", index=False
+                self.output_dir / f"{prefix}_state_table.csv",
+                index=False,
             )
 
-        # Save FES data
-        if self.fes_data is not None:
-            np.save(self.output_dir / f"{prefix}_fes.npy", self.fes_data["free_energy"])
+    def _save_fes_array(self, prefix: str) -> None:
+        """Save free energy surface array if present."""
+        if self.fes_data is None:
+            return
+        np.save(
+            self.output_dir / f"{prefix}_fes.npy",
+            self.fes_data["free_energy"],
+        )
 
-            # Save FES metadata
-            fes_metadata = {
-                k: v for k, v in self.fes_data.items() if k != "free_energy"
-            }
-            with open(self.output_dir / f"{prefix}_fes_metadata.pkl", "wb") as f:
-                pickle.dump(fes_metadata, f)
+    def _save_fes_metadata(self, prefix: str) -> None:
+        """Save non-array FES metadata alongside the FES array."""
+        if self.fes_data is None:
+            return
+        fes_metadata = {k: v for k, v in self.fes_data.items() if k != "free_energy"}
+        with open(self.output_dir / f"{prefix}_fes_metadata.pkl", "wb") as f:
+            pickle.dump(fes_metadata, f)
 
-        # Save implied timescales
-        if self.implied_timescales is not None:
-            with open(self.output_dir / f"{prefix}_implied_timescales.pkl", "wb") as f:
-                pickle.dump(self.implied_timescales, f)
+    def _save_implied_timescales_file(self, prefix: str) -> None:
+        """Save implied timescales structure if computed."""
+        if self.implied_timescales is None:
+            return
+        with open(self.output_dir / f"{prefix}_implied_timescales.pkl", "wb") as f:
+            pickle.dump(self.implied_timescales, f)
 
+    def _log_save_completion(self) -> None:
+        """Emit a final log confirming save destination."""
         logger.info(f"Analysis results saved to {self.output_dir}")
 
     def plot_free_energy_surface(
