@@ -63,6 +63,7 @@ class ReplicaExchange:
         self.output_dir = Path(output_dir)
         self.exchange_frequency = exchange_frequency
         self.dcd_stride = dcd_stride
+        self.frames_per_replica_target: Optional[int] = None
 
         # Create output directory
         self.output_dir.mkdir(exist_ok=True)
@@ -101,6 +102,9 @@ class ReplicaExchange:
         self.exchange_history: List[List[int]] = (
             []
         )  # Fixed: Added type annotation for nested int lists
+        # Diagnostics accumulation
+        self.acceptance_matrix: Optional[np.ndarray] = None
+        self.replica_visit_counts: Optional[np.ndarray] = None
 
         logger.info(f"Initialized REMD with {self.n_replicas} replicas")
         logger.info(
@@ -843,6 +847,15 @@ class ReplicaExchange:
         """
         self._validate_setup_state()
         self._log_run_start(total_steps)
+        # Configure deterministic stride to target ~5000 frames/replica in production
+        # frames ≈ production_steps / dcd_stride ⇒ set dcd_stride = max(1, production_steps // 5000)
+        production_steps_preview = max(0, total_steps - equilibration_steps)
+        if production_steps_preview > 0:
+            self.dcd_stride = max(1, production_steps_preview // 5000)
+            logger.info(
+                f"Setting DCD stride to {self.dcd_stride} to target ~5000 frames/replica"
+            )
+
         if equilibration_steps > 0:
             self._run_equilibration_phase(equilibration_steps, checkpoint_manager)
         if self._skip_production_if_completed(checkpoint_manager):
@@ -1058,11 +1071,23 @@ class ReplicaExchange:
                 f"{exchange_steps} exchange attempts"
             )
         )
+        # Initialize diagnostics once production starts
+        if self.acceptance_matrix is None:
+            self.acceptance_matrix = np.zeros((self.n_replicas - 1, 2), dtype=int)
+        if self.replica_visit_counts is None:
+            self.replica_visit_counts = np.zeros(
+                (self.n_replicas, self.n_replicas), dtype=int
+            )
+
         for step in range(exchange_steps):
             self._production_step_all_replicas(step, checkpoint_manager)
             energies = self._precompute_energies()
             self._attempt_all_exchanges(energies)
             self.exchange_history.append(self.replica_states.copy())
+            # Update visitation histogram
+            for r, s in enumerate(self.replica_states):
+                if self.replica_visit_counts is not None:
+                    self.replica_visit_counts[r, s] += 1
             self._log_production_progress(
                 step, exchange_steps, total_steps, equilibration_steps
             )
@@ -1115,7 +1140,13 @@ class ReplicaExchange:
     def _attempt_all_exchanges(self, energies: List[Any]) -> None:
         for i in range(0, self.n_replicas - 1, 2):
             try:
-                self.attempt_exchange(i, i + 1, energies=energies)
+                accepted = self.attempt_exchange(i, i + 1, energies=energies)
+                # Update acceptance matrix (even pairs in column 0)
+                if self.acceptance_matrix is not None:
+                    row = i
+                    self.acceptance_matrix[row, 0] += 1  # attempts
+                    if accepted:
+                        self.acceptance_matrix[row, 1] += 1  # accepts
             except Exception as exc:
                 logger.warning(
                     (
@@ -1125,7 +1156,13 @@ class ReplicaExchange:
                 )
         for i in range(1, self.n_replicas - 1, 2):
             try:
-                self.attempt_exchange(i, i + 1, energies=energies)
+                accepted = self.attempt_exchange(i, i + 1, energies=energies)
+                # Update acceptance matrix (odd pairs in next rows)
+                if self.acceptance_matrix is not None:
+                    row = i
+                    self.acceptance_matrix[row, 0] += 1
+                    if accepted:
+                        self.acceptance_matrix[row, 1] += 1
             except Exception as exc:
                 logger.warning(
                     (
@@ -1230,12 +1267,38 @@ class ReplicaExchange:
             "state_replicas": self.state_replicas,
             "exchange_history": self.exchange_history,
             "trajectory_files": [str(f) for f in self.trajectory_files],
+            # Diagnostics
+            "acceptance_matrix": (
+                self.acceptance_matrix.tolist()
+                if self.acceptance_matrix is not None
+                else None
+            ),
+            "replica_visitation_histogram": (
+                self.replica_visit_counts.tolist()
+                if self.replica_visit_counts is not None
+                else None
+            ),
+            "frames_per_replica": self._compute_frames_per_replica(),
+            "effective_sample_size": None,  # Placeholder for TRAM/MBAR ESS if applied
         }
 
         with open(results_file, "wb") as f:
             pickle.dump(results, f)
 
         logger.info(f"Results saved to {results_file}")
+
+    def _compute_frames_per_replica(self) -> List[int]:
+        frames: List[int] = []
+        for traj_file in self.trajectory_files:
+            try:
+                if traj_file.exists():
+                    t = md.load(str(traj_file), top=self.pdb_file)
+                    frames.append(int(t.n_frames))
+                else:
+                    frames.append(0)
+            except Exception:
+                frames.append(0)
+        return frames
 
     def demux_trajectories(
         self, target_temperature: float = 300.0, equilibration_steps: int = 100

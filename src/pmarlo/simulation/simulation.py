@@ -97,6 +97,12 @@ class Simulation:
         if meta is None:
             meta = self.meta
 
+        # Make this Simulation instance discoverable by reporters/utilities
+        try:
+            setattr(openmm_simulation, "_owner", self)
+        except Exception:
+            pass
+
         trajectory_file = production_run(
             self.steps, openmm_simulation, meta, self.output_dir
         )
@@ -279,6 +285,11 @@ def _create_openmm_simulation(
         pdb.topology, system, integrator, platform, platform_properties or None
     )
     simulation.context.setPositions(pdb.positions)
+    # Expose owner to allow reporters to access stride settings
+    try:
+        setattr(simulation, "_owner", None)
+    except Exception:
+        pass
     return simulation
 
 
@@ -287,63 +298,106 @@ def _minimize_and_equilibrate(simulation: app.Simulation) -> None:
     simulation.step(1000)
 
 
-def production_run(steps, simulation, meta, output_dir=None):
-    """Run production molecular dynamics simulation."""
+def _print_production_stage_start() -> None:
     print("Stage 3/5  –  production run...")
 
-    if output_dir is None:
-        output_dir = Path("output") / "simulation"
-    else:
-        output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
 
-    dcd_filename = str(output_dir / "traj.dcd")
-    # Respect Simulation.dcd_stride if available via bound simulation.owner;
-    # default 1000
+def _resolve_output_dir(output_dir: Optional[Path]) -> Path:
+    return Path("output") / "simulation" if output_dir is None else Path(output_dir)
+
+
+def _compose_dcd_filename(output_dir: Path) -> str:
+    return str(output_dir / "traj.dcd")
+
+
+def _determine_dcd_stride(simulation: app.Simulation) -> int:
     try:
         stride = getattr(getattr(simulation, "_owner", None), "dcd_stride", 1000)
+        if not isinstance(stride, int) or stride <= 0:
+            return 1000
+        return int(stride)
     except Exception:
-        stride = 1000
-    dcd = app.DCDReporter(dcd_filename, int(max(1, stride)))
-    simulation.reporters.append(dcd)
+        return 1000
+
+
+def _attach_dcd_reporter(
+    simulation: app.Simulation, dcd_filename: str, stride: int
+) -> app.DCDReporter:
+    reporter = app.DCDReporter(dcd_filename, int(max(1, stride)))
+    simulation.reporters.append(reporter)
+    return reporter
+
+
+def _run_metadynamics(
+    meta: Metadynamics, simulation: app.Simulation, total_steps: int, step_size: int
+) -> list[float]:
+    bias_list: list[float] = []
+    for _ in range(total_steps // step_size):
+        meta.step(simulation, step_size)
+        simulation.step(0)
+        try:
+            bias_val = meta._currentBias  # type: ignore[attr-defined]
+        except AttributeError:
+            bias_val = 0.0
+        for _ in range(step_size):
+            bias_list.append(float(bias_val))
+    return bias_list
+
+
+def _run_plain_md(simulation: app.Simulation, total_steps: int) -> None:
+    simulation.step(total_steps)
+
+
+def _save_final_state(simulation: app.Simulation, output_dir: Path) -> None:
+    simulation.saveState(str(output_dir / "final.xml"))
+
+
+def _cleanup_dcd(simulation: app.Simulation, reporter: app.DCDReporter) -> None:
+    simulation.reporters.remove(reporter)
+    import gc
+
+    del reporter
+    gc.collect()
+
+
+def _save_bias_if_present(
+    meta: Optional[Metadynamics], bias_list: list[float], output_dir: Path
+) -> None:
+    if meta is None:
+        return
+    bias_array = np.array(bias_list)
+    bias_file = output_dir / "bias_for_run.npy"
+    np.save(str(bias_file), bias_array)
+    print(
+        f"[INFO] Saved bias array for this run to {bias_file} (length: {len(bias_array)})"
+    )
+
+
+def production_run(steps, simulation, meta, output_dir=None):
+    """Run production molecular dynamics simulation."""
+    _print_production_stage_start()
+
+    out_dir = _resolve_output_dir(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    dcd_filename = _compose_dcd_filename(out_dir)
+    stride = _determine_dcd_stride(simulation)
+    dcd_reporter = _attach_dcd_reporter(simulation, dcd_filename, stride)
 
     total_steps = steps
     step_size = 10
-    bias_list = []
 
     if meta is not None:
-        for i in range(total_steps // step_size):
-            meta.step(simulation, step_size)
-            simulation.step(0)  # triggers reporters
-            try:
-                bias_val = meta._currentBias
-            except AttributeError:
-                bias_val = 0.0
-            for _ in range(step_size):
-                bias_list.append(bias_val)
+        bias_list = _run_metadynamics(meta, simulation, total_steps, step_size)
     else:
-        # Run without metadynamics
-        simulation.step(total_steps)
+        _run_plain_md(simulation, total_steps)
+        bias_list = []
 
-    simulation.saveState(str(output_dir / "final.xml"))
+    _save_final_state(simulation, out_dir)
     print("✔ MD + biasing finished\n")
 
-    # Remove DCDReporter and force garbage collection to finalize file
-    simulation.reporters.remove(dcd)
-    import gc
-
-    del dcd
-    gc.collect()
-
-    if meta is not None:
-        # Save the bias array for this run
-        bias_array = np.array(bias_list)
-        bias_file = output_dir / "bias_for_run.npy"
-        np.save(str(bias_file), bias_array)
-        print(
-            f"[INFO] Saved bias array for this run to {bias_file} "
-            f"(length: {len(bias_array)})"
-        )
+    _cleanup_dcd(simulation, dcd_reporter)
+    _save_bias_if_present(meta, bias_list, out_dir)
 
     return dcd_filename
 

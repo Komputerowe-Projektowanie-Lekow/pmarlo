@@ -221,10 +221,10 @@ if __name__ == "__main__":
     output_dir = ensure_output_dir(DEFAULT_OUTPUT_DIR)
 
     # Default parameters for longer production run
-    steps = 50_000
+    steps = 10_000
     default_n_states = 50
     feature_type = "phi_psi"
-    temperatures = [300.0, 310.0, 320.0]
+    temperatures = [300.0, 305.0, 310.0, 315.0, 320.0]
 
     logging.info("Initializing protein: %s", pdb_path)
     protein = Protein(str(pdb_path), ph=7.0, auto_prepare=False)

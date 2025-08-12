@@ -1296,7 +1296,7 @@ description = "pdbfixer: Fixes problems in PDB files"
 optional = true
 python-versions = "*"
 groups = ["main"]
-markers = "extra == \"fixer\""
+markers = "python_version == \"3.11\" and extra == \"fixer\""
 files = []
 develop = false
 
@@ -2204,4 +2204,4 @@ fixer = ["pdbfixer"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.13"
-content-hash = "7bb3c75eb5ee5e1a21e595096048395b0a2d4b5bc50b6d56c2968f67883e86ed"
+content-hash = "6f5746eb1a71392e66d78b76b13b9600b96c437d3e8c7c98f56f5082d1f68693"

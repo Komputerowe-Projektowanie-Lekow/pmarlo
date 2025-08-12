@@ -60,6 +60,8 @@ def _configure_pipeline(config: SimulationConfig, run_dir: Path) -> Pipeline:
         output_dir=str(run_dir),
         auto_continue=False,
         enable_checkpoints=False,
+        # Ensure we record frames frequently enough for short tests
+        # (propagated to Simulation via Pipeline)
     )
 
 

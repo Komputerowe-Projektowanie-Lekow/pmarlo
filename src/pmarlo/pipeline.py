@@ -217,6 +217,8 @@ class Pipeline:
             steps=self.steps,
             output_dir=str(sim_output_dir),
             use_metadynamics=self.use_metadynamics,
+            # Ensure DCD is produced even for short test runs
+            dcd_stride=max(1, min(100, self.steps // 10) if self.steps else 10),
         )
 
         logger.info(

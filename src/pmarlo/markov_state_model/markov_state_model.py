@@ -13,6 +13,7 @@ This module provides advanced MSM analysis capabilities including:
 - Comprehensive visualization
 """
 
+import json
 import logging
 import pickle
 import warnings
@@ -25,6 +26,7 @@ import mdtraj as md
 import numpy as np
 import pandas as pd
 from scipy import constants
+from scipy.ndimage import gaussian_filter
 from scipy.sparse import csc_matrix, issparse, save_npz
 from sklearn.cluster import MiniBatchKMeans
 
@@ -87,6 +89,7 @@ class EnhancedMSM:
         self.stationary_distribution: Optional[np.ndarray] = None
         self.free_energies: Optional[np.ndarray] = None
         self.lag_time = 20  # Default lag time
+        self.frame_stride: Optional[int] = None  # Optional: frames per saved sample
 
         # TRAM data
         self.tram_weights: Optional[np.ndarray] = None
@@ -127,6 +130,196 @@ class EnhancedMSM:
             raise ValueError("No trajectories loaded successfully")
 
         logger.info(f"Total trajectories loaded: {len(self.trajectories)}")
+        # Track total frames for adaptive clustering heuristics
+        try:
+            self.total_frames: Optional[int] = int(
+                sum(int(t.n_frames) for t in self.trajectories)
+            )
+        except Exception:
+            self.total_frames = None
+
+    def save_phi_psi_scatter_diagnostics(
+        self,
+        *,
+        max_residues: int = 6,
+        exclude_special: bool = True,
+        sample_per_residue: int = 2000,
+        filename: str = "diagnostics_phi_psi_scatter.png",
+    ) -> Optional[Path]:
+        """Save a raw φ/ψ scatter plot across several residues for sanity check.
+
+        - Uses multiple internal residues that have both φ and ψ defined
+        - Optionally excludes termini and Gly/Pro (distinctive Ramachandran regions)
+        - Wraps to degrees in [-180, 180]
+        """
+        try:
+            if not self.trajectories:
+                return None
+
+            all_phi, all_psi, selected_meta = self._init_phi_psi_buffers()
+
+            for traj in self.trajectories:
+                dihedrals = self._compute_traj_dihedrals(traj)
+                if dihedrals is None:
+                    continue
+                phi_indices, phi, psi_indices, psi = dihedrals
+
+                phi_map, psi_map, common_res = self._map_residues_to_dihedrals(
+                    traj, phi_indices, psi_indices
+                )
+
+                candidates = self._build_phi_psi_candidates(
+                    traj, common_res, phi_map, psi_map, exclude_special
+                )
+                if not candidates:
+                    continue
+
+                selected = self._select_candidate_residues(candidates, max_residues)
+                phi_wrap, psi_wrap = self._wrap_dihedral_angles_in_degrees(phi, psi)
+
+                self._accumulate_samples_for_selected(
+                    selected,
+                    phi_wrap,
+                    psi_wrap,
+                    sample_per_residue,
+                    all_phi,
+                    all_psi,
+                    selected_meta,
+                )
+
+            if not all_phi or not all_psi:
+                logger.warning("φ/ψ diagnostics: no data collected; skipping plot")
+                return None
+
+            out_path = self._plot_phi_psi_scatter_and_save(all_phi, all_psi, filename)
+            self._save_phi_psi_metadata(selected_meta, max_residues)
+            logger.info(f"Saved φ/ψ diagnostic scatter: {out_path}")
+            return out_path
+        except Exception as e:
+            logger.warning(f"φ/ψ diagnostics failed: {e}")
+            return None
+
+    # ---- φ/ψ diagnostics helpers (split to address C901) ----
+
+    def _init_phi_psi_buffers(self) -> tuple[list[float], list[float], list[dict]]:
+        all_phi: list[float] = []
+        all_psi: list[float] = []
+        selected_meta: list[dict] = []
+        return all_phi, all_psi, selected_meta
+
+    def _compute_traj_dihedrals(
+        self, traj: md.Trajectory
+    ) -> Optional[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+        phi_indices, phi = md.compute_phi(traj)
+        psi_indices, psi = md.compute_psi(traj)
+        if phi.size == 0 or psi.size == 0:
+            return None
+        return phi_indices, phi, psi_indices, psi
+
+    def _map_residues_to_dihedrals(
+        self,
+        traj: md.Trajectory,
+        phi_indices: np.ndarray,
+        psi_indices: np.ndarray,
+    ) -> tuple[Dict[int, int], Dict[int, int], List[int]]:
+        # Map dihedral columns to residue indices via second atom (N_i)
+        phi_res_ids = [
+            int(traj.topology.atom(int(idx[1])).residue.index) for idx in phi_indices
+        ]
+        psi_res_ids = [
+            int(traj.topology.atom(int(idx[1])).residue.index) for idx in psi_indices
+        ]
+        phi_map = {rid: col for col, rid in enumerate(phi_res_ids)}
+        psi_map = {rid: col for col, rid in enumerate(psi_res_ids)}
+        common_res = sorted(set(phi_map).intersection(psi_map))
+        return phi_map, psi_map, common_res
+
+    def _build_phi_psi_candidates(
+        self,
+        traj: md.Trajectory,
+        common_res: List[int],
+        phi_map: Dict[int, int],
+        psi_map: Dict[int, int],
+        exclude_special: bool,
+    ) -> list[tuple[int, int, int, str]]:
+        candidates: list[tuple[int, int, int, str]] = []
+        n_residues = traj.topology.n_residues
+        for rid in common_res:
+            # Exclude termini (lack one of the dihedrals typically)
+            if rid <= 0 or rid >= n_residues - 1:
+                continue
+            res = traj.topology.residue(rid)
+            res_name = str(res.name).upper()
+            if exclude_special and res_name in {"GLY", "PRO"}:
+                continue
+            candidates.append((rid, phi_map[rid], psi_map[rid], res_name))
+        return candidates
+
+    def _select_candidate_residues(
+        self, candidates: list[tuple[int, int, int, str]], max_residues: int
+    ) -> list[tuple[int, int, int, str]]:
+        step = max(1, len(candidates) // max_residues)
+        return [candidates[i] for i in range(0, len(candidates), step)][:max_residues]
+
+    def _wrap_dihedral_angles_in_degrees(
+        self, phi: np.ndarray, psi: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        phi_deg = np.degrees(phi)
+        psi_deg = np.degrees(psi)
+        phi_wrap = ((phi_deg + 180.0) % 360.0) - 180.0
+        psi_wrap = ((psi_deg + 180.0) % 360.0) - 180.0
+        return phi_wrap, psi_wrap
+
+    def _accumulate_samples_for_selected(
+        self,
+        selected: list[tuple[int, int, int, str]],
+        phi_wrap: np.ndarray,
+        psi_wrap: np.ndarray,
+        sample_per_residue: int,
+        all_phi: list[float],
+        all_psi: list[float],
+        selected_meta: list[dict],
+    ) -> None:
+        for rid, cphi, cpsi, res_name in selected:
+            x = phi_wrap[:, cphi].astype(float)
+            y = psi_wrap[:, cpsi].astype(float)
+            # Subsample evenly to avoid massive plots
+            if x.size > sample_per_residue:
+                stride = max(1, x.size // sample_per_residue)
+                x = x[::stride]
+                y = y[::stride]
+            all_phi.extend(x.tolist())
+            all_psi.extend(y.tolist())
+            selected_meta.append({"residue_index": rid, "name": res_name})
+
+    def _plot_phi_psi_scatter_and_save(
+        self, all_phi: list[float], all_psi: list[float], filename: str
+    ) -> Path:
+        plt.figure(figsize=(7, 6))
+        plt.scatter(all_phi, all_psi, s=4, alpha=0.25, c="tab:blue")
+        plt.xlim([-180, 180])
+        plt.ylim([-180, 180])
+        plt.xlabel("ϕ (deg)")
+        plt.ylabel("ψ (deg)")
+        plt.title("Raw ϕ/ψ scatter (multi-residue)")
+        out_path = self.output_dir / filename
+        plt.tight_layout()
+        plt.savefig(out_path, dpi=200)
+        plt.close()
+        return out_path
+
+    def _save_phi_psi_metadata(
+        self, selected_meta: list[dict], max_residues: int
+    ) -> None:
+        try:
+            meta_path = self.output_dir / "diagnostics_phi_psi_meta.json"
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {"selected_residues": selected_meta[:max_residues]}, f, indent=2
+                )
+        except Exception:
+            # Best-effort metadata save; do not raise
+            pass
 
     def compute_features(
         self, feature_type: str = "phi_psi", n_features: Optional[int] = None
@@ -148,6 +341,8 @@ class EnhancedMSM:
             all_features.append(traj_features)
         self.features = self._combine_all_features(all_features)
         self._log_features_shape()
+        # Optional: apply TICA projection (2-5 components) when requested
+        self._maybe_apply_tica(feature_type, n_features)
 
     # ---------------- Feature computation helper methods ----------------
 
@@ -157,11 +352,14 @@ class EnhancedMSM:
     def _compute_features_for_traj(
         self, traj: md.Trajectory, feature_type: str, n_features: Optional[int]
     ) -> np.ndarray:
-        if feature_type == "phi_psi":
+        ft = feature_type.lower()
+        if ft.startswith("phi_psi_distances"):
+            return self._compute_phi_psi_plus_distance_features(traj, n_features)
+        if ft.startswith("phi_psi"):
             return self._compute_phi_psi_features(traj)
-        if feature_type == "distances":
+        if ft == "distances":
             return self._compute_distance_features(traj, n_features)
-        if feature_type == "contacts":
+        if ft == "contacts":
             return self._compute_contact_features(traj)
         raise ValueError(f"Unknown feature type: {feature_type}")
 
@@ -184,6 +382,18 @@ class EnhancedMSM:
 
     def _fallback_cartesian_features(self, traj: md.Trajectory) -> np.ndarray:
         return traj.xyz.reshape(traj.n_frames, -1)
+
+    def _compute_phi_psi_plus_distance_features(
+        self, traj: md.Trajectory, n_distance_features: Optional[int]
+    ) -> np.ndarray:
+        """Concatenate φ/ψ trig-expanded features with selected Cα distances."""
+        phi_psi = self._compute_phi_psi_features(traj)
+        dists = self._compute_distance_features(traj, n_distance_features)
+        if phi_psi.shape[0] != dists.shape[0]:
+            min_len = min(phi_psi.shape[0], dists.shape[0])
+            phi_psi = phi_psi[:min_len]
+            dists = dists[:min_len]
+        return np.hstack([phi_psi, dists])
 
     def _compute_distance_features(
         self, traj: md.Trajectory, n_features: Optional[int]
@@ -245,6 +455,19 @@ class EnhancedMSM:
         if self.features is None:
             raise ValueError("Features must be computed before clustering")
 
+        # Adaptive microstate reduction for Stage-1: prefer 10–20 states for ~40k frames
+        try:
+            num_frames = int(self.features.shape[0]) if self.features is not None else 0
+        except Exception:
+            num_frames = 0
+        if n_clusters > 20 and 0 < num_frames <= 40000:
+            logger.info(
+                f"Reducing requested clusters from {n_clusters} to 20 for low data volume ({num_frames} frames)"
+            )
+            n_clusters = 20
+        if n_clusters < 10:
+            n_clusters = 10
+
         if algorithm == "kmeans":
             clusterer = MiniBatchKMeans(n_clusters=n_clusters, random_state=42)
             labels = clusterer.fit_predict(self.features)
@@ -274,6 +497,19 @@ class EnhancedMSM:
         logger.info(f"Building MSM with lag time {lag_time} using {method} method...")
 
         self.lag_time = lag_time
+        # If features were marked for TICA (feature_type contained 'tica'), they were already projected.
+        # Ensure that if features are still high-dimensional dihedrals without TICA, we optionally apply a default 3-comp TICA.
+        try:
+            # Use direct attribute checks to satisfy type checkers
+            if self.features is not None and not hasattr(self, "tica_components_"):
+                # Heuristic: if feature dimension is large (>20), project to 3 tICs
+                if self.features.shape[1] > 20:
+                    logger.info(
+                        "Applying default 3-component TICA prior to MSM to reduce noise"
+                    )
+                    self._maybe_apply_tica("tica", 3)
+        except Exception:
+            pass
 
         if method == "standard":
             self._build_standard_msm(lag_time)
@@ -287,12 +523,64 @@ class EnhancedMSM:
 
         logger.info("MSM construction completed")
 
+    # ---------------- TICA (time-lagged ICA) support ----------------
+
+    def _maybe_apply_tica(
+        self, feature_type: str, n_components_hint: Optional[int]
+    ) -> None:
+        """Apply simple TICA if requested via feature_type string containing 'tica'.
+
+        Projects self.features to the top 2–5 TICA components using current lag_time.
+        """
+        if self.features is None:
+            return
+        if "tica" not in feature_type.lower():
+            return
+        n_components = int(max(2, min(5, (n_components_hint or 3))))
+
+        # Mean-center features
+        X = self.features.astype(float)
+        X -= np.mean(X, axis=0, keepdims=True)
+
+        lag = max(1, int(self.lag_time))
+        C0 = np.zeros((X.shape[1], X.shape[1]), dtype=float)
+        Ctau = np.zeros_like(C0)
+
+        # Accumulate time-lagged covariances per trajectory to avoid crossing boundaries
+        start_idx = 0
+        for traj in self.trajectories:
+            T = traj.n_frames
+            end_idx = start_idx + T
+            if T > lag + 1:
+                Xt = X[start_idx : end_idx - lag]
+                Xtl = X[start_idx + lag : end_idx]
+                C0 += Xt.T @ Xt
+                Ctau += Xt.T @ Xtl
+            start_idx = end_idx
+
+        # Regularize for numerical stability
+        eps = 1e-6
+        C0 += eps * np.eye(C0.shape[0])
+
+        try:
+            # Solve generalized eigenproblem via inversion (small dims expected)
+            A = np.linalg.solve(C0, Ctau)
+            eigvals, eigvecs = np.linalg.eig(A)
+            order = np.argsort(-np.abs(eigvals))
+            W = np.real(eigvecs[:, order[:n_components]])
+            self.features = X @ W
+            # Store for reference/debugging (optional attributes)
+            self.tica_components_ = W  # type: ignore[attr-defined]
+            self.tica_eigenvalues_ = np.real(eigvals[order[:n_components]])  # type: ignore[attr-defined]
+            logger.info(f"Applied TICA projection to {n_components} components")
+        except Exception as e:
+            logger.warning(f"TICA failed ({e}); proceeding without TICA")
+
     def _build_standard_msm(self, lag_time: int):
         """Build standard MSM from single temperature data."""
-        # Count transitions - Fix: Added proper type annotation
-        counts: Dict[Tuple[int, int], float] = defaultdict(
-            float
-        )  # Fix: Added type annotation
+        # Count transitions with small Bayesian prior α to regularize sparse rows
+        alpha: float = 2.0
+        counts: Dict[Tuple[int, int], float] = defaultdict(float)
         total_transitions = 0
 
         for dtraj in self.dtrajs:
@@ -302,19 +590,17 @@ class EnhancedMSM:
                 counts[(state_i, state_j)] += 1.0
                 total_transitions += 1
 
-        # Build count matrix - Fix: Properly initialize as numpy array
-        count_matrix = np.zeros(
-            (self.n_states, self.n_states)
-        )  # Fix: Direct numpy array initialization
+        # Build count matrix
+        count_matrix = np.full((self.n_states, self.n_states), alpha, dtype=float)
         for (i, j), count in counts.items():
-            count_matrix[i, j] = count
+            count_matrix[i, j] += count
 
-        # Regularize zero rows to avoid non-stochastic rows (unvisited states)
+        # Ensure diagonal support for completely unvisited states (in addition to α)
         row_sums_tmp = count_matrix.sum(axis=1)
         zero_row_indices = np.where(row_sums_tmp == 0)[0]
         if zero_row_indices.size > 0:
             for idx in zero_row_indices:
-                count_matrix[idx, idx] = 1.0
+                count_matrix[idx, idx] = max(1.0, alpha)
 
         self.count_matrix = count_matrix
 
@@ -378,19 +664,18 @@ class EnhancedMSM:
             for (i, j), count in counts.items():
                 combined_counts[(i, j)] += count * weight
 
-        # Build matrices from combined counts - Fix: Proper numpy array initialization
-        count_matrix = np.zeros(
-            (self.n_states, self.n_states)
-        )  # Fix: Direct numpy array initialization
+        # Build matrices from combined counts with small Bayesian prior α
+        alpha: float = 2.0
+        count_matrix = np.full((self.n_states, self.n_states), alpha, dtype=float)
         for (i, j), count in combined_counts.items():
-            count_matrix[i, j] = count
+            count_matrix[i, j] += count
 
-        # Regularize zero rows to avoid non-stochastic rows (unvisited states)
+        # Ensure diagonal support for completely unvisited states (in addition to α)
         row_sums_tmp = count_matrix.sum(axis=1)
         zero_row_indices = np.where(row_sums_tmp == 0)[0]
         if zero_row_indices.size > 0:
             for idx in zero_row_indices:
-                count_matrix[idx, idx] = 1.0
+                count_matrix[idx, idx] = max(1.0, alpha)
 
         self.count_matrix = count_matrix
 
@@ -442,7 +727,8 @@ class EnhancedMSM:
         logger.info("Computing implied timescales...")
 
         if lag_times is None:
-            lag_times = list(range(1, 101, 5))  # 1 to 100 in steps of 5
+            # Recommended lag grid (frames): coarse-to-fine coverage
+            lag_times = [1, 2, 3, 5, 8, 10, 15, 20, 30, 50, 75, 100, 150, 200]
 
         timescales_data = []
 
@@ -486,6 +772,131 @@ class EnhancedMSM:
 
         logger.info("Implied timescales computation completed")
 
+    # ---------------- Macrostate CK test ----------------
+
+    def _micro_to_macro_labels(self, n_macrostates: int = 3) -> Optional[np.ndarray]:
+        try:
+            # Prefer precomputed labels in state_table
+            if (
+                self.state_table is not None
+                and "macrostate" in self.state_table.columns
+            ):
+                labels = np.asarray(self.state_table["macrostate"], dtype=int)
+                if labels.size == self.n_states:
+                    return labels
+        except Exception:
+            pass
+        # Fallback: run internal lumping
+        return self._pcca_lumping(n_macrostates=n_macrostates)
+
+    def compute_ck_test_macrostates(
+        self, n_macrostates: int = 3, factors: Optional[List[int]] = None
+    ) -> Optional[Dict[str, float]]:
+        """Compute CK test MSE at macrostate level for multiples of the base lag.
+
+        Returns a mapping of factor -> MSE on T^factor vs empirical T at (factor*lag).
+        """
+        try:
+            factors = self._normalize_ck_factors(factors)
+            if not self.dtrajs or self.n_states <= 0 or self.lag_time <= 0:
+                return None
+
+            macro_labels = self._micro_to_macro_labels(n_macrostates=n_macrostates)
+            if macro_labels is None:
+                return None
+            n_macros = int(np.max(macro_labels) + 1)
+            if n_macros <= 1:
+                return None
+
+            macro_trajs = self._build_macro_trajectories(self.dtrajs, macro_labels)
+            T1 = self._estimate_macro_T(macro_trajs, n_macros, int(self.lag_time))
+
+            results: Dict[str, float] = {}
+            for f in factors:
+                mse = self._ck_mse_for_factor(
+                    T1, macro_trajs, n_macros, int(self.lag_time), int(f)
+                )
+                if mse is not None:
+                    results[str(int(f))] = float(mse)
+
+            self._persist_ck_macro_results(results, n_macros, int(self.lag_time))
+            return results
+        except Exception:
+            return None
+
+    # ---- CK helpers (split to address C901) ----
+
+    def _normalize_ck_factors(self, factors: Optional[List[int]]) -> List[int]:
+        if factors is None:
+            return [2, 3]
+        return [int(f) for f in factors if int(f) > 1]
+
+    def _build_macro_trajectories(
+        self, dtrajs: List[np.ndarray], macro_labels: np.ndarray
+    ) -> List[np.ndarray]:
+        macro_trajs: List[np.ndarray] = []
+        for arr in dtrajs:
+            try:
+                seq = np.asarray(arr, dtype=int)
+                macro_trajs.append(macro_labels[seq])
+            except Exception:
+                macro_trajs.append(np.array([], dtype=int))
+        return macro_trajs
+
+    def _count_macro_T(
+        self, macro_trajs: List[np.ndarray], nM: int, lag: int
+    ) -> np.ndarray:
+        C = np.zeros((nM, nM), dtype=float)
+        for seq in macro_trajs:
+            if seq.size <= lag:
+                continue
+            for i in range(0, seq.size - lag):
+                a = int(seq[i])
+                b = int(seq[i + lag])
+                if 0 <= a < nM and 0 <= b < nM:
+                    C[a, b] += 1.0
+        rows = C.sum(axis=1)
+        rows[rows == 0] = 1.0
+        return C / rows[:, None]
+
+    def _estimate_macro_T(
+        self, macro_trajs: List[np.ndarray], nM: int, lag_frames: int
+    ) -> np.ndarray:
+        return self._count_macro_T(macro_trajs, nM, int(lag_frames))
+
+    def _ck_mse_for_factor(
+        self,
+        T1: np.ndarray,
+        macro_trajs: List[np.ndarray],
+        nM: int,
+        base_lag: int,
+        factor: int,
+    ) -> Optional[float]:
+        try:
+            T_theory = np.linalg.matrix_power(T1, int(factor))
+            T_emp = self._count_macro_T(macro_trajs, nM, int(base_lag) * int(factor))
+            diff = T_theory - T_emp
+            return float(np.mean(diff * diff))
+        except Exception:
+            return None
+
+    def _persist_ck_macro_results(
+        self, results: Dict[str, float], nM: int, lag_frames: int
+    ) -> None:
+        try:
+            out = {
+                "n_macrostates": int(nM),
+                "lag_time_frames": int(lag_frames),
+                "factors": results,
+            }
+            with open(
+                self.output_dir / "msm_analysis_ck_macro.json", "w", encoding="utf-8"
+            ) as f:
+                json.dump(out, f, indent=2)
+        except Exception:
+            # Best-effort persistence; do not raise
+            pass
+
     def generate_free_energy_surface(
         self,
         cv1_name: str = "phi",
@@ -512,16 +923,28 @@ class EnhancedMSM:
         total_frames, cv_points = self._log_data_cardinality(
             cv1_data, frame_weights_array
         )
-        bins = self._maybe_adjust_bins_for_sparsity(bins, total_frames)
+        bins = self._choose_bins(total_frames, bins)
         cv1_data, cv2_data, frame_weights_array = self._align_data_lengths(
             cv1_data, cv2_data, frame_weights_array
         )
+        ranges = (
+            [(-180.0, 180.0), (-180.0, 180.0)]
+            if (cv1_name == "phi" and cv2_name == "psi")
+            else None
+        )
         H, xedges, yedges = self._compute_weighted_histogram(
-            cv1_data, cv2_data, frame_weights_array, bins
+            cv1_data, cv2_data, frame_weights_array, bins, ranges, smooth_sigma=0.6
         )
         F = self._histogram_to_free_energy(H, temperature)
         self._log_fes_statistics(F, H)
         self._store_fes_result(F, xedges, yedges, cv1_name, cv2_name, temperature)
+        try:
+            # Side-by-side scatter and FES for quick sanity diagnostics
+            self._save_fes_with_scatter(
+                cv1_data, cv2_data, xedges, yedges, F, cv1_name, cv2_name
+            )
+        except Exception:
+            pass
         logger.info("Free energy surface generated")
         assert self.fes_data is not None
         return self.fes_data
@@ -555,23 +978,19 @@ class EnhancedMSM:
         )
         return total_frames, cv_points
 
-    def _maybe_adjust_bins_for_sparsity(self, bins: int, total_frames: int) -> int:
-        min_frames_required = bins // 4
-        if total_frames < min_frames_required:
-            logger.warning(
-                (
-                    f"Insufficient data for {bins}x{bins} FES: "
-                    f"{total_frames} frames < {min_frames_required} required"
-                )
-            )
-            logger.info(
-                (
-                    "Reducing bins from "
-                    f"{bins} to {max(10, total_frames // 2)} for sparse data"
-                )
-            )
-            return max(10, total_frames // 2)
-        return bins
+    def _choose_bins(self, total_frames: int, user_bins: int) -> int:
+        """Select bin count based on frames; clamp to [40, 60]."""
+        # Simple heuristic: scale with sqrt of frames but clamp to 40–60
+        try:
+            if total_frames <= 0:
+                return max(40, min(60, user_bins))
+            reco = int(max(40, min(60, np.sqrt(total_frames) // 6)))
+        except Exception:
+            reco = 50
+        # Respect user suggestion if within clamp, otherwise prefer recommended
+        candidate = max(40, min(60, int(user_bins)))
+        # Pick the closer to recommended to avoid extremes
+        return candidate if abs(candidate - reco) <= 5 else reco
 
     def _align_data_lengths(
         self,
@@ -599,11 +1018,20 @@ class EnhancedMSM:
         cv2_data: np.ndarray,
         frame_weights_array: np.ndarray,
         bins: int,
+        ranges: Optional[List[Tuple[float, float]]] = None,
+        smooth_sigma: Optional[float] = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         try:
             H, xedges, yedges = np.histogram2d(
-                cv1_data, cv2_data, bins=bins, weights=frame_weights_array, density=True
+                cv1_data,
+                cv2_data,
+                bins=bins,
+                weights=frame_weights_array,
+                density=True,
+                range=ranges,  # Use fixed ranges when provided (e.g., [-180,180] for angles)
             )
+            if smooth_sigma and smooth_sigma > 0:
+                H = gaussian_filter(H, sigma=float(smooth_sigma))
             non_zero_bins = int(np.sum(H > 0))
             logger.info(
                 (
@@ -673,6 +1101,48 @@ class EnhancedMSM:
             "temperature": temperature,
         }
 
+    def _save_fes_with_scatter(
+        self,
+        cv1_data: np.ndarray,
+        cv2_data: np.ndarray,
+        xedges: np.ndarray,
+        yedges: np.ndarray,
+        F: np.ndarray,
+        cv1_name: str,
+        cv2_name: str,
+    ) -> None:
+        # Downsample scatter for speed/clarity
+        max_points = 20000
+        n = min(len(cv1_data), len(cv2_data))
+        if n <= 0:
+            return
+        stride = max(1, n // max_points)
+        xs = cv1_data[::stride]
+        ys = cv2_data[::stride]
+
+        import matplotlib.pyplot as _plt
+
+        fig, axes = _plt.subplots(1, 2, figsize=(12, 5))
+        # Scatter
+        axes[0].scatter(xs, ys, s=4, alpha=0.25, c="tab:blue")
+        axes[0].set_xlim([-180, 180])
+        axes[0].set_ylim([-180, 180])
+        axes[0].set_xlabel(f"{cv1_name} (deg)")
+        axes[0].set_ylabel(f"{cv2_name} (deg)")
+        axes[0].set_title("Raw scatter")
+        # FES contour
+        x_centers = 0.5 * (xedges[:-1] + xedges[1:])
+        y_centers = 0.5 * (yedges[:-1] + yedges[1:])
+        c = axes[1].contourf(x_centers, y_centers, F.T, levels=20, cmap="viridis")
+        fig.colorbar(c, ax=axes[1], label="Free Energy (kJ/mol)")
+        axes[1].set_xlabel(cv1_name)
+        axes[1].set_ylabel(cv2_name)
+        axes[1].set_title("FES (smoothed)")
+        fig.suptitle(f"{cv1_name} vs {cv2_name}")
+        fig.tight_layout()
+        fig.savefig(self.output_dir / "fes_and_scatter.png", dpi=200)
+        _plt.close(fig)
+
     def _extract_collective_variables(
         self, cv1_name: str, cv2_name: str
     ) -> Tuple[np.ndarray, np.ndarray]:
@@ -685,13 +1155,17 @@ class EnhancedMSM:
                 phi_angles, _ = md.compute_phi(traj)
                 psi_angles, _ = md.compute_psi(traj)
 
-                # Ensure arrays are 1D by selecting the first available dihedral or fallback
+                # Ensure arrays are 1D by selecting the first available dihedral
                 if phi_angles.size > 0 and psi_angles.size > 0:
                     phi_vec = phi_angles[:, 0] if phi_angles.ndim == 2 else phi_angles
                     psi_vec = psi_angles[:, 0] if psi_angles.ndim == 2 else psi_angles
-                    # Flatten to 1D python floats
-                    cv1_data.extend([float(v) for v in np.array(phi_vec).reshape(-1)])
-                    cv2_data.extend([float(v) for v in np.array(psi_vec).reshape(-1)])
+                    # Convert radians -> degrees and wrap to [-180, 180]
+                    phi_deg = np.degrees(np.array(phi_vec).reshape(-1))
+                    psi_deg = np.degrees(np.array(psi_vec).reshape(-1))
+                    phi_wrapped = ((phi_deg + 180.0) % 360.0) - 180.0
+                    psi_wrapped = ((psi_deg + 180.0) % 360.0) - 180.0
+                    cv1_data.extend([float(v) for v in phi_wrapped])
+                    cv2_data.extend([float(v) for v in psi_wrapped])
                 else:
                     raise ValueError("No phi/psi angles found in trajectory")
 
@@ -744,6 +1218,13 @@ class EnhancedMSM:
         self._attach_cluster_centers(state_data)
         self.state_table = pd.DataFrame(state_data)
         logger.info(f"State table created with {len(self.state_table)} states")
+        try:
+            # Optional: PCCA+ lumping from microstates to macrostates (3–5)
+            macrostates = self._pcca_lumping(n_macrostates=4)
+            if macrostates is not None:
+                self.state_table["macrostate"] = macrostates
+        except Exception as e:
+            logger.warning(f"PCCA+ lumping skipped ({e})")
         return self.state_table
 
     # -------------- State table helper methods (split for C901) --------------
@@ -816,6 +1297,29 @@ class EnhancedMSM:
         if self.cluster_centers is not None:
             for i, center in enumerate(self.cluster_centers.T):
                 state_data[f"cluster_center_{i}"] = center
+
+    def _pcca_lumping(self, n_macrostates: int = 4) -> Optional[np.ndarray]:
+        """Perform a simple PCCA+-like lumping using leading eigenvectors.
+
+        This is a lightweight surrogate: we compute the top-k right eigenvectors of
+        T and run k-means in that space to get fuzzy clusters; then assign hard labels.
+        """
+        try:
+            if self.transition_matrix is None or self.n_states <= n_macrostates:
+                return None
+            T = np.asarray(self.transition_matrix, dtype=float)
+            # Leading eigenvectors (excluding stationary)
+            eigvals, eigvecs = np.linalg.eig(T.T)
+            order = np.argsort(-np.real(eigvals))
+            # Skip the first (stationary); take next components
+            k = max(2, min(n_macrostates, T.shape[0] - 1))
+            comps = np.real(eigvecs[:, order[1 : 1 + k]])
+            # k-means in eigenvector space
+            km = MiniBatchKMeans(n_clusters=n_macrostates, random_state=42)
+            labels = km.fit_predict(comps)
+            return labels.astype(int)
+        except Exception:
+            return None
 
     def _create_matrix_intelligent(
         self, shape: Tuple[int, int], use_sparse: Optional[bool] = None
@@ -1264,6 +1768,11 @@ def _initialize_msm_analyzer(
 
 def _load_and_prepare(msm: EnhancedMSM, feature_type: str, n_clusters: int) -> None:
     msm.load_trajectories()
+    # Save a quick φ/ψ sanity scatter before feature building (helps spot issues early)
+    try:
+        msm.save_phi_psi_scatter_diagnostics()
+    except Exception:
+        pass
     msm.compute_features(feature_type=feature_type)
     msm.cluster_features(n_clusters=n_clusters)
 

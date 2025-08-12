@@ -136,12 +136,19 @@ def _compute_msm_diagnostics(msm) -> Dict:
     its_convergence_score = compute_its_convergence_score(
         getattr(msm, "implied_timescales", None)
     )
+    # Macrostate CK test (factors 2,3) if available
+    ck_macro = None
+    try:
+        ck_macro = msm.compute_ck_test_macrostates(n_macrostates=3, factors=[2, 3])
+    except Exception:
+        ck_macro = None
     return {
         "spectral_gap": spectral_gap,
         "stationary_entropy": stationary_entropy,
         "row_stochasticity_mad": row_stochasticity_mad,
         "detailed_balance_mad": detailed_balance_mad,
         "its_convergence_score": its_convergence_score,
+        "ck_macro": ck_macro,
     }
 
 

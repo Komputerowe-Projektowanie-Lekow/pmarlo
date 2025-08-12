@@ -12,6 +12,10 @@ final.xml
 /experiments_output/msm/*
 /experiments_output/replica_exchange/*
 /experiments_output/simulation/*
+/experiments_output_all/
+
+/mdfiles/prompts.md
+/mdfiles/README_EXPERIMENTS.md
 
 
 # IDE files
