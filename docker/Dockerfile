@@ -28,4 +28,7 @@ COPY tests /app/tests
 # Make src importable without installing the package (live code via bind mount)
 ENV PYTHONPATH=/app/src
 
-CMD ["python", "-m", "pmarlo.experiments.cli", "--help"]
+# Entry point for containerized runs (Docker/K8s)
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]

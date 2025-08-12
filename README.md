@@ -30,6 +30,11 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
+
+## Documentation
+Documentation was made using cognition powered by Devin. Here is the link https://deepwiki.com/Komputerowe-Projektowanie-Lekow/pmarlo. It will be updated weekly whenever new features, bug fixes, or other changes are made.
+
+
 ## Verified Usage Example
 
 The following example demonstrates the verified functionality of PMARLO:
