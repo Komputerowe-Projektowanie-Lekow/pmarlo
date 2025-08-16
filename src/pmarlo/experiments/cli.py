@@ -86,7 +86,9 @@ def main():
     elif args.verbose >= 2:
         log_level = logging.DEBUG
     logging.basicConfig(
-        level=log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+        level=log_level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,
     )
 
     if args.cmd == "simulation":

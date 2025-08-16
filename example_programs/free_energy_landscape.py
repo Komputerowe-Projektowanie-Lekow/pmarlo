@@ -45,7 +45,9 @@ DEFAULT_OUTPUT_DIR = (
 def configure_logging(verbose: bool) -> None:
     """Configure console logging."""
     level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(level=level, format="%(asctime)s - %(levelname)s - %(message)s")
+    logging.basicConfig(
+        level=level, format="%(asctime)s - %(levelname)s - %(message)s", force=True
+    )
 
 
 def ensure_output_dir(path: Path) -> Path:
@@ -225,7 +227,24 @@ if __name__ == "__main__":
     steps = 1000
     n_states = 50
     feature_type = "phi_psi"
-    temperatures = [300.0, 310.0, 320.0]
+    temperatures = [
+        300.0,
+        305.0,
+        310.0,
+        315.0,
+        320.0,
+        325.0,
+        330.0,
+        335.0,
+        340.0,
+        345.0,
+        350.0,
+        355.0,
+        360.0,
+        365.0,
+        370.0,
+        375.0,
+    ]
 
     # Initialize Protein using the public API; avoid automatic preparation to skip PDBFixer
     logging.info("Initializing protein: %s", pdb_path)

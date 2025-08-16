@@ -41,7 +41,9 @@ DEFAULT_OUTPUT_DIR = (
 def configure_logging(verbose: bool) -> None:
     """Configure console logging."""
     level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(level=level, format="%(asctime)s - %(levelname)s - %(message)s")
+    logging.basicConfig(
+        level=level, format="%(asctime)s - %(levelname)s - %(message)s", force=True
+    )
 
 
 def ensure_output_dir(path: Path) -> Path:
@@ -224,7 +226,24 @@ if __name__ == "__main__":
     steps = 10_000
     default_n_states = 50
     feature_type = "phi_psi"
-    temperatures = [300.0, 305.0, 310.0, 315.0, 320.0]
+    temperatures = [
+        300.0,
+        305.0,
+        310.0,
+        315.0,
+        320.0,
+        325.0,
+        330.0,
+        335.0,
+        340.0,
+        345.0,
+        350.0,
+        355.0,
+        360.0,
+        365.0,
+        370.0,
+        375.0,
+    ]
 
     logging.info("Initializing protein: %s", pdb_path)
     protein = Protein(str(pdb_path), ph=7.0, auto_prepare=False)

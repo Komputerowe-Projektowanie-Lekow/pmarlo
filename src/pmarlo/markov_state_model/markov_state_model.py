@@ -932,8 +932,29 @@ class EnhancedMSM:
             if (cv1_name == "phi" and cv2_name == "psi")
             else None
         )
+        # Optional quick diagnostic: warn if φ and ψ look almost identical
+        try:
+            if cv1_name == "phi" and cv2_name == "psi" and len(cv1_data) > 10:
+                corr = float(np.corrcoef(cv1_data, cv2_data)[0, 1])
+                if abs(corr) > 0.95:
+                    logger.warning(
+                        (
+                            "High linear correlation between ϕ and ψ (|r|=%.2f). "
+                            "Check indexing/wrapping or data coverage."
+                        ),
+                        corr,
+                    )
+        except Exception:
+            pass
+
         H, xedges, yedges = self._compute_weighted_histogram(
-            cv1_data, cv2_data, frame_weights_array, bins, ranges, smooth_sigma=0.6
+            cv1_data,
+            cv2_data,
+            frame_weights_array,
+            bins,
+            ranges,
+            smooth_sigma=0.6,
+            periodic=(cv1_name == "phi" and cv2_name == "psi"),
         )
         F = self._histogram_to_free_energy(H, temperature)
         self._log_fes_statistics(F, H)
@@ -1020,6 +1041,7 @@ class EnhancedMSM:
         bins: int,
         ranges: Optional[List[Tuple[float, float]]] = None,
         smooth_sigma: Optional[float] = None,
+        periodic: bool = False,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         try:
             H, xedges, yedges = np.histogram2d(
@@ -1031,7 +1053,9 @@ class EnhancedMSM:
                 range=ranges,  # Use fixed ranges when provided (e.g., [-180,180] for angles)
             )
             if smooth_sigma and smooth_sigma > 0:
-                H = gaussian_filter(H, sigma=float(smooth_sigma))
+                # Use circular smoothing on angular FES to respect periodic boundaries
+                mode = "wrap" if periodic else "reflect"
+                H = gaussian_filter(H, sigma=float(smooth_sigma), mode=mode)
             non_zero_bins = int(np.sum(H > 0))
             logger.info(
                 (

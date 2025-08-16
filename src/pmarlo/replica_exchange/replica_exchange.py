@@ -41,7 +41,7 @@ class ReplicaExchange:
         output_dir: str = "output/replica_exchange",
         exchange_frequency: int = 50,  # Very frequent exchanges for testing
         auto_setup: bool = False,
-        dcd_stride: int = 1000,
+        dcd_stride: int = 1,
     ):  # Explicit opt-in for auto-setup
         """
         Initialize the replica exchange simulation.
@@ -1333,11 +1333,12 @@ class ReplicaExchange:
         # DCD reporter settings (must match setup_replicas)
         dcd_frequency = int(max(1, getattr(self, "dcd_stride", 1000)))
 
-        # Load all trajectories with proper error handling
-        demux_frames = []
-        trajectory_frame_counts = {}  # Cache frame counts to avoid repeated loading
+        # Load all trajectories and perform segment-wise demultiplexing
+        demux_segments: List[md.Trajectory] = []
+        trajectory_frame_counts: Dict[str, int] = {}
 
-        logger.info(f"Processing {len(self.exchange_history)} exchange steps...")
+        n_segments = len(self.exchange_history)
+        logger.info(f"Processing {n_segments} exchange steps (segments)...")
         logger.info(
             (
                 f"Exchange frequency: {self.exchange_frequency} MD steps, "
@@ -1345,104 +1346,91 @@ class ReplicaExchange:
             )
         )
 
-        # Debug: Check files exist and get basic info
+        # Diagnostics for DCD files
         logger.info("DCD File Diagnostics:")
+        loaded_trajs: Dict[int, md.Trajectory] = {}
         for i, traj_file in enumerate(self.trajectory_files):
             if traj_file.exists():
                 file_size = traj_file.stat().st_size
                 logger.info(
-                    (
-                        f"  Replica {i}: {traj_file.name} exists, size: "
-                        f"{file_size:,} bytes"
-                    )
+                    f"  Replica {i}: {traj_file.name} exists, size: {file_size:,} bytes"
                 )
-
-                # Try a simple frame count using mdtraj
                 try:
-                    temp_traj = md.load(str(traj_file), top=self.pdb_file)
-                    actual_frames = temp_traj.n_frames
-                    logger.info(f"    -> Successfully loaded: {actual_frames} frames")
-                    trajectory_frame_counts[str(traj_file)] = actual_frames
+                    t = md.load(str(traj_file), top=self.pdb_file)
+                    loaded_trajs[i] = t
+                    trajectory_frame_counts[str(traj_file)] = int(t.n_frames)
+                    logger.info(f"    -> Loaded: {t.n_frames} frames")
                 except Exception as e:
                     logger.warning(f"    -> Failed to load: {e}")
                     trajectory_frame_counts[str(traj_file)] = 0
             else:
                 logger.warning(f"  Replica {i}: {traj_file.name} does not exist")
 
-        # Plan frames per replica for batched loading
-        steps_plan: List[Tuple[int, int]] = []
-        frames_by_replica: Dict[int, set] = {}
-        for step, replica_states in enumerate(self.exchange_history):
+        if not loaded_trajs:
+            logger.warning("No trajectories could be loaded for demultiplexing")
+            return None
+
+        # Effective equilibration steps actually integrated (heating + temp equil)
+        effective_equil_steps = max(100, equilibration_steps * 40 // 100) + max(
+            100, equilibration_steps * 60 // 100
+        )
+
+        # Build per-segment slices
+        for s, replica_states in enumerate(self.exchange_history):
             try:
+                # Which replica was at the target temperature during this segment
                 replica_at_target = None
                 for replica_idx, temp_state in enumerate(replica_states):
                     if temp_state == target_temp_idx:
-                        replica_at_target = replica_idx
+                        replica_at_target = int(replica_idx)
                         break
                 if replica_at_target is None:
                     continue
-                md_step = equilibration_steps + step * self.exchange_frequency
-                frame_number = md_step // dcd_frequency
-                steps_plan.append((replica_at_target, frame_number))
-                frames_by_replica.setdefault(replica_at_target, set()).add(frame_number)
+
+                traj = loaded_trajs.get(replica_at_target)
+                if traj is None:
+                    continue
+
+                # Segment MD step range [start, stop)
+                start_md = effective_equil_steps + s * self.exchange_frequency
+                stop_md = effective_equil_steps + (s + 1) * self.exchange_frequency
+
+                # Map to saved frame indices
+                start_frame = max(0, start_md // dcd_frequency)
+                # Inclusive of frames with step < stop_md
+                end_frame = min(
+                    traj.n_frames, (max(0, stop_md - 1) // dcd_frequency) + 1
+                )
+
+                if end_frame > start_frame:
+                    segment = traj[start_frame:end_frame]
+                    demux_segments.append(segment)
             except Exception:
                 continue
 
-        # Load each replica once and extract requested frames
-        per_replica_frames: Dict[int, Dict[int, md.Trajectory]] = {}
-        for replica_idx, frame_set in frames_by_replica.items():
-            traj_file = self.trajectory_files[replica_idx]
-            if not traj_file.exists():
-                logger.warning(f"Trajectory file not found: {traj_file}")
-                continue
+        if demux_segments:
             try:
-                traj = md.load(str(traj_file), top=self.pdb_file)
-                n_frames = traj.n_frames
-                trajectory_frame_counts[str(traj_file)] = n_frames
-                selected: Dict[int, md.Trajectory] = {}
-                for fidx in sorted(frame_set):
-                    if 0 <= fidx < n_frames:
-                        selected[fidx] = traj[fidx]
-                per_replica_frames[replica_idx] = selected
-            except Exception as e:
-                logger.warning(
-                    f"Could not load trajectory for replica {replica_idx}: {e}"
-                )
-                continue
-
-        # Assemble in chronological order
-        for replica_idx, frame_number in steps_plan:
-            frame_map = per_replica_frames.get(replica_idx, {})
-            if frame_number in frame_map:
-                demux_frames.append(frame_map[frame_number])
-
-        if demux_frames:
-            try:
-                # Combine all frames
-                demux_traj = md.join(demux_frames)
-
-                # Save demultiplexed trajectory
+                demux_traj = md.join(demux_segments)
                 demux_file = self.output_dir / f"demux_T{actual_temp:.0f}K.dcd"
                 demux_traj.save_dcd(str(demux_file))
-
                 logger.info(f"Demultiplexed trajectory saved: {demux_file}")
-                logger.info(f"Total frames at target temperature: {len(demux_frames)}")
-
+                logger.info(
+                    f"Total frames at target temperature: {int(demux_traj.n_frames)}"
+                )
                 return str(demux_file)
             except Exception as e:
                 logger.error(f"Error saving demultiplexed trajectory: {e}")
                 return None
         else:
-            logger.debug(
+            logger.warning(
                 (
-                    "No frames found for demultiplexing - this may indicate "
-                    "frame indexing issues"
+                    "No segments found for demultiplexing - check exchange history, "
+                    "frame indexing, or stride settings"
                 )
             )
-            logger.debug("Debug info:")
             logger.debug(f"  Exchange steps: {len(self.exchange_history)}")
             logger.debug(f"  Exchange frequency: {self.exchange_frequency}")
-            logger.debug(f"  Equilibration steps: {equilibration_steps}")
+            logger.debug(f"  Effective equilibration steps: {effective_equil_steps}")
             logger.debug(f"  DCD frequency: {dcd_frequency}")
             for i, traj_file in enumerate(self.trajectory_files):
                 n_frames = trajectory_frame_counts.get(str(traj_file), 0)

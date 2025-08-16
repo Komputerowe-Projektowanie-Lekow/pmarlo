@@ -9,7 +9,10 @@ from pmarlo import MarkovStateModel, Pipeline, Protein, ReplicaExchange, Simulat
 
 # Configure logging to show all messages in console
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(message)s", datefmt="%H:%M:%S"
+    level=logging.INFO,
+    format="%(asctime)s - %(message)s",
+    datefmt="%H:%M:%S",
+    force=True,
 )
 logger = logging.getLogger(__name__)
 

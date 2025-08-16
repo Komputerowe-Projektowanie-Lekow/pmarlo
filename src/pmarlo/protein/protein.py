@@ -57,6 +57,17 @@ class Protein:
         self._initialize_storage()
         self._initialize_properties_dict()
         self._maybe_prepare(auto_prepare, preparation_options, ph)
+        if not auto_prepare:
+            # Load protein data without PDBFixer using MDTraj
+            try:
+                import mdtraj as md
+
+                traj = md.load(self.pdb_file)
+                self.properties["num_atoms"] = traj.n_atoms
+                self.properties["num_residues"] = traj.topology.n_residues
+                self.properties["num_chains"] = len(traj.topology.chains)
+            except Exception as e:
+                print(f"Warning: MDTraj failed to load PDB for properties: {e}")
 
     # --- Initialization helpers to reduce complexity ---
 
