@@ -92,7 +92,8 @@ def run_conformation_finder(
     # 1) Features → reduction → clustering via new API
     specs = feature_specs if feature_specs is not None else ["phi_psi"]
     X, cols, periodic = api.compute_features(traj, feature_specs=specs)
-    Y = api.reduce_features(X, method="tica", lag=10, n_components=3)
+    # Try VAMP for robustness; fallback remains in api if unavailable
+    Y = api.reduce_features(X, method="vamp", lag=10, n_components=3)
     labels = api.cluster_microstates(Y, method="minibatchkmeans", n_clusters=20)
 
     # 2) MSM from labels → macrostates (PCCA+-like)
@@ -148,6 +149,23 @@ def run_conformation_finder(
     save_transition_matrix_heatmap(
         T, str(OUT_DIR), name=f"transition_matrix_lag{chosen_lag}.png"
     )
+    # Save CK results (macro) for quick diagnostic
+    try:
+        from pmarlo.markov_state_model.markov_state_model import EnhancedMSM
+
+        # Build small MSM object from labels to reuse CK helpers
+        msm_tmp = EnhancedMSM(trajectory_files=[], topology_file=str(PDB_PATH))
+        msm_tmp.dtrajs = [labels]
+        msm_tmp.n_states = int(np.max(labels) + 1)
+        msm_tmp.lag_time = int(chosen_lag)
+        ck = msm_tmp.compute_ck_test_macrostates(n_macrostates=3, factors=[2, 3])
+        if ck is not None:
+            import json as _json  # type: ignore
+
+            with open(OUT_DIR / "ck_macro.json", "w", encoding="utf-8") as f:
+                _json.dump(ck, f, indent=2)
+    except Exception:
+        pass
     try:
         import matplotlib.pyplot as plt  # type: ignore
 

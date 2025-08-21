@@ -495,6 +495,50 @@ docs = ["ipython", "matplotlib", "numpydoc", "sphinx"]
 tests = ["pytest", "pytest-cov", "pytest-xdist"]
 
 [[package]]
+name = "deeptime"
+version = "0.4.5"
+description = "Python library for analysis of time series data including dimensionality reduction, clustering, and Markov model estimation."
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+files = [
+    {file = "deeptime-0.4.5-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:d6974d6e736a46e366858c415160beea2e86fdb1fb51e7b69c83dbdf545fb219"},
+    {file = "deeptime-0.4.5-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:28d7084f858ab1801f526fe1c996a152947c93b41b48db98055278f2a435d0a3"},
+    {file = "deeptime-0.4.5-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:88f849730e055f2bcc592ee486e47dbefc23088d49655327363fb0acce983a16"},
+    {file = "deeptime-0.4.5-cp310-cp310-win_amd64.whl", hash = "sha256:168f89346265a8f244f430a44b79384f9a319ce04748d5a03a7d9f16920b085e"},
+    {file = "deeptime-0.4.5-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:a755ebad819f396a2969fdd6a17fa10958807cf4d649f63213d60caccf543099"},
+    {file = "deeptime-0.4.5-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:499a8a955ad8e9160b86e69b2860c30561e5cf6b72d12170746a345dbc3570a9"},
+    {file = "deeptime-0.4.5-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:d2c1e148bc6c9cf027347834dd5ba1a5bf51f9cd01e375162f3bd516195b7ccd"},
+    {file = "deeptime-0.4.5-cp311-cp311-win_amd64.whl", hash = "sha256:ea7bead327a709eb703ecb5c2bb6f7a6c18d892b195b6e23840baea61d74fae5"},
+    {file = "deeptime-0.4.5-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:ff05e51b0763392f3b64b854545a6e41cf9a445fb642d3e690fcafa261cdb3f5"},
+    {file = "deeptime-0.4.5-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:69a09c60f9d0e12c035b7be4742fab1988d8e589064492f555c1b9c0b2f1c941"},
+    {file = "deeptime-0.4.5-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:ec9aeb7c2624b63d86f0a011a229ef0d9c643696ae84c78fe19f68c8cfc1bdea"},
+    {file = "deeptime-0.4.5-cp312-cp312-win_amd64.whl", hash = "sha256:7888d7a8f2f69ea1b0a723ad55652b224d64495a76431e57efab08abc610d1ae"},
+    {file = "deeptime-0.4.5-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:d9532eb850416907fe13ed63cf895133879be6afe1c9534bec002f0d60554274"},
+    {file = "deeptime-0.4.5-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:cd54f676377f6f6de42b830ed459b4ad49fc3e87822225a1c626ddef62861758"},
+    {file = "deeptime-0.4.5-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:7fa7a6960cb656dd61b0fd788bc86ae98600cfa3566ef13d55236e1904ee0cab"},
+    {file = "deeptime-0.4.5-cp313-cp313-win_amd64.whl", hash = "sha256:714145dcdb1cc5bdcaa11901482370f75364b32e0ea106d7990e7025ba3a0558"},
+    {file = "deeptime-0.4.5-cp39-cp39-macosx_10_9_x86_64.whl", hash = "sha256:b1bfca912b9e23fdc5dfbf6863b79362654021088d9d8d21c8e06e7ffeea8c92"},
+    {file = "deeptime-0.4.5-cp39-cp39-macosx_11_0_arm64.whl", hash = "sha256:bfc49855b21d5a3cb308db119844d928ae61910cd6c985cf6bed56e043d3ffd6"},
+    {file = "deeptime-0.4.5-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:c4c0b7a504c81201918673488f9f69c0e1fa435825b64e3bf92f4b7925adf469"},
+    {file = "deeptime-0.4.5-cp39-cp39-win_amd64.whl", hash = "sha256:04a3230920d3daf487d5324d174d001547b225d9e2c4a9c96b6c05950ae83b1a"},
+    {file = "deeptime-0.4.5.tar.gz", hash = "sha256:e290101e8a63f2338091866af671821e4d972b9d4fabf3fee4a14777f9aef414"},
+]
+
+[package.dependencies]
+numpy = "*"
+scikit-learn = ">=1.5.0"
+scipy = ">=1.9.0"
+threadpoolctl = ">=3.1.0"
+
+[package.extras]
+deep-learning = ["torch"]
+docs = ["jupyter", "matplotlib", "mdshare", "memory_profiler", "nbconvert", "nbsphinx", "networkx", "sphinx", "sphinx-gallery", "sphinxcontrib-bibtex", "sphinxcontrib-katex", "torch", "tqdm"]
+plotting = ["matplotlib", "networkx"]
+tests = ["cmake (>=3.24)", "coverage[toml]", "cython (>=0.29.30)", "flaky (>=3.7.0)", "matplotlib", "networkx", "ninja ; platform_system != \"Windows\"", "pybind11 (>=2.10.1)", "pytest (>=7.1.2)", "pytest-cov (>=3.0.0)", "pytest-xdist (>=2.5.0)", "torch (>=1.12.0) ; platform_system != \"Darwin\" and platform_system != \"Windows\"", "tqdm (>=4.64.0)"]
+units = ["pint (>=0.20)"]
+
+[[package]]
 name = "distlib"
 version = "0.4.0"
 description = "Distribution utilities"
@@ -2287,4 +2331,4 @@ fixer = ["pdbfixer"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.13"
-content-hash = "1fba07372a9032e1436b808f48c63e9e2235a8e9fd924cd06d8d08849001e71d"
+content-hash = "bf5566748c567541c27ca844dfe4d4387084ded6c68b8c33096238671eb31c5d"

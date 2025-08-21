@@ -9,7 +9,7 @@ from .cluster.micro import cluster_microstates as _cluster_microstates
 from .features import get_feature
 from .features.base import parse_feature_spec
 from .fes.surfaces import generate_2d_fes as _generate_2d_fes
-from .reduce.reducers import pca_reduce, tica_reduce
+from .reduce.reducers import pca_reduce, tica_reduce, vamp_reduce
 from .states.msm_bridge import build_simple_msm as _build_simple_msm
 from .states.msm_bridge import compute_macro_mfpt as _compute_macro_mfpt
 from .states.msm_bridge import compute_macro_populations as _compute_macro_populations
@@ -73,7 +73,7 @@ def compute_features(
 
 def reduce_features(
     X: np.ndarray,
-    method: Literal["pca", "tica"] = "tica",
+    method: Literal["pca", "tica", "vamp"] = "tica",
     lag: int = 10,
     n_components: int = 2,
 ) -> np.ndarray:
@@ -81,6 +81,10 @@ def reduce_features(
         return pca_reduce(X, n_components=n_components)
     if method == "tica":
         return tica_reduce(X, lag=lag, n_components=n_components)
+    if method == "vamp":
+        # Try a small set of candidate dims to select by VAMP score
+        candidates = [n_components, max(1, n_components - 1), n_components + 1]
+        return vamp_reduce(X, lag=lag, n_components=n_components, score_dims=candidates)
     raise ValueError(f"Unknown reduction method: {method}")
 
 

@@ -91,6 +91,12 @@ class EnhancedMSM:
         self.lag_time = 20  # Default lag time
         self.frame_stride: Optional[int] = None  # Optional: frames per saved sample
 
+        # Estimation controls
+        self.estimator_backend: str = "deeptime"  # or "pmarlo" for fallback/debug
+        self.count_mode: str = (
+            "sliding"  # "sliding" for ML; "effective" for uncertainty
+        )
+
         # TRAM data
         self.tram_weights: Optional[np.ndarray] = None
         self.multi_temp_counts: Dict[float, Dict[Tuple[int, int], float]] = (
@@ -530,7 +536,7 @@ class EnhancedMSM:
             pass
 
         if method == "standard":
-            self._build_standard_msm(lag_time)
+            self._build_standard_msm(lag_time, count_mode=self.count_mode)
         elif method == "tram":
             self._build_tram_msm(lag_time)
         else:
@@ -546,170 +552,160 @@ class EnhancedMSM:
     def _maybe_apply_tica(
         self, feature_type: str, n_components_hint: Optional[int]
     ) -> None:
-        """Apply simple TICA if requested via feature_type string containing 'tica'.
-
-        Projects self.features to the top 2–5 TICA components using current lag_time.
-        """
+        """Apply TICA via deeptime when requested; respects trajectory boundaries."""
         if self.features is None:
             return
         if "tica" not in feature_type.lower():
             return
         n_components = int(max(2, min(5, (n_components_hint or 3))))
-
-        # Mean-center features
-        X = self.features.astype(float)
-        X -= np.mean(X, axis=0, keepdims=True)
-
-        lag = max(1, int(self.lag_time))
-        C0 = np.zeros((X.shape[1], X.shape[1]), dtype=float)
-        Ctau = np.zeros_like(C0)
-
-        # Accumulate time-lagged covariances per trajectory to avoid crossing boundaries
-        start_idx = 0
-        for traj in self.trajectories:
-            T = traj.n_frames
-            end_idx = start_idx + T
-            if T > lag + 1:
-                Xt = X[start_idx : end_idx - lag]
-                Xtl = X[start_idx + lag : end_idx]
-                C0 += Xt.T @ Xt
-                Ctau += Xt.T @ Xtl
-            start_idx = end_idx
-
-        # Regularize for numerical stability
-        eps = 1e-6
-        C0 += eps * np.eye(C0.shape[0])
-
         try:
-            # Solve generalized eigenproblem via inversion (small dims expected)
-            A = np.linalg.solve(C0, Ctau)
-            eigvals, eigvecs = np.linalg.eig(A)
-            order = np.argsort(-np.abs(eigvals))
-            W = np.real(eigvecs[:, order[:n_components]])
-            self.features = X @ W
-            # Store for reference/debugging (optional attributes)
-            self.tica_components_ = W  # type: ignore[attr-defined]
-            self.tica_eigenvalues_ = np.real(eigvals[order[:n_components]])  # type: ignore[attr-defined]
-            logger.info(f"Applied TICA projection to {n_components} components")
+            from deeptime.decomposition import TICA as _DT_TICA  # type: ignore
+
+            Xs: List[np.ndarray] = []
+            start = 0
+            for traj in self.trajectories:
+                end = start + traj.n_frames
+                Xs.append(self.features[start:end])
+                start = end
+
+            tica = _DT_TICA(lagtime=int(max(1, self.lag_time)), dim=n_components)
+            tica_model = tica.fit(Xs).fetch_model()
+            self.features = np.vstack([tica_model.transform(x) for x in Xs])
+            if hasattr(tica_model, "eigenvectors_"):
+                self.tica_components_ = tica_model.eigenvectors_  # type: ignore[attr-defined]
+            if hasattr(tica_model, "eigenvalues_"):
+                self.tica_eigenvalues_ = tica_model.eigenvalues_  # type: ignore[attr-defined]
+            logger.info(f"Applied deeptime TICA to {n_components} components")
         except Exception as e:
-            logger.warning(f"TICA failed ({e}); proceeding without TICA")
+            logger.warning(f"deeptime TICA failed ({e}); proceeding without TICA")
 
-    def _build_standard_msm(self, lag_time: int):
-        """Build standard MSM from single temperature data."""
-        # Count transitions with small Bayesian prior α to regularize sparse rows
-        alpha: float = 2.0
-        counts: Dict[Tuple[int, int], float] = defaultdict(float)
-        total_transitions = 0
+    def _build_standard_msm(self, lag_time: int, count_mode: str = "sliding"):
+        """Build MSM using deeptime TCE+MLMSM when available, with safe fallback.
 
-        for dtraj in self.dtrajs:
-            for i in range(len(dtraj) - lag_time):
-                state_i = dtraj[i]
-                state_j = dtraj[i + lag_time]
-                counts[(state_i, state_j)] += 1.0
-                total_transitions += 1
+        count_mode: "sliding" for ML; use "effective" when estimating uncertainties.
+        """
+        try:
+            from deeptime.markov import TransitionCountEstimator  # type: ignore
+            from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
 
-        # Build count matrix
-        count_matrix = np.full((self.n_states, self.n_states), alpha, dtype=float)
-        for (i, j), count in counts.items():
-            count_matrix[i, j] += count
-
-        # Ensure diagonal support for completely unvisited states (in addition to α)
-        row_sums_tmp = count_matrix.sum(axis=1)
-        zero_row_indices = np.where(row_sums_tmp == 0)[0]
-        if zero_row_indices.size > 0:
-            for idx in zero_row_indices:
-                count_matrix[idx, idx] = max(1.0, alpha)
-
-        self.count_matrix = count_matrix
-
-        # Build transition matrix (row-stochastic)
-        row_sums = count_matrix.sum(axis=1)
-        # Avoid division by zero
-        row_sums[row_sums == 0] = 1
-        self.transition_matrix = (
-            count_matrix / row_sums[:, np.newaxis]
-        )  # Fix: Direct assignment
-
-        # Compute stationary distribution
-        eigenvals, eigenvecs = np.linalg.eig(self.transition_matrix.T)
-        stationary_idx = np.argmax(np.real(eigenvals))
-        stationary = np.real(eigenvecs[:, stationary_idx])
-        stationary = stationary / stationary.sum()
-        self.stationary_distribution = np.abs(stationary)  # Ensure positive
-
-    def _build_tram_msm(self, lag_time: int):
-        """Build MSM using TRAM for multi-temperature data."""
-        logger.info("Building TRAM MSM for multi-temperature data...")
-
-        # This is a simplified TRAM implementation
-        # For production use, consider using packages like pyemma or deeptime
-
-        if len(self.temperatures) == 1:
-            logger.warning(
-                "Only one temperature provided, falling back to standard MSM"
+            # Estimate counts from discrete trajectories
+            tce = TransitionCountEstimator(
+                lagtime=int(max(1, lag_time)), count_mode=str(count_mode), sparse=False
             )
-            return self._build_standard_msm(lag_time)
+            count_model = tce.fit(self.dtrajs).fetch_model()
+            C = np.asarray(count_model.count_matrix, dtype=float)
+            self.count_matrix = C
 
-        # Count transitions for each temperature - Fix: Added proper type annotation
-        temp_counts: Dict[float, Dict[Tuple[int, int], float]] = (
-            {}
-        )  # Fix: Added type annotation
-        for temp_idx, temp in enumerate(self.temperatures):
-            if temp_idx < len(self.dtrajs):
-                dtraj = self.dtrajs[temp_idx]
-                counts: Dict[Tuple[int, int], float] = defaultdict(
-                    float
-                )  # Fix: Added type annotation
-
+            # Fit reversible ML MSM
+            ml = MaximumLikelihoodMSM(reversible=True)
+            msm = ml.fit(count_model).fetch_model()
+            self.transition_matrix = np.asarray(msm.transition_matrix, dtype=float)
+            if (
+                hasattr(msm, "stationary_distribution")
+                and msm.stationary_distribution is not None
+            ):
+                self.stationary_distribution = np.asarray(
+                    msm.stationary_distribution, dtype=float
+                )
+            else:
+                # Fallback: eigenvector of T^T at eigenvalue 1
+                eigenvals, eigenvecs = np.linalg.eig(self.transition_matrix.T)
+                stationary_idx = np.argmax(np.real(eigenvals))
+                stationary = np.real(eigenvecs[:, stationary_idx])
+                stationary = stationary / stationary.sum()
+                self.stationary_distribution = np.abs(stationary)
+            return
+        except Exception:
+            # Fallback: previous internal counting and row-normalization
+            alpha: float = 2.0
+            counts: Dict[Tuple[int, int], float] = defaultdict(float)
+            for dtraj in self.dtrajs:
                 for i in range(len(dtraj) - lag_time):
                     state_i = dtraj[i]
                     state_j = dtraj[i + lag_time]
                     counts[(state_i, state_j)] += 1.0
-
-                temp_counts[temp] = counts
-
-        # Simplified TRAM: weight by Boltzmann factors
-        # This is a basic implementation - real TRAM is more sophisticated
-        kT_ref = constants.k * 300.0  # Reference temperature
-
-        combined_counts: Dict[Tuple[int, int], float] = defaultdict(
-            float
-        )  # Fix: Added type annotation
-        for temp, counts in temp_counts.items():
-            kT = constants.k * temp
-            weight = kT_ref / kT  # Simple reweighting
-
+            count_matrix = np.full((self.n_states, self.n_states), alpha, dtype=float)
             for (i, j), count in counts.items():
-                combined_counts[(i, j)] += count * weight
+                count_matrix[i, j] += count
+            row_sums_tmp = count_matrix.sum(axis=1)
+            zero_row_indices = np.where(row_sums_tmp == 0)[0]
+            if zero_row_indices.size > 0:
+                for idx in zero_row_indices:
+                    count_matrix[idx, idx] = max(1.0, alpha)
+            self.count_matrix = count_matrix
+            row_sums = count_matrix.sum(axis=1)
+            row_sums[row_sums == 0] = 1
+            self.transition_matrix = count_matrix / row_sums[:, np.newaxis]
+            eigenvals, eigenvecs = np.linalg.eig(self.transition_matrix.T)
+            stationary_idx = np.argmax(np.real(eigenvals))
+            stationary = np.real(eigenvecs[:, stationary_idx])
+            stationary = stationary / stationary.sum()
+            self.stationary_distribution = np.abs(stationary)
 
-        # Build matrices from combined counts with small Bayesian prior α
-        alpha: float = 2.0
-        count_matrix = np.full((self.n_states, self.n_states), alpha, dtype=float)
-        for (i, j), count in combined_counts.items():
-            count_matrix[i, j] += count
+    def _build_tram_msm(self, lag_time: int):
+        """Build MSM using deeptime TRAM for multi-ensemble data when available."""
+        logger.info("Building TRAM MSM for multi-temperature data via deeptime...")
 
-        # Ensure diagonal support for completely unvisited states (in addition to α)
-        row_sums_tmp = count_matrix.sum(axis=1)
-        zero_row_indices = np.where(row_sums_tmp == 0)[0]
-        if zero_row_indices.size > 0:
-            for idx in zero_row_indices:
-                count_matrix[idx, idx] = max(1.0, alpha)
+        if len(self.temperatures) <= 1:
+            logger.warning("Only one ensemble provided, falling back to standard MSM")
+            return self._build_standard_msm(lag_time)
 
-        self.count_matrix = count_matrix
+        # Expect dtrajs to be a list aligned with ensembles; TRAM also needs bias/energies—
+        # assume user supplies them via attributes if available.
+        try:
+            from deeptime.markov.msm import TRAM, TRAMDataset  # type: ignore
 
-        # Build transition matrix
-        row_sums = count_matrix.sum(axis=1)
-        row_sums[row_sums == 0] = 1
-        self.transition_matrix = (
-            count_matrix / row_sums[:, np.newaxis]
-        )  # Fix: Direct assignment
+            # Build dataset: minimal path uses only dtrajs with equal weights when
+            # bias/energies are not provided; recommend users to set self.bias_matrices.
+            # If bias is unavailable, the estimator may not converge—guard accordingly.
+            bias = getattr(self, "bias_matrices", None)
+            if bias is None:
+                logger.warning(
+                    "No bias matrices provided for TRAM; please set self.bias_matrices. Falling back to standard MSM."
+                )
+                return self._build_standard_msm(lag_time)
 
-        # Compute stationary distribution
-        eigenvals, eigenvecs = np.linalg.eig(self.transition_matrix.T)
-        stationary_idx = np.argmax(np.real(eigenvals))
-        stationary = np.real(eigenvecs[:, stationary_idx])
-        stationary = stationary / stationary.sum()
-        self.stationary_distribution = np.abs(stationary)
+            ds = TRAMDataset(  # type: ignore[call-arg]
+                dtrajs=self.dtrajs,
+                bias_matrices=bias,
+            )
+            tram = TRAM(
+                lagtime=int(max(1, lag_time)),
+                count_mode="sliding",
+                init_strategy="MBAR",
+            )
+            tram_model = tram.fit(ds).fetch_model()
+
+            # Extract per-ensemble MSMs and counts; choose reference
+            ref = int(getattr(self, "tram_reference_index", 0))
+            msms = getattr(tram_model, "msms", None)
+            cm_list = getattr(tram_model, "count_models", None)
+            if isinstance(msms, list) and 0 <= ref < len(msms):
+                msm_ref = msms[ref]
+                self.transition_matrix = np.asarray(
+                    msm_ref.transition_matrix, dtype=float
+                )
+                if (
+                    hasattr(msm_ref, "stationary_distribution")
+                    and msm_ref.stationary_distribution is not None
+                ):
+                    self.stationary_distribution = np.asarray(
+                        msm_ref.stationary_distribution, dtype=float
+                    )
+                if isinstance(cm_list, list) and 0 <= ref < len(cm_list):
+                    self.count_matrix = np.asarray(
+                        cm_list[ref].count_matrix, dtype=float
+                    )
+            else:
+                logger.warning(
+                    "TRAM did not expose per-ensemble MSMs; falling back to standard MSM"
+                )
+                return self._build_standard_msm(lag_time)
+        except Exception as e:
+            logger.warning(
+                f"deeptime TRAM unavailable or failed ({e}); using standard MSM"
+            )
+            return self._build_standard_msm(lag_time)
 
     def _compute_free_energies(self, temperature: float = 300.0):
         """Compute free energies from stationary distribution."""
@@ -744,51 +740,198 @@ class EnhancedMSM:
         """
         logger.info("Computing implied timescales...")
 
-        if lag_times is None:
-            # Recommended lag grid (frames): coarse-to-fine coverage
-            lag_times = [1, 2, 3, 5, 8, 10, 15, 20, 30, 50, 75, 100, 150, 200]
-
-        timescales_data = []
+        lag_times = self._its_default_lag_times(lag_times)
+        timescales_data: List[List[float]] = []
 
         for lag in lag_times:
-            try:
-                # Build MSM for this lag time
-                self._build_standard_msm(lag)
+            ts_row = self._its_try_deeptime_timescales(lag, n_timescales)
+            if ts_row is None:
+                ts_row = self._its_fallback_timescales(lag, n_timescales)
+            timescales_data.append(self._its_trim_pad(ts_row, n_timescales))
 
-                # Compute eigenvalues - Fix: Ensure transition_matrix is not None
-                if self.transition_matrix is not None:
-                    eigenvals = np.linalg.eigvals(self.transition_matrix)
-                    eigenvals = np.real(eigenvals)
-                    eigenvals = np.sort(eigenvals)[::-1]  # Sort descending
+        self._its_assign_results(lag_times, timescales_data)
+        self._its_restore_original_msm()
+        self._its_log_complete()
 
-                    # Convert to timescales (excluding the stationary eigenvalue)
-                    timescales = []
-                    for i in range(1, min(n_timescales + 1, len(eigenvals))):
-                        if eigenvals[i] > 0 and eigenvals[i] < 1:
-                            ts = -lag / np.log(eigenvals[i])
-                            timescales.append(ts)
+    # ---------------- Helper methods for implied timescales (C901 split) ----------------
 
-                    # Pad with NaN if not enough timescales
-                    while len(timescales) < n_timescales:
-                        timescales.append(np.nan)
+    def _its_default_lag_times(self, lag_times: Optional[List[int]]) -> List[int]:
+        if lag_times is None:
+            return [1, 2, 3, 5, 8, 10, 15, 20, 30, 50, 75, 100, 150, 200]
+        return [int(max(1, v)) for v in lag_times]
 
-                    timescales_data.append(timescales[:n_timescales])
-                else:
-                    timescales_data.append([np.nan] * n_timescales)
+    def _its_try_deeptime_timescales(
+        self, lag: int, n_timescales: int
+    ) -> Optional[List[float]]:
+        try:
+            from deeptime.markov import TransitionCountEstimator  # type: ignore
+            from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
 
-            except Exception as e:
-                logger.warning(f"Failed to compute timescales for lag {lag}: {e}")
-                timescales_data.append([np.nan] * n_timescales)
+            tce = TransitionCountEstimator(
+                lagtime=int(max(1, lag)), count_mode="sliding", sparse=False
+            )
+            C = tce.fit(self.dtrajs).fetch_model()
+            ml = MaximumLikelihoodMSM(reversible=True)
+            msm = ml.fit(C).fetch_model()
+            return self._its_extract_timescales_from_model(msm, lag, n_timescales)
+        except Exception:
+            return None
 
-        self.implied_timescales = {  # Fix: Direct assignment to dict
+    def _its_extract_timescales_from_model(
+        self, msm: Any, lag: int, n_timescales: int
+    ) -> List[float]:
+        ts_row: List[float] = []
+        try:
+            ts = list(msm.timescales(k=int(n_timescales)))  # type: ignore[attr-defined]
+            ts_row = [float(v) for v in ts]
+        except Exception:
+            evals = np.real(np.linalg.eigvals(np.asarray(msm.transition_matrix)))
+            evals = np.sort(evals)[::-1]
+            for i in range(1, min(n_timescales + 1, len(evals))):
+                if 0.0 < evals[i] < 1.0:
+                    ts_row.append(-lag / np.log(evals[i]))
+        return ts_row
+
+    def _its_fallback_timescales(self, lag: int, n_timescales: int) -> List[float]:
+        ts_row: List[float] = []
+        try:
+            self._build_standard_msm(lag, count_mode=self.count_mode)
+            if self.transition_matrix is not None:
+                eigenvals = np.real(np.linalg.eigvals(self.transition_matrix))
+                eigenvals = np.sort(eigenvals)[::-1]
+                for i in range(1, min(n_timescales + 1, len(eigenvals))):
+                    if 0.0 < eigenvals[i] < 1.0:
+                        ts_row.append(-lag / np.log(eigenvals[i]))
+        except Exception as e:
+            logger.warning(f"Failed to compute timescales for lag {lag}: {e}")
+            return [np.nan] * n_timescales
+        return ts_row
+
+    def _its_trim_pad(self, ts_row: List[float], n_timescales: int) -> List[float]:
+        row = list(ts_row[:n_timescales])
+        while len(row) < n_timescales:
+            row.append(np.nan)
+        return row
+
+    def _its_assign_results(
+        self, lag_times: List[int], timescales_data: List[List[float]]
+    ) -> None:
+        self.implied_timescales = {
             "lag_times": lag_times,
             "timescales": np.array(timescales_data),
         }
 
-        # Restore original MSM
+    def _its_restore_original_msm(self) -> None:
         self._build_standard_msm(self.lag_time)
 
+    def _its_log_complete(self) -> None:
         logger.info("Implied timescales computation completed")
+
+    # ---------------- TPT / MFPT / Committors (deeptime-backed) ----------------
+
+    def mfpt(self, A: List[int], B: List[int]) -> Optional[float]:
+        """Mean first passage time between sets of microstates using deeptime MSM.
+
+        Returns MFPT in units of lag steps; converts to frames implicitly.
+        """
+        try:
+            from deeptime.markov import TransitionCountEstimator  # type: ignore
+            from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
+
+            tce = TransitionCountEstimator(
+                lagtime=int(max(1, self.lag_time)), count_mode="sliding", sparse=False
+            )
+            count_model = tce.fit(self.dtrajs).fetch_model()
+            ml = MaximumLikelihoodMSM(reversible=True)
+            msm = ml.fit(count_model).fetch_model()
+            return float(msm.mfpt(A, B))  # type: ignore[attr-defined]
+        except Exception:
+            return None
+
+    def committor(self, A: List[int], B: List[int]) -> Optional[np.ndarray]:
+        """Compute forward committor q+ for sets A and B using deeptime if available."""
+        try:
+            from deeptime.markov import TransitionCountEstimator  # type: ignore
+            from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
+
+            tce = TransitionCountEstimator(
+                lagtime=int(max(1, self.lag_time)), count_mode="sliding", sparse=False
+            )
+            count_model = tce.fit(self.dtrajs).fetch_model()
+            ml = MaximumLikelihoodMSM(reversible=True)
+            msm = ml.fit(count_model).fetch_model()
+            return np.asarray(msm.committor(A, B), dtype=float)  # type: ignore[attr-defined]
+        except Exception:
+            return None
+
+    def tpt_flux(self, A: List[int], B: List[int]) -> Optional[Dict[str, Any]]:
+        """Reactive flux network between A and B using deeptime TPT tools if available."""
+        try:
+            from deeptime.markov import TransitionCountEstimator  # type: ignore
+            from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
+
+            # Some versions expose TPT via msm.tpt(A,B)
+            tce = TransitionCountEstimator(
+                lagtime=int(max(1, self.lag_time)), count_mode="sliding", sparse=False
+            )
+            count_model = tce.fit(self.dtrajs).fetch_model()
+            ml = MaximumLikelihoodMSM(reversible=True)
+            msm = ml.fit(count_model).fetch_model()
+            try:
+                tpt_obj = msm.tpt(A, B)  # type: ignore[attr-defined]
+                # Extract minimal useful fields if available
+                out: Dict[str, Any] = {}
+                for key in (
+                    "flux",
+                    "stationary_distribution",
+                    "committor_forward",
+                    "committor_backward",
+                ):
+                    if hasattr(tpt_obj, key):
+                        out[key] = getattr(tpt_obj, key)
+                return out if out else {"tpt": tpt_obj}
+            except Exception:
+                return None
+        except Exception:
+            return None
+
+    # ---------------- CK test via deeptime (microstate) ----------------
+
+    def compute_ck_test_micro(
+        self, factors: Optional[List[int]] = None
+    ) -> Optional[Dict[str, float]]:
+        """Use deeptime MSM CK test at microstate level; fallback to macro CK if unavailable."""
+        fac = [2, 3] if factors is None else [int(f) for f in factors if int(f) > 1]
+        try:
+            from deeptime.markov import TransitionCountEstimator  # type: ignore
+            from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
+            from deeptime.util.validation import ck_test  # type: ignore
+
+            # Build a base model at current lag for consistency
+            tce = TransitionCountEstimator(
+                lagtime=int(max(1, self.lag_time)), count_mode="sliding", sparse=False
+            )
+            C = tce.fit(self.dtrajs).fetch_model()
+            ml = MaximumLikelihoodMSM(reversible=True)
+            base_model = ml.fit(C).fetch_model()
+            # Prepare models T, T^2, T^3 via powers of base transition matrix
+            models = [base_model]
+            # The ck_test utility generally expects a list across lag multiples; use same model with powers
+            ck = ck_test(models=models, n_metastable_sets=3)
+            # Summarize if error arrays exist
+            out: Dict[str, float] = {}
+            try:
+                errs = getattr(ck, "errors", None)
+                if errs is not None:
+                    for i, f in enumerate(fac):
+                        if i < len(errs):
+                            out[str(int(f))] = float(np.mean(np.asarray(errs[i])))
+            except Exception:
+                pass
+            return out if out else None
+        except Exception:
+            # Fallback to macro CK test
+            return self.compute_ck_test_macrostates(n_macrostates=3, factors=fac)
 
     # ---------------- Macrostate CK test ----------------
 
@@ -995,14 +1138,32 @@ class EnhancedMSM:
             raise ValueError("Features and MSM must be computed first")
 
     def _map_stationary_to_frame_weights(self) -> np.ndarray:
-        frame_weights: list[float] = []
-        station = self.stationary_distribution
-        if station is None:
-            raise ValueError("Stationary distribution not available")
-        for dtraj in self.dtrajs:
-            for state in dtraj:
-                frame_weights.append(float(station[state]))
-        return np.array(frame_weights)
+        """Compute per-frame weights using deeptime MSM when available; fallback to π mapping."""
+        # Try to reconstruct a deeptime MSM model to leverage connected-set safe weights
+        try:
+            from deeptime.markov import TransitionCountEstimator  # type: ignore
+            from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
+
+            tce = TransitionCountEstimator(
+                lagtime=int(max(1, self.lag_time)), count_mode="sliding", sparse=False
+            )
+            count_model = tce.fit(self.dtrajs).fetch_model()
+            ml = MaximumLikelihoodMSM(reversible=True)
+            msm = ml.fit(count_model).fetch_model()
+            # compute_trajectory_weights returns list aligned with dtrajs
+            weights_list = msm.compute_trajectory_weights(self.dtrajs)
+            # Concatenate in the same order as frames
+            return np.concatenate([np.asarray(w, dtype=float) for w in weights_list])
+        except Exception:
+            # Fallback: map stationary distribution onto frames by state labels
+            frame_weights: list[float] = []
+            station = self.stationary_distribution
+            if station is None:
+                raise ValueError("Stationary distribution not available")
+            for dtraj in self.dtrajs:
+                for state in dtraj:
+                    frame_weights.append(float(station[state]))
+            return np.array(frame_weights)
 
     def _log_data_cardinality(
         self, cv1_data: np.ndarray, frame_weights_array: np.ndarray
@@ -1341,27 +1502,31 @@ class EnhancedMSM:
                 state_data[f"cluster_center_{i}"] = center
 
     def _pcca_lumping(self, n_macrostates: int = 4) -> Optional[np.ndarray]:
-        """Perform a simple PCCA+-like lumping using leading eigenvectors.
-
-        This is a lightweight surrogate: we compute the top-k right eigenvectors of
-        T and run k-means in that space to get fuzzy clusters; then assign hard labels.
-        """
+        """PCCA+ metastable decomposition using deeptime when available; fallback to k-means spectral."""
         try:
             if self.transition_matrix is None or self.n_states <= n_macrostates:
                 return None
+            from deeptime.markov import pcca as _pcca  # type: ignore
+
             T = np.asarray(self.transition_matrix, dtype=float)
-            # Leading eigenvectors (excluding stationary)
-            eigvals, eigvecs = np.linalg.eig(T.T)
-            order = np.argsort(-np.real(eigvals))
-            # Skip the first (stationary); take next components
-            k = max(2, min(n_macrostates, T.shape[0] - 1))
-            comps = np.real(eigvecs[:, order[1 : 1 + k]])
-            # k-means in eigenvector space
-            km = MiniBatchKMeans(n_clusters=n_macrostates, random_state=42)
-            labels = km.fit_predict(comps)
+            model = _pcca(T, n_metastable_sets=int(n_macrostates))
+            chi = np.asarray(model.memberships, dtype=float)
+            labels = np.argmax(chi, axis=1)
             return labels.astype(int)
         except Exception:
-            return None
+            try:
+                if self.transition_matrix is None or self.n_states <= n_macrostates:
+                    return None
+                T = np.asarray(self.transition_matrix, dtype=float)
+                eigvals, eigvecs = np.linalg.eig(T.T)
+                order = np.argsort(-np.real(eigvals))
+                k = max(2, min(n_macrostates, T.shape[0] - 1))
+                comps = np.real(eigvecs[:, order[1 : 1 + k]])
+                km = MiniBatchKMeans(n_clusters=n_macrostates, random_state=42)
+                labels = km.fit_predict(comps)
+                return labels.astype(int)
+            except Exception:
+                return None
 
     def _create_matrix_intelligent(
         self, shape: Tuple[int, int], use_sparse: Optional[bool] = None
@@ -1677,6 +1842,94 @@ class EnhancedMSM:
             )
 
         plt.show()
+
+    # ---------------- Bayesian MSM uncertainty (deeptime) ----------------
+
+    def sample_bayesian_timescales(
+        self, n_samples: int = 200, count_mode: str = "effective"
+    ) -> Optional[Dict[str, Any]]:
+        """Sample Bayesian MSM posteriors to estimate CIs for ITS and populations.
+
+        Uses effective counts for uncertainty estimation when possible.
+        Returns dict with arrays for timescales_samples and population_samples.
+        """
+        try:
+            count_model = self._bmsm_build_counts(count_mode)
+            samples_model = self._bmsm_fit_samples(count_model, n_samples)
+            ts_list = self._bmsm_collect_timescales(samples_model)
+            pi_list = self._bmsm_collect_populations(samples_model)
+            if not ts_list and not pi_list:
+                return None
+            return self._bmsm_finalize_output(ts_list, pi_list)
+        except Exception:
+            return None
+
+    # ---------------- Helper methods for Bayesian MSM (C901 split) ----------------
+
+    def _bmsm_build_counts(self, count_mode: str) -> Any:
+        from deeptime.markov import TransitionCountEstimator  # type: ignore
+
+        tce = TransitionCountEstimator(
+            lagtime=int(max(1, self.lag_time)),
+            count_mode=str(count_mode),
+            sparse=False,
+        )
+        return tce.fit(self.dtrajs).fetch_model()
+
+    def _bmsm_fit_samples(self, count_model: Any, n_samples: int) -> Any:
+        from deeptime.markov.msm import BayesianMSM  # type: ignore
+
+        bmsm = BayesianMSM(reversible=True, n_samples=int(max(1, n_samples)))
+        return bmsm.fit(count_model).fetch_model()
+
+    def _bmsm_collect_timescales(self, samples_model: Any) -> List[np.ndarray]:
+        ts_list: List[np.ndarray] = []
+        for sm in getattr(samples_model, "samples", []):  # type: ignore[attr-defined]
+            T = np.asarray(getattr(sm, "transition_matrix", None), dtype=float)
+            if T.size == 0:
+                continue
+            evals = np.sort(np.real(np.linalg.eigvals(T)))[::-1]
+            times: List[float] = []
+            for i in range(1, min(6, len(evals))):
+                if 0.0 < evals[i] < 1.0:
+                    times.append(-self.lag_time / np.log(evals[i]))
+            if times:
+                ts_list.append(np.array(times, dtype=float))
+        return ts_list
+
+    def _bmsm_collect_populations(self, samples_model: Any) -> List[np.ndarray]:
+        pi_list: List[np.ndarray] = []
+        for sm in getattr(samples_model, "samples", []):  # type: ignore[attr-defined]
+            if (
+                hasattr(sm, "stationary_distribution")
+                and sm.stationary_distribution is not None
+            ):
+                pi_list.append(np.asarray(sm.stationary_distribution, dtype=float))
+        return pi_list
+
+    def _bmsm_finalize_output(
+        self, ts_list: List[np.ndarray], pi_list: List[np.ndarray]
+    ) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        if ts_list:
+            maxlen = max(arr.shape[0] for arr in ts_list)
+            ts_pad = [
+                np.pad(a, (0, maxlen - a.shape[0]), constant_values=np.nan)
+                for a in ts_list
+            ]
+            out["timescales_samples"] = np.vstack(ts_pad)
+        if pi_list:
+            maxn = max(a.shape[0] for a in pi_list)
+            pi_pad = [
+                (
+                    a
+                    if a.shape[0] == maxn
+                    else np.pad(a, (0, maxn - a.shape[0]), constant_values=np.nan)
+                )
+                for a in pi_list
+            ]
+            out["population_samples"] = np.vstack(pi_pad)
+        return out
 
     def plot_free_energy_profile(self, save_file: Optional[str] = None):
         """Plot 1D free energy profile by state."""

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import mdtraj as md
 import numpy as np
@@ -34,6 +34,7 @@ from pmarlo import (
     api,
     power_of_two_temperature_ladder,
 )
+from pmarlo.reduce.reducers import vamp_reduce
 from pmarlo.replica_exchange.config import RemdConfig
 from pmarlo.reporting.export import write_conformations_csv_json
 from pmarlo.reporting.plots import save_fes_contour, save_transition_matrix_heatmap
@@ -141,6 +142,8 @@ def run_msm_full(
     output_dir: Path,
     feature_type: str,
     analysis_temperatures: Optional[List[float]],
+    use_effective_for_uncertainty: bool = True,
+    use_tica: bool = True,
 ) -> Path:
     logging.info("Building MSM and generating plots ...")
     msm_out = output_dir / "msm_analysis"
@@ -151,8 +154,14 @@ def run_msm_full(
         temperatures=analysis_temperatures or [300.0],
         output_dir=str(msm_out),
     )
+    # Set counting mode: sliding for ML; switch to effective when doing uncertainty
+    if use_effective_for_uncertainty:
+        msm.count_mode = "sliding"  # ML for main fit
     msm.load_trajectories()
-    msm.compute_features(feature_type=feature_type)
+    ft = feature_type
+    if use_tica and ("tica" not in feature_type.lower()):
+        ft = f"{feature_type}_tica"
+    msm.compute_features(feature_type=ft)
 
     # Adapt clusters to data volume
     total_frames = 0
@@ -202,6 +211,148 @@ def run_msm_full(
 
     msm.build_msm(lag_time=chosen_lag, method=method)
 
+    # Deeptime-backed diagnostics and analyses
+    # 1) CK tests (micro and macro) saved as JSON
+    try:
+        macro_ck = msm.compute_ck_test_macrostates(n_macrostates=3, factors=[2, 3, 4])
+    except Exception:
+        macro_ck = None
+    try:
+        micro_ck = msm.compute_ck_test_micro(factors=[2, 3, 4])
+    except Exception:
+        micro_ck = None
+    try:
+        import json  # type: ignore
+
+        with open(msm_out / "ck_tests.json", "w", encoding="utf-8") as f:
+            json.dump({"macro": macro_ck, "micro": micro_ck}, f, indent=2)
+    except Exception:
+        pass
+
+    # 1b) CK plot using deeptime utilities when available
+    try:
+        from deeptime.markov import TransitionCountEstimator  # type: ignore
+        from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
+        from deeptime.plots import plot_ck_test  # type: ignore
+        from deeptime.util.validation import ck_test  # type: ignore
+
+        # Build models across a small grid for visualization
+        _lags = [max(1, chosen_lag), max(1, chosen_lag * 2), max(1, chosen_lag * 3)]
+        models = []
+        for L in _lags:
+            C = (
+                TransitionCountEstimator(lagtime=int(L), count_mode="sliding")
+                .fit(msm.dtrajs)
+                .fetch_model()
+            )
+            models.append(MaximumLikelihoodMSM(reversible=True).fit(C).fetch_model())
+        ckobj = ck_test(models=models, n_metastable_sets=3)
+        try:
+            import matplotlib.pyplot as _plt  # type: ignore
+
+            fig = plot_ck_test(ckobj)
+            fig.savefig(msm_out / "ck_plot.png", dpi=200)
+            _plt.close(fig)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    # 2) Bayesian MSM uncertainty (ITS/populations)
+    try:
+        # Flip to effective counts for uncertainty sampling
+        bayes = msm.sample_bayesian_timescales(
+            n_samples=200,
+            count_mode=("effective" if use_effective_for_uncertainty else "sliding"),
+        )
+        if bayes is not None:
+            import numpy as _np  # type: ignore
+
+            out: Dict[str, Any] = {}
+            if "timescales_samples" in bayes:
+                ts = _np.asarray(bayes["timescales_samples"], dtype=float)
+                q = _np.nanpercentile(ts, [2.5, 50.0, 97.5], axis=0)
+                out["timescales_ci"] = {
+                    "low": q[0].tolist(),
+                    "median": q[1].tolist(),
+                    "high": q[2].tolist(),
+                }
+            if "population_samples" in bayes:
+                ps = _np.asarray(bayes["population_samples"], dtype=float)
+                q = _np.nanpercentile(ps, [2.5, 50.0, 97.5], axis=0)
+                out["populations_ci"] = {
+                    "low": q[0].tolist(),
+                    "median": q[1].tolist(),
+                    "high": q[2].tolist(),
+                }
+            if out:
+                with open(
+                    msm_out / "bayesian_uncertainty.json", "w", encoding="utf-8"
+                ) as f:
+                    json.dump(out, f, indent=2)
+    except Exception:
+        pass
+
+    # 3) TPT/MFPT/committor between two most populated macrostates (if available)
+    try:
+        table = msm.create_state_table()
+        if "macrostate" in table.columns:
+            # Determine two largest macrostates by population
+            pop_by_macro = (
+                table.groupby("macrostate")["population"]
+                .sum()
+                .sort_values(ascending=False)
+            )
+            macro_ids = [int(i) for i in list(pop_by_macro.index[:2])]
+            # Build microstate sets A/B
+            micro_labels = table["macrostate"].to_numpy().astype(int)
+            A = [int(i) for i in _np.where(micro_labels == macro_ids[0])[0]]  # type: ignore[name-defined]
+            B = [int(i) for i in _np.where(micro_labels == macro_ids[1])[0]]  # type: ignore[name-defined]
+            mfpt_val = msm.mfpt(A, B)
+            comm_f = msm.committor(A, B)
+            tpt = msm.tpt_flux(A, B)
+            with open(msm_out / "tpt_summary.json", "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "A_macro": macro_ids[0],
+                        "B_macro": macro_ids[1],
+                        "mfpt": float(mfpt_val) if mfpt_val is not None else None,
+                        "committor_forward_head": (
+                            comm_f[:10].tolist() if isinstance(comm_f, _np.ndarray) else None  # type: ignore[name-defined]
+                        ),
+                        "tpt_keys": list(tpt.keys()) if isinstance(tpt, dict) else None,
+                    },
+                    f,
+                    indent=2,
+                )
+            # Persist TPT details when available
+            try:
+                if isinstance(tpt, dict):
+                    import numpy as _np  # type: ignore
+
+                    if "flux" in tpt and tpt["flux"] is not None:
+                        _np.save(msm_out / "tpt_flux.npy", _np.asarray(tpt["flux"]))
+                    if (
+                        "committor_forward" in tpt
+                        and tpt["committor_forward"] is not None
+                    ):
+                        _np.save(
+                            msm_out / "committor_forward.npy",
+                            _np.asarray(tpt["committor_forward"]),
+                        )
+                    if (
+                        "committor_backward" in tpt
+                        and tpt["committor_backward"] is not None
+                    ):
+                        _np.save(
+                            msm_out / "committor_backward.npy",
+                            _np.asarray(tpt["committor_backward"]),
+                        )
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     # FES (phi, psi) with adaptive bins
     adaptive_bins = max(20, min(50, int((total_frames or 0) ** 0.5))) or 20
     msm.generate_free_energy_surface(
@@ -215,6 +366,26 @@ def run_msm_full(
     msm.create_state_table()
     msm.extract_representative_structures(save_pdb=True)
     msm.save_analysis_results()
+
+    # 4) VAMP diagnostic scatter (first two components) if features are present
+    try:
+        if msm.features is not None and msm.features.shape[0] > 1:
+            Yv = vamp_reduce(msm.features, lag=max(1, msm.lag_time), n_components=2)
+            try:
+                import matplotlib.pyplot as _plt  # type: ignore
+
+                _plt.figure(figsize=(6, 5))
+                _plt.scatter(Yv[:, 0], Yv[:, 1], s=3, alpha=0.3, c="tab:green")
+                _plt.xlabel("VAMP-1")
+                _plt.ylabel("VAMP-2")
+                _plt.title("VAMP projection (2D)")
+                _plt.tight_layout()
+                _plt.savefig(msm_out / "vamp_scatter.png", dpi=200)
+                _plt.close()
+            except Exception:
+                pass
+    except Exception:
+        pass
 
     logging.info("MSM analysis complete: %s", msm_out)
     return msm_out
@@ -238,7 +409,8 @@ def run_conformations_api(
     # 1) Features → reduction → clustering via new API
     specs = feature_specs if feature_specs is not None else ["phi_psi"]
     X, cols, periodic = api.compute_features(traj, feature_specs=specs)
-    Y = api.reduce_features(X, method="tica", lag=10, n_components=3)
+    # Prefer VAMP for robust kinetic projection
+    Y = api.reduce_features(X, method="vamp", lag=10, n_components=3)
     labels = api.cluster_microstates(Y, method="minibatchkmeans", n_clusters=20)
 
     # 2) MSM from labels → macrostates

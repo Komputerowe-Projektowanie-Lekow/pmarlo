@@ -5,6 +5,9 @@ matplotlib>=3.2.0
 pandas>=1.1.0
 scikit-learn>=0.23.0
 
+# Markov state modeling & kinetics
+deeptime>=0.4.5
+
 # Molecular dynamics and analysis
 mdtraj>=1.9.0
 openmm>=7.5.0

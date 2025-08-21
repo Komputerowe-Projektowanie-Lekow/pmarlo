@@ -228,6 +228,25 @@ def run_msm_and_fes(
     # Save plots and outputs
     msm.plot_free_energy_surface(save_file="free_energy_surface", interactive=False)
     msm.plot_implied_timescales(save_file="implied_timescales")
+    # Save CK macro and Bayesian uncertainty summaries when available
+    try:
+        ck_macro = msm.compute_ck_test_macrostates(n_macrostates=3, factors=[2, 3, 4])
+        if ck_macro is not None:
+            import json as _json  # type: ignore
+
+            with open(msm_output_dir / "ck_macro.json", "w", encoding="utf-8") as f:
+                _json.dump(ck_macro, f, indent=2)
+    except Exception:
+        pass
+    try:
+        bayes = msm.sample_bayesian_timescales(n_samples=200, count_mode="effective")
+        if bayes is not None:
+            with open(msm_output_dir / "bayesian_uncertainty.pkl", "wb") as f:
+                import pickle as _pkl  # type: ignore
+
+                _pkl.dump(bayes, f)
+    except Exception:
+        pass
     msm.plot_free_energy_profile(save_file="free_energy_profile")
     msm.create_state_table()
     msm.extract_representative_structures(save_pdb=True)

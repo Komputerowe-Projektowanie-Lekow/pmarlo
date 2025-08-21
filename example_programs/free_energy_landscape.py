@@ -238,6 +238,16 @@ def run_msm_and_fes(
     # Save plots and results
     msm.plot_free_energy_surface(save_file="free_energy_surface", interactive=False)
     msm.plot_implied_timescales(save_file="implied_timescales")
+    # Save CK micro results and a VAMP scatter for diagnostics
+    try:
+        ck_micro = msm.compute_ck_test_micro(factors=[2, 3])
+        if ck_micro is not None:
+            import json as _json  # type: ignore
+
+            with open(msm_output_dir / "ck_micro.json", "w", encoding="utf-8") as f:
+                _json.dump(ck_micro, f, indent=2)
+    except Exception:
+        pass
     msm.plot_free_energy_profile(save_file="free_energy_profile")
     msm.create_state_table()
     msm.extract_representative_structures(save_pdb=True)
