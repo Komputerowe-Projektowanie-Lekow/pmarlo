@@ -364,15 +364,33 @@ class EnhancedMSM:
         raise ValueError(f"Unknown feature type: {feature_type}")
 
     def _compute_phi_psi_features(self, traj: md.Trajectory) -> np.ndarray:
-        phi_angles, _ = md.compute_phi(traj)
-        psi_angles, _ = md.compute_psi(traj)
-        features: List[np.ndarray] = []
-        self._maybe_extend_with_trig(features, phi_angles)
-        self._maybe_extend_with_trig(features, psi_angles)
-        if features:
-            return np.hstack(features)
-        logger.warning("No dihedral angles found, using Cartesian coordinates")
-        return self._fallback_cartesian_features(traj)
+        """Backward-compatible φ/ψ features via new features API.
+
+        Uses api.compute_features(["phi_psi"]) to get dihedral angles (radians)
+        and returns trig-expanded features [cos(angles), sin(angles)] as before.
+        Falls back to Cartesian if no angles found.
+        """
+        try:
+            # Lazy import to avoid import cycles
+            from pmarlo import api  # type: ignore
+
+            X, _cols, _periodic = api.compute_features(traj, feature_specs=["phi_psi"])
+            if X.size == 0 or X.shape[1] == 0:
+                logger.warning("No dihedral angles found, using Cartesian coordinates")
+                return self._fallback_cartesian_features(traj)
+            # Apply trig expansion over all angle columns to preserve previous behavior
+            return np.hstack([np.cos(X), np.sin(X)])
+        except Exception:
+            # Robust fallback to original direct computation path
+            phi_angles, _ = md.compute_phi(traj)
+            psi_angles, _ = md.compute_psi(traj)
+            features: List[np.ndarray] = []
+            self._maybe_extend_with_trig(features, phi_angles)
+            self._maybe_extend_with_trig(features, psi_angles)
+            if features:
+                return np.hstack(features)
+            logger.warning("No dihedral angles found, using Cartesian coordinates")
+            return self._fallback_cartesian_features(traj)
 
     def _maybe_extend_with_trig(
         self, features: List[np.ndarray], angles: np.ndarray

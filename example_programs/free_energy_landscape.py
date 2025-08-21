@@ -28,7 +28,13 @@ from typing import List, Optional, Tuple
 import mdtraj as md
 
 # Import from the public package API (as if installed via pip)
-from pmarlo import MarkovStateModel, Protein, ReplicaExchange
+from pmarlo import (
+    MarkovStateModel,
+    Protein,
+    ReplicaExchange,
+    power_of_two_temperature_ladder,
+)
+from pmarlo.replica_exchange.config import RemdConfig
 
 # ------------------------------ Configuration ------------------------------
 
@@ -74,13 +80,20 @@ def run_replica_exchange_simulation(
     dcd_stride = max(1, int(steps // 5000))
     exchange_frequency = 200 if steps >= 20000 else 100
 
-    remd = ReplicaExchange(
-        pdb_file=str(pdb_file),
-        temperatures=temperatures,
-        output_dir=str(remd_output_dir),
-        exchange_frequency=exchange_frequency,
-        auto_setup=False,
-        dcd_stride=dcd_stride,
+    remd = ReplicaExchange.from_config(
+        RemdConfig(
+            pdb_file=str(pdb_file),
+            temperatures=temperatures,
+            output_dir=str(remd_output_dir),
+            exchange_frequency=exchange_frequency,
+            auto_setup=False,
+            dcd_stride=dcd_stride,
+        )
+    )
+    remd.plan_reporter_stride(
+        total_steps=int(steps),
+        equilibration_steps=min(steps // 10, 200),
+        target_frames=5000,
     )
     remd.setup_replicas()
     remd.run_simulation(
@@ -95,12 +108,28 @@ def run_replica_exchange_simulation(
         # Count frames in demuxed; if insufficient, prefer TRAM on all replicas
         try:
             traj = md.load(str(demuxed), top=str(pdb_file))
-            if traj.n_frames >= 1000:
+            # Compute expected demux frames: production steps / reporter stride
+            try:
+                equil = min(steps // 10, 200)
+                production_steps = max(0, int(steps) - int(equil))
+                # Prefer reporter_stride if recorded on REMD
+                reporter_stride = getattr(remd, "reporter_stride", None)
+                dcd_stride_eff = int(
+                    reporter_stride
+                    if reporter_stride
+                    else max(1, getattr(remd, "dcd_stride", 1))
+                )
+                expected_frames = max(1, production_steps // dcd_stride_eff)
+            except Exception:
+                expected_frames = 1000
+
+            if traj.n_frames >= expected_frames:
                 logging.info("Using demultiplexed trajectory at ~300K: %s", demuxed)
                 return [demuxed], [300.0]
             logging.info(
-                "Demux yielded only %d frames (<1000). Switching to multi-replica TRAM analysis.",
+                "Demux yielded only %d frames (<%d). Switching to multi-replica TRAM analysis.",
                 traj.n_frames,
+                expected_frames,
             )
         except Exception:
             logging.info(
@@ -227,24 +256,8 @@ if __name__ == "__main__":
     steps = 1000
     n_states = 50
     feature_type = "phi_psi"
-    temperatures = [
-        300.0,
-        305.0,
-        310.0,
-        315.0,
-        320.0,
-        325.0,
-        330.0,
-        335.0,
-        340.0,
-        345.0,
-        350.0,
-        355.0,
-        360.0,
-        365.0,
-        370.0,
-        375.0,
-    ]
+    # Build a temperature ladder with power-of-two replicas (~5 K spacing by default)
+    temperatures = power_of_two_temperature_ladder(300.0, 375.0, 32)
 
     # Initialize Protein using the public API; avoid automatic preparation to skip PDBFixer
     logging.info("Initializing protein: %s", pdb_path)

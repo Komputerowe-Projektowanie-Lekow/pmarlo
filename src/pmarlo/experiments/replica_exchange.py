@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from ..manager.checkpoint_manager import CheckpointManager
+from ..replica_exchange.config import RemdConfig
 from ..replica_exchange.replica_exchange import ReplicaExchange, setup_bias_variables
 from .benchmark_utils import (
     build_remd_baseline_object,
@@ -75,18 +76,37 @@ def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
     else:
         temps = config.temperatures
 
-    remd = ReplicaExchange(
-        pdb_file=config.pdb_file,
-        temperatures=temps,
-        output_dir=str(run_dir / "remd"),
-        exchange_frequency=config.exchange_frequency,
-        auto_setup=False,
-        dcd_stride=2000,
-    )
+    if hasattr(ReplicaExchange, "from_config"):
+        remd = ReplicaExchange.from_config(
+            RemdConfig(
+                pdb_file=config.pdb_file,
+                temperatures=temps,
+                output_dir=str(run_dir / "remd"),
+                exchange_frequency=config.exchange_frequency,
+                dcd_stride=2000,
+                auto_setup=False,
+            )
+        )
+    else:
+        # Backward-compatibility for tests that patch ReplicaExchange with a dummy
+        remd = ReplicaExchange(
+            pdb_file=config.pdb_file,
+            temperatures=temps,
+            output_dir=str(run_dir / "remd"),
+            exchange_frequency=config.exchange_frequency,
+            auto_setup=False,
+        )
 
     bias_vars = (
         setup_bias_variables(config.pdb_file) if config.use_metadynamics else None
     )
+    # Plan stride before reporters are created
+    if hasattr(remd, "plan_reporter_stride"):
+        remd.plan_reporter_stride(
+            total_steps=config.total_steps,
+            equilibration_steps=config.equilibration_steps,
+            target_frames=5000,
+        )
     remd.setup_replicas(bias_variables=bias_vars)
 
     # Run with KPI tracking

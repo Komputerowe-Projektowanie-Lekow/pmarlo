@@ -11,8 +11,10 @@ providing an OpenMM-like interface for molecular dynamics simulations.
 from .markov_state_model.markov_state_model import EnhancedMSM as MarkovStateModel
 from .pipeline import LegacyPipeline, Pipeline
 from .protein.protein import Protein
+from .replica_exchange.config import RemdConfig
 from .replica_exchange.replica_exchange import ReplicaExchange
 from .simulation.simulation import Simulation
+from .utils.replica_utils import power_of_two_temperature_ladder
 
 __version__ = "0.1.0"
 __author__ = "PMARLO Development Team"
@@ -21,8 +23,10 @@ __author__ = "PMARLO Development Team"
 __all__ = [
     "Protein",
     "ReplicaExchange",
+    "RemdConfig",
     "MarkovStateModel",
     "Simulation",
     "Pipeline",
     "LegacyPipeline",
+    "power_of_two_temperature_ladder",
 ]

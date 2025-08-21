@@ -24,6 +24,7 @@ import mdtraj as md
 import numpy as np
 
 from pmarlo import MarkovStateModel, Protein, ReplicaExchange
+from pmarlo.replica_exchange.config import RemdConfig
 
 # ------------------------------ Configuration ------------------------------
 
@@ -73,13 +74,20 @@ def run_replica_exchange_simulation(
     exchange_frequency = max(200, steps // 20)
     logging.info("Using exchange_frequency=%d", exchange_frequency)
 
-    remd = ReplicaExchange(
-        pdb_file=str(pdb_file),
-        temperatures=temperatures,
-        output_dir=str(remd_output_dir),
-        exchange_frequency=exchange_frequency,
-        auto_setup=False,
-        dcd_stride=dcd_stride,
+    remd = ReplicaExchange.from_config(
+        RemdConfig(
+            pdb_file=str(pdb_file),
+            temperatures=temperatures,
+            output_dir=str(remd_output_dir),
+            exchange_frequency=exchange_frequency,
+            auto_setup=False,
+            dcd_stride=dcd_stride,
+        )
+    )
+    remd.plan_reporter_stride(
+        total_steps=int(steps),
+        equilibration_steps=min(steps // 10, 2000),
+        target_frames=5000,
     )
     remd.setup_replicas()
     remd.run_simulation(
@@ -96,11 +104,26 @@ def run_replica_exchange_simulation(
         try:
             traj = md.load(str(demuxed), top=str(pdb_file))
             logging.info("Demuxed trajectory has %d frames", traj.n_frames)
-            if traj.n_frames >= 2000:
+            # Compute expected demux frames from production steps and stride
+            try:
+                equil = min(steps // 10, 2000)
+                production_steps = max(0, int(steps) - int(equil))
+                reporter_stride = getattr(remd, "reporter_stride", None)
+                dcd_stride_eff = int(
+                    reporter_stride
+                    if reporter_stride
+                    else max(1, getattr(remd, "dcd_stride", 1))
+                )
+                expected_frames = max(1, production_steps // dcd_stride_eff)
+            except Exception:
+                expected_frames = 2000
+
+            if traj.n_frames >= expected_frames:
                 logging.info("Using demultiplexed trajectory at ~300K")
                 return [demuxed], [300.0]
             logging.info(
-                "Too few frames in demuxed (<2000) – will use all replicas in TRAM"
+                "Too few frames in demuxed (<%d) – will use all replicas in TRAM",
+                expected_frames,
             )
         except Exception as e:
             logging.warning("Could not load demuxed trajectory: %s", e)

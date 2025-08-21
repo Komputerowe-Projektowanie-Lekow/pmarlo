@@ -18,6 +18,7 @@ from .manager.checkpoint_manager import CheckpointManager
 from .markov_state_model.markov_state_model import EnhancedMSM as MarkovStateModel
 from .markov_state_model.markov_state_model import run_complete_msm_analysis
 from .protein.protein import Protein
+from .replica_exchange.config import RemdConfig
 from .replica_exchange.replica_exchange import ReplicaExchange, run_remd_simulation
 from .simulation.simulation import Simulation
 
@@ -178,10 +179,12 @@ class Pipeline:
 
         remd_output_dir = self.output_dir / "replica_exchange"
 
-        self.replica_exchange = ReplicaExchange(
-            pdb_file=str(self.prepared_pdb),
-            temperatures=self.temperatures,
-            output_dir=str(remd_output_dir),
+        self.replica_exchange = ReplicaExchange.from_config(
+            RemdConfig(
+                pdb_file=str(self.prepared_pdb),
+                temperatures=self.temperatures,
+                output_dir=str(remd_output_dir),
+            )
         )
 
         # CRITICAL FIX: Initialize replicas before returning
@@ -193,6 +196,12 @@ class Pipeline:
 
             bias_variables = setup_bias_variables(str(self.prepared_pdb))
 
+        # Plan stride for pipeline run before reporters are created
+        self.replica_exchange.plan_reporter_stride(
+            total_steps=int(self.steps),
+            equilibration_steps=min(self.steps // 10, 200),
+            target_frames=5000,
+        )
         self.replica_exchange.setup_replicas(bias_variables=bias_variables)
 
         logger.info(f"Replica exchange setup with {len(self.temperatures)} replicas")

@@ -14,13 +14,22 @@ import pickle
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import mdtraj as md
 import numpy as np
 import openmm
 from openmm import Platform, unit
-from openmm.app import PME, DCDReporter, ForceField, HBonds, PDBFile, Simulation
+from openmm.app import ForceField, PDBFile, Simulation
 
 from ..utils.replica_utils import exponential_temperature_ladder
+from .config import RemdConfig
+from .diagnostics import compute_exchange_statistics
+from .platform_selector import select_platform_and_properties
+from .system_builder import (
+    create_system,
+    load_pdb_and_forcefield,
+    log_system_info,
+    setup_metadynamics,
+)
+from .trajectory import ClosableDCDReporter
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +51,8 @@ class ReplicaExchange:
         exchange_frequency: int = 50,  # Very frequent exchanges for testing
         auto_setup: bool = False,
         dcd_stride: int = 1,
+        config: Optional[RemdConfig] = None,
+        random_seed: Optional[int] = None,
     ):  # Explicit opt-in for auto-setup
         """
         Initialize the replica exchange simulation.
@@ -63,10 +74,35 @@ class ReplicaExchange:
         self.output_dir = Path(output_dir)
         self.exchange_frequency = exchange_frequency
         self.dcd_stride = dcd_stride
+        self.reporter_stride: Optional[int] = None
+        self._replica_reporter_stride: List[int] = []
         self.frames_per_replica_target: Optional[int] = None
 
         # Create output directory
         self.output_dir.mkdir(exist_ok=True)
+
+        # Reproducibility: RNG seeding
+        if (
+            config
+            and hasattr(config, "target_frames_per_replica")
+            and getattr(config, "target_frames_per_replica", None) is not None
+        ):
+            try:
+                self.frames_per_replica_target = int(
+                    getattr(config, "target_frames_per_replica")
+                )
+            except Exception:
+                self.frames_per_replica_target = None
+        self.random_seed: int = (
+            int(getattr(config, "random_seed", 0))
+            if (config and getattr(config, "random_seed", None) is not None)
+            else (
+                int(random_seed)
+                if random_seed is not None
+                else (int.from_bytes(os.urandom(8), "little") & 0x7FFFFFFF)
+            )
+        )
+        self.rng = np.random.default_rng(self.random_seed)
 
         # Initialize replicas - Fixed: Added proper type annotations
         self.n_replicas = len(self.temperatures)
@@ -117,7 +153,43 @@ class ReplicaExchange:
         # Auto-setup if requested (for API consistency)
         if auto_setup:
             logger.info("Auto-setting up replicas...")
+            # Ensure a reporter stride exists for auto-setup
+            if self.reporter_stride is None:
+                self.reporter_stride = max(1, self.dcd_stride)
+                logger.info(
+                    f"Reporter stride not planned; defaulting to dcd_stride={self.reporter_stride} for auto_setup"
+                )
             self.setup_replicas()
+
+    @classmethod
+    def from_config(cls, config: RemdConfig) -> "ReplicaExchange":
+        """Construct instance using immutable RemdConfig as single source of truth."""
+        return cls(
+            pdb_file=config.pdb_file,
+            forcefield_files=config.forcefield_files,
+            temperatures=config.temperatures,
+            output_dir=str(config.output_dir),
+            exchange_frequency=config.exchange_frequency,
+            auto_setup=config.auto_setup,
+            dcd_stride=config.dcd_stride,
+            config=config,
+            random_seed=getattr(config, "random_seed", None),
+        )
+
+    def plan_reporter_stride(
+        self,
+        total_steps: int,
+        equilibration_steps: int,
+        target_frames: int = 5000,
+    ) -> int:
+        """Plan and freeze the reporter stride for this run.
+
+        Decide the DCD stride once, before reporters are added, and store it.
+        """
+        production_steps = max(0, total_steps - equilibration_steps)
+        stride = max(1, production_steps // max(1, target_frames))
+        self.reporter_stride = stride
+        return stride
 
     def _generate_temperature_ladder(
         self,
@@ -143,12 +215,18 @@ class ReplicaExchange:
             bias_variables: Optional list of bias variables for metadynamics
         """
         logger.info("Setting up replica simulations...")
+        # Enforce stride planning before creating reporters
+        assert (
+            self.reporter_stride is not None
+        ), "reporter_stride is not planned. Call plan_reporter_stride(...) before setup_replicas()"
 
-        pdb, forcefield = self._load_pdb_and_forcefield()
-        system = self._create_system(pdb, forcefield)
-        self._log_system_info(system)
-        self._setup_metadynamics(system, bias_variables)
-        platform, platform_properties = self._select_platform_and_properties()
+        pdb, forcefield = load_pdb_and_forcefield(self.pdb_file, self.forcefield_files)
+        system = create_system(pdb, forcefield)
+        log_system_info(system, logger)
+        self.metadynamics = setup_metadynamics(
+            system, bias_variables, self.temperatures[0], self.output_dir
+        )
+        platform, platform_properties = select_platform_and_properties(logger)
 
         shared_minimized_positions = None
 
@@ -156,6 +234,11 @@ class ReplicaExchange:
             logger.info(f"Setting up replica {i} at {temperature}K...")
 
             integrator = self._create_integrator_for_temperature(temperature)
+            # Offset integrator seed per replica
+            try:
+                integrator.setRandomNumberSeed(int(self.random_seed + i))
+            except Exception:
+                pass
             simulation = self._create_simulation(
                 pdb, system, integrator, platform, platform_properties
             )
@@ -192,92 +275,43 @@ class ReplicaExchange:
 
     # --- Helper methods for setup_replicas ---
 
-    def _load_pdb_and_forcefield(self) -> Tuple[PDBFile, ForceField]:
-        pdb = PDBFile(self.pdb_file)
-        forcefield = ForceField(*self.forcefield_files)
-        return pdb, forcefield
+    def _load_pdb_and_forcefield(self) -> Tuple[PDBFile, ForceField]:  # Deprecated
+        return load_pdb_and_forcefield(self.pdb_file, self.forcefield_files)
 
-    def _create_system(self, pdb: PDBFile, forcefield: ForceField) -> openmm.System:
-        logger.info("Creating molecular system with HMR and tuned parameters...")
-        system = forcefield.createSystem(
-            pdb.topology,
-            nonbondedMethod=PME,
-            constraints=HBonds,
-            rigidWater=True,
-            nonbondedCutoff=0.9 * unit.nanometer,
-            ewaldErrorTolerance=1e-4,
-            hydrogenMass=3.0 * unit.amu,
-            removeCMMotion=True,
-        )
-        return system
+    def _create_system(
+        self, pdb: PDBFile, forcefield: ForceField
+    ) -> openmm.System:  # Deprecated
+        return create_system(pdb, forcefield)
 
-    def _log_system_info(self, system: openmm.System) -> None:
-        logger.info(f"System created with {system.getNumParticles()} particles")
-        logger.info(f"System has {system.getNumForces()} force terms")
-        for force_idx in range(system.getNumForces()):
-            force = system.getForce(force_idx)
-            logger.info(f"  Force {force_idx}: {force.__class__.__name__}")
+    def _log_system_info(self, system: openmm.System) -> None:  # Deprecated
+        return log_system_info(system, logger)
 
     def _setup_metadynamics(
         self, system: openmm.System, bias_variables: Optional[List]
-    ) -> None:
-        self.metadynamics = None
-        if not bias_variables:
-            return
-        from openmm.app.metadynamics import Metadynamics
-
-        bias_dir = self.output_dir / "bias"
-        bias_dir.mkdir(exist_ok=True)
-        self.metadynamics = Metadynamics(
-            system,
-            bias_variables,
-            temperature=self.temperatures[0] * unit.kelvin,
-            biasFactor=10.0,
-            height=1.0 * unit.kilojoules_per_mole,
-            frequency=500,
-            biasDir=str(bias_dir),
-            saveFrequency=1000,
+    ) -> None:  # Deprecated
+        self.metadynamics = setup_metadynamics(
+            system, bias_variables, self.temperatures[0], self.output_dir
         )
 
     def _select_platform_and_properties(
         self,
-    ) -> Tuple[Platform, Dict[str, str]]:
-        platform_properties: Dict[str, str] = {}
-        try:
-            platform = Platform.getPlatformByName("CUDA")
-            platform_properties = {
-                "Precision": "mixed",
-                "UseFastMath": "true",
-                "DeterministicForces": "false",
-            }
-            logger.info("Using CUDA (mixed precision, fast math)")
-        except Exception:
-            try:
-                try:
-                    platform = Platform.getPlatformByName("HIP")
-                    logger.info("Using HIP (AMD GPU)")
-                except Exception:
-                    platform = Platform.getPlatformByName("OpenCL")
-                    logger.info("Using OpenCL")
-            except Exception:
-                platform = Platform.getPlatformByName("CPU")
-                try:
-                    Platform.setPropertyDefaultValue(
-                        "CpuThreads", str(os.cpu_count() or 1)
-                    )
-                except Exception:
-                    pass
-                logger.info("Using CPU with all cores")
-        return platform, platform_properties
+    ) -> Tuple[Platform, Dict[str, str]]:  # Deprecated
+        return select_platform_and_properties(logger)
 
     def _create_integrator_for_temperature(
         self, temperature: float
     ) -> openmm.Integrator:
-        return openmm.LangevinIntegrator(
+        integrator = openmm.LangevinIntegrator(
             temperature * unit.kelvin,
             1.0 / unit.picosecond,
             2.0 * unit.femtoseconds,
         )
+        # Seed integrator RNG for reproducibility
+        try:
+            integrator.setRandomNumberSeed(int(self.random_seed))
+        except Exception:
+            pass
+        return integrator
 
     def _create_simulation(
         self,
@@ -477,8 +511,14 @@ class ReplicaExchange:
 
     def _add_dcd_reporter(self, simulation: Simulation, replica_index: int) -> Path:
         traj_file = self.output_dir / f"replica_{replica_index:02d}.dcd"
-        dcd_reporter = DCDReporter(str(traj_file), int(max(1, self.dcd_stride)))
+        stride = int(
+            self.reporter_stride
+            if self.reporter_stride is not None
+            else max(1, self.dcd_stride)
+        )
+        dcd_reporter = ClosableDCDReporter(str(traj_file), stride)
         simulation.reporters.append(dcd_reporter)
+        self._replica_reporter_stride.append(stride)
         return traj_file
 
     def _store_replica_data(
@@ -540,31 +580,25 @@ class ReplicaExchange:
             "exchange_frequency": self.exchange_frequency,
         }
 
-        # Save positions and velocities for each replica
-        replica_data = []
+        # Save states in XML for long-term stability across versions
+        from openmm import XmlSerializer  # type: ignore
+
+        replica_xml_states: List[str] = []
         for i, context in enumerate(self.contexts):
             try:
                 sim_state = context.getState(
                     getPositions=True, getVelocities=True, getEnergy=True
                 )
-                replica_data.append(
-                    {
-                        "positions": sim_state.getPositions(),
-                        "velocities": sim_state.getVelocities(),
-                        "energy": sim_state.getPotentialEnergy(),
-                    }
-                )
+                xml_str = XmlSerializer.serialize(sim_state)
+                replica_xml_states.append(xml_str)
             except Exception as e:
-                logger.warning(f"Could not save state for replica {i}: {e}")
-                replica_data.append(
-                    {  # Fixed: Replace None with empty dict to satisfy type checker
-                        "positions": None,
-                        "velocities": None,
-                        "energy": None,
-                    }
-                )
+                logger.warning(f"Could not save state XML for replica {i}: {e}")
+                replica_xml_states.append("")
 
-        state["replica_data"] = replica_data
+        state["replica_state_xml"] = replica_xml_states
+        # Persist reporter stride data for demux after resume
+        state["reporter_stride"] = int(self.reporter_stride or max(1, self.dcd_stride))
+        state["replica_reporter_strides"] = self._replica_reporter_stride.copy()
         return state
 
     def restore_from_checkpoint(
@@ -602,18 +636,31 @@ class ReplicaExchange:
             logger.info("Setting up replicas for checkpoint restoration...")
             self.setup_replicas(bias_variables=bias_variables)
 
-        # Restore replica states if available
-        replica_data = checkpoint_state.get("replica_data", [])
-        if replica_data and len(replica_data) == self.n_replicas:
-            logger.info("Restoring individual replica states...")
-            for i, (context, data) in enumerate(zip(self.contexts, replica_data)):
-                if (
-                    data is not None and data.get("positions") is not None
-                ):  # Fixed: Check for valid data
+        # Restore reporter stride info if present
+        self.reporter_stride = checkpoint_state.get(
+            "reporter_stride", self.reporter_stride
+        )
+        saved_replica_strides = checkpoint_state.get("replica_reporter_strides")
+        if isinstance(saved_replica_strides, list):
+            try:
+                self._replica_reporter_stride = [int(x) for x in saved_replica_strides]
+            except Exception:
+                pass
+
+        # Restore replica states from XML if available
+        from openmm import XmlSerializer  # type: ignore
+
+        replica_xml = checkpoint_state.get("replica_state_xml", [])
+        if replica_xml and len(replica_xml) == self.n_replicas:
+            logger.info("Restoring individual replica states from XML...")
+            for i, (context, xml_str) in enumerate(zip(self.contexts, replica_xml)):
+                if xml_str:
                     try:
-                        # Create a state with the saved positions and velocities
-                        context.setPositions(data["positions"])
-                        context.setVelocities(data["velocities"])
+                        state_obj = XmlSerializer.deserialize(xml_str)
+                        if state_obj.getPositions() is not None:
+                            context.setPositions(state_obj.getPositions())
+                        if state_obj.getVelocities() is not None:
+                            context.setVelocities(state_obj.getVelocities())
                         logger.info(f"Restored state for replica {i}")
                     except Exception as e:
                         logger.warning(f"Could not restore state for replica {i}: {e}")
@@ -714,7 +761,7 @@ class ReplicaExchange:
         pair = (min(state_i_val, state_j_val), max(state_i_val, state_j_val))
         self.pair_attempt_counts[pair] = self.pair_attempt_counts.get(pair, 0) + 1
 
-        if np.random.random() < prob:
+        if self.rng.random() < prob:
             self._perform_exchange(replica_i, replica_j)
             self.exchanges_accepted += 1
             self.pair_accept_counts[pair] = self.pair_accept_counts.get(pair, 0) + 1
@@ -822,12 +869,23 @@ class ReplicaExchange:
             self.temperatures[old_state_i] * unit.kelvin
         )
 
-        self.contexts[replica_i].setVelocitiesToTemperature(
-            self.temperatures[old_state_j] * unit.kelvin
-        )
-        self.contexts[replica_j].setVelocitiesToTemperature(
-            self.temperatures[old_state_i] * unit.kelvin
-        )
+        # Rescale velocities deterministically instead of redrawing
+        Ti = self.temperatures[old_state_i]
+        Tj = self.temperatures[old_state_j]
+        scale_ij = float(np.sqrt(max(1e-12, Tj / max(1e-12, Ti))))
+        try:
+            vi = self.contexts[replica_i].getState(getVelocities=True).getVelocities()
+            vj = self.contexts[replica_j].getState(getVelocities=True).getVelocities()
+            self.contexts[replica_i].setVelocities(vi * scale_ij)
+            self.contexts[replica_j].setVelocities(vj / scale_ij)
+        except Exception:
+            # Fallback to Maxwell draw if rescaling fails
+            self.contexts[replica_i].setVelocitiesToTemperature(
+                self.temperatures[old_state_j] * unit.kelvin
+            )
+            self.contexts[replica_j].setVelocitiesToTemperature(
+                self.temperatures[old_state_i] * unit.kelvin
+            )
 
     def run_simulation(
         self,
@@ -847,14 +905,12 @@ class ReplicaExchange:
         """
         self._validate_setup_state()
         self._log_run_start(total_steps)
-        # Configure deterministic stride to target ~5000 frames/replica in production
-        # frames ≈ production_steps / dcd_stride ⇒ set dcd_stride = max(1, production_steps // 5000)
-        production_steps_preview = max(0, total_steps - equilibration_steps)
-        if production_steps_preview > 0:
-            self.dcd_stride = max(1, production_steps_preview // 5000)
-            logger.info(
-                f"Setting DCD stride to {self.dcd_stride} to target ~5000 frames/replica"
+        # Decide reporter stride BEFORE production; do not mutate during run
+        if self.reporter_stride is None:
+            stride = self.plan_reporter_stride(
+                total_steps, equilibration_steps, target_frames=5000
             )
+            logger.info(f"DCD stride planned as {stride} for ~5000 frames/replica")
 
         if equilibration_steps > 0:
             self._run_equilibration_phase(equilibration_steps, checkpoint_manager)
@@ -1205,7 +1261,7 @@ class ReplicaExchange:
     def _log_final_stats(self) -> None:
         final_acceptance = self.exchanges_accepted / max(1, self.exchange_attempts)
         logger.info("=" * 60)
-        logger.info("🎉 REPLICA EXCHANGE SIMULATION COMPLETED! 🎉")
+        logger.info("REPLICA EXCHANGE SIMULATION COMPLETED")
         logger.info(f"Final exchange acceptance rate: {final_acceptance:.3f}")
         logger.info(f"Total exchanges attempted: {self.exchange_attempts}")
         logger.info(f"Total exchanges accepted: {self.exchanges_accepted}")
@@ -1216,19 +1272,21 @@ class ReplicaExchange:
         logger.info("Closing DCD files...")
 
         for i, replica in enumerate(self.replicas):
-            # Remove DCD reporters to force file closure
-            dcd_reporters = [r for r in replica.reporters if hasattr(r, "_out")]
+            # Close DCD reporters safely
+            dcd_reporters = [
+                r for r in replica.reporters if isinstance(r, ClosableDCDReporter)
+            ]
             for reporter in dcd_reporters:
                 try:
-                    # Force close the DCD file
-                    if hasattr(reporter, "_out") and reporter._out:
-                        reporter._out.close()
-                        logger.debug(f"Closed DCD file for replica {i}")
+                    reporter.close()
+                    logger.debug(f"Closed DCD file for replica {i}")
                 except Exception as e:
                     logger.warning(f"Error closing DCD file for replica {i}: {e}")
 
             # Remove DCD reporters from the simulation
-            replica.reporters = [r for r in replica.reporters if not hasattr(r, "_out")]
+            replica.reporters = [
+                r for r in replica.reporters if not isinstance(r, ClosableDCDReporter)
+            ]
 
         # Force garbage collection to ensure file handles are released
         import gc
@@ -1292,6 +1350,8 @@ class ReplicaExchange:
         for traj_file in self.trajectory_files:
             try:
                 if traj_file.exists():
+                    import mdtraj as md  # type: ignore
+
                     t = md.load(str(traj_file), top=self.pdb_file)
                     frames.append(int(t.n_frames))
                 else:
@@ -1330,11 +1390,15 @@ class ReplicaExchange:
             logger.warning("No exchange history available for demultiplexing")
             return None
 
-        # DCD reporter settings (must match setup_replicas)
-        dcd_frequency = int(max(1, getattr(self, "dcd_stride", 1000)))
+        # Reporter stride: prefer per-replica recorded stride, otherwise use planned stride
+        default_stride = int(
+            self.reporter_stride
+            if self.reporter_stride is not None
+            else max(1, self.dcd_stride)
+        )
 
         # Load all trajectories and perform segment-wise demultiplexing
-        demux_segments: List[md.Trajectory] = []
+        demux_segments: List[Any] = []
         trajectory_frame_counts: Dict[str, int] = {}
 
         n_segments = len(self.exchange_history)
@@ -1342,13 +1406,13 @@ class ReplicaExchange:
         logger.info(
             (
                 f"Exchange frequency: {self.exchange_frequency} MD steps, "
-                f"DCD frequency: {dcd_frequency} MD steps"
+                f"default DCD stride: {default_stride} MD steps"
             )
         )
 
         # Diagnostics for DCD files
         logger.info("DCD File Diagnostics:")
-        loaded_trajs: Dict[int, md.Trajectory] = {}
+        loaded_trajs: Dict[int, Any] = {}
         for i, traj_file in enumerate(self.trajectory_files):
             if traj_file.exists():
                 file_size = traj_file.stat().st_size
@@ -1356,6 +1420,8 @@ class ReplicaExchange:
                     f"  Replica {i}: {traj_file.name} exists, size: {file_size:,} bytes"
                 )
                 try:
+                    import mdtraj as md  # type: ignore
+
                     t = md.load(str(traj_file), top=self.pdb_file)
                     loaded_trajs[i] = t
                     trajectory_frame_counts[str(traj_file)] = int(t.n_frames)
@@ -1395,12 +1461,15 @@ class ReplicaExchange:
                 start_md = effective_equil_steps + s * self.exchange_frequency
                 stop_md = effective_equil_steps + (s + 1) * self.exchange_frequency
 
-                # Map to saved frame indices
-                start_frame = max(0, start_md // dcd_frequency)
-                # Inclusive of frames with step < stop_md
-                end_frame = min(
-                    traj.n_frames, (max(0, stop_md - 1) // dcd_frequency) + 1
+                # Map to saved frame indices using replica's recorded stride if available
+                stride = (
+                    self._replica_reporter_stride[replica_at_target]
+                    if replica_at_target < len(self._replica_reporter_stride)
+                    else default_stride
                 )
+                start_frame = max(0, start_md // stride)
+                # Inclusive of frames with step < stop_md
+                end_frame = min(traj.n_frames, (max(0, stop_md - 1) // stride) + 1)
 
                 if end_frame > start_frame:
                     segment = traj[start_frame:end_frame]
@@ -1410,6 +1479,8 @@ class ReplicaExchange:
 
         if demux_segments:
             try:
+                import mdtraj as md  # type: ignore
+
                 demux_traj = md.join(demux_segments)
                 demux_file = self.output_dir / f"demux_T{actual_temp:.0f}K.dcd"
                 demux_traj.save_dcd(str(demux_file))
@@ -1431,7 +1502,7 @@ class ReplicaExchange:
             logger.debug(f"  Exchange steps: {len(self.exchange_history)}")
             logger.debug(f"  Exchange frequency: {self.exchange_frequency}")
             logger.debug(f"  Effective equilibration steps: {effective_equil_steps}")
-            logger.debug(f"  DCD frequency: {dcd_frequency}")
+            logger.debug(f"  Default DCD stride: {default_stride}")
             for i, traj_file in enumerate(self.trajectory_files):
                 n_frames = trajectory_frame_counts.get(str(traj_file), 0)
                 logger.debug(f"  Replica {i}: {n_frames} frames in {traj_file.name}")
@@ -1448,42 +1519,22 @@ class ReplicaExchange:
             for replica, state in enumerate(states):
                 replica_visits[replica, state] += 1
 
-        # Normalize to get probabilities
-        replica_probs = replica_visits / len(self.exchange_history)
+        # Normalize to get probabilities (not currently used downstream)
+        _ = replica_visits / max(1, len(self.exchange_history))
 
-        # Calculate round-trip times (simplified)
-        round_trip_times = []
-        for replica in range(self.n_replicas):
-            # Find when replica returns to its starting state
-            start_state = 0  # Assuming replica starts at its own temperature
-            current_state = start_state
-            trip_start = 0
-
-            for step, states in enumerate(self.exchange_history):
-                if states[replica] != current_state:
-                    current_state = states[replica]
-                    if current_state == start_state and step > trip_start:
-                        round_trip_times.append(step - trip_start)
-                        trip_start = step
-
-        # Per-pair acceptance rates
-        per_pair_acceptance = {}
-        for k, att in self.pair_attempt_counts.items():
-            acc = self.pair_accept_counts.get(k, 0)
-            rate = acc / max(1, att)
-            per_pair_acceptance[f"{k}"] = rate
+        extra = compute_exchange_statistics(
+            self.exchange_history,
+            self.n_replicas,
+            self.pair_attempt_counts,
+            self.pair_accept_counts,
+        )
 
         return {
             "total_exchange_attempts": self.exchange_attempts,
             "total_exchanges_accepted": self.exchanges_accepted,
             "overall_acceptance_rate": self.exchanges_accepted
             / max(1, self.exchange_attempts),
-            "replica_state_probabilities": replica_probs.tolist(),
-            "average_round_trip_time": (
-                np.mean(round_trip_times) if round_trip_times else 0
-            ),
-            "round_trip_times": round_trip_times[:10],  # First 10 for brevity
-            "per_pair_acceptance": per_pair_acceptance,
+            **extra,
         }
 
 
@@ -1575,6 +1626,13 @@ def run_remd_simulation(
         exchange_frequency=50,  # Very frequent exchanges for testing
     )
 
+    # Plan DCD reporter stride before reporters are created in setup
+    remd.plan_reporter_stride(
+        total_steps=total_steps,
+        equilibration_steps=equilibration_steps,
+        target_frames=5000,
+    )
+
     # Set up replicas
     remd.setup_replicas(bias_variables=bias_variables)
 
@@ -1616,6 +1674,13 @@ def run_remd_simulation(
         # Set up bias variables if they were used
         bias_variables = remd_config.get("bias_variables") if use_metadynamics else None
 
+        # Plan reporter stride prior to setup
+        remd.plan_reporter_stride(
+            total_steps=total_steps,
+            equilibration_steps=equilibration_steps,
+            target_frames=5000,
+        )
+
         # Only setup replicas if we haven't done energy minimization yet
         if not checkpoint_manager.is_step_completed("energy_minimization"):
             remd.setup_replicas(bias_variables=bias_variables)
@@ -1627,6 +1692,12 @@ def run_remd_simulation(
             temperatures=temperatures,
             output_dir=output_dir,
             exchange_frequency=50,
+        )
+        # Plan reporter stride prior to setup
+        remd.plan_reporter_stride(
+            total_steps=total_steps,
+            equilibration_steps=equilibration_steps,
+            target_frames=5000,
         )
         remd.setup_replicas(bias_variables=bias_variables)
 
@@ -1656,24 +1727,24 @@ def run_remd_simulation(
                 target_temperature=300.0, equilibration_steps=equilibration_steps
             )
             if demux_traj:
-                logger.info(f"✓ Demultiplexing successful: {demux_traj}")
+                logger.info(f"Demultiplexing successful: {demux_traj}")
                 if checkpoint_manager:
                     checkpoint_manager.mark_step_completed(
                         "trajectory_demux", {"demux_file": demux_traj}
                     )
             else:
-                logger.warning("⚠ Demultiplexing returned no trajectory")
+                logger.warning("Demultiplexing returned no trajectory")
                 if checkpoint_manager:
                     checkpoint_manager.mark_step_failed(
                         "trajectory_demux", "No frames found for demultiplexing"
                     )
         except Exception as e:
-            logger.warning(f"⚠ Demultiplexing failed: {e}")
+            logger.warning(f"Demultiplexing failed: {e}")
             if checkpoint_manager:
                 checkpoint_manager.mark_step_failed("trajectory_demux", str(e))
 
         # Always log that the simulation itself was successful
-        logger.info("🎉 REMD simulation completed successfully!")
+        logger.info("REMD simulation completed successfully")
         logger.info("Raw trajectory files are available for manual analysis")
     else:
         logger.info(
