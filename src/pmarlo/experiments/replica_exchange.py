@@ -22,7 +22,7 @@ from .kpi import (
     default_kpi_metrics,
     write_benchmark_json,
 )
-from .utils import timestamp_dir
+from .utils import set_seed, timestamp_dir
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,7 @@ class ReplicaExchangeConfig:
     tmin: float = 300.0
     tmax: float = 350.0
     nreplicas: int = 6
+    seed: int | None = None
 
 
 def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
@@ -46,6 +47,7 @@ def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
     Runs Stage 2: REMD with multi-temperature replicas from a prepared PDB.
     Returns a dict with exchange statistics and artifact paths.
     """
+    set_seed(config.seed)
     run_dir = timestamp_dir(config.output_dir)
 
     # Minimal checkpointing confined to this experiment run dir
@@ -85,6 +87,7 @@ def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
                 exchange_frequency=config.exchange_frequency,
                 dcd_stride=2000,
                 auto_setup=False,
+                random_seed=config.seed,
             )
         )
     else:
@@ -95,6 +98,7 @@ def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
             output_dir=str(run_dir / "remd"),
             exchange_frequency=config.exchange_frequency,
             auto_setup=False,
+            random_seed=config.seed,
         )
 
     bias_vars = (
@@ -158,7 +162,7 @@ def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
         "frames_per_second": None,
         "spectral_gap": None,
         "row_stochasticity_mad": None,
-        "seed": None,
+        "seed": config.seed,
         "num_frames": None,
     }
 
