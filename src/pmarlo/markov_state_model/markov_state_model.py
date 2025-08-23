@@ -18,6 +18,7 @@ import logging
 import pickle
 import warnings
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -30,10 +31,51 @@ from scipy.ndimage import gaussian_filter
 from scipy.sparse import csc_matrix, issparse, save_npz
 from sklearn.cluster import MiniBatchKMeans
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("pmarlo")
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings("ignore", category=FutureWarning)
+
+
+@dataclass
+class ImpliedTimescaleResult:
+    """Container for implied timescale analysis results."""
+
+    lag_times: List[int]
+    eigenvalues: np.ndarray
+    timescales: np.ndarray
+    rates: np.ndarray
+    eigenvalues_ci: Tuple[np.ndarray, np.ndarray]
+    timescales_ci: Tuple[np.ndarray, np.ndarray]
+    rates_ci: Tuple[np.ndarray, np.ndarray]
+    recommended_lag_window: Optional[Tuple[int, int]]
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a JSON-serializable representation of the results."""
+
+        return {
+            "lag_times": self.lag_times,
+            "eigenvalues": self.eigenvalues.tolist(),
+            "timescales": self.timescales.tolist(),
+            "rates": self.rates.tolist(),
+            "eigenvalues_ci": {
+                "lower": self.eigenvalues_ci[0].tolist(),
+                "upper": self.eigenvalues_ci[1].tolist(),
+            },
+            "timescales_ci": {
+                "lower": self.timescales_ci[0].tolist(),
+                "upper": self.timescales_ci[1].tolist(),
+            },
+            "rates_ci": {
+                "lower": self.rates_ci[0].tolist(),
+                "upper": self.rates_ci[1].tolist(),
+            },
+            "recommended_lag_window": (
+                list(self.recommended_lag_window)
+                if self.recommended_lag_window
+                else None
+            ),
+        }
 
 
 class EnhancedMSM:
@@ -783,103 +825,173 @@ class EnhancedMSM:
         )
 
     def compute_implied_timescales(
-        self, lag_times: Optional[List[int]] = None, n_timescales: int = 5
-    ):
-        """
-        Compute implied timescales for MSM validation.
+        self,
+        lag_times: Optional[List[int]] = None,
+        n_timescales: int = 5,
+        n_samples: int = 100,
+        dirichlet_alpha: float = 1.0,
+        m: int = 2,
+        epsilon: float = 0.1,
+        random_seed: int = 13,
+    ) -> ImpliedTimescaleResult:
+        """Compute implied timescales with Bayesian confidence intervals.
 
         Args:
-            lag_times: List of lag times to test
-            n_timescales: Number of timescales to compute
+            lag_times: List of lag times to test. Defaults to a curated ladder.
+            n_timescales: Number of non-trivial timescales to compute.
+            n_samples: Number of Bayesian transition-matrix samples.
+            dirichlet_alpha: Pseudocount added to transition counts.
+            m: Number of leading eigenvalues checked for plateau detection.
+            epsilon: Relative variation tolerated between consecutive lags.
+            random_seed: Seed for deterministic sampling.
+
+        Returns:
+            ImpliedTimescaleResult summarizing timescales, rates and CIs.
         """
-        logger.info("Computing implied timescales...")
+        logger.info("Computing implied timescales with Bayesian sampling")
+        np.random.seed(random_seed)
 
         lag_times = self._its_default_lag_times(lag_times)
-        timescales_data: List[List[float]] = []
+        eig_mean_list: List[np.ndarray] = []
+        eig_lower_list: List[np.ndarray] = []
+        eig_upper_list: List[np.ndarray] = []
+        ts_mean_list: List[np.ndarray] = []
+        ts_lower_list: List[np.ndarray] = []
+        ts_upper_list: List[np.ndarray] = []
+        rate_mean_list: List[np.ndarray] = []
+        rate_lower_list: List[np.ndarray] = []
+        rate_upper_list: List[np.ndarray] = []
 
         for lag in lag_times:
-            ts_row = self._its_try_deeptime_timescales(lag, n_timescales)
-            if ts_row is None:
-                ts_row = self._its_fallback_timescales(lag, n_timescales)
-            timescales_data.append(self._its_trim_pad(ts_row, n_timescales))
+            stats = self._its_bayesian_stats(
+                lag, n_timescales, n_samples, dirichlet_alpha
+            )
+            eig_mean_list.append(stats["eig_mean"])
+            eig_lower_list.append(stats["eig_lower"])
+            eig_upper_list.append(stats["eig_upper"])
+            ts_mean_list.append(stats["ts_mean"])
+            ts_lower_list.append(stats["ts_lower"])
+            ts_upper_list.append(stats["ts_upper"])
+            rate_mean_list.append(stats["rate_mean"])
+            rate_lower_list.append(stats["rate_lower"])
+            rate_upper_list.append(stats["rate_upper"])
 
-        self._its_assign_results(lag_times, timescales_data)
-        self._its_restore_original_msm()
-        self._its_log_complete()
+        eigenvalues = np.vstack(eig_mean_list)
+        timescales = np.vstack(ts_mean_list)
+        rates = np.vstack(rate_mean_list)
+        eigen_ci = (np.vstack(eig_lower_list), np.vstack(eig_upper_list))
+        ts_ci = (np.vstack(ts_lower_list), np.vstack(ts_upper_list))
+        rate_ci = (np.vstack(rate_lower_list), np.vstack(rate_upper_list))
 
-    # ---------------- Helper methods for implied timescales (C901 split) ----------------
+        recommended = self._its_select_lag_window(
+            lag_times, eigenvalues, m=m, epsilon=epsilon
+        )
+
+        result = ImpliedTimescaleResult(
+            lag_times=lag_times,
+            eigenvalues=eigenvalues,
+            timescales=timescales,
+            rates=rates,
+            eigenvalues_ci=eigen_ci,
+            timescales_ci=ts_ci,
+            rates_ci=rate_ci,
+            recommended_lag_window=recommended,
+        )
+
+        self.implied_timescales = result.to_dict()
+        logger.info("Implied timescales computation completed")
+        return result
+
+    # ---------------- Helper methods for implied timescales ----------------
 
     def _its_default_lag_times(self, lag_times: Optional[List[int]]) -> List[int]:
         if lag_times is None:
             return [1, 2, 3, 5, 8, 10, 15, 20, 30, 50, 75, 100, 150, 200]
         return [int(max(1, v)) for v in lag_times]
 
-    def _its_try_deeptime_timescales(
-        self, lag: int, n_timescales: int
-    ) -> Optional[List[float]]:
-        try:
-            from deeptime.markov import TransitionCountEstimator  # type: ignore
-            from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
+    def _its_bayesian_stats(
+        self,
+        lag: int,
+        n_timescales: int,
+        n_samples: int,
+        dirichlet_alpha: float,
+    ) -> Dict[str, np.ndarray]:
+        """Estimate eigenvalues, timescales and rates for a lag."""
 
-            tce = TransitionCountEstimator(
-                lagtime=int(max(1, lag)), count_mode="sliding", sparse=False
+        from deeptime.markov import TransitionCountEstimator  # type: ignore
+        from deeptime.markov.msm import BayesianMSM  # type: ignore
+
+        tce = TransitionCountEstimator(
+            lagtime=int(max(1, lag)), count_mode="sliding", sparse=False
+        )
+        C = tce.fit(self.dtrajs).fetch_model()
+        counts = np.asarray(C.count_matrix, dtype=float) + dirichlet_alpha
+        bayes = BayesianMSM(
+            n_samples=n_samples, reversible=True, lagtime=int(max(1, lag))
+        )
+        posterior = bayes.fit(counts).fetch_model()
+        eig_stats = posterior.gather_stats("eigenvalues", k=n_timescales + 1)
+        lam_mean = np.array(eig_stats.mean[1:])
+        lam_lower = np.array(eig_stats.L[1:])
+        lam_upper = np.array(eig_stats.R[1:])
+        ts_stats = posterior.gather_stats("timescales", k=n_timescales)
+        ts_mean = np.array(ts_stats.mean) * lag
+        ts_lower = np.array(ts_stats.L) * lag
+        ts_upper = np.array(ts_stats.R) * lag
+        rate_mean = np.divide(
+            1.0, ts_mean, out=np.zeros_like(ts_mean), where=ts_mean > 0
+        )
+        rate_lower = np.divide(
+            1.0, ts_upper, out=np.zeros_like(ts_upper), where=ts_upper > 0
+        )
+        rate_upper = np.divide(
+            1.0, ts_lower, out=np.zeros_like(ts_lower), where=ts_lower > 0
+        )
+        if np.any(np.isinf(ts_upper)) or np.any(rate_mean == 0.0):
+            logger.warning(
+                "Lag %s may suffer from data scarcity; rates may approach zero", lag
             )
-            C = tce.fit(self.dtrajs).fetch_model()
-            ml = MaximumLikelihoodMSM(reversible=True)
-            msm = ml.fit(C).fetch_model()
-            return self._its_extract_timescales_from_model(msm, lag, n_timescales)
-        except Exception:
-            return None
-
-    def _its_extract_timescales_from_model(
-        self, msm: Any, lag: int, n_timescales: int
-    ) -> List[float]:
-        ts_row: List[float] = []
-        try:
-            ts = list(msm.timescales(k=int(n_timescales)))  # type: ignore[attr-defined]
-            ts_row = [float(v) for v in ts]
-        except Exception:
-            evals = np.real(np.linalg.eigvals(np.asarray(msm.transition_matrix)))
-            evals = np.sort(evals)[::-1]
-            for i in range(1, min(n_timescales + 1, len(evals))):
-                if 0.0 < evals[i] < 1.0:
-                    ts_row.append(-lag / np.log(evals[i]))
-        return ts_row
-
-    def _its_fallback_timescales(self, lag: int, n_timescales: int) -> List[float]:
-        ts_row: List[float] = []
-        try:
-            self._build_standard_msm(lag, count_mode=self.count_mode)
-            if self.transition_matrix is not None:
-                eigenvals = np.real(np.linalg.eigvals(self.transition_matrix))
-                eigenvals = np.sort(eigenvals)[::-1]
-                for i in range(1, min(n_timescales + 1, len(eigenvals))):
-                    if 0.0 < eigenvals[i] < 1.0:
-                        ts_row.append(-lag / np.log(eigenvals[i]))
-        except Exception as e:
-            logger.warning(f"Failed to compute timescales for lag {lag}: {e}")
-            return [np.nan] * n_timescales
-        return ts_row
-
-    def _its_trim_pad(self, ts_row: List[float], n_timescales: int) -> List[float]:
-        row = list(ts_row[:n_timescales])
-        while len(row) < n_timescales:
-            row.append(np.nan)
-        return row
-
-    def _its_assign_results(
-        self, lag_times: List[int], timescales_data: List[List[float]]
-    ) -> None:
-        self.implied_timescales = {
-            "lag_times": lag_times,
-            "timescales": np.array(timescales_data),
+        return {
+            "eig_mean": lam_mean,
+            "eig_lower": lam_lower,
+            "eig_upper": lam_upper,
+            "ts_mean": ts_mean,
+            "ts_lower": ts_lower,
+            "ts_upper": ts_upper,
+            "rate_mean": rate_mean,
+            "rate_lower": rate_lower,
+            "rate_upper": rate_upper,
         }
 
-    def _its_restore_original_msm(self) -> None:
-        self._build_standard_msm(self.lag_time)
+    def _its_select_lag_window(
+        self, lag_times: List[int], eigenvalues: np.ndarray, m: int, epsilon: float
+    ) -> Optional[Tuple[int, int]]:
+        """Select lag window where leading eigenvalues vary ≤ ``epsilon``."""
 
-    def _its_log_complete(self) -> None:
-        logger.info("Implied timescales computation completed")
+        if len(lag_times) < 2:
+            return None
+        stable: List[int] = []
+        for i in range(len(lag_times) - 1):
+            base = eigenvalues[i, :m]
+            nxt = eigenvalues[i + 1, :m]
+            rel = np.abs(nxt - base) / np.maximum(np.abs(base), 1e-12)
+            if np.all(rel <= epsilon):
+                stable.append(i)
+        if not stable:
+            return None
+        start = stable[0]
+        best = (start, start + 1)
+        cur_start = start
+        prev = start
+        for idx in stable[1:]:
+            if idx == prev + 1:
+                prev = idx
+                if idx + 1 - cur_start > best[1] - best[0]:
+                    best = (cur_start, idx + 1)
+            else:
+                cur_start = idx
+                prev = idx
+        return (lag_times[best[0]], lag_times[best[1]])
 
     # ---------------- TPT / MFPT / Committors (deeptime-backed) ----------------
 
@@ -1872,26 +1984,42 @@ class EnhancedMSM:
             plt.show()
 
     def plot_implied_timescales(self, save_file: Optional[str] = None):
-        """Plot implied timescales for MSM validation."""
+        """Plot implied timescales and rates with confidence intervals."""
+
         if self.implied_timescales is None:
             raise ValueError("Implied timescales must be computed first")
 
-        lag_times = self.implied_timescales["lag_times"]
-        timescales = self.implied_timescales["timescales"]
+        lag_times = np.asarray(self.implied_timescales["lag_times"], dtype=float)
+        timescales = np.asarray(self.implied_timescales["timescales"], dtype=float)
+        rates = np.asarray(self.implied_timescales["rates"], dtype=float)
+        ts_ci = self.implied_timescales.get("timescales_ci")
+        rate_ci = self.implied_timescales.get("rates_ci")
+        rec = self.implied_timescales.get("recommended_lag_window")
 
-        plt.figure(figsize=(10, 6))
-
+        fig, axes = plt.subplots(2, 1, figsize=(10, 10), sharex=True)
         for i in range(timescales.shape[1]):
-            plt.plot(lag_times, timescales[:, i], "o-", label=f"Timescale {i+1}")
+            axes[0].plot(lag_times, timescales[:, i], "o-", label=f"Timescale {i+1}")
+            if ts_ci:
+                lower = np.asarray(ts_ci["lower"])[:, i]
+                upper = np.asarray(ts_ci["upper"])[:, i]
+                axes[0].fill_between(lag_times, lower, upper, alpha=0.2)
+            axes[1].plot(lag_times, rates[:, i], "o-", label=f"Rate {i+1}")
+            if rate_ci:
+                r_lower = np.asarray(rate_ci["lower"])[:, i]
+                r_upper = np.asarray(rate_ci["upper"])[:, i]
+                axes[1].fill_between(lag_times, r_lower, r_upper, alpha=0.2)
 
-        plt.xlabel("Lag Time")
-        plt.ylabel("Implied Timescale")
-        plt.title("Implied Timescales Analysis")
-        plt.legend()
-        plt.grid(True, alpha=0.3)
+        axes[0].set_ylabel("Implied Timescale")
+        axes[1].set_ylabel("Rate")
+        axes[1].set_xlabel("Lag Time")
+        for ax in axes:
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            if rec:
+                ax.axvspan(rec[0], rec[1], color="grey", alpha=0.1)
 
         if save_file:
-            plt.savefig(
+            fig.savefig(
                 self.output_dir / f"{save_file}.png", dpi=300, bbox_inches="tight"
             )
 
