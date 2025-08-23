@@ -37,6 +37,8 @@ from scipy.sparse.csgraph import connected_components
 from sklearn.cluster import MiniBatchKMeans
 from ..cluster.micro import ClusteringResult, cluster_microstates
 
+from ..replica_exchange.demux_metadata import DemuxMetadata
+
 from pmarlo.states.msm_bridge import _row_normalize, _stationary_from_T
 from pmarlo.utils.msm_utils import ensure_connected_counts
 
@@ -130,6 +132,9 @@ class EnhancedMSM:
         self.free_energies: Optional[np.ndarray] = None
         self.lag_time = 20  # Default lag time
         self.frame_stride: Optional[int] = None  # Optional: frames per saved sample
+        self.time_per_frame_ps: Optional[float] = None
+        self.demux_metadata: Optional[DemuxMetadata] = None
+        self.total_frames: Optional[int] = None
 
         # Estimation controls
         self.estimator_backend: str = "deeptime"  # or "pmarlo" for fallback/debug
@@ -152,9 +157,11 @@ class EnhancedMSM:
             f"Enhanced MSM initialized for {len(self.trajectory_files)} trajectories"
         )
 
-    def load_trajectories(self, stride: int = 1):
-        """
-        Load trajectory data for analysis.
+    def load_trajectories(self, stride: int = 1) -> None:
+        """Load trajectory data for analysis.
+
+        If a metadata file with the same stem as a trajectory exists, it is
+        loaded to determine the physical time per frame.
 
         Args:
             stride: Stride for loading frames (1 = every frame)
@@ -163,10 +170,31 @@ class EnhancedMSM:
 
         self.trajectories = []
         for i, traj_file in enumerate(self.trajectory_files):
-            if Path(traj_file).exists():
+            path = Path(traj_file)
+            if path.exists():
                 traj = md.load(traj_file, top=self.topology_file, stride=stride)
                 self.trajectories.append(traj)
                 logger.info(f"Loaded trajectory {i+1}: {traj.n_frames} frames")
+
+                meta_path = path.with_suffix(".meta.json")
+                if meta_path.exists() and self.demux_metadata is None:
+                    try:
+                        meta = DemuxMetadata.from_json(meta_path)
+                        self.demux_metadata = meta
+                        stride_frames = (
+                            meta.exchange_frequency_steps // meta.frames_per_segment
+                        )
+                        self.frame_stride = stride_frames
+                        self.time_per_frame_ps = (
+                            meta.integration_timestep_ps * stride_frames
+                        )
+                        logger.info(
+                            "Loaded demux metadata: stride=%d, dt=%.4f ps",
+                            stride_frames,
+                            self.time_per_frame_ps,
+                        )
+                    except Exception as exc:  # pragma: no cover - defensive
+                        logger.warning(f"Failed to parse metadata {meta_path}: {exc}")
             else:
                 logger.warning(f"Trajectory file not found: {traj_file}")
 
@@ -176,9 +204,7 @@ class EnhancedMSM:
         logger.info(f"Total trajectories loaded: {len(self.trajectories)}")
         # Track total frames for adaptive clustering heuristics
         try:
-            self.total_frames: Optional[int] = int(
-                sum(int(t.n_frames) for t in self.trajectories)
-            )
+            self.total_frames = int(sum(int(t.n_frames) for t in self.trajectories))
         except Exception:
             self.total_frames = None
 
@@ -1997,16 +2023,29 @@ class EnhancedMSM:
         if self.implied_timescales is None:
             raise ValueError("Implied timescales must be computed first")
 
-        lag_times = self.implied_timescales["lag_times"]
-        timescales = self.implied_timescales["timescales"]
+        lag_times = np.array(self.implied_timescales["lag_times"], dtype=float)
+        timescales = np.array(self.implied_timescales["timescales"], dtype=float)
+
+        dt_ps = self.time_per_frame_ps or 1.0
+        lag_ps = lag_times * dt_ps
+        ts_ps = timescales * dt_ps
+
+        unit_label = "ps"
+        scale = 1.0
+        if np.max(lag_ps) >= 1000.0 or np.max(ts_ps) >= 1000.0:
+            unit_label = "ns"
+            scale = 1e-3
+
+        lag_plot = lag_ps * scale
+        ts_plot = ts_ps * scale
 
         plt.figure(figsize=(10, 6))
 
-        for i in range(timescales.shape[1]):
-            plt.plot(lag_times, timescales[:, i], "o-", label=f"Timescale {i+1}")
+        for i in range(ts_plot.shape[1]):
+            plt.plot(lag_plot, ts_plot[:, i], "o-", label=f"τ{i+1} ({unit_label})")
 
-        plt.xlabel("Lag Time")
-        plt.ylabel("Implied Timescale")
+        plt.xlabel(f"Lag Time ({unit_label})")
+        plt.ylabel(f"Implied Timescale ({unit_label})")
         plt.title("Implied Timescales Analysis")
         plt.legend()
         plt.grid(True, alpha=0.3)
