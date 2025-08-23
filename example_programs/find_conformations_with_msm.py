@@ -159,11 +159,11 @@ def run_conformation_finder(
         msm_tmp.n_states = int(np.max(labels) + 1)
         msm_tmp.lag_time = int(chosen_lag)
         ck = msm_tmp.compute_ck_test_macrostates(n_macrostates=3, factors=[2, 3])
-        if ck is not None:
+        if ck.mse:
             import json as _json  # type: ignore
 
             with open(OUT_DIR / "ck_macro.json", "w", encoding="utf-8") as f:
-                _json.dump(ck, f, indent=2)
+                _json.dump(ck.to_dict(), f, indent=2)
     except Exception:
         pass
     try:
