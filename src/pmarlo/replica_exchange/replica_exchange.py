@@ -578,6 +578,8 @@ class ReplicaExchange:
             "exchange_history": self.exchange_history.copy(),
             "output_dir": str(self.output_dir),
             "exchange_frequency": self.exchange_frequency,
+            "random_seed": self.random_seed,
+            "rng_state": self.rng.bit_generator.state,
         }
 
         # Save states in XML for long-term stability across versions
@@ -630,6 +632,17 @@ class ReplicaExchange:
         self.state_replicas = checkpoint_state.get(
             "state_replicas", list(range(self.n_replicas))
         )
+        # Restore RNG for reproducible continuation
+        self.random_seed = checkpoint_state.get("random_seed", self.random_seed)
+        rng_state = checkpoint_state.get("rng_state")
+        self.rng = np.random.default_rng()
+        if rng_state is not None:
+            try:
+                self.rng.bit_generator.state = rng_state
+            except Exception:
+                self.rng = np.random.default_rng(self.random_seed)
+        else:
+            self.rng = np.random.default_rng(self.random_seed)
 
         # If replicas aren't set up, set them up first
         if not self.is_setup():
@@ -713,8 +726,9 @@ class ReplicaExchange:
 
         beta_i = 1.0 / (unit.MOLAR_GAS_CONSTANT_R * temp_i * unit.kelvin)
         beta_j = 1.0 / (unit.MOLAR_GAS_CONSTANT_R * temp_j * unit.kelvin)
-        delta = safe_dimensionless((beta_j - beta_i) * (energy_i - energy_j))
-        prob = min(1.0, np.exp(-delta))
+        # Correct Metropolis acceptance for temperature swap
+        delta = safe_dimensionless((beta_i - beta_j) * (energy_j - energy_i))
+        prob = min(1.0, np.exp(delta))
 
         # Debug logging for troubleshooting low acceptance rates
         logger.debug(
@@ -820,12 +834,12 @@ class ReplicaExchange:
         if not hasattr(e_j, "value_in_unit"):
             e_j = float(e_j) * unit.kilojoules_per_mole
 
-        delta_q = (beta_j - beta_i) * (e_i - e_j)
+        delta_q = (beta_i - beta_j) * (e_j - e_i)
         try:
             delta = delta_q.value_in_unit(unit.dimensionless)
         except Exception:
             delta = float(delta_q)
-        return float(min(1.0, np.exp(-delta)))
+        return float(min(1.0, np.exp(delta)))
 
     def _perform_exchange(self, replica_i: int, replica_j: int) -> None:
         if replica_i >= len(self.replica_states):
@@ -1298,15 +1312,8 @@ class ReplicaExchange:
     def save_checkpoint(self, step: int):
         """Save simulation checkpoint."""
         checkpoint_file = self.output_dir / f"checkpoint_step_{step:06d}.pkl"
-        checkpoint_data = {
-            "step": step,
-            "replica_states": self.replica_states,
-            "state_replicas": self.state_replicas,
-            "exchange_attempts": self.exchange_attempts,
-            "exchanges_accepted": self.exchanges_accepted,
-            "exchange_history": self.exchange_history,
-        }
-
+        checkpoint_data = self.save_checkpoint_state()
+        checkpoint_data["step"] = step
         with open(checkpoint_file, "wb") as f:
             pickle.dump(checkpoint_data, f)
 
@@ -1437,9 +1444,13 @@ class ReplicaExchange:
             return None
 
         # Effective equilibration steps actually integrated (heating + temp equil)
-        effective_equil_steps = max(100, equilibration_steps * 40 // 100) + max(
-            100, equilibration_steps * 60 // 100
-        )
+        if equilibration_steps > 0:
+            effective_equil_steps = (
+                max(100, equilibration_steps * 40 // 100)
+                + max(100, equilibration_steps * 60 // 100)
+            )
+        else:
+            effective_equil_steps = 0
 
         # Build per-segment slices
         for s, replica_states in enumerate(self.exchange_history):
