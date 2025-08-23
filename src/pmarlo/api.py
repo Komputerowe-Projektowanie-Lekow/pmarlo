@@ -103,7 +103,7 @@ def cluster_microstates(
     Y: np.ndarray,
     method: Literal["auto", "minibatchkmeans", "kmeans"] = "auto",
     n_states: int | Literal["auto"] = "auto",
-    random_state: int = 42,
+    random_state: int | None = 42,
     minibatch_threshold: int = 5_000_000,
     **kwargs,
 ) -> np.ndarray:
@@ -120,7 +120,8 @@ def cluster_microstates(
     n_states:
         Number of states or ``"auto"`` to select via silhouette.
     random_state:
-        Seed for deterministic clustering.
+        Seed for deterministic clustering.  When ``None`` the global NumPy
+        random state is used.
     minibatch_threshold:
         Product of frames and features above which ``MiniBatchKMeans`` is used
         when ``method="auto"``.
@@ -437,7 +438,7 @@ def analyze_msm(
     analysis_temperatures: Optional[List[float]] = None,
     use_effective_for_uncertainty: bool = True,
     use_tica: bool = True,
-    random_state: int = 42,
+    random_state: int | None = 42,
     traj_stride: int = 1,
     atom_selection: str | Sequence[int] | None = None,
     chunk_size: int = 1000,
@@ -461,7 +462,7 @@ def analyze_msm(
     use_tica:
         Whether to apply TICA reduction.
     random_state:
-        Seed for deterministic clustering.
+        Seed for deterministic clustering. ``None`` uses the global state.
     traj_stride:
         Stride for loading trajectory frames.
     atom_selection:

@@ -23,7 +23,7 @@ import warnings
 from dataclasses import dataclass, field
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union, Literal, Sequence
+from typing import Any, Dict, List, Optional, Tuple, Union, Literal, Sequence, cast
 
 import matplotlib.pyplot as plt
 import mdtraj as md
@@ -91,7 +91,7 @@ class EnhancedMSM:
         topology_file: Optional[str] = None,
         temperatures: Optional[List[float]] = None,
         output_dir: str = "output/msm_analysis",
-        random_state: int = 42,
+        random_state: int | None = 42,
     ):
         """
         Initialize the Enhanced MSM analyzer.
@@ -101,6 +101,8 @@ class EnhancedMSM:
             topology_file: Topology file (PDB) for the system
             temperatures: List of temperatures for TRAM analysis
             output_dir: Directory for output files
+            random_state: Seed for internal stochastic components. ``None``
+                uses the global random state.
         """
         self.trajectory_files = (
             trajectory_files
@@ -120,7 +122,7 @@ class EnhancedMSM:
         self.features: Optional[np.ndarray] = None
         self.cluster_centers: Optional[np.ndarray] = None
         self.n_states = 0
-        self.random_state = int(random_state)
+        self.random_state = int(random_state) if random_state is not None else None
 
         # MSM data - Fixed: Initialize with proper types instead of None
         self.transition_matrix: Optional[np.ndarray] = (
@@ -643,11 +645,13 @@ class EnhancedMSM:
             n_states,
         )
 
+        method_choice = cast(
+            Literal["kmeans", "minibatchkmeans"],
+            algorithm if algorithm in ["kmeans", "minibatchkmeans"] else "kmeans",
+        )
         result: ClusteringResult = cluster_microstates(
             self.features,
-            method=(
-                algorithm if algorithm in ["kmeans", "minibatchkmeans"] else "kmeans"
-            ),
+            method=method_choice,
             n_states=n_states,
             random_state=rng,
         )

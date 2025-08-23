@@ -144,10 +144,23 @@ def _stationary_from_T(T: np.ndarray) -> np.ndarray:
 
 
 def pcca_like_macrostates(
-    T: np.ndarray, n_macrostates: int = 4, random_state: int = 42
+    T: np.ndarray, n_macrostates: int = 4, random_state: int | None = 42
 ) -> Optional[np.ndarray]:
-    """Compute metastable sets using PCCA+ (deeptime), fallback to k-means on eigenvectors.
-    Returns hard labels per microstate.
+    """Compute metastable sets using PCCA+ with a k-means fallback.
+
+    Parameters
+    ----------
+    T:
+        Microstate transition matrix.
+    n_macrostates:
+        Desired number of macrostates.
+    random_state:
+        Seed for the k-means fallback. ``None`` uses NumPy's global state.
+
+    Returns
+    -------
+    Optional[np.ndarray]
+        Hard labels per microstate or ``None`` if the decomposition failed.
     """
     if T.size == 0 or T.shape[0] <= n_macrostates:
         return None

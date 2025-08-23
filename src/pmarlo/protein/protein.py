@@ -29,6 +29,7 @@ class Protein:
         ph: float = 7.0,
         auto_prepare: bool = True,
         preparation_options: Optional[Dict[str, Any]] = None,
+        random_state: int | None = None,
     ):
         """Initialize a Protein object with a PDB file.
 
@@ -37,6 +38,7 @@ class Protein:
             ph: pH value for protonation state (default: 7.0)
             auto_prepare: Automatically prepare the protein (default: True)
             preparation_options: Custom preparation options
+            random_state: Included for API compatibility; currently unused.
 
         Raises:
             ValueError: If the PDB file does not exist, is empty, or has an invalid
@@ -51,6 +53,7 @@ class Protein:
             )
 
         pdb_path = self._resolve_pdb_path(pdb_file)
+        self.random_state = random_state
         self._validate_file_exists(pdb_path)
         self._validate_extension(pdb_path)
         self._validate_readable_nonempty(pdb_path)
@@ -147,7 +150,9 @@ class Protein:
                 coords = pos.value_in_unit(unit.nanometer)
             except Exception as exc:  # pragma: no cover - defensive
                 raise ValueError(f"Invalid coordinate for atom {i}: {exc}") from exc
-            if any(math.isnan(c) or math.isinf(c) for c in (coords.x, coords.y, coords.z)):
+            if any(
+                math.isnan(c) or math.isinf(c) for c in (coords.x, coords.y, coords.z)
+            ):
                 raise ValueError(f"Atom {i} has non-finite coordinates")
 
     def _assign_basic_fields(self, pdb_path: Path, ph: float) -> None:
