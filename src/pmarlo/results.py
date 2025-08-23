@@ -164,3 +164,17 @@ class CKResult(BaseResult):
 
     lag_times: np.ndarray
     timescales: np.ndarray
+
+
+@dataclass
+class ITSResult(BaseResult):
+    """Implied timescale estimation results with confidence intervals."""
+
+    lag_times: np.ndarray
+    eigenvalues: np.ndarray
+    eigenvalues_ci: np.ndarray
+    timescales: np.ndarray
+    timescales_ci: np.ndarray
+    rates: np.ndarray
+    rates_ci: np.ndarray
+    recommended_lag_window: Optional[tuple[int, int]] = None

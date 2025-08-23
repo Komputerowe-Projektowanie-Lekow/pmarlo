@@ -7,6 +7,7 @@ import numpy as np
 from pmarlo.markov_state_model.markov_state_model import EnhancedMSM
 from pmarlo.replica_exchange.demux_metadata import DemuxMetadata
 from pmarlo.replica_exchange.replica_exchange import ReplicaExchange
+from pmarlo.results import ITSResult
 
 matplotlib.use("Agg")
 
@@ -67,7 +68,16 @@ def test_demux_metadata_roundtrip(tmp_path):
         / meta.frames_per_segment,
     )
 
-    msm.implied_timescales = {"lag_times": [1], "timescales": np.array([[1.0]])}
+    msm.implied_timescales = ITSResult(
+        lag_times=np.array([1]),
+        eigenvalues=np.array([[0.5]]),
+        eigenvalues_ci=np.array([[[0.4, 0.6]]]),
+        timescales=np.array([[1.0]]),
+        timescales_ci=np.array([[[0.8, 1.2]]]),
+        rates=np.array([[1.0]]),
+        rates_ci=np.array([[[0.8, 1.2]]]),
+        recommended_lag_window=(1, 1),
+    )
     msm.plot_implied_timescales()
     xlabel = matplotlib.pyplot.gca().get_xlabel()
     assert "ps" in xlabel or "ns" in xlabel
