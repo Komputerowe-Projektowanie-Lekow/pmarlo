@@ -6,14 +6,15 @@ from pathlib import Path
 from .msm import MSMConfig, run_msm_experiment
 from .replica_exchange import ReplicaExchangeConfig, run_replica_exchange_experiment
 from .simulation import SimulationConfig, run_simulation_experiment
+from .utils import tests_data_dir
 
 # CLI sets logging level; modules themselves do not configure basicConfig
 
 
 def _tests_data_dir() -> Path:
-    # Resolve to package root / tests / data
-    here = Path(__file__).resolve().parents[2]
-    return here / "tests" / "data"
+    """Return the path to ``tests/data`` for use as CLI defaults."""
+
+    return tests_data_dir()
 
 
 def main():

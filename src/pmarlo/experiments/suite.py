@@ -29,6 +29,7 @@ from typing import Literal, TypedDict
 from .msm import MSMConfig, run_msm_experiment
 from .replica_exchange import ReplicaExchangeConfig, run_replica_exchange_experiment
 from .simulation import SimulationConfig, run_simulation_experiment
+from .utils import tests_data_dir
 
 AlgorithmName = Literal["simulation", "remd", "msm"]
 
@@ -59,12 +60,15 @@ class SuiteCase:
 
 
 def _tests_pdb() -> str:
-    # Tests data live under repo/tests/data in this project layout
-    return "tests/data/3gd8-fixed.pdb"
+    """Return the path to the test PDB file."""
+
+    return str(tests_data_dir() / "3gd8-fixed.pdb")
 
 
 def _tests_traj() -> list[str]:
-    return ["tests/data/traj.dcd"]
+    """Return paths to the default test trajectories."""
+
+    return [str(tests_data_dir() / "traj.dcd")]
 
 
 def get_suite_cases() -> list[SuiteCase]:
@@ -133,6 +137,7 @@ def run_suite_case(index: int) -> SuiteResult:
             # internally by the experiment function
             steps=int(c.sim_steps or 500),
             use_metadynamics=bool(c.sim_use_metadynamics is True),
+            seed=0,
         )
         res = run_simulation_experiment(sim_cfg)
     elif c.algorithm == "remd":
@@ -143,6 +148,7 @@ def run_suite_case(index: int) -> SuiteResult:
             nreplicas=int(c.remd_nrep or 6),
             tmin=float(c.remd_tmin or 300.0),
             tmax=float(c.remd_tmax or 350.0),
+            seed=0,
         )
         res = run_replica_exchange_experiment(remd_cfg)
     else:
@@ -151,6 +157,7 @@ def run_suite_case(index: int) -> SuiteResult:
             topology_file=_tests_pdb(),
             n_clusters=int(c.msm_clusters or 60),
             lag_time=int(c.msm_lag or 20),
+            seed=0,
         )
         res = run_msm_experiment(msm_cfg)
 
