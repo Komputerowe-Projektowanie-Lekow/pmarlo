@@ -11,6 +11,7 @@ allowing for better exploration of conformational space across multiple temperat
 import logging
 import os
 import pickle
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -19,6 +20,7 @@ import openmm
 from openmm import Platform, unit
 from openmm.app import ForceField, PDBFile, Simulation
 
+from ..results import REMDResult
 from ..utils.replica_utils import exponential_temperature_ladder
 from .config import RemdConfig
 from .diagnostics import compute_exchange_statistics
@@ -1317,39 +1319,31 @@ class ReplicaExchange:
         with open(checkpoint_file, "wb") as f:
             pickle.dump(checkpoint_data, f)
 
-    def save_results(self):
+    def save_results(self) -> None:
         """Save final simulation results."""
-        results_file = self.output_dir / "remd_results.pkl"
-        results = {
-            "temperatures": self.temperatures,
-            "n_replicas": self.n_replicas,
-            "exchange_frequency": self.exchange_frequency,
-            "exchange_attempts": self.exchange_attempts,
-            "exchanges_accepted": self.exchanges_accepted,
-            "final_acceptance_rate": self.exchanges_accepted
+        results_file = self.output_dir / "analysis_results.pkl"
+        json_file = self.output_dir / "analysis_results.json"
+        result = REMDResult(
+            temperatures=np.asarray(self.temperatures),
+            n_replicas=self.n_replicas,
+            exchange_frequency=self.exchange_frequency,
+            exchange_attempts=self.exchange_attempts,
+            exchanges_accepted=self.exchanges_accepted,
+            final_acceptance_rate=self.exchanges_accepted
             / max(1, self.exchange_attempts),
-            "replica_states": self.replica_states,
-            "state_replicas": self.state_replicas,
-            "exchange_history": self.exchange_history,
-            "trajectory_files": [str(f) for f in self.trajectory_files],
-            # Diagnostics
-            "acceptance_matrix": (
-                self.acceptance_matrix.tolist()
-                if self.acceptance_matrix is not None
-                else None
-            ),
-            "replica_visitation_histogram": (
-                self.replica_visit_counts.tolist()
-                if self.replica_visit_counts is not None
-                else None
-            ),
-            "frames_per_replica": self._compute_frames_per_replica(),
-            "effective_sample_size": None,  # Placeholder for TRAM/MBAR ESS if applied
-        }
-
-        with open(results_file, "wb") as f:
-            pickle.dump(results, f)
-
+            replica_states=self.replica_states,
+            state_replicas=self.state_replicas,
+            exchange_history=self.exchange_history,
+            trajectory_files=[str(f) for f in self.trajectory_files],
+            acceptance_matrix=self.acceptance_matrix,
+            replica_visitation_histogram=self.replica_visit_counts,
+            frames_per_replica=self._compute_frames_per_replica(),
+            effective_sample_size=None,
+        )
+        with open(results_file, "wb") as pkl_f:
+            pickle.dump({"remd": result}, pkl_f)
+        with open(json_file, "w") as json_f:
+            json.dump({"remd": result.to_dict(metadata_only=True)}, json_f)
         logger.info(f"Results saved to {results_file}")
 
     def _compute_frames_per_replica(self) -> List[int]:
@@ -1445,9 +1439,8 @@ class ReplicaExchange:
 
         # Effective equilibration steps actually integrated (heating + temp equil)
         if equilibration_steps > 0:
-            effective_equil_steps = (
-                max(100, equilibration_steps * 40 // 100)
-                + max(100, equilibration_steps * 60 // 100)
+            effective_equil_steps = max(100, equilibration_steps * 40 // 100) + max(
+                100, equilibration_steps * 60 // 100
             )
         else:
             effective_equil_steps = 0
