@@ -26,7 +26,7 @@ from .kpi import (
     default_kpi_metrics,
     write_benchmark_json,
 )
-from .utils import timestamp_dir
+from .utils import set_seed, timestamp_dir
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,7 @@ class MSMConfig:
     lag_time: int = 20
     feature_type: str = "phi_psi"
     temperatures: List[float] | None = None
+    seed: int | None = None
 
 
 def _create_run_directory(output_dir: str) -> Path:
@@ -224,7 +225,7 @@ def _build_enriched_input(
         "seconds_per_step": None,
         "num_exchange_attempts": None,
         "overall_acceptance_rate": None,
-        "seed": None,
+        "seed": config.seed,
     }
 
 
@@ -279,6 +280,7 @@ def run_msm_experiment(config: MSMConfig) -> Dict:
 
     Returns a dictionary pointing to the run directory and summary file content.
     """
+    set_seed(config.seed)
     run_dir = _create_run_directory(config.output_dir)
 
     msm, tracker = _perform_msm_analysis_with_tracking(config, run_dir)

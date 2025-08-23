@@ -14,13 +14,15 @@ def cluster_microstates(
     **kwargs,
 ) -> np.ndarray:
     """Cluster reduced data into microstates and return labels."""
-    if Y.size == 0:
+    if Y.shape[0] == 0:
         return np.zeros((0,), dtype=int)
+    if Y.shape[1] == 0:
+        raise ValueError("Input array must have at least one feature")
     if method == "minibatchkmeans":
         km = MiniBatchKMeans(n_clusters=n_clusters, random_state=random_state, **kwargs)
     elif method == "kmeans":
         km = KMeans(
-            n_clusters=n_clusters, random_state=random_state, n_init="auto", **kwargs
+            n_clusters=n_clusters, random_state=random_state, n_init=10, **kwargs
         )
     else:
         raise ValueError(f"Unsupported clustering method: {method}")

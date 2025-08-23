@@ -9,11 +9,13 @@ try:
 except ImportError:
     PDBFixer = None
     HAS_PDBFIXER = False
+import math
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 # Fixed: Added missing imports for PME and HBonds
+from openmm import unit
 from openmm.app import PME, ForceField, HBonds, PDBFile
 from rdkit import Chem
 from rdkit.Chem import Descriptors
@@ -52,6 +54,7 @@ class Protein:
         self._validate_file_exists(pdb_path)
         self._validate_extension(pdb_path)
         self._validate_readable_nonempty(pdb_path)
+        self._validate_ph(ph)
         self._assign_basic_fields(pdb_path, ph)
         self._initialize_fixer(auto_prepare, pdb_file)
         self._initialize_storage()
@@ -61,8 +64,19 @@ class Protein:
             # Load protein data without PDBFixer using MDTraj and compute basic properties
             try:
                 import mdtraj as md
+            except Exception as e:
+                print(f"Warning: MDTraj not available: {e}")
+            else:
+                try:
+                    traj = md.load(self.pdb_file)
+                except Exception as e:  # pragma: no cover - error path
+                    raise ValueError(f"Failed to parse PDB file: {e}") from e
 
-                traj = md.load(self.pdb_file)
+                import numpy as np
+
+                if not np.isfinite(traj.xyz).all():
+                    raise ValueError("PDB contains invalid (non-finite) coordinates")
+
                 topo = traj.topology
                 self.properties["num_atoms"] = traj.n_atoms
                 self.properties["num_residues"] = topo.n_residues
@@ -96,8 +110,6 @@ class Protein:
                 self.properties["aromatic_rings"] = int(
                     self.properties.get("aromatic_rings", 0)
                 )
-            except Exception as e:
-                print(f"Warning: MDTraj failed to load PDB for properties: {e}")
 
     # --- Initialization helpers to reduce complexity ---
 
@@ -120,6 +132,23 @@ class Protein:
                     raise ValueError("Protein file is empty")
         except OSError as exc:
             raise ValueError(f"Cannot read protein file: {pdb_path}") from exc
+
+    def _validate_ph(self, ph: float) -> None:
+        if not (0.0 <= ph <= 14.0):
+            raise ValueError(f"pH must be between 0 and 14, got {ph}")
+
+    def _validate_coordinates(self, positions) -> None:
+        if positions is None:
+            raise ValueError("No coordinates provided")
+        for i, pos in enumerate(positions):
+            if pos is None:
+                raise ValueError(f"Atom {i} has undefined coordinates")
+            try:
+                coords = pos.value_in_unit(unit.nanometer)
+            except Exception as exc:  # pragma: no cover - defensive
+                raise ValueError(f"Invalid coordinate for atom {i}: {exc}") from exc
+            if any(math.isnan(c) or math.isinf(c) for c in (coords.x, coords.y, coords.z)):
+                raise ValueError(f"Atom {i} has non-finite coordinates")
 
     def _assign_basic_fields(self, pdb_path: Path, ph: float) -> None:
         self.pdb_file = str(pdb_path)
@@ -272,6 +301,7 @@ class Protein:
 
         self.topology = self.fixer.topology
         self.positions = self.fixer.positions
+        self._validate_coordinates(self.positions)
 
     def _calculate_properties(self):
         """Calculate protein properties using RDKit."""
@@ -444,10 +474,10 @@ class Protein:
         # Fixed: Ensure fixer is not None before using it
         if self.fixer is None:
             raise RuntimeError("PDBFixer object is not initialized")
+        self._validate_coordinates(self.fixer.positions)
 
-        PDBFile.writeFile(
-            self.fixer.topology, self.fixer.positions, open(output_file, "w")
-        )
+        with open(output_file, "w") as handle:
+            PDBFile.writeFile(self.fixer.topology, self.fixer.positions, handle)
 
     def create_system(self, forcefield_files: Optional[list] = None) -> None:
         """
@@ -466,6 +496,7 @@ class Protein:
                 pdb = PDBFile(self.pdb_file)
                 self.topology = pdb.topology
                 self.positions = pdb.positions
+                self._validate_coordinates(self.positions)
 
             if forcefield_files is None:
                 forcefield_files = ["amber14-all.xml", "amber14/tip3pfb.xml"]

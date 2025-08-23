@@ -54,6 +54,7 @@ class Simulation:
         output_dir: str = "output/simulation",
         use_metadynamics: bool = True,
         dcd_stride: int = 1000,
+        random_seed: Optional[int] = None,
     ):
         """
         Initialize the Simulation.
@@ -64,6 +65,7 @@ class Simulation:
             steps: Number of production steps
             output_dir: Directory for output files
             use_metadynamics: Whether to use metadynamics biasing
+            random_seed: Seed for deterministic integrator behaviour
         """
         self.pdb_file = pdb_file
         self.temperature = temperature
@@ -71,6 +73,7 @@ class Simulation:
         self.output_dir = Path(output_dir)
         self.use_metadynamics = use_metadynamics
         self.dcd_stride = dcd_stride
+        self.random_seed = random_seed
 
         # OpenMM objects
         self.openmm_simulation = None
@@ -86,7 +89,11 @@ class Simulation:
     ) -> Tuple["openmm.app.Simulation", Optional["Metadynamics"]]:
         """Prepare the molecular system with forcefield and optional metadynamics."""
         simulation, meta = prepare_system(
-            self.pdb_file, self.temperature, self.use_metadynamics, self.output_dir
+            self.pdb_file,
+            self.temperature,
+            self.use_metadynamics,
+            self.output_dir,
+            self.random_seed,
         )
         return simulation, meta
 
@@ -135,15 +142,16 @@ def prepare_system(
     temperature: float = 300.0,
     use_metadynamics: bool = True,
     output_dir: Optional[Path] = None,
+    random_seed: Optional[int] = None,
 ) -> Tuple["openmm.app.Simulation", Optional["Metadynamics"]]:
     """Prepare the molecular system with forcefield and optional metadynamics."""
     pdb = _load_pdb(pdb_file_name)
     forcefield = _create_forcefield()
     system = _create_system(pdb, forcefield)
     meta = _maybe_create_metadynamics(
-        system, pdb_file_name, use_metadynamics, output_dir
+        system, pdb_file_name, temperature, use_metadynamics, output_dir
     )
-    integrator = _create_integrator(temperature)
+    integrator = _create_integrator(temperature, random_seed)
     platform, platform_properties = _select_platform()
     simulation = _create_openmm_simulation(
         pdb, system, integrator, platform, platform_properties
@@ -180,6 +188,7 @@ def _create_system(pdb: app.PDBFile, forcefield: app.ForceField) -> openmm.Syste
 def _maybe_create_metadynamics(
     system: openmm.System,
     pdb_file_name: str,
+    temperature: float,
     use_metadynamics: bool,
     output_dir: Optional[Path],
 ) -> Optional[Metadynamics]:
@@ -206,7 +215,7 @@ def _maybe_create_metadynamics(
     return Metadynamics(
         system,
         [phi_cv],
-        temperature=temperature_quantity(300.0),
+        temperature=temperature_quantity(temperature),
         biasFactor=10.0,
         height=1.0 * unit.kilojoules_per_mole,
         frequency=500,  # hill every 1 ps (500 × 2 fs)
@@ -238,10 +247,15 @@ def _clear_existing_bias_files(bias_dir: Path) -> None:
                 pass
 
 
-def _create_integrator(temperature: float) -> openmm.Integrator:
-    return openmm.LangevinIntegrator(
+def _create_integrator(
+    temperature: float, random_seed: Optional[int] = None
+) -> openmm.Integrator:
+    integrator = openmm.LangevinIntegrator(
         temperature * unit.kelvin, 1 / unit.picosecond, 2 * unit.femtoseconds
     )
+    if random_seed is not None:
+        integrator.setRandomNumberSeed(int(random_seed))
+    return integrator
 
 
 def _select_platform() -> Tuple[openmm.Platform, dict]:
@@ -250,18 +264,26 @@ def _select_platform() -> Tuple[openmm.Platform, dict]:
         platform = openmm.Platform.getPlatformByName("CUDA")
         platform_properties = {
             "Precision": "mixed",
-            "UseFastMath": "true",
-            "DeterministicForces": "false",
+            "UseFastMath": "false",
+            "DeterministicForces": "true",
         }
-        logger.info("Using CUDA (mixed precision, fast math)")
+        logger.info("Using CUDA (mixed precision, deterministic forces)")
     except Exception:
         try:
             try:
                 platform = openmm.Platform.getPlatformByName("HIP")
-                logger.info("Using HIP (AMD GPU)")
+                platform_properties = {
+                    "Precision": "mixed",
+                    "DeterministicForces": "true",
+                }
+                logger.info("Using HIP (deterministic forces)")
             except Exception:
                 platform = openmm.Platform.getPlatformByName("OpenCL")
-                logger.info("Using OpenCL")
+                platform_properties = {
+                    "Precision": "mixed",
+                    "DeterministicForces": "true",
+                }
+                logger.info("Using OpenCL (deterministic forces)")
         except Exception:
             platform = openmm.Platform.getPlatformByName("CPU")
             try:
