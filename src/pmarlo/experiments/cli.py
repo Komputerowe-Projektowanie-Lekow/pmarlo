@@ -77,6 +77,14 @@ def main():
     msm.add_argument("--clusters", type=int, default=60)
     msm.add_argument("--lag", type=int, default=20)
     msm.add_argument("--out", default="experiments_output/msm")
+    msm.add_argument("--stride", type=int, default=1, help="Frame loading stride")
+    msm.add_argument(
+        "--atom-indices",
+        type=int,
+        nargs="*",
+        default=None,
+        help="Subset of atom indices to load",
+    )
 
     args = parser.parse_args()
 
@@ -120,6 +128,8 @@ def main():
             output_dir=args.out,
             n_clusters=args.clusters,
             lag_time=args.lag,
+            stride=args.stride,
+            atom_indices=args.atom_indices,
         )
         result = run_msm_experiment(cfg)
 

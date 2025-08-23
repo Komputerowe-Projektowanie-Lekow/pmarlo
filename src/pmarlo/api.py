@@ -97,10 +97,26 @@ def reduce_features(
 
 def cluster_microstates(
     Y: np.ndarray,
-    method: Literal["minibatchkmeans", "kmeans"] = "minibatchkmeans",
-    **kwargs,
+    method: Literal["auto", "minibatchkmeans", "kmeans"] = "auto",
+    threshold: int = 1_000_000,
+    **kwargs: Any,
 ) -> np.ndarray:
-    return _cluster_microstates(Y, method=method, **kwargs)
+    """Cluster reduced coordinates into microstates.
+
+    Parameters
+    ----------
+    Y:
+        Reduced feature matrix of shape (n_frames, n_features).
+    method:
+        Clustering backend. ``"auto"`` switches to mini-batch when the dataset size
+        exceeds ``threshold``.
+    threshold:
+        Dataset size above which mini-batch KMeans is used when ``method`` is
+        ``"auto"``.
+    **kwargs:
+        Additional arguments forwarded to the clustering function.
+    """
+    return _cluster_microstates(Y, method=method, threshold=threshold, **kwargs)
 
 
 def generate_free_energy_surface(
@@ -376,10 +392,37 @@ def analyze_msm(
     analysis_temperatures: Optional[List[float]] = None,
     use_effective_for_uncertainty: bool = True,
     use_tica: bool = True,
+    stride: int = 1,
+    atom_indices: Optional[Sequence[int]] = None,
 ) -> Path:
     """Build and analyze an MSM, saving plots and artifacts.
 
-    Returns the analysis output directory.
+    Parameters
+    ----------
+    trajectory_files:
+        List of trajectory files to load.
+    topology_pdb:
+        Topology PDB file corresponding to the trajectories.
+    output_dir:
+        Directory to place analysis results.
+    feature_type:
+        Features to compute from the trajectories.
+    analysis_temperatures:
+        Optional list of temperatures for TRAM analysis.
+    use_effective_for_uncertainty:
+        Use sliding window counts for uncertainty estimates.
+    use_tica:
+        Apply TICA before clustering when ``True``.
+    stride:
+        Load every ``stride``-th frame from the trajectories.
+    atom_indices:
+        Optional sequence of atom indices to load. When provided the trajectory
+        loader operates in streaming mode using ``mdtraj.iterload``.
+
+    Returns
+    -------
+    Path
+        The analysis output directory.
     """
     msm_out = Path(output_dir) / "msm_analysis"
 
@@ -391,7 +434,7 @@ def analyze_msm(
     )
     if use_effective_for_uncertainty:
         msm.count_mode = "sliding"
-    msm.load_trajectories()
+    msm.load_trajectories(stride=stride, atom_indices=atom_indices)
     ft = feature_type
     if use_tica and ("tica" not in feature_type.lower()):
         ft = f"{feature_type}_tica"

@@ -19,7 +19,7 @@ import pickle
 import warnings
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import matplotlib.pyplot as plt
 import mdtraj as md
@@ -30,7 +30,7 @@ from scipy.ndimage import gaussian_filter
 from scipy.sparse import csc_matrix, issparse, save_npz
 from sklearn.cluster import MiniBatchKMeans
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("pmarlo")
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -112,33 +112,52 @@ class EnhancedMSM:
             f"Enhanced MSM initialized for {len(self.trajectory_files)} trajectories"
         )
 
-    def load_trajectories(self, stride: int = 1):
-        """
-        Load trajectory data for analysis.
+    def load_trajectories(
+        self, stride: int = 1, atom_indices: Optional[Sequence[int]] = None
+    ) -> None:
+        """Load trajectory data for analysis.
 
-        Args:
-            stride: Stride for loading frames (1 = every frame)
+        Parameters
+        ----------
+        stride:
+            Stride for loading frames (``1`` = every frame).
+        atom_indices:
+            Optional subset of atom indices to load. When provided, data are
+            streamed from disk using :func:`mdtraj.iterload` to limit memory
+            usage.
         """
-        logger.info("Loading trajectory data...")
+        logger.info(
+            "Loading trajectory data in streaming mode (stride=%s, atoms=%s)",
+            stride,
+            atom_indices,
+        )
 
         self.trajectories = []
         for i, traj_file in enumerate(self.trajectory_files):
             if Path(traj_file).exists():
-                traj = md.load(traj_file, top=self.topology_file, stride=stride)
+                iterator = md.iterload(
+                    traj_file,
+                    top=self.topology_file,
+                    stride=stride,
+                    atom_indices=atom_indices,
+                )
+                traj: Optional[md.Trajectory] = None
+                for chunk in iterator:
+                    traj = chunk if traj is None else traj.join(chunk)
+                if traj is None:
+                    continue
                 self.trajectories.append(traj)
-                logger.info(f"Loaded trajectory {i+1}: {traj.n_frames} frames")
+                logger.info("Loaded trajectory %s: %s frames", i + 1, traj.n_frames)
             else:
                 logger.warning(f"Trajectory file not found: {traj_file}")
 
         if not self.trajectories:
             raise ValueError("No trajectories loaded successfully")
 
-        logger.info(f"Total trajectories loaded: {len(self.trajectories)}")
+        logger.info("Total trajectories loaded: %s", len(self.trajectories))
         # Track total frames for adaptive clustering heuristics
         try:
-            self.total_frames: Optional[int] = int(
-                sum(int(t.n_frames) for t in self.trajectories)
-            )
+            self.total_frames = int(sum(int(t.n_frames) for t in self.trajectories))
         except Exception:
             self.total_frames = None
 
@@ -2159,6 +2178,8 @@ def run_complete_msm_analysis(
     lag_time: int = 20,
     feature_type: str = "phi_psi",
     temperatures: Optional[List[float]] = None,
+    stride: int = 1,
+    atom_indices: Optional[Sequence[int]] = None,
 ) -> EnhancedMSM:
     """
     Run complete MSM analysis pipeline.
@@ -2178,7 +2199,7 @@ def run_complete_msm_analysis(
     msm = _initialize_msm_analyzer(
         trajectory_files, topology_file, temperatures, output_dir
     )
-    _load_and_prepare(msm, feature_type, n_clusters)
+    _load_and_prepare(msm, feature_type, n_clusters, stride, atom_indices)
     _build_and_validate_msm(msm, temperatures, lag_time)
     fes_success = _maybe_generate_fes(msm, feature_type)
     _finalize_results_and_plots(msm, fes_success)
@@ -2203,8 +2224,14 @@ def _initialize_msm_analyzer(
     )
 
 
-def _load_and_prepare(msm: EnhancedMSM, feature_type: str, n_clusters: int) -> None:
-    msm.load_trajectories()
+def _load_and_prepare(
+    msm: EnhancedMSM,
+    feature_type: str,
+    n_clusters: int,
+    stride: int,
+    atom_indices: Optional[Sequence[int]],
+) -> None:
+    msm.load_trajectories(stride=stride, atom_indices=atom_indices)
     # Save a quick φ/ψ sanity scatter before feature building (helps spot issues early)
     try:
         msm.save_phi_psi_scatter_diagnostics()

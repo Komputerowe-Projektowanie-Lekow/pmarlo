@@ -28,7 +28,7 @@ from .kpi import (
 )
 from .utils import set_seed, timestamp_dir
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("pmarlo")
 
 
 @dataclass
@@ -41,6 +41,8 @@ class MSMConfig:
     feature_type: str = "phi_psi"
     temperatures: List[float] | None = None
     seed: int | None = None
+    stride: int = 1
+    atom_indices: List[int] | None = None
 
 
 def _create_run_directory(output_dir: str) -> Path:
@@ -59,6 +61,8 @@ def _perform_msm_analysis_with_tracking(config: MSMConfig, run_dir: Path):
             lag_time=config.lag_time,
             feature_type=config.feature_type,
             temperatures=config.temperatures,
+            stride=config.stride,
+            atom_indices=config.atom_indices,
         )
     return msm, tracker
 
