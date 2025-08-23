@@ -18,6 +18,7 @@ import logging
 import pickle
 import warnings
 from collections import defaultdict
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -28,12 +29,41 @@ import pandas as pd
 from scipy import constants
 from scipy.ndimage import gaussian_filter
 from scipy.sparse import csc_matrix, issparse, save_npz
+from scipy.sparse.csgraph import connected_components
 from sklearn.cluster import MiniBatchKMeans
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("pmarlo")
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings("ignore", category=FutureWarning)
+
+
+@dataclass
+class CKTestResult:
+    """Results of a Chapman–Kolmogorov test.
+
+    Attributes:
+        mse: Mapping from lag multiple to mean squared error.
+        mode: Level at which the CK test was performed ("micro" or "macro").
+        insufficient_data: Flag indicating if the test could not be evaluated due to
+            limited statistics.
+        thresholds: Threshold values used to determine data sufficiency.
+    """
+
+    mse: Dict[int, float] = field(default_factory=dict)
+    mode: str = "micro"
+    insufficient_data: bool = False
+    thresholds: Dict[str, int] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a JSON-serializable representation of the result."""
+
+        return {
+            "mse": {int(k): float(v) for k, v in self.mse.items()},
+            "mode": self.mode,
+            "insufficient_data": self.insufficient_data,
+            "thresholds": self.thresholds,
+        }
 
 
 class EnhancedMSM:
@@ -949,49 +979,71 @@ class EnhancedMSM:
         except Exception:
             return None
 
-    # ---------------- CK test via deeptime (microstate) ----------------
+    # ---------------- CK test via internal microstate counts ----------------
 
     def compute_ck_test_micro(
-        self, factors: Optional[List[int]] = None
-    ) -> Optional[Dict[str, float]]:
-        """Use deeptime MSM CK test at microstate level; fallback to macro CK if unavailable."""
-        fac = [2, 3] if factors is None else [int(f) for f in factors if int(f) > 1]
-        try:
-            from deeptime.markov import TransitionCountEstimator  # type: ignore
-            from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
-            from deeptime.util.validation import ck_test  # type: ignore
+        self,
+        factors: Optional[List[int]] = None,
+        max_states: int = 50,
+        min_transitions: int = 5,
+    ) -> CKTestResult:
+        """Compute CK test MSE at the microstate level.
 
-            # Build a base model at current lag for consistency
-            tce = TransitionCountEstimator(
-                lagtime=int(max(1, self.lag_time)), count_mode="sliding", sparse=False
+        The calculation is restricted to the largest connected component of the
+        transition graph, limited to ``max_states`` states. If any state has fewer
+        than ``min_transitions`` outgoing transitions, the result is marked as
+        insufficient.
+        """
+
+        factors = self._normalize_ck_factors(factors)
+        result = CKTestResult(
+            mode="micro",
+            thresholds={
+                "min_transitions_per_state": int(min_transitions),
+                "max_states": int(max_states),
+            },
+        )
+        if not self.dtrajs or self.n_states <= 1 or self.lag_time <= 0:
+            result.insufficient_data = True
+            return result
+
+        T_all, C_all = self._count_micro_T(
+            self.dtrajs, self.n_states, int(self.lag_time)
+        )
+        idx = self._largest_connected_states(C_all, int(max_states))
+        if idx.size == 0:
+            result.insufficient_data = True
+            return result
+
+        state_map = {int(old): i for i, old in enumerate(idx)}
+        filtered = [
+            np.array([state_map[s] for s in traj if s in state_map], dtype=int)
+            for traj in self.dtrajs
+        ]
+        n_sel = int(len(idx))
+        T1, C1 = self._count_micro_T(filtered, n_sel, int(self.lag_time))
+        if np.any(C1.sum(axis=1) < min_transitions):
+            result.insufficient_data = True
+            return result
+
+        for f in factors:
+            T_emp, Ck = self._count_micro_T(
+                filtered, n_sel, int(self.lag_time) * int(f)
             )
-            C = tce.fit(self.dtrajs).fetch_model()
-            ml = MaximumLikelihoodMSM(reversible=True)
-            base_model = ml.fit(C).fetch_model()
-            # Prepare models T, T^2, T^3 via powers of base transition matrix
-            models = [base_model]
-            # The ck_test utility generally expects a list across lag multiples; use same model with powers
-            ck = ck_test(models=models, n_metastable_sets=3)
-            # Summarize if error arrays exist
-            out: Dict[str, float] = {}
-            try:
-                errs = getattr(ck, "errors", None)
-                if errs is not None:
-                    for i, f in enumerate(fac):
-                        if i < len(errs):
-                            out[str(int(f))] = float(np.mean(np.asarray(errs[i])))
-            except Exception:
-                pass
-            return out if out else None
-        except Exception:
-            # Fallback to macro CK test
-            return self.compute_ck_test_macrostates(n_macrostates=3, factors=fac)
+            if np.any(Ck.sum(axis=1) < min_transitions):
+                result.insufficient_data = True
+                return result
+            T_theory = np.linalg.matrix_power(T1, int(f))
+            diff = T_theory - T_emp
+            result.mse[int(f)] = float(np.mean(diff * diff))
 
-    # ---------------- Macrostate CK test ----------------
+        self._persist_ck_micro_results(result, n_sel, int(self.lag_time))
+        return result
+
+    # ---------------- Macrostate CK test with eigen-gap check ----------------
 
     def _micro_to_macro_labels(self, n_macrostates: int = 3) -> Optional[np.ndarray]:
         try:
-            # Prefer precomputed labels in state_table
             if (
                 self.state_table is not None
                 and "macrostate" in self.state_table.columns
@@ -1001,49 +1053,66 @@ class EnhancedMSM:
                     return labels
         except Exception:
             pass
-        # Fallback: run internal lumping
         return self._pcca_lumping(n_macrostates=n_macrostates)
 
     def compute_ck_test_macrostates(
-        self, n_macrostates: int = 3, factors: Optional[List[int]] = None
-    ) -> Optional[Dict[str, float]]:
-        """Compute CK test MSE at macrostate level for multiples of the base lag.
+        self,
+        n_macrostates: int = 3,
+        factors: Optional[List[int]] = None,
+        min_transitions: int = 5,
+    ) -> CKTestResult:
+        """Compute CK test MSE at the macrostate level.
 
-        Returns a mapping of factor -> MSE on T^factor vs empirical T at (factor*lag).
+        Falls back to a microstate CK test if the eigenvalue gap of the underlying
+        microstate transition matrix does not support at least two metastable
+        states.
         """
-        try:
-            factors = self._normalize_ck_factors(factors)
-            if not self.dtrajs or self.n_states <= 0 or self.lag_time <= 0:
-                return None
 
-            macro_labels = self._micro_to_macro_labels(n_macrostates=n_macrostates)
-            if macro_labels is None:
-                return None
-            n_macros = int(np.max(macro_labels) + 1)
-            if n_macros <= 1:
-                return None
+        factors = self._normalize_ck_factors(factors)
+        gap = self._micro_eigen_gap(k=2)
+        if gap is None or gap <= 0.01:
+            logger.info("Eigen gap too small; using microstate CK test instead")
+            return self.compute_ck_test_micro(factors=factors)
 
-            macro_trajs = self._build_macro_trajectories(self.dtrajs, macro_labels)
-            T1 = self._estimate_macro_T(macro_trajs, n_macros, int(self.lag_time))
+        result = CKTestResult(
+            mode="macro", thresholds={"min_transitions_per_state": int(min_transitions)}
+        )
+        if not self.dtrajs or self.n_states <= 0 or self.lag_time <= 0:
+            result.insufficient_data = True
+            return result
 
-            results: Dict[str, float] = {}
-            for f in factors:
-                mse = self._ck_mse_for_factor(
-                    T1, macro_trajs, n_macros, int(self.lag_time), int(f)
-                )
-                if mse is not None:
-                    results[str(int(f))] = float(mse)
+        macro_labels = self._micro_to_macro_labels(n_macrostates=n_macrostates)
+        if macro_labels is None:
+            return self.compute_ck_test_micro(factors=factors)
+        n_macros = int(np.max(macro_labels) + 1)
+        if n_macros <= 1:
+            return self.compute_ck_test_micro(factors=factors)
 
-            self._persist_ck_macro_results(results, n_macros, int(self.lag_time))
-            return results
-        except Exception:
-            return None
+        macro_trajs = self._build_macro_trajectories(self.dtrajs, macro_labels)
+        T1, C1 = self._count_macro_T_and_counts(
+            macro_trajs, n_macros, int(self.lag_time)
+        )
+        if np.any(C1.sum(axis=1) < min_transitions):
+            result.insufficient_data = True
+            return result
 
-    # ---- CK helpers (split to address C901) ----
+        for f in factors:
+            mse, Ck = self._ck_mse_for_factor(
+                T1, macro_trajs, n_macros, int(self.lag_time), int(f)
+            )
+            if mse is None or np.any(Ck.sum(axis=1) < min_transitions):
+                result.insufficient_data = True
+                return result
+            result.mse[int(f)] = float(mse)
+
+        self._persist_ck_macro_results(result, n_macros, int(self.lag_time))
+        return result
+
+    # ---- CK helpers ----
 
     def _normalize_ck_factors(self, factors: Optional[List[int]]) -> List[int]:
         if factors is None:
-            return [2, 3]
+            return [2, 3, 4, 5]
         return [int(f) for f in factors if int(f) > 1]
 
     def _build_macro_trajectories(
@@ -1058,9 +1127,14 @@ class EnhancedMSM:
                 macro_trajs.append(np.array([], dtype=int))
         return macro_trajs
 
-    def _count_macro_T(
+    def _normalize_counts(self, C: np.ndarray) -> np.ndarray:
+        rows = C.sum(axis=1)
+        rows[rows == 0] = 1.0
+        return C / rows[:, None]
+
+    def _count_macro_T_and_counts(
         self, macro_trajs: List[np.ndarray], nM: int, lag: int
-    ) -> np.ndarray:
+    ) -> Tuple[np.ndarray, np.ndarray]:
         C = np.zeros((nM, nM), dtype=float)
         for seq in macro_trajs:
             if seq.size <= lag:
@@ -1070,14 +1144,13 @@ class EnhancedMSM:
                 b = int(seq[i + lag])
                 if 0 <= a < nM and 0 <= b < nM:
                     C[a, b] += 1.0
-        rows = C.sum(axis=1)
-        rows[rows == 0] = 1.0
-        return C / rows[:, None]
+        return self._normalize_counts(C), C
 
-    def _estimate_macro_T(
-        self, macro_trajs: List[np.ndarray], nM: int, lag_frames: int
+    def _count_macro_T(
+        self, macro_trajs: List[np.ndarray], nM: int, lag: int
     ) -> np.ndarray:
-        return self._count_macro_T(macro_trajs, nM, int(lag_frames))
+        T, _ = self._count_macro_T_and_counts(macro_trajs, nM, lag)
+        return T
 
     def _ck_mse_for_factor(
         self,
@@ -1086,30 +1159,97 @@ class EnhancedMSM:
         nM: int,
         base_lag: int,
         factor: int,
-    ) -> Optional[float]:
+    ) -> Tuple[Optional[float], np.ndarray]:
         try:
             T_theory = np.linalg.matrix_power(T1, int(factor))
-            T_emp = self._count_macro_T(macro_trajs, nM, int(base_lag) * int(factor))
+            T_emp, C_emp = self._count_macro_T_and_counts(
+                macro_trajs, nM, int(base_lag) * int(factor)
+            )
             diff = T_theory - T_emp
-            return float(np.mean(diff * diff))
+            return float(np.mean(diff * diff)), C_emp
+        except Exception:
+            return None, np.zeros((nM, nM), dtype=float)
+
+    def _count_micro_T(
+        self, dtrajs: List[np.ndarray], nS: int, lag: int
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        C = np.zeros((nS, nS), dtype=float)
+        for seq in dtrajs:
+            seq = np.asarray(seq, dtype=int)
+            if seq.size <= lag:
+                continue
+            for i in range(0, seq.size - lag):
+                a = int(seq[i])
+                b = int(seq[i + lag])
+                if 0 <= a < nS and 0 <= b < nS:
+                    C[a, b] += 1.0
+        return self._normalize_counts(C), C
+
+    def _largest_connected_states(self, C: np.ndarray, max_states: int) -> np.ndarray:
+        try:
+            adj = ((C + C.T) > 0).astype(int)
+            _, labels = connected_components(adj, directed=False, return_labels=True)
+            counts = np.bincount(labels)
+            main = int(np.argmax(counts))
+            idx = np.where(labels == main)[0]
+            if idx.size > max_states:
+                totals = (C + C.T).sum(axis=1)
+                idx = idx[np.argsort(totals[idx])[::-1]][:max_states]
+            return idx
+        except Exception:
+            return np.arange(min(C.shape[0], max_states))
+
+    def _micro_eigen_gap(self, k: int = 2) -> Optional[float]:
+        try:
+            if self.transition_matrix is not None:
+                T = np.asarray(self.transition_matrix, dtype=float)
+            else:
+                T, _ = self._count_micro_T(
+                    self.dtrajs, self.n_states, int(self.lag_time)
+                )
+            evals = np.sort(np.real(np.linalg.eigvals(T)))[::-1]
+            if len(evals) <= k:
+                return None
+            return float(evals[k - 1] - evals[k])
         except Exception:
             return None
 
     def _persist_ck_macro_results(
-        self, results: Dict[str, float], nM: int, lag_frames: int
+        self, result: CKTestResult, nM: int, lag_frames: int
     ) -> None:
         try:
             out = {
                 "n_macrostates": int(nM),
                 "lag_time_frames": int(lag_frames),
-                "factors": results,
+                "factors": {str(k): v for k, v in result.mse.items()},
+                "thresholds": result.thresholds,
+                "mode": result.mode,
+                "insufficient_data": result.insufficient_data,
             }
             with open(
                 self.output_dir / "msm_analysis_ck_macro.json", "w", encoding="utf-8"
             ) as f:
                 json.dump(out, f, indent=2)
         except Exception:
-            # Best-effort persistence; do not raise
+            pass
+
+    def _persist_ck_micro_results(
+        self, result: CKTestResult, nS: int, lag_frames: int
+    ) -> None:
+        try:
+            out = {
+                "n_states": int(nS),
+                "lag_time_frames": int(lag_frames),
+                "factors": {str(k): v for k, v in result.mse.items()},
+                "thresholds": result.thresholds,
+                "mode": result.mode,
+                "insufficient_data": result.insufficient_data,
+            }
+            with open(
+                self.output_dir / "msm_analysis_ck_micro.json", "w", encoding="utf-8"
+            ) as f:
+                json.dump(out, f, indent=2)
+        except Exception:
             pass
 
     def generate_free_energy_surface(
@@ -1927,11 +2067,7 @@ class EnhancedMSM:
             from deeptime.util.validation import ck_test  # type: ignore
 
             base_lag = int(max(1, self.lag_time))
-            facs = (
-                [2, 3, 4]
-                if factors is None
-                else [int(f) for f in factors if int(f) > 1]
-            )
+            facs = self._normalize_ck_factors(factors)
             lags = [base_lag] + [base_lag * f for f in facs]
 
             models = []
@@ -1954,33 +2090,39 @@ class EnhancedMSM:
         except Exception:
             pass
 
-        # Fallback: macrostate MSE bar plot
+        # Fallback: internal CK bar plot
         try:
-            facs = (
-                [2, 3, 4]
-                if factors is None
-                else [int(f) for f in factors if int(f) > 1]
-            )
-            results = self.compute_ck_test_macrostates(
+            facs = self._normalize_ck_factors(factors)
+            result = self.compute_ck_test_macrostates(
                 n_macrostates=int(max(2, n_macrostates)), factors=facs
             )
-            if not results:
-                return None
-            xs = [int(k) for k in results.keys()]
-            ys = [float(results[str(k)]) for k in xs]
 
             plt.figure(figsize=(7, 5))
-            # Use numeric x values to avoid matplotlib categorical parsing warning
-            xvals = xs
-            plt.bar(xvals, ys, color="tab:orange", alpha=0.8, width=0.6)
-            plt.xticks(xvals, [str(x) for x in xs])
-            plt.xlabel("Lag multiple (k)")
-            plt.ylabel("MSE(T^k, T_empirical@k·lag)")
-            plt.title("Chapman–Kolmogorov test (macrostate)")
+            if result.mse:
+                xs = sorted(result.mse.keys())
+                ys = [result.mse[k] for k in xs]
+                plt.bar(xs, ys, color="tab:orange", alpha=0.8, width=0.6)
+                plt.xticks(xs, [str(x) for x in xs])
+                plt.xlabel("Lag multiple (k)")
+                plt.ylabel("MSE(T^k, T_empirical@k·lag)")
+                plt.title(f"Chapman–Kolmogorov test ({result.mode}state)")
+            else:
+                thresh = ", ".join(f"{k}={v}" for k, v in result.thresholds.items())
+                plt.text(
+                    0.5,
+                    0.5,
+                    f"insufficient data\n{thresh}",
+                    ha="center",
+                    va="center",
+                    fontsize=12,
+                )
+                plt.title("Chapman–Kolmogorov test")
+                plt.axis("off")
+
             plt.tight_layout()
             plt.savefig(out_path, dpi=200)
             plt.close()
-            logger.info(f"Saved CK macrostate bar plot: {out_path}")
+            logger.info(f"Saved CK test plot: {out_path}")
             return out_path
         except Exception:
             return None
