@@ -1,46 +1,57 @@
 from __future__ import annotations
 
-from typing import List
+import logging
 
 import numpy as np
 
 
+logger = logging.getLogger(__name__)
+
+
 def linear_temperature_ladder(
     min_temp: float, max_temp: float, n_replicas: int
-) -> List[float]:
+) -> list[float]:
     """Generate a linearly spaced temperature ladder inclusive of bounds."""
-    if n_replicas <= 0:
-        return []
+    if n_replicas < 1:
+        raise ValueError("n_replicas must be positive")
     if n_replicas == 1:
         return [float(min_temp)]
-    temps = np.linspace(min_temp, max_temp, n_replicas)
+    tmin, tmax = sorted((float(min_temp), float(max_temp)))
+    logger.debug(
+        "Generating linear ladder from %s to %s with %d replicas",
+        tmin,
+        tmax,
+        n_replicas,
+    )
+    temps = np.linspace(tmin, tmax, n_replicas)
     return [float(t) for t in temps]
 
 
 def exponential_temperature_ladder(
     min_temp: float, max_temp: float, n_replicas: int
-) -> List[float]:
-    """Generate an exponentially spaced temperature ladder inclusive of bounds.
-
-    Matches the behavior already used in `ReplicaExchange._generate_temperature_ladder`.
-    """
-    if n_replicas <= 0:
-        return []
+) -> list[float]:
+    """Generate an exponentially spaced temperature ladder inclusive of bounds."""
+    if n_replicas < 1:
+        raise ValueError("n_replicas must be positive")
     if n_replicas == 1:
         return [float(min_temp)]
-    ratios = np.arange(n_replicas) / (n_replicas - 1)
-    temps = (
-        min_temp
-        * (max_temp / max_temp if min_temp == 0 else (max_temp / min_temp)) ** ratios
+    tmin, tmax = sorted((float(min_temp), float(max_temp)))
+    if tmin <= 0:
+        raise ValueError("Temperatures must be positive for exponential spacing")
+    logger.debug(
+        "Generating exponential ladder from %s to %s with %d replicas",
+        tmin,
+        tmax,
+        n_replicas,
     )
-    # In the typical case min_temp>0; safety above avoids zero division;
-    # if min_temp==0, ladder degenerates
+    ratios = np.arange(n_replicas) / (n_replicas - 1)
+    temps = tmin * (tmax / tmin) ** ratios
     return [float(t) for t in temps]
 
 
 def power_of_two_temperature_ladder(
     min_temp: float, max_temp: float, n_replicas: int | None = None
-) -> List[float]:
+) -> list[float]:
     """Generate a temperature ladder with a power-of-two number of replicas.
 
     Behavior:
@@ -76,8 +87,18 @@ def power_of_two_temperature_ladder(
         delta = tmax - tmin
         approx_points = int(max(2, round(delta / target_step) + 1))
         npts = _next_power_of_two(approx_points)
+        logger.debug(
+            "Choosing power-of-two replicas: delta=%s approx=%s npts=%s",
+            delta,
+            approx_points,
+            npts,
+        )
     else:
-        npts = _next_power_of_two(int(n_replicas))
+        n_rep = int(n_replicas)
+        if n_rep < 1:
+            raise ValueError("n_replicas must be positive")
+        npts = _next_power_of_two(n_rep)
+        logger.debug("Rounded n_replicas=%s to power-of-two=%s", n_rep, npts)
 
     # Guard upper bound to a reasonable maximum (avoid extremely large ladders by mistake)
     npts = int(max(2, min(npts, 1 << 12)))  # cap at 4096 for safety
