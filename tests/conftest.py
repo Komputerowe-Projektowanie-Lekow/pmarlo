@@ -57,3 +57,43 @@ def temp_output_dir():
 def skip_if_no_openmm():
     """Skip tests if OpenMM is not available."""
     return find_spec("openmm") is None
+
+
+@pytest.fixture
+def damaged_pdb_file(tmp_path):
+    """Create a deliberately damaged PDB file."""
+    path = tmp_path / "damaged.pdb"
+    path.write_text("ATOM      1  N   ALA A   1\nEND\n")
+    return path
+
+
+@pytest.fixture
+def nan_pdb_file(tmp_path):
+    """Create a PDB file containing NaN coordinates."""
+    from openmm import Vec3, unit
+    from openmm.app import PDBFile, Topology, element
+
+    path = tmp_path / "nan.pdb"
+
+    top = Topology()
+    chain = top.addChain("A")
+    res = top.addResidue("ALA", chain)
+    top.addAtom("N", element.get_by_symbol("N"), res)
+    top.addAtom("CA", element.get_by_symbol("C"), res)
+    positions = unit.Quantity(
+        [Vec3(0.0, 0.0, 0.0), Vec3(1.0, 0.0, 0.0)],
+        unit.nanometer,
+    )
+    with open(path, "w") as handle:
+        PDBFile.writeFile(top, positions, handle)
+
+    lines = path.read_text().splitlines()
+    new_lines = []
+    for line in lines:
+        if line.startswith("ATOM") and line[12:16].strip() == "N":
+            line = line[:30] + f"{'NaN':>8}" + line[38:]
+        elif line.startswith("ATOM") and line[12:16].strip() == "CA":
+            line = line[:38] + f"{'NaN':>8}" + line[46:]
+        new_lines.append(line)
+    path.write_text("\n".join(new_lines) + "\n")
+    return path
