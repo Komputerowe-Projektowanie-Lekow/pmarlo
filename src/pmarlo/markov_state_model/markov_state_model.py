@@ -13,14 +13,18 @@ This module provides advanced MSM analysis capabilities including:
 - Comprehensive visualization
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import pickle
 import warnings
+
 from collections import defaultdict
 from dataclasses import dataclass, field
+
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union, Literal
 
 import matplotlib.pyplot as plt
 import mdtraj as md
@@ -31,6 +35,10 @@ from scipy.ndimage import gaussian_filter
 from scipy.sparse import csc_matrix, issparse, save_npz
 from scipy.sparse.csgraph import connected_components
 from sklearn.cluster import MiniBatchKMeans
+from ..cluster.micro import ClusteringResult, cluster_microstates
+
+from pmarlo.states.msm_bridge import _row_normalize, _stationary_from_T
+from pmarlo.utils.msm_utils import ensure_connected_counts
 
 logger = logging.getLogger("pmarlo")
 
@@ -80,6 +88,7 @@ class EnhancedMSM:
         topology_file: Optional[str] = None,
         temperatures: Optional[List[float]] = None,
         output_dir: str = "output/msm_analysis",
+        random_state: int = 42,
     ):
         """
         Initialize the Enhanced MSM analyzer.
@@ -108,6 +117,7 @@ class EnhancedMSM:
         self.features: Optional[np.ndarray] = None
         self.cluster_centers: Optional[np.ndarray] = None
         self.n_states = 0
+        self.random_state = int(random_state)
 
         # MSM data - Fixed: Initialize with proper types instead of None
         self.transition_matrix: Optional[np.ndarray] = (
@@ -492,40 +502,34 @@ class EnhancedMSM:
         if self.features is not None:
             logger.info(f"Features computed: {self.features.shape}")
 
-    def cluster_features(self, n_clusters: int = 100, algorithm: str = "kmeans"):
-        """
-        Cluster features to create discrete states.
-
-        Args:
-            n_clusters: Number of clusters (states)
-            algorithm: Clustering algorithm ('kmeans', 'gmm')
-        """
-        logger.info(
-            f"Clustering features into {n_clusters} states using {algorithm}..."
-        )
+    def cluster_features(
+        self,
+        n_states: int | Literal["auto"] = "auto",
+        algorithm: str = "kmeans",
+        random_state: int | None = None,
+    ) -> None:
+        """Cluster features to create discrete states."""
 
         if self.features is None:
             raise ValueError("Features must be computed before clustering")
 
-        # Adaptive microstate reduction for Stage-1: prefer 10–20 states for ~40k frames
-        try:
-            num_frames = int(self.features.shape[0]) if self.features is not None else 0
-        except Exception:
-            num_frames = 0
-        if n_clusters > 20 and 0 < num_frames <= 40000:
-            logger.info(
-                f"Reducing requested clusters from {n_clusters} to 20 for low data volume ({num_frames} frames)"
-            )
-            n_clusters = 20
-        if n_clusters < 10:
-            n_clusters = 10
+        rng = self.random_state if random_state is None else random_state
+        logger.info(
+            "Clustering features using %s: requested=%s",
+            algorithm,
+            n_states,
+        )
 
-        if algorithm == "kmeans":
-            clusterer = MiniBatchKMeans(n_clusters=n_clusters, random_state=42)
-            labels = clusterer.fit_predict(self.features)
-            self.cluster_centers = clusterer.cluster_centers_
-        else:
-            raise ValueError(f"Clustering algorithm {algorithm} not implemented")
+        result: ClusteringResult = cluster_microstates(
+            self.features,
+            method=(
+                algorithm if algorithm in ["kmeans", "minibatchkmeans"] else "kmeans"
+            ),
+            n_states=n_states,
+            random_state=rng,
+        )
+        labels = result.labels
+        self.cluster_centers = result.centers
 
         # Split labels back into trajectories
         self.dtrajs = []
@@ -535,29 +539,13 @@ class EnhancedMSM:
             self.dtrajs.append(labels[start_idx:end_idx])
             start_idx = end_idx
 
-        # Remap labels to contiguous states to drop empty clusters
-        try:
-            unique_states = np.unique(labels)
-            remap = {
-                int(old): int(new) for new, old in enumerate(sorted(unique_states))
-            }
-            if len(remap) != int(n_clusters):
-                logger.info(
-                    "Compressing %d clusters to %d observed states",
-                    int(n_clusters),
-                    len(remap),
-                )
-            # Apply remap to dtrajs
-            new_dtrajs: List[np.ndarray] = []
-            for dt in self.dtrajs:
-                new_dtrajs.append(np.array([remap[int(x)] for x in dt], dtype=int))
-            self.dtrajs = new_dtrajs
-            self.n_states = int(len(remap))
-        except Exception:
-            # Fallback: keep original labeling if remap fails
-            self.n_states = int(n_clusters)
-
-        logger.info(f"Clustering completed: {self.n_states} states")
+        self.n_states = int(result.n_states)
+        logger.info(
+            "Clustering completed: requested=%s, actual=%d%s",
+            n_states,
+            self.n_states,
+            f" ({result.rationale})" if result.rationale else "",
+        )
 
     def build_msm(self, lag_time: int = 20, method: str = "standard") -> None:
         """Build Markov State Model from discrete trajectories.
@@ -651,13 +639,23 @@ class EnhancedMSM:
         if self.estimator_backend == "deeptime":
             try:  # pragma: no cover - exercised in environments with deeptime
                 from deeptime.markov import TransitionCountEstimator  # type: ignore
-                from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
 
                 use_deeptime = True
             except Exception:  # pragma: no cover - import failure
                 use_deeptime = False
 
         lag = int(max(1, lag_time))
+        max_valid_lag = min(len(dt) for dt in self.dtrajs) - 1 if self.dtrajs else 0
+        if lag > max_valid_lag and max_valid_lag > 0:
+            logger.warning(
+                "Lag %s exceeds max feasible %s; capping", lag, max_valid_lag
+            )
+            lag = max_valid_lag
+        if max_valid_lag < 1:
+            self.count_matrix = np.zeros((self.n_states, self.n_states), dtype=float)
+            self.transition_matrix = np.eye(self.n_states, dtype=float)
+            self.stationary_distribution = np.zeros((self.n_states,), dtype=float)
+            return
 
         if use_deeptime:
             tce = TransitionCountEstimator(
@@ -666,65 +664,38 @@ class EnhancedMSM:
                 sparse=False,
             )
             count_model = tce.fit(self.dtrajs).fetch_model()
-            C = np.asarray(count_model.count_matrix, dtype=float)
-            self.count_matrix = C
-
-            ml = MaximumLikelihoodMSM(reversible=True)
-            msm = ml.fit(count_model).fetch_model()
-            self.transition_matrix = np.asarray(msm.transition_matrix, dtype=float)
-            if (
-                hasattr(msm, "stationary_distribution")
-                and msm.stationary_distribution is not None
-            ):
-                self.stationary_distribution = np.asarray(
-                    msm.stationary_distribution, dtype=float
-                )
-            else:
-                eigenvals, eigenvecs = np.linalg.eig(self.transition_matrix.T)
-                stationary_idx = int(np.argmin(np.abs(eigenvals - 1)))
-                stationary = np.real(eigenvecs[:, stationary_idx])
-                stationary = np.maximum(stationary, 0.0)
-                stationary = stationary / stationary.sum()
-                self.stationary_distribution = stationary
-            return
-
-        # Manual fallback implementation -------------------------------------
-        alpha: float = 2.0
-        counts: Dict[Tuple[int, int], float] = defaultdict(float)
-        step = lag if count_mode == "strided" else 1
-        for dtraj in self.dtrajs:
-            if len(dtraj) <= lag:
-                continue
-            for i in range(0, len(dtraj) - lag, step):
-                state_i = int(dtraj[i])
-                state_j = int(dtraj[i + lag])
-                if state_i < 0 or state_j < 0:
+            counts = np.asarray(count_model.count_matrix, dtype=float)
+        else:
+            counts = np.zeros((self.n_states, self.n_states), dtype=float)
+            step = lag if count_mode == "strided" else 1
+            for dtraj in self.dtrajs:
+                if len(dtraj) <= lag:
                     continue
-                if state_i >= self.n_states or state_j >= self.n_states:
-                    continue
-                counts[(state_i, state_j)] += 1.0
+                for i in range(0, len(dtraj) - lag, step):
+                    state_i = int(dtraj[i])
+                    state_j = int(dtraj[i + lag])
+                    if state_i < 0 or state_j < 0:
+                        continue
+                    if state_i >= self.n_states or state_j >= self.n_states:
+                        continue
+                    counts[state_i, state_j] += 1.0
 
-        count_matrix = np.full((self.n_states, self.n_states), alpha, dtype=float)
-        for (i, j), count in counts.items():
-            count_matrix[i, j] += count
+        res = ensure_connected_counts(counts)
+        self.count_matrix = np.zeros((self.n_states, self.n_states), dtype=float)
+        if res.counts.size:
+            self.count_matrix[np.ix_(res.active, res.active)] = res.counts
+            T_active = _row_normalize(res.counts)
+            pi_active = _stationary_from_T(T_active)
+            T_full = np.eye(self.n_states, dtype=float)
+            T_full[np.ix_(res.active, res.active)] = T_active
+            pi_full = np.zeros((self.n_states,), dtype=float)
+            pi_full[res.active] = pi_active
+        else:
+            T_full = np.eye(self.n_states, dtype=float)
+            pi_full = np.zeros((self.n_states,), dtype=float)
 
-        row_sums_tmp = count_matrix.sum(axis=1)
-        zero_row_indices = np.where(row_sums_tmp == 0)[0]
-        for idx in zero_row_indices:
-            count_matrix[idx, idx] = max(1.0, alpha)
-
-        self.count_matrix = count_matrix
-
-        row_sums = count_matrix.sum(axis=1)
-        row_sums[row_sums == 0] = 1.0
-        self.transition_matrix = count_matrix / row_sums[:, np.newaxis]
-
-        eigenvals, eigenvecs = np.linalg.eig(self.transition_matrix.T)
-        stationary_idx = int(np.argmin(np.abs(eigenvals - 1)))
-        stationary = np.real(eigenvecs[:, stationary_idx])
-        stationary = np.maximum(stationary, 0.0)
-        stationary = stationary / stationary.sum()
-        self.stationary_distribution = stationary
+        self.transition_matrix = T_full
+        self.stationary_distribution = pi_full
 
     def _build_tram_msm(self, lag_time: int):
         """Build MSM using deeptime TRAM for multi-ensemble data when available."""
@@ -825,6 +796,24 @@ class EnhancedMSM:
         logger.info("Computing implied timescales...")
 
         lag_times = self._its_default_lag_times(lag_times)
+        max_valid_lag = min(len(dt) for dt in self.dtrajs) - 1 if self.dtrajs else 0
+        if max_valid_lag < 1:
+            logger.warning("Trajectories too short for implied timescales")
+            self.implied_timescales = {
+                "lag_times": [],
+                "timescales": np.empty((0, n_timescales)),
+            }
+            return
+        if any(lag_val > max_valid_lag for lag_val in lag_times):
+            logger.warning("Capping lag times above max_valid_lag=%s", max_valid_lag)
+            lag_times = [lag_val for lag_val in lag_times if lag_val <= max_valid_lag]
+        if not lag_times:
+            self.implied_timescales = {
+                "lag_times": [],
+                "timescales": np.empty((0, n_timescales)),
+            }
+            return
+
         timescales_data: List[List[float]] = []
 
         for lag in lag_times:
@@ -849,32 +838,24 @@ class EnhancedMSM:
     ) -> Optional[List[float]]:
         try:
             from deeptime.markov import TransitionCountEstimator  # type: ignore
-            from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
 
             tce = TransitionCountEstimator(
                 lagtime=int(max(1, lag)), count_mode="sliding", sparse=False
             )
-            C = tce.fit(self.dtrajs).fetch_model()
-            ml = MaximumLikelihoodMSM(reversible=True)
-            msm = ml.fit(C).fetch_model()
-            return self._its_extract_timescales_from_model(msm, lag, n_timescales)
+            C = np.asarray(tce.fit(self.dtrajs).fetch_model().count_matrix, dtype=float)
+            res = ensure_connected_counts(C)
+            if res.counts.size == 0:
+                return []
+            T = _row_normalize(res.counts)
+            eigenvals = np.real(np.linalg.eigvals(T))
+            eigenvals = np.sort(eigenvals)[::-1]
+            ts_row: List[float] = []
+            for i in range(1, min(n_timescales + 1, len(eigenvals))):
+                if 0.0 < eigenvals[i] < 1.0:
+                    ts_row.append(-lag / np.log(eigenvals[i]))
+            return ts_row
         except Exception:
             return None
-
-    def _its_extract_timescales_from_model(
-        self, msm: Any, lag: int, n_timescales: int
-    ) -> List[float]:
-        ts_row: List[float] = []
-        try:
-            ts = list(msm.timescales(k=int(n_timescales)))  # type: ignore[attr-defined]
-            ts_row = [float(v) for v in ts]
-        except Exception:
-            evals = np.real(np.linalg.eigvals(np.asarray(msm.transition_matrix)))
-            evals = np.sort(evals)[::-1]
-            for i in range(1, min(n_timescales + 1, len(evals))):
-                if 0.0 < evals[i] < 1.0:
-                    ts_row.append(-lag / np.log(evals[i]))
-        return ts_row
 
     def _its_fallback_timescales(self, lag: int, n_timescales: int) -> List[float]:
         ts_row: List[float] = []
@@ -2297,7 +2278,7 @@ def run_complete_msm_analysis(
     trajectory_files: Union[str, List[str]],
     topology_file: str,
     output_dir: str = "output/msm_analysis",
-    n_clusters: int = 100,
+    n_states: int | Literal["auto"] = 100,
     lag_time: int = 20,
     feature_type: str = "phi_psi",
     temperatures: Optional[List[float]] = None,
@@ -2309,7 +2290,7 @@ def run_complete_msm_analysis(
         trajectory_files: Trajectory file(s) to analyze
         topology_file: Topology file (PDB)
         output_dir: Output directory
-        n_clusters: Number of states for clustering
+        n_states: Number of states for clustering or ``"auto"``
         lag_time: Lag time for MSM construction
         feature_type: Type of features to use
         temperatures: Temperatures for TRAM analysis
@@ -2320,7 +2301,7 @@ def run_complete_msm_analysis(
     msm = _initialize_msm_analyzer(
         trajectory_files, topology_file, temperatures, output_dir
     )
-    _load_and_prepare(msm, feature_type, n_clusters)
+    _load_and_prepare(msm, feature_type, n_states)
     _build_and_validate_msm(msm, temperatures, lag_time)
     fes_success = _maybe_generate_fes(msm, feature_type)
     _finalize_results_and_plots(msm, fes_success)
@@ -2345,7 +2326,9 @@ def _initialize_msm_analyzer(
     )
 
 
-def _load_and_prepare(msm: EnhancedMSM, feature_type: str, n_clusters: int) -> None:
+def _load_and_prepare(
+    msm: EnhancedMSM, feature_type: str, n_states: int | Literal["auto"]
+) -> None:
     msm.load_trajectories()
     # Save a quick φ/ψ sanity scatter before feature building (helps spot issues early)
     try:
@@ -2353,7 +2336,7 @@ def _load_and_prepare(msm: EnhancedMSM, feature_type: str, n_clusters: int) -> N
     except Exception:
         pass
     msm.compute_features(feature_type=feature_type)
-    msm.cluster_features(n_clusters=n_clusters)
+    msm.cluster_features(n_states=n_states)
 
 
 def _build_and_validate_msm(
