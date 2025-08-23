@@ -31,7 +31,11 @@ def test_generate_2d_fes_reference():
     res = generate_2d_fes(x, y, bins=(20, 20), temperature=300.0, smoothing_sigma=None)
     assert isinstance(res, FESResult)
     H, xedges, yedges = np.histogram2d(
-        x, y, bins=(20, 20), range=((x.min(), x.max()), (y.min(), y.max())), density=True
+        x,
+        y,
+        bins=(20, 20),
+        range=((x.min(), x.max()), (y.min(), y.max())),
+        density=True,
     )
     kT = _kT_kJ_per_mol(300.0)
     tiny = np.finfo(float).tiny
@@ -39,7 +43,7 @@ def test_generate_2d_fes_reference():
     F_ref = np.where(H > 0, -kT * np.log(H_clipped), np.inf)
     F_ref -= np.nanmin(F_ref)
     assert np.allclose(res.F, F_ref)
-    assert np.allclose(res.counts, H)
+    assert np.allclose(res.metadata["counts"], H)
 
 
 def test_generate_2d_fes_shape_mismatch():
@@ -53,4 +57,3 @@ def test_generate_1d_pmf_invalid_temperature():
     data = np.array([0.0, 1.0])
     with pytest.raises(ValueError):
         generate_1d_pmf(data, temperature=-1.0)
-
