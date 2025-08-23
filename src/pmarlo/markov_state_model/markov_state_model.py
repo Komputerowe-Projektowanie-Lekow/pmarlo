@@ -29,6 +29,7 @@ from scipy import constants
 from scipy.ndimage import gaussian_filter
 from scipy.sparse import csc_matrix, issparse, save_npz
 from sklearn.cluster import MiniBatchKMeans
+from ..results import CKResult, FESResult, MSMResult
 
 logger = logging.getLogger(__name__)
 
@@ -1705,12 +1706,43 @@ class EnhancedMSM:
         self._save_discrete_trajectories(prefix)
         self._save_state_table_file(prefix)
 
-        # FES and metadata
+        # FES
         self._save_fes_array(prefix)
-        self._save_fes_metadata(prefix)
 
-        # Analysis artifacts
-        self._save_implied_timescales_file(prefix)
+        # Collect structured results
+        analysis_results: Dict[str, Any] = {}
+        assert self.transition_matrix is not None
+        assert self.count_matrix is not None
+        analysis_results["msm"] = MSMResult(
+            transition_matrix=self.transition_matrix,
+            count_matrix=self.count_matrix,
+            free_energies=self.free_energies,
+            stationary_distribution=self.stationary_distribution,
+        )
+        if self.fes_data is not None:
+            analysis_results["fes"] = FESResult(
+                free_energy=self.fes_data["free_energy"],
+                xedges=self.fes_data["xedges"],
+                yedges=self.fes_data["yedges"],
+                cv1_name=self.fes_data["cv1_name"],
+                cv2_name=self.fes_data["cv2_name"],
+                temperature=self.fes_data["temperature"],
+            )
+        if self.implied_timescales is not None:
+            analysis_results["ck"] = CKResult(
+                lag_times=self.implied_timescales["lag_times"],
+                timescales=self.implied_timescales["timescales"],
+            )
+
+        results_file = self.output_dir / "analysis_results.pkl"
+        json_file = self.output_dir / "analysis_results.json"
+        with results_file.open("wb") as f:
+            pickle.dump(analysis_results, f)
+        with json_file.open("w") as f:
+            json.dump(
+                {k: v.to_dict(metadata_only=True) for k, v in analysis_results.items()},
+                f,
+            )
 
         # Final message
         self._log_save_completion()
@@ -1784,21 +1816,6 @@ class EnhancedMSM:
             self.output_dir / f"{prefix}_fes.npy",
             self.fes_data["free_energy"],
         )
-
-    def _save_fes_metadata(self, prefix: str) -> None:
-        """Save non-array FES metadata alongside the FES array."""
-        if self.fes_data is None:
-            return
-        fes_metadata = {k: v for k, v in self.fes_data.items() if k != "free_energy"}
-        with open(self.output_dir / f"{prefix}_fes_metadata.pkl", "wb") as f:
-            pickle.dump(fes_metadata, f)
-
-    def _save_implied_timescales_file(self, prefix: str) -> None:
-        """Save implied timescales structure if computed."""
-        if self.implied_timescales is None:
-            return
-        with open(self.output_dir / f"{prefix}_implied_timescales.pkl", "wb") as f:
-            pickle.dump(self.implied_timescales, f)
 
     def _log_save_completion(self) -> None:
         """Emit a final log confirming save destination."""
