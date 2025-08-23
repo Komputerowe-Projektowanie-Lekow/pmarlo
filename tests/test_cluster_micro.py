@@ -37,3 +37,11 @@ def test_auto_and_fixed_states():
     auto = cluster_microstates(X, n_states="auto", random_state=0)
     assert 4 <= auto.n_states <= 20
     assert auto.rationale is not None
+
+
+def test_auto_switches_to_minibatch():
+    Y = np.random.rand(10, 10)
+    with patch("pmarlo.cluster.micro.MiniBatchKMeans") as mock_mb:
+        mock_mb.return_value.fit_predict.return_value = np.zeros(10, dtype=int)
+        cluster_microstates(Y, method="auto", n_states=2, minibatch_threshold=50)
+        assert mock_mb.called

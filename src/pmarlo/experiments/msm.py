@@ -40,6 +40,8 @@ class MSMConfig:
     lag_time: int = 20
     feature_type: str = "phi_psi"
     temperatures: List[float] | None = None
+    stride: int = 1
+    atom_selection: str | None = None
     seed: int | None = None
 
 
@@ -59,6 +61,8 @@ def _perform_msm_analysis_with_tracking(config: MSMConfig, run_dir: Path):
             lag_time=config.lag_time,
             feature_type=config.feature_type,
             temperatures=config.temperatures,
+            stride=config.stride,
+            atom_selection=config.atom_selection,
         )
     return msm, tracker
 
