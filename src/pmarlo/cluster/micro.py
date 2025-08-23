@@ -34,7 +34,7 @@ def cluster_microstates(
     Y: np.ndarray,
     method: Literal["auto", "minibatchkmeans", "kmeans"] = "auto",
     n_states: int | Literal["auto"] = "auto",
-    random_state: int = 42,
+    random_state: int | None = 42,
     minibatch_threshold: int = 5_000_000,
     **kwargs,
 ) -> ClusteringResult:
@@ -52,7 +52,8 @@ def cluster_microstates(
         Number of microstates to identify or ``"auto"`` to select the number
         based on the silhouette score.
     random_state:
-        Seed for deterministic clustering.
+        Seed for deterministic clustering.  When ``None`` the global NumPy
+        random state is used.
     minibatch_threshold:
         Product of frames and features above which ``MiniBatchKMeans`` is used
         when ``method="auto"``.
