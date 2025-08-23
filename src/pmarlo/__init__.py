@@ -14,6 +14,7 @@ from .protein.protein import Protein
 from .replica_exchange.config import RemdConfig
 from .replica_exchange.replica_exchange import ReplicaExchange
 from .simulation.simulation import Simulation
+from .utils.msm_utils import candidate_lag_ladder
 from .utils.replica_utils import power_of_two_temperature_ladder
 
 __version__ = "0.1.0"
@@ -29,4 +30,5 @@ __all__ = [
     "Pipeline",
     "LegacyPipeline",
     "power_of_two_temperature_ladder",
+    "candidate_lag_ladder",
 ]

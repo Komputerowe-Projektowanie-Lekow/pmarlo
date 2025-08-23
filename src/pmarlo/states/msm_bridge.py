@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple, cast
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 def build_simple_msm(
@@ -12,31 +15,36 @@ def build_simple_msm(
     lag: int = 20,
     count_mode: str = "sliding",
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Build MSM using deeptime estimators, with a robust fallback.
+    """Build MSM using deeptime estimators.
 
     Returns a pair (transition_matrix, stationary_distribution).
     """
     if not dtrajs:
+        logger.error("build_simple_msm: No dtrajs provided")
         return np.zeros((0, 0), dtype=float), np.zeros((0,), dtype=float)
 
     n_states = _infer_n_states(dtrajs, n_states)
+    logger.info(f"build_simple_msm: Using {n_states} states")
 
-    # Try deeptime-based estimation first
-    try:
-        T, pi = _fit_msm_deeptime(dtrajs, n_states, lag, count_mode)
-        return T, pi
-    except Exception:
-        # Fall back to Dirichlet-regularized ML counts
-        return _fit_msm_fallback(dtrajs, n_states, lag)
+    # Deeptime-based estimation
+    T, pi = _fit_msm_deeptime(dtrajs, n_states, lag, count_mode)
+    logger.info(f"build_simple_msm: Transition matrix shape: {T.shape}")
+    logger.info(f"build_simple_msm: Stationary distribution shape: {pi.shape}")
+    return T, pi
 
 
 def _infer_n_states(dtrajs: List[np.ndarray], n_states: Optional[int]) -> int:
+    """
+    Infer number of microstates from provided labels when not specified.
+    """
     if n_states is not None:
+        logger.debug(f"infer_n_states: States provided, using {n_states}")
         return int(n_states)
     max_state = 0
     for dt in dtrajs:
         if dt.size:
             max_state = max(max_state, int(np.max(dt)))
+    logger.debug(f"infer_n_states: Using {max_state + 1} states")
     return int(max_state + 1)
 
 
@@ -46,18 +54,31 @@ def _fit_msm_deeptime(
     lag: int,
     count_mode: str,
 ) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    This function is used to fit the MSM using the deeptime library.
+    It uses the TransitionCountEstimator to estimate the transition matrix,
+    and the MaximumLikelihoodMSM to fit the MSM.
+    """
     from deeptime.markov import TransitionCountEstimator  # type: ignore
     from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
 
     tce = TransitionCountEstimator(
-        lagtime=int(max(1, lag)), count_mode=str(count_mode), sparse=False
+        lagtime=int(max(1, lag)),
+        count_mode=str(count_mode),
+        sparse=False,
     )
+
     count_model = tce.fit(dtrajs).fetch_model()
-    ml = MaximumLikelihoodMSM(reversible=True)
+
+    # Most processes here are not assumed reversible
+    ml = MaximumLikelihoodMSM(reversible=False)
     msm = ml.fit(count_model).fetch_model()
+    logger.debug(f"fit_msm_deeptime: MSM model: {msm}")
 
     T = np.asarray(msm.transition_matrix, dtype=float)
     pi = _stationary_from_model_or_T(msm, T)
+    logger.debug(f"fit_msm_deeptime: Transition matrix shape: {T.shape}")
+    logger.debug(f"fit_msm_deeptime: Stationary distribution shape: {pi.shape}")
     return T, cast(np.ndarray, pi)
 
 
@@ -73,6 +94,11 @@ def _stationary_from_model_or_T(msm: object, T: np.ndarray) -> np.ndarray:
 def _fit_msm_fallback(
     dtrajs: List[np.ndarray], n_states: int, lag: int
 ) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    This function is used to fit the MSM using the fallback method.
+    It uses the Dirichlet-regularized ML counts to estimate the transition matrix,
+    and the stationary distribution is computed from the transition matrix.
+    """
     counts: Dict[Tuple[int, int], float] = defaultdict(float)
     alpha = 2.0
     for dtraj in dtrajs:
@@ -87,6 +113,8 @@ def _fit_msm_fallback(
         C[i, j] += c
     T = _row_normalize(C)
     pi = _stationary_from_T(T)
+    print(f"fit_msm_fallback: Transition matrix shape: {T.shape}")
+    print(f"fit_msm_fallback: Stationary distribution shape: {pi.shape}")
     return T, pi
 
 

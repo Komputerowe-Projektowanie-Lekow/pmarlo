@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 
 import mdtraj as md  # type: ignore
@@ -9,13 +10,19 @@ from .cluster.micro import cluster_microstates as _cluster_microstates
 from .features import get_feature
 from .features.base import parse_feature_spec
 from .fes.surfaces import generate_2d_fes as _generate_2d_fes
+from .markov_state_model.markov_state_model import EnhancedMSM as MarkovStateModel
 from .reduce.reducers import pca_reduce, tica_reduce, vamp_reduce
+from .replica_exchange.config import RemdConfig
+from .replica_exchange.replica_exchange import ReplicaExchange
+from .reporting.export import write_conformations_csv_json
+from .reporting.plots import save_fes_contour, save_transition_matrix_heatmap
 from .states.msm_bridge import build_simple_msm as _build_simple_msm
 from .states.msm_bridge import compute_macro_mfpt as _compute_macro_mfpt
 from .states.msm_bridge import compute_macro_populations as _compute_macro_populations
 from .states.msm_bridge import lump_micro_to_macro_T as _lump_micro_to_macro_T
 from .states.msm_bridge import pcca_like_macrostates as _pcca_like
 from .states.picker import pick_frames_around_minima as _pick_frames_around_minima
+from .utils.msm_utils import candidate_lag_ladder
 
 
 def compute_features(
@@ -300,3 +307,285 @@ def generate_fes_and_pick_minima(
         "fes": fes,
         "minima": minima,
     }
+
+
+# ------------------------------ High-level wrappers ------------------------------
+
+
+def run_replica_exchange(
+    pdb_file: str | Path,
+    output_dir: str | Path,
+    temperatures: List[float],
+    total_steps: int,
+) -> Tuple[List[str], List[float]]:
+    """Run REMD and return (trajectory_files, analysis_temperatures).
+
+    Attempts demultiplexing to ~300 K; falls back to per-replica trajectories.
+    """
+    remd_out = Path(output_dir) / "replica_exchange"
+
+    equil = min(total_steps // 10, 200 if total_steps <= 2000 else 2000)
+    dcd_stride = max(1, int(total_steps // 5000))
+    exchange_frequency = max(100, total_steps // 20)
+
+    remd = ReplicaExchange.from_config(
+        RemdConfig(
+            pdb_file=str(pdb_file),
+            temperatures=temperatures,
+            output_dir=str(remd_out),
+            exchange_frequency=exchange_frequency,
+            auto_setup=False,
+            dcd_stride=dcd_stride,
+        )
+    )
+    remd.plan_reporter_stride(
+        total_steps=int(total_steps), equilibration_steps=int(equil), target_frames=5000
+    )
+    remd.setup_replicas()
+    remd.run_simulation(total_steps=int(total_steps), equilibration_steps=int(equil))
+
+    # Demultiplex best-effort
+    demuxed = remd.demux_trajectories(
+        target_temperature=300.0, equilibration_steps=int(equil)
+    )
+    if demuxed:
+        try:
+            traj = md.load(str(demuxed), top=str(pdb_file))
+            reporter_stride = getattr(remd, "reporter_stride", None)
+            eff_stride = int(
+                reporter_stride
+                if reporter_stride
+                else max(1, getattr(remd, "dcd_stride", 1))
+            )
+            production_steps = max(0, int(total_steps) - int(equil))
+            expected = max(1, production_steps // eff_stride)
+            if traj.n_frames >= expected:
+                return [str(demuxed)], [300.0]
+        except Exception:
+            pass
+
+    traj_files = [str(f) for f in remd.trajectory_files]
+    return traj_files, temperatures
+
+
+def analyze_msm(
+    trajectory_files: List[str],
+    topology_pdb: str | Path,
+    output_dir: str | Path,
+    feature_type: str = "phi_psi",
+    analysis_temperatures: Optional[List[float]] = None,
+    use_effective_for_uncertainty: bool = True,
+    use_tica: bool = True,
+) -> Path:
+    """Build and analyze an MSM, saving plots and artifacts.
+
+    Returns the analysis output directory.
+    """
+    msm_out = Path(output_dir) / "msm_analysis"
+
+    msm = MarkovStateModel(
+        trajectory_files=trajectory_files,
+        topology_file=str(topology_pdb),
+        temperatures=analysis_temperatures or [300.0],
+        output_dir=str(msm_out),
+    )
+    if use_effective_for_uncertainty:
+        msm.count_mode = "sliding"
+    msm.load_trajectories()
+    ft = feature_type
+    if use_tica and ("tica" not in feature_type.lower()):
+        ft = f"{feature_type}_tica"
+    msm.compute_features(feature_type=ft)
+
+    # Cluster
+    N_CLUSTERS = 8
+    msm.cluster_features(n_clusters=int(N_CLUSTERS))
+
+    # Method selection
+    method = (
+        "tram"
+        if analysis_temperatures
+        and len(analysis_temperatures) > 1
+        and len(trajectory_files) > 1
+        else "standard"
+    )
+
+    # ITS and lag selection
+    try:
+        total_frames = sum(t.n_frames for t in msm.trajectories)
+    except Exception:
+        total_frames = 0
+    max_lag = 250
+    try:
+        if total_frames > 0:
+            max_lag = int(min(500, max(150, total_frames // 5)))
+    except Exception:
+        max_lag = 250
+    candidate_lags = candidate_lag_ladder(min_lag=1, max_lag=max_lag)
+    msm.build_msm(lag_time=5, method=method)
+    msm.compute_implied_timescales(lag_times=candidate_lags, n_timescales=3)
+
+    chosen_lag = 10
+    try:
+        import numpy as _np  # type: ignore
+
+        lags = _np.array(msm.implied_timescales["lag_times"])  # type: ignore[index]
+        its = _np.array(msm.implied_timescales["timescales"])  # type: ignore[index]
+        scores: List[float] = []
+        for idx in range(len(lags)):
+            if idx == 0:
+                scores.append(float("inf"))
+                continue
+            prev = its[idx - 1]
+            cur = its[idx]
+            mask = _np.isfinite(prev) & _np.isfinite(cur) & (_np.abs(prev) > 0)
+            if _np.count_nonzero(mask) == 0:
+                scores.append(float("inf"))
+                continue
+            rel = float(_np.mean(_np.abs((cur[mask] - prev[mask]) / prev[mask])))
+            scores.append(rel)
+        start_idx = min(3, len(scores) - 1)
+        region = scores[start_idx:]
+        if region:
+            min_idx = int(_np.nanargmin(region)) + start_idx
+            chosen_lag = int(lags[min_idx])
+    except Exception:
+        chosen_lag = 10
+
+    msm.build_msm(lag_time=chosen_lag, method=method)
+
+    # CK tests, plots, representatives, FES
+    try:
+        msm.compute_ck_test_macrostates(n_macrostates=3, factors=[2, 3, 4])
+    except Exception:
+        pass
+    try:
+        msm.compute_ck_test_micro(factors=[2, 3, 4])
+    except Exception:
+        pass
+
+    try:
+        total_frames_fes = sum(t.n_frames for t in msm.trajectories)
+    except Exception:
+        total_frames_fes = 0
+    adaptive_bins = max(20, min(50, int((total_frames_fes or 0) ** 0.5))) or 20
+    msm.generate_free_energy_surface(
+        cv1_name="phi", cv2_name="psi", bins=int(adaptive_bins), temperature=300.0
+    )
+    msm.plot_free_energy_surface(save_file="free_energy_surface", interactive=False)
+    msm.plot_implied_timescales(save_file="implied_timescales")
+    msm.plot_free_energy_profile(save_file="free_energy_profile")
+    msm.create_state_table()
+    msm.extract_representative_structures(save_pdb=True)
+    msm.save_analysis_results()
+
+    return msm_out
+
+
+def find_conformations(
+    topology_pdb: str | Path,
+    trajectory_choice: str | Path,
+    output_dir: str | Path,
+    feature_specs: Optional[List[str]] = None,
+    requested_pair: Optional[Tuple[str, str]] = None,
+) -> Path:
+    """Find MSM- and FES-based representative conformations; save CSV/JSON and PDBs.
+
+    Returns the output directory path.
+    """
+    out = Path(output_dir)
+
+    traj = md.load(str(trajectory_choice), top=str(topology_pdb))
+
+    specs = feature_specs if feature_specs is not None else ["phi_psi"]
+    X, cols, periodic = compute_features(traj, feature_specs=specs)
+    Y = reduce_features(X, method="vamp", lag=10, n_components=3)
+    labels = cluster_microstates(Y, method="minibatchkmeans", n_clusters=8)
+
+    dtrajs = [labels]
+    observed_states = int(np.max(labels)) + 1 if labels.size else 0
+    T, pi = build_msm_from_labels(dtrajs, n_states=observed_states, lag=10)
+    macrostates = compute_macrostates(T, n_macrostates=4)
+    _ = save_transition_matrix_heatmap(T, str(out), name="transition_matrix.png")
+
+    items: List[dict] = []
+    if macrostates is not None:
+        macro_of_micro = macrostates
+        macro_per_frame = macro_of_micro[labels]
+        pi_macro = macrostate_populations(pi, macro_of_micro)
+        T_macro = macro_transition_matrix(T, pi, macro_of_micro)
+        mfpt = macro_mfpt(T_macro)
+
+        for macro_id in sorted(set(int(m) for m in macro_per_frame)):
+            idxs = np.where(macro_per_frame == macro_id)[0]
+            if idxs.size == 0:
+                continue
+            centroid = np.mean(Y[idxs], axis=0)
+            deltas = np.linalg.norm(Y[idxs] - centroid, axis=1)
+            best_local = int(idxs[int(np.argmin(deltas))])
+            best_local = int(best_local % max(1, traj.n_frames))
+            rep_path = out / f"macrostate_{macro_id:02d}_rep.pdb"
+            try:
+                traj[best_local].save_pdb(str(rep_path))
+            except Exception:
+                pass
+            items.append(
+                {
+                    "type": "MSM",
+                    "macrostate": int(macro_id),
+                    "representative_frame": int(best_local),
+                    "population": (
+                        float(pi_macro[macro_id])
+                        if pi_macro.size > macro_id
+                        else float("nan")
+                    ),
+                    "mfpt_to": {
+                        str(int(j)): float(mfpt[int(macro_id), int(j)])
+                        for j in range(mfpt.shape[1])
+                    },
+                    "rep_pdb": str(rep_path),
+                }
+            )
+
+    adaptive_bins = max(30, min(80, int((getattr(traj, "n_frames", 0) or 1) ** 0.5)))
+    fes_info = generate_fes_and_pick_minima(
+        X,
+        cols,
+        periodic,
+        requested_pair=requested_pair,
+        bins=(adaptive_bins, adaptive_bins),
+        temperature=300.0,
+        smoothing="cosine",
+        deltaF_kJmol=3.0,
+    )
+    names = fes_info["names"]
+    fes = fes_info["fes"]
+    minima = fes_info["minima"]
+    fname = f"fes_{sanitize_label_for_filename(names[0])}_vs_{sanitize_label_for_filename(names[1])}.png"
+    _ = save_fes_contour(
+        fes["F"], fes["xedges"], fes["yedges"], names[0], names[1], str(out), fname
+    )
+
+    for idx, entry in enumerate(minima.get("minima", [])):
+        frames = entry.get("frames", [])
+        if not frames:
+            continue
+        best_local = int(frames[0])
+        rep_path = out / f"state_{idx:02d}_rep.pdb"
+        try:
+            traj[best_local].save_pdb(str(rep_path))
+        except Exception:
+            pass
+        items.append(
+            {
+                "type": "FES_MIN",
+                "state": int(idx),
+                "representative_frame": int(best_local),
+                "num_frames": int(entry.get("num_frames", 0)),
+                "pair": {"x": names[0], "y": names[1]},
+                "rep_pdb": str(rep_path),
+            }
+        )
+
+    write_conformations_csv_json(str(out), items)
+    return out

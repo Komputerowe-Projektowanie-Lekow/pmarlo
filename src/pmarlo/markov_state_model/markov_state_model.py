@@ -507,8 +507,29 @@ class EnhancedMSM:
             self.dtrajs.append(labels[start_idx:end_idx])
             start_idx = end_idx
 
-        self.n_states = n_clusters
-        logger.info(f"Clustering completed: {n_clusters} states")
+        # Remap labels to contiguous states to drop empty clusters
+        try:
+            unique_states = np.unique(labels)
+            remap = {
+                int(old): int(new) for new, old in enumerate(sorted(unique_states))
+            }
+            if len(remap) != int(n_clusters):
+                logger.info(
+                    "Compressing %d clusters to %d observed states",
+                    int(n_clusters),
+                    len(remap),
+                )
+            # Apply remap to dtrajs
+            new_dtrajs: List[np.ndarray] = []
+            for dt in self.dtrajs:
+                new_dtrajs.append(np.array([remap[int(x)] for x in dt], dtype=int))
+            self.dtrajs = new_dtrajs
+            self.n_states = int(len(remap))
+        except Exception:
+            # Fallback: keep original labeling if remap fails
+            self.n_states = int(n_clusters)
+
+        logger.info(f"Clustering completed: {self.n_states} states")
 
     def build_msm(self, lag_time: int = 20, method: str = "standard"):
         """
@@ -1843,6 +1864,94 @@ class EnhancedMSM:
 
         plt.show()
 
+    def plot_ck_test(
+        self,
+        save_file: str = "ck_plot.png",
+        n_macrostates: int = 3,
+        factors: Optional[List[int]] = None,
+    ) -> Optional[Path]:
+        """Generate and save a CK (Chapman–Kolmogorov) test plot.
+
+        Preference order:
+        1) Use deeptime's ck_test and plotting utilities across lag multiples
+        2) Fallback to a macrostate-level bar plot of MSE vs factors
+        """
+        # Normalize filename
+        try:
+            out_path = self.output_dir / (
+                save_file
+                if str(save_file).lower().endswith(".png")
+                else f"{save_file}.png"
+            )
+        except Exception:
+            return None
+
+        # Attempt deeptime-based CK plot
+        try:
+            from deeptime.markov import TransitionCountEstimator  # type: ignore
+            from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
+            from deeptime.plots import plot_ck_test  # type: ignore
+            from deeptime.util.validation import ck_test  # type: ignore
+
+            base_lag = int(max(1, self.lag_time))
+            facs = (
+                [2, 3, 4]
+                if factors is None
+                else [int(f) for f in factors if int(f) > 1]
+            )
+            lags = [base_lag] + [base_lag * f for f in facs]
+
+            models = []
+            for L in lags:
+                tce = TransitionCountEstimator(
+                    lagtime=int(L), count_mode="sliding", sparse=False
+                )
+                C = tce.fit(self.dtrajs).fetch_model()
+                ml = MaximumLikelihoodMSM(reversible=True)
+                models.append(ml.fit(C).fetch_model())
+
+            ckobj = ck_test(models=models, n_metastable_sets=int(max(2, n_macrostates)))
+            import matplotlib.pyplot as _plt  # type: ignore
+
+            fig = plot_ck_test(ckobj)
+            fig.savefig(out_path, dpi=200)
+            _plt.close(fig)
+            logger.info(f"Saved CK test plot: {out_path}")
+            return out_path
+        except Exception:
+            pass
+
+        # Fallback: macrostate MSE bar plot
+        try:
+            facs = (
+                [2, 3, 4]
+                if factors is None
+                else [int(f) for f in factors if int(f) > 1]
+            )
+            results = self.compute_ck_test_macrostates(
+                n_macrostates=int(max(2, n_macrostates)), factors=facs
+            )
+            if not results:
+                return None
+            xs = [int(k) for k in results.keys()]
+            ys = [float(results[str(k)]) for k in xs]
+
+            plt.figure(figsize=(7, 5))
+            # Use numeric x values to avoid matplotlib categorical parsing warning
+            xvals = xs
+            plt.bar(xvals, ys, color="tab:orange", alpha=0.8, width=0.6)
+            plt.xticks(xvals, [str(x) for x in xs])
+            plt.xlabel("Lag multiple (k)")
+            plt.ylabel("MSE(T^k, T_empirical@k·lag)")
+            plt.title("Chapman–Kolmogorov test (macrostate)")
+            plt.tight_layout()
+            plt.savefig(out_path, dpi=200)
+            plt.close()
+            logger.info(f"Saved CK macrostate bar plot: {out_path}")
+            return out_path
+        except Exception:
+            return None
+
     # ---------------- Bayesian MSM uncertainty (deeptime) ----------------
 
     def sample_bayesian_timescales(
@@ -2119,3 +2228,29 @@ def _finalize_results_and_plots(msm: EnhancedMSM, fes_success: bool) -> None:
         logger.info("\u2713 Free energy profile plot saved")
     except Exception as e:
         logger.warning(f"\u26a0 Free energy profile plotting failed: {e}")
+    # CK diagnostics: persist JSON and plot (best-effort)
+    try:
+        macro_ck = None
+        micro_ck = None
+        try:
+            macro_ck = msm.compute_ck_test_macrostates(
+                n_macrostates=3, factors=[2, 3, 4]
+            )
+        except Exception:
+            macro_ck = None
+        try:
+            micro_ck = msm.compute_ck_test_micro(factors=[2, 3, 4])
+        except Exception:
+            micro_ck = None
+        try:
+            with open(msm.output_dir / "ck_tests.json", "w", encoding="utf-8") as f:
+                json.dump({"macro": macro_ck, "micro": micro_ck}, f, indent=2)
+        except Exception:
+            pass
+        try:
+            msm.plot_ck_test(save_file="ck_plot", n_macrostates=3, factors=[2, 3, 4])
+            logger.info("\u2713 CK test plot saved")
+        except Exception as e:
+            logger.warning(f"\u26a0 CK test plotting failed: {e}")
+    except Exception:
+        pass
