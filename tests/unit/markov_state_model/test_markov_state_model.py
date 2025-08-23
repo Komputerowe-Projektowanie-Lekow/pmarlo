@@ -56,14 +56,18 @@ def test_implied_timescales_lag_cap():
     dtraj = [0, 1, 0, 1, 0, 1]
     msm = _build_simple_msm(dtraj, lag_time=1, mode="sliding")
     msm.compute_implied_timescales(lag_times=[1, 300], n_timescales=2)
-    lags = msm.implied_timescales["lag_times"]
+    res = msm.implied_timescales
+    assert res is not None
+    lags = list(res.lag_times)
     assert all(lag_val <= 5 for lag_val in lags)
-    assert msm.implied_timescales["timescales"].shape[0] == len(lags)
+    assert res.timescales.shape[0] == len(lags)
 
 
 def test_implied_timescales_no_valid_lag():
     dtraj = [0, 1]
     msm = _build_simple_msm(dtraj, lag_time=1, mode="sliding")
     msm.compute_implied_timescales(lag_times=[5, 10], n_timescales=2)
-    assert msm.implied_timescales["lag_times"] == []
-    assert msm.implied_timescales["timescales"].size == 0
+    res = msm.implied_timescales
+    assert res is not None
+    assert res.lag_times.size == 0
+    assert res.timescales.size == 0
