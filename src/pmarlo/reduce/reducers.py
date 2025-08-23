@@ -5,61 +5,113 @@ from typing import List, Optional, cast
 import numpy as np
 
 
-def pca_reduce(X: np.ndarray, n_components: int = 2) -> np.ndarray:
-    """Simple PCA using SVD with mean-centering.
+def _preprocess(X: np.ndarray, scale: bool = True) -> np.ndarray:
+    """Center and optionally scale features in a NaN-safe manner."""
+    Xp = np.asarray(X, dtype=float)
+    mean = np.nanmean(Xp, axis=0, keepdims=True)
+    mean = np.nan_to_num(mean, nan=0.0)
+    Xp = np.nan_to_num(Xp - mean, nan=0.0)
+    if scale:
+        std = np.nanstd(Xp, axis=0, keepdims=True)
+        std = np.nan_to_num(std, nan=1.0)
+        std[std == 0] = 1.0
+        Xp = Xp / std
+    return np.nan_to_num(Xp, nan=0.0)
 
-    Returns projected data (n_frames, n_components).
+
+def pca_reduce(
+    X: np.ndarray,
+    n_components: int = 2,
+    batch_size: Optional[int] = None,
+    scale: bool = True,
+) -> np.ndarray:
+    """PCA reduction with optional batching and feature scaling.
+
+    Parameters
+    ----------
+    X: array-like, shape (n_frames, n_features)
+        Input data.
+    n_components: int, default=2
+        Number of principal components to keep.
+    batch_size: Optional[int]
+        If provided, use incremental PCA processing in chunks of this size.
+    scale: bool, default=True
+        When True, scale features to unit variance in addition to centering.
+
+    Returns
+    -------
+    np.ndarray, shape (n_frames, n_components)
+        Projected data.
     """
     if X.size == 0:
         return np.zeros((X.shape[0], n_components), dtype=float)
-    Xc = X - np.mean(X, axis=0, keepdims=True)
-    # Economy SVD
-    U, S, Vt = np.linalg.svd(Xc, full_matrices=False)
-    k = int(max(1, min(n_components, Vt.shape[0])))
-    return cast(np.ndarray, U[:, :k] @ np.diag(S[:k]))
+    Xp = _preprocess(X, scale=scale)
+    n_comp = int(max(1, n_components))
+    if batch_size is None or Xp.shape[0] <= batch_size:
+        # Economy SVD
+        U, S, Vt = np.linalg.svd(Xp, full_matrices=False)
+        k = int(min(n_comp, Vt.shape[0]))
+        return cast(np.ndarray, U[:, :k] @ np.diag(S[:k]))
+    from sklearn.decomposition import IncrementalPCA
+
+    ipca = IncrementalPCA(n_components=n_comp)
+    for start in range(0, Xp.shape[0], batch_size):
+        ipca.partial_fit(Xp[start : start + batch_size])
+    return cast(np.ndarray, ipca.transform(Xp))
 
 
-def tica_reduce(X: np.ndarray, lag: int = 10, n_components: int = 2) -> np.ndarray:
-    """TICA using deeptime when available; falls back to internal solver.
+def tica_reduce(
+    X: np.ndarray,
+    lag: int = 10,
+    n_components: int = 2,
+    batch_size: Optional[int] = None,
+    scale: bool = True,
+) -> np.ndarray:
+    """TICA reduction with optional batching and feature scaling.
 
-    - Returns projected data of shape (n_frames, n_components)
-    - Accepts a single time series X (n_frames, n_features)
+    Falls back to an internal generalized eigenvalue solver when deeptime is
+    unavailable. The input is always centered and optionally scaled in a
+    NaN-safe manner.
     """
     if X.size == 0:
         return np.zeros((X.shape[0], n_components), dtype=float)
+    Xp = _preprocess(X, scale=scale)
     # Prefer deeptime implementation for numerical stability and lag-aware behavior
     try:
         from deeptime.decomposition import TICA as _DT_TICA  # type: ignore
 
-        series: List[np.ndarray] = [np.asarray(X, dtype=float)]
+        series: List[np.ndarray] = [Xp]
         dim = int(max(1, n_components))
         model = _DT_TICA(lagtime=int(max(1, lag)), dim=dim).fit(series).fetch_model()
         Y_list = model.transform(series)
         Y = np.asarray(Y_list[0], dtype=float)
-        # Ensure exact component count
-        if Y.shape[1] != dim:
-            Y = (
-                Y[:, :dim]
-                if Y.shape[1] > dim
-                else np.pad(Y, ((0, 0), (0, dim - Y.shape[1])), mode="constant")
-            )
-        return Y
+        return _ensure_component_count(Y, dim)
     except Exception:
-        # Fallback: lightweight generalized eigenvalue approach
-        Xc = X - np.mean(X, axis=0, keepdims=True)
-        if Xc.shape[0] <= lag + 1:
-            return pca_reduce(Xc, n_components=n_components)
-        X0 = Xc[:-lag]
-        X1 = Xc[lag:]
-        C0 = X0.T @ X0
-        Ctau = X0.T @ X1
-        eps = 1e-6
-        C0 += eps * np.eye(C0.shape[0])
-        A = np.linalg.solve(C0, Ctau)
-        eigvals, eigvecs = np.linalg.eig(A)
-        order = np.argsort(-np.abs(eigvals))
-        W = np.real(eigvecs[:, order[: int(max(1, n_components))]])
-        return cast(np.ndarray, Xc @ W)
+        return _tica_fallback(Xp, lag, n_components, batch_size)
+
+
+def _tica_fallback(
+    X: np.ndarray, lag: int, n_components: int, batch_size: Optional[int]
+) -> np.ndarray:
+    """Internal TICA solver with batching support."""
+    if X.shape[0] <= lag + 1:
+        return pca_reduce(X, n_components=n_components)
+    C0 = np.zeros((X.shape[1], X.shape[1]))
+    Ctau = np.zeros_like(C0)
+    bs = batch_size or (X.shape[0] - lag)
+    for start in range(0, X.shape[0] - lag, bs):
+        end = min(X.shape[0] - lag, start + bs)
+        X0 = X[start:end]
+        X1 = X[start + lag : end + lag]
+        C0 += X0.T @ X0
+        Ctau += X0.T @ X1
+    eps = 1e-6
+    C0 += eps * np.eye(C0.shape[0])
+    A = np.linalg.solve(C0, Ctau)
+    eigvals, eigvecs = np.linalg.eig(A)
+    order = np.argsort(-np.abs(eigvals))
+    W = np.real(eigvecs[:, order[: int(max(1, n_components))]])
+    return cast(np.ndarray, X @ W)
 
 
 def vamp_reduce(
@@ -67,14 +119,17 @@ def vamp_reduce(
     lag: int = 10,
     n_components: int = 2,
     score_dims: Optional[List[int]] = None,
+    scale: bool = True,
 ) -> np.ndarray:
     """VAMP reduction using deeptime with optional dimension selection.
 
-    Falls back to PCA if deeptime is unavailable or errors.
+    Input data are centered and optionally scaled in a NaN-safe fashion. Falls
+    back to PCA if deeptime is unavailable or errors.
     """
     if X.size == 0:
         return np.zeros((X.shape[0], n_components), dtype=float)
-    series: List[np.ndarray] = [np.asarray(X, dtype=float)]
+    Xp = _preprocess(X, scale=scale)
+    series: List[np.ndarray] = [Xp]
     dim = int(max(1, n_components))
 
     # Try deeptime VAMP transform path
@@ -83,7 +138,7 @@ def vamp_reduce(
         Y = _vamp_transform(series, lag, dim)
         return _ensure_component_count(Y, dim)
     except Exception:
-        return pca_reduce(X, n_components=n_components)
+        return pca_reduce(Xp, n_components=n_components)
 
 
 def _vamp_select_dimension(

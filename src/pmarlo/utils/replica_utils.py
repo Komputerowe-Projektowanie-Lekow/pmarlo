@@ -29,23 +29,29 @@ def linear_temperature_ladder(
 
 def exponential_temperature_ladder(
     min_temp: float, max_temp: float, n_replicas: int
-) -> list[float]:
-    """Generate an exponentially spaced temperature ladder inclusive of bounds."""
-    if n_replicas < 1:
+) -> List[float]:
+    """Generate an exponentially spaced temperature ladder inclusive of bounds.
+
+    Uses :func:`numpy.geomspace` to ensure strictly monotonic spacing.
+    REMD requires positive temperatures, so both bounds must be > 0.
+    """
+    if n_replicas <= 0:
         raise ValueError("n_replicas must be positive")
     if n_replicas == 1:
         return [float(min_temp)]
+    if min_temp <= 0 or max_temp <= 0:
+        raise ValueError("Temperatures must be positive for exponential ladder")
+
     tmin, tmax = sorted((float(min_temp), float(max_temp)))
-    if tmin <= 0:
-        raise ValueError("Temperatures must be positive for exponential spacing")
+
     logger.debug(
         "Generating exponential ladder from %s to %s with %d replicas",
         tmin,
         tmax,
         n_replicas,
     )
-    ratios = np.arange(n_replicas) / (n_replicas - 1)
-    temps = tmin * (tmax / tmin) ** ratios
+
+    temps = np.geomspace(tmin, tmax, n_replicas)
     return [float(t) for t in temps]
 
 

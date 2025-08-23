@@ -202,3 +202,35 @@ class TestProteinIntegration:
 
         # Properties should be similar (allowing for small differences)
         assert abs(properties["num_atoms"] - properties2["num_atoms"]) < 100
+
+
+class TestProteinAdditional:
+    """Additional validation tests for Protein class."""
+
+    def test_invalid_ph(self, test_pdb_file):
+        """pH outside 0-14 should raise ValueError."""
+        with pytest.raises(ValueError, match="pH must be between"):
+            Protein(str(test_pdb_file), ph=20.0, auto_prepare=False)
+
+    def test_damaged_pdb_raises(self, damaged_pdb_file):
+        """Damaged PDB files should fail during parsing."""
+        with pytest.raises(ValueError):
+            Protein(str(damaged_pdb_file), auto_prepare=False)
+
+    def test_round_trip_io_without_preparation(self, test_pdb_file, temp_output_dir):
+        """Saving and reloading unprepared proteins should preserve topology."""
+        protein = Protein(str(test_pdb_file), auto_prepare=False)
+        out_file = temp_output_dir / "roundtrip.pdb"
+        protein.save(str(out_file))
+        protein2 = Protein(str(out_file), auto_prepare=False)
+        props1 = protein.get_properties()
+        props2 = protein2.get_properties()
+        assert props1["num_atoms"] == props2["num_atoms"]
+        assert props1["num_residues"] == props2["num_residues"]
+
+    def test_invalid_coordinates_detected(self, nan_pdb_file, skip_if_no_openmm):
+        """Protein initialization should fail on non-finite coordinates."""
+        if skip_if_no_openmm:
+            pytest.skip("OpenMM required")
+        with pytest.raises(ValueError, match="non-finite"):
+            Protein(str(nan_pdb_file), auto_prepare=False)
