@@ -16,6 +16,7 @@ from .replica_exchange.replica_exchange import ReplicaExchange
 from .simulation.simulation import Simulation
 from .utils.msm_utils import candidate_lag_ladder
 from .utils.replica_utils import power_of_two_temperature_ladder
+from .utils.seed import quiet_external_loggers
 
 __version__ = "0.1.0"
 __author__ = "PMARLO Development Team"
@@ -32,3 +33,6 @@ __all__ = [
     "power_of_two_temperature_ladder",
     "candidate_lag_ladder",
 ]
+
+# Reduce noise from third-party libraries upon import
+quiet_external_loggers()
