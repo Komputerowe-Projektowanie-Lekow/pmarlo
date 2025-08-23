@@ -877,7 +877,7 @@ class LegacyPipeline:
             trajectory_files=trajectory_files,
             topology_file=str(pdb_fixed_path),
             output_dir=str(msm_output_dir),
-            n_clusters=n_states,
+            n_states=n_states,
             lag_time=10,
             feature_type="phi_psi",
             temperatures=analysis_temperatures,
