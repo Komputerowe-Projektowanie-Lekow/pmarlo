@@ -114,13 +114,17 @@ class DistancePairFeature:
     def compute(self, traj: md.Trajectory, **kwargs) -> np.ndarray:
         i = int(kwargs.get("i", -1))
         j = int(kwargs.get("j", -1))
-        if i < 0 or j < 0:
-            self.labels = ["dist:atoms:-1--1"]
-            return np.zeros((traj.n_frames, 1), dtype=float)
+        n_atoms = traj.n_atoms
+        if not (0 <= i < n_atoms) or not (0 <= j < n_atoms):
+            raise ValueError("Atom indices out of range")
+
         pairs = [[i, j]]
         d = md.compute_distances(traj, pairs)
+        # Replace possible NaN/inf values produced by mdtraj with zeros to
+        # keep the feature array numerically stable.
+        np.nan_to_num(d, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
         self.labels = [f"dist:atoms:{i}-{j}"]
-        return cast(np.ndarray, d.astype(float))
+        return cast(np.ndarray, d.astype(float, copy=False))
 
     def is_periodic(self) -> np.ndarray:
         return self._periodic
@@ -262,11 +266,17 @@ class ContactsPairFeature:
         i = int(kwargs.get("i", -1))
         j = int(kwargs.get("j", -1))
         rcut = float(kwargs.get("rcut", 0.5))
-        if i < 0 or j < 0:
-            return np.zeros((traj.n_frames, 1), dtype=float)
+        n_atoms = traj.n_atoms
+        if rcut <= 0:
+            raise ValueError("rcut must be positive")
+        if not (0 <= i < n_atoms) or not (0 <= j < n_atoms):
+            raise ValueError("Atom indices out of range")
         pairs = [[i, j]]
         d = md.compute_distances(traj, pairs)
-        return cast(np.ndarray, (d < rcut).astype(float))
+        # NaNs in distances imply missing coordinates; treat them as infinite so
+        # that the contact is reported as absent.
+        np.nan_to_num(d, copy=False, nan=np.inf, posinf=np.inf, neginf=np.inf)
+        return cast(np.ndarray, (d <= rcut).astype(float, copy=False))
 
     def is_periodic(self) -> np.ndarray:
         return self._periodic
