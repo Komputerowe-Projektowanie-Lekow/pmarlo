@@ -93,9 +93,7 @@ class EnhancedMSM:
 
         # Estimation controls
         self.estimator_backend: str = "deeptime"  # or "pmarlo" for fallback/debug
-        self.count_mode: str = (
-            "sliding"  # "sliding" for ML; "effective" for uncertainty
-        )
+        self.count_mode: str = "sliding"  # "sliding" or "strided" counting
 
         # TRAM data
         self.tram_weights: Optional[np.ndarray] = None
@@ -531,14 +529,20 @@ class EnhancedMSM:
 
         logger.info(f"Clustering completed: {self.n_states} states")
 
-    def build_msm(self, lag_time: int = 20, method: str = "standard"):
-        """
-        Build Markov State Model from discrete trajectories.
+    def build_msm(self, lag_time: int = 20, method: str = "standard") -> None:
+        """Build Markov State Model from discrete trajectories.
 
-        Args:
-            lag_time: Lag time for transition counting
-            method: MSM method ('standard', 'tram')
+        Parameters
+        ----------
+        lag_time:
+            Lag time (in frames) used when counting transitions.  Values smaller
+            than one are treated as one to avoid degenerate estimates.
+        method:
+            MSM construction method.  ``"standard"`` uses a discrete-time MSM
+            and ``"tram"`` uses the TRAM estimator when multiple thermodynamic
+            ensembles are available.
         """
+        lag_time = int(max(1, lag_time))
         logger.info(f"Building MSM with lag time {lag_time} using {method} method...")
 
         self.lag_time = lag_time
@@ -600,24 +604,41 @@ class EnhancedMSM:
         except Exception as e:
             logger.warning(f"deeptime TICA failed ({e}); proceeding without TICA")
 
-    def _build_standard_msm(self, lag_time: int, count_mode: str = "sliding"):
-        """Build MSM using deeptime TCE+MLMSM when available, with safe fallback.
+    def _build_standard_msm(self, lag_time: int, count_mode: str = "sliding") -> None:
+        """Estimate transition counts and matrix for a discrete MSM.
 
-        count_mode: "sliding" for ML; use "effective" when estimating uncertainties.
+        Parameters
+        ----------
+        lag_time:
+            Lag time (in frames) for the transition counts.
+        count_mode:
+            ``"sliding"`` counts transitions between every consecutive frame
+            separated by ``lag_time`` while ``"strided"`` advances the starting
+            frame by ``lag_time`` after each counted transition.
         """
-        try:
-            from deeptime.markov import TransitionCountEstimator  # type: ignore
-            from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
 
-            # Estimate counts from discrete trajectories
+        use_deeptime = False
+        if self.estimator_backend == "deeptime":
+            try:  # pragma: no cover - exercised in environments with deeptime
+                from deeptime.markov import TransitionCountEstimator  # type: ignore
+                from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
+
+                use_deeptime = True
+            except Exception:  # pragma: no cover - import failure
+                use_deeptime = False
+
+        lag = int(max(1, lag_time))
+
+        if use_deeptime:
             tce = TransitionCountEstimator(
-                lagtime=int(max(1, lag_time)), count_mode=str(count_mode), sparse=False
+                lagtime=lag,
+                count_mode="sliding" if count_mode == "strided" else str(count_mode),
+                sparse=False,
             )
             count_model = tce.fit(self.dtrajs).fetch_model()
             C = np.asarray(count_model.count_matrix, dtype=float)
             self.count_matrix = C
 
-            # Fit reversible ML MSM
             ml = MaximumLikelihoodMSM(reversible=True)
             msm = ml.fit(count_model).fetch_model()
             self.transition_matrix = np.asarray(msm.transition_matrix, dtype=float)
@@ -629,39 +650,51 @@ class EnhancedMSM:
                     msm.stationary_distribution, dtype=float
                 )
             else:
-                # Fallback: eigenvector of T^T at eigenvalue 1
                 eigenvals, eigenvecs = np.linalg.eig(self.transition_matrix.T)
-                stationary_idx = np.argmax(np.real(eigenvals))
+                stationary_idx = int(np.argmin(np.abs(eigenvals - 1)))
                 stationary = np.real(eigenvecs[:, stationary_idx])
+                stationary = np.maximum(stationary, 0.0)
                 stationary = stationary / stationary.sum()
-                self.stationary_distribution = np.abs(stationary)
+                self.stationary_distribution = stationary
             return
-        except Exception:
-            # Fallback: previous internal counting and row-normalization
-            alpha: float = 2.0
-            counts: Dict[Tuple[int, int], float] = defaultdict(float)
-            for dtraj in self.dtrajs:
-                for i in range(len(dtraj) - lag_time):
-                    state_i = dtraj[i]
-                    state_j = dtraj[i + lag_time]
-                    counts[(state_i, state_j)] += 1.0
-            count_matrix = np.full((self.n_states, self.n_states), alpha, dtype=float)
-            for (i, j), count in counts.items():
-                count_matrix[i, j] += count
-            row_sums_tmp = count_matrix.sum(axis=1)
-            zero_row_indices = np.where(row_sums_tmp == 0)[0]
-            if zero_row_indices.size > 0:
-                for idx in zero_row_indices:
-                    count_matrix[idx, idx] = max(1.0, alpha)
-            self.count_matrix = count_matrix
-            row_sums = count_matrix.sum(axis=1)
-            row_sums[row_sums == 0] = 1
-            self.transition_matrix = count_matrix / row_sums[:, np.newaxis]
-            eigenvals, eigenvecs = np.linalg.eig(self.transition_matrix.T)
-            stationary_idx = np.argmax(np.real(eigenvals))
-            stationary = np.real(eigenvecs[:, stationary_idx])
-            stationary = stationary / stationary.sum()
-            self.stationary_distribution = np.abs(stationary)
+
+        # Manual fallback implementation -------------------------------------
+        alpha: float = 2.0
+        counts: Dict[Tuple[int, int], float] = defaultdict(float)
+        step = lag if count_mode == "strided" else 1
+        for dtraj in self.dtrajs:
+            if len(dtraj) <= lag:
+                continue
+            for i in range(0, len(dtraj) - lag, step):
+                state_i = int(dtraj[i])
+                state_j = int(dtraj[i + lag])
+                if state_i < 0 or state_j < 0:
+                    continue
+                if state_i >= self.n_states or state_j >= self.n_states:
+                    continue
+                counts[(state_i, state_j)] += 1.0
+
+        count_matrix = np.full((self.n_states, self.n_states), alpha, dtype=float)
+        for (i, j), count in counts.items():
+            count_matrix[i, j] += count
+
+        row_sums_tmp = count_matrix.sum(axis=1)
+        zero_row_indices = np.where(row_sums_tmp == 0)[0]
+        for idx in zero_row_indices:
+            count_matrix[idx, idx] = max(1.0, alpha)
+
+        self.count_matrix = count_matrix
+
+        row_sums = count_matrix.sum(axis=1)
+        row_sums[row_sums == 0] = 1.0
+        self.transition_matrix = count_matrix / row_sums[:, np.newaxis]
+
+        eigenvals, eigenvecs = np.linalg.eig(self.transition_matrix.T)
+        stationary_idx = int(np.argmin(np.abs(eigenvals - 1)))
+        stationary = np.real(eigenvecs[:, stationary_idx])
+        stationary = np.maximum(stationary, 0.0)
+        stationary = stationary / stationary.sum()
+        self.stationary_distribution = stationary
 
     def _build_tram_msm(self, lag_time: int):
         """Build MSM using deeptime TRAM for multi-ensemble data when available."""
