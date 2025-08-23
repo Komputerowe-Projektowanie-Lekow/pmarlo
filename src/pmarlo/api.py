@@ -9,6 +9,7 @@ import numpy as np
 from .cluster.micro import cluster_microstates as _cluster_microstates
 from .features import get_feature
 from .features.base import parse_feature_spec
+from .fes.surfaces import FESResult
 from .fes.surfaces import generate_2d_fes as _generate_2d_fes
 from .markov_state_model.markov_state_model import EnhancedMSM as MarkovStateModel
 from .reduce.reducers import pca_reduce, tica_reduce, vamp_reduce
@@ -126,10 +127,30 @@ def generate_free_energy_surface(
     temperature: float = 300.0,
     periodic: Tuple[bool, bool] = (False, False),
     smoothing: Optional[Literal["cosine"]] = None,
-) -> dict:
-    # Map smoothing flag to gaussian sigma; cosine placeholder maps to 0.6
+) -> FESResult:
+    """Generate a two-dimensional free-energy surface.
+
+    Parameters
+    ----------
+    cv1, cv2:
+        Collective variables of equal length.
+    bins:
+        Number of histogram bins along each dimension.
+    temperature:
+        Simulation temperature in Kelvin.
+    periodic:
+        Whether each collective variable is periodic.
+    smoothing:
+        Optional smoothing scheme; ``"cosine"`` maps to a Gaussian sigma of 0.6.
+
+    Returns
+    -------
+    FESResult
+        Dataclass containing free energies and histogram edges.
+    """
+
     sigma = 0.6 if smoothing == "cosine" else 0.6
-    out = _generate_2d_fes(
+    return _generate_2d_fes(
         cv1,
         cv2,
         bins=bins,
@@ -137,7 +158,6 @@ def generate_free_energy_surface(
         periodic=periodic,
         smoothing_sigma=sigma,
     )
-    return out
 
 
 def build_msm_from_labels(
@@ -313,7 +333,12 @@ def generate_fes_and_pick_minima(
         smoothing=smoothing,
     )
     minima = _pick_frames_around_minima(
-        cv1, cv2, fes["F"], fes["xedges"], fes["yedges"], deltaF_kJmol=deltaF_kJmol
+        cv1,
+        cv2,
+        fes.F,
+        fes.xedges,
+        fes.yedges,
+        deltaF_kJmol=deltaF_kJmol,
     )
     return {
         "i": int(i),

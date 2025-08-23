@@ -16,7 +16,7 @@ def _preprocess(X: np.ndarray, scale: bool = True) -> np.ndarray:
         std = np.nan_to_num(std, nan=1.0)
         std[std == 0] = 1.0
         Xp = Xp / std
-    return np.nan_to_num(Xp, nan=0.0)
+    return cast(np.ndarray, np.nan_to_num(Xp, nan=0.0))
 
 
 def pca_reduce(

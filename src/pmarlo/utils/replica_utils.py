@@ -4,7 +4,6 @@ import logging
 
 import numpy as np
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -29,7 +28,7 @@ def linear_temperature_ladder(
 
 def exponential_temperature_ladder(
     min_temp: float, max_temp: float, n_replicas: int
-) -> List[float]:
+) -> list[float]:
     """Generate an exponentially spaced temperature ladder inclusive of bounds.
 
     Uses :func:`numpy.geomspace` to ensure strictly monotonic spacing.
