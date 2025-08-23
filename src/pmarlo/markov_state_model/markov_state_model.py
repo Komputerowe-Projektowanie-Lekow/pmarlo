@@ -13,11 +13,12 @@ This module provides advanced MSM analysis capabilities including:
 - Comprehensive visualization
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import pickle
 import warnings
-from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union, Literal
 
@@ -30,6 +31,9 @@ from scipy.ndimage import gaussian_filter
 from scipy.sparse import csc_matrix, issparse, save_npz
 from sklearn.cluster import MiniBatchKMeans
 from ..cluster.micro import ClusteringResult, cluster_microstates
+
+from pmarlo.states.msm_bridge import _row_normalize, _stationary_from_T
+from pmarlo.utils.msm_utils import ensure_connected_counts
 
 logger = logging.getLogger("pmarlo")
 
@@ -602,13 +606,23 @@ class EnhancedMSM:
         if self.estimator_backend == "deeptime":
             try:  # pragma: no cover - exercised in environments with deeptime
                 from deeptime.markov import TransitionCountEstimator  # type: ignore
-                from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
 
                 use_deeptime = True
             except Exception:  # pragma: no cover - import failure
                 use_deeptime = False
 
         lag = int(max(1, lag_time))
+        max_valid_lag = min(len(dt) for dt in self.dtrajs) - 1 if self.dtrajs else 0
+        if lag > max_valid_lag and max_valid_lag > 0:
+            logger.warning(
+                "Lag %s exceeds max feasible %s; capping", lag, max_valid_lag
+            )
+            lag = max_valid_lag
+        if max_valid_lag < 1:
+            self.count_matrix = np.zeros((self.n_states, self.n_states), dtype=float)
+            self.transition_matrix = np.eye(self.n_states, dtype=float)
+            self.stationary_distribution = np.zeros((self.n_states,), dtype=float)
+            return
 
         if use_deeptime:
             tce = TransitionCountEstimator(
@@ -617,65 +631,38 @@ class EnhancedMSM:
                 sparse=False,
             )
             count_model = tce.fit(self.dtrajs).fetch_model()
-            C = np.asarray(count_model.count_matrix, dtype=float)
-            self.count_matrix = C
-
-            ml = MaximumLikelihoodMSM(reversible=True)
-            msm = ml.fit(count_model).fetch_model()
-            self.transition_matrix = np.asarray(msm.transition_matrix, dtype=float)
-            if (
-                hasattr(msm, "stationary_distribution")
-                and msm.stationary_distribution is not None
-            ):
-                self.stationary_distribution = np.asarray(
-                    msm.stationary_distribution, dtype=float
-                )
-            else:
-                eigenvals, eigenvecs = np.linalg.eig(self.transition_matrix.T)
-                stationary_idx = int(np.argmin(np.abs(eigenvals - 1)))
-                stationary = np.real(eigenvecs[:, stationary_idx])
-                stationary = np.maximum(stationary, 0.0)
-                stationary = stationary / stationary.sum()
-                self.stationary_distribution = stationary
-            return
-
-        # Manual fallback implementation -------------------------------------
-        alpha: float = 2.0
-        counts: Dict[Tuple[int, int], float] = defaultdict(float)
-        step = lag if count_mode == "strided" else 1
-        for dtraj in self.dtrajs:
-            if len(dtraj) <= lag:
-                continue
-            for i in range(0, len(dtraj) - lag, step):
-                state_i = int(dtraj[i])
-                state_j = int(dtraj[i + lag])
-                if state_i < 0 or state_j < 0:
+            counts = np.asarray(count_model.count_matrix, dtype=float)
+        else:
+            counts = np.zeros((self.n_states, self.n_states), dtype=float)
+            step = lag if count_mode == "strided" else 1
+            for dtraj in self.dtrajs:
+                if len(dtraj) <= lag:
                     continue
-                if state_i >= self.n_states or state_j >= self.n_states:
-                    continue
-                counts[(state_i, state_j)] += 1.0
+                for i in range(0, len(dtraj) - lag, step):
+                    state_i = int(dtraj[i])
+                    state_j = int(dtraj[i + lag])
+                    if state_i < 0 or state_j < 0:
+                        continue
+                    if state_i >= self.n_states or state_j >= self.n_states:
+                        continue
+                    counts[state_i, state_j] += 1.0
 
-        count_matrix = np.full((self.n_states, self.n_states), alpha, dtype=float)
-        for (i, j), count in counts.items():
-            count_matrix[i, j] += count
+        res = ensure_connected_counts(counts)
+        self.count_matrix = np.zeros((self.n_states, self.n_states), dtype=float)
+        if res.counts.size:
+            self.count_matrix[np.ix_(res.active, res.active)] = res.counts
+            T_active = _row_normalize(res.counts)
+            pi_active = _stationary_from_T(T_active)
+            T_full = np.eye(self.n_states, dtype=float)
+            T_full[np.ix_(res.active, res.active)] = T_active
+            pi_full = np.zeros((self.n_states,), dtype=float)
+            pi_full[res.active] = pi_active
+        else:
+            T_full = np.eye(self.n_states, dtype=float)
+            pi_full = np.zeros((self.n_states,), dtype=float)
 
-        row_sums_tmp = count_matrix.sum(axis=1)
-        zero_row_indices = np.where(row_sums_tmp == 0)[0]
-        for idx in zero_row_indices:
-            count_matrix[idx, idx] = max(1.0, alpha)
-
-        self.count_matrix = count_matrix
-
-        row_sums = count_matrix.sum(axis=1)
-        row_sums[row_sums == 0] = 1.0
-        self.transition_matrix = count_matrix / row_sums[:, np.newaxis]
-
-        eigenvals, eigenvecs = np.linalg.eig(self.transition_matrix.T)
-        stationary_idx = int(np.argmin(np.abs(eigenvals - 1)))
-        stationary = np.real(eigenvecs[:, stationary_idx])
-        stationary = np.maximum(stationary, 0.0)
-        stationary = stationary / stationary.sum()
-        self.stationary_distribution = stationary
+        self.transition_matrix = T_full
+        self.stationary_distribution = pi_full
 
     def _build_tram_msm(self, lag_time: int):
         """Build MSM using deeptime TRAM for multi-ensemble data when available."""
@@ -776,6 +763,24 @@ class EnhancedMSM:
         logger.info("Computing implied timescales...")
 
         lag_times = self._its_default_lag_times(lag_times)
+        max_valid_lag = min(len(dt) for dt in self.dtrajs) - 1 if self.dtrajs else 0
+        if max_valid_lag < 1:
+            logger.warning("Trajectories too short for implied timescales")
+            self.implied_timescales = {
+                "lag_times": [],
+                "timescales": np.empty((0, n_timescales)),
+            }
+            return
+        if any(lag_val > max_valid_lag for lag_val in lag_times):
+            logger.warning("Capping lag times above max_valid_lag=%s", max_valid_lag)
+            lag_times = [lag_val for lag_val in lag_times if lag_val <= max_valid_lag]
+        if not lag_times:
+            self.implied_timescales = {
+                "lag_times": [],
+                "timescales": np.empty((0, n_timescales)),
+            }
+            return
+
         timescales_data: List[List[float]] = []
 
         for lag in lag_times:
@@ -800,32 +805,24 @@ class EnhancedMSM:
     ) -> Optional[List[float]]:
         try:
             from deeptime.markov import TransitionCountEstimator  # type: ignore
-            from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
 
             tce = TransitionCountEstimator(
                 lagtime=int(max(1, lag)), count_mode="sliding", sparse=False
             )
-            C = tce.fit(self.dtrajs).fetch_model()
-            ml = MaximumLikelihoodMSM(reversible=True)
-            msm = ml.fit(C).fetch_model()
-            return self._its_extract_timescales_from_model(msm, lag, n_timescales)
+            C = np.asarray(tce.fit(self.dtrajs).fetch_model().count_matrix, dtype=float)
+            res = ensure_connected_counts(C)
+            if res.counts.size == 0:
+                return []
+            T = _row_normalize(res.counts)
+            eigenvals = np.real(np.linalg.eigvals(T))
+            eigenvals = np.sort(eigenvals)[::-1]
+            ts_row: List[float] = []
+            for i in range(1, min(n_timescales + 1, len(eigenvals))):
+                if 0.0 < eigenvals[i] < 1.0:
+                    ts_row.append(-lag / np.log(eigenvals[i]))
+            return ts_row
         except Exception:
             return None
-
-    def _its_extract_timescales_from_model(
-        self, msm: Any, lag: int, n_timescales: int
-    ) -> List[float]:
-        ts_row: List[float] = []
-        try:
-            ts = list(msm.timescales(k=int(n_timescales)))  # type: ignore[attr-defined]
-            ts_row = [float(v) for v in ts]
-        except Exception:
-            evals = np.real(np.linalg.eigvals(np.asarray(msm.transition_matrix)))
-            evals = np.sort(evals)[::-1]
-            for i in range(1, min(n_timescales + 1, len(evals))):
-                if 0.0 < evals[i] < 1.0:
-                    ts_row.append(-lag / np.log(evals[i]))
-        return ts_row
 
     def _its_fallback_timescales(self, lag: int, n_timescales: int) -> List[float]:
         ts_row: List[float] = []
