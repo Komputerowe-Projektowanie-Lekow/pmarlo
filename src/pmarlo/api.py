@@ -9,7 +9,7 @@ import numpy as np
 from .cluster.micro import cluster_microstates as _cluster_microstates
 from .features import get_feature
 from .features.base import parse_feature_spec
-from .fes.surfaces import generate_2d_fes as _generate_2d_fes
+from .fes.surfaces import FESResult, generate_2d_fes as _generate_2d_fes
 from .markov_state_model.markov_state_model import EnhancedMSM as MarkovStateModel
 from .reduce.reducers import pca_reduce, tica_reduce, vamp_reduce
 from .replica_exchange.config import RemdConfig
@@ -97,10 +97,38 @@ def reduce_features(
 
 def cluster_microstates(
     Y: np.ndarray,
-    method: Literal["minibatchkmeans", "kmeans"] = "minibatchkmeans",
+    method: Literal["minibatchkmeans", "kmeans"] = "kmeans",
+    n_states: int | Literal["auto"] = "auto",
+    random_state: int = 42,
     **kwargs,
 ) -> np.ndarray:
-    return _cluster_microstates(Y, method=method, **kwargs)
+    """Public wrapper around :func:`cluster.micro.cluster_microstates`.
+
+    Parameters
+    ----------
+    Y:
+        Reduced feature array.
+    method:
+        Clustering algorithm to use.
+    n_states:
+        Number of states or ``"auto"`` to select via silhouette.
+    random_state:
+        Seed for deterministic clustering.
+
+    Returns
+    -------
+    np.ndarray
+        Integer labels per frame.
+    """
+
+    result = _cluster_microstates(
+        Y,
+        method=method,
+        n_states=n_states,
+        random_state=random_state,
+        **kwargs,
+    )
+    return result.labels
 
 
 def generate_free_energy_surface(
@@ -110,7 +138,29 @@ def generate_free_energy_surface(
     temperature: float = 300.0,
     periodic: Tuple[bool, bool] = (False, False),
     smoothing: Optional[Literal["cosine"]] = None,
-) -> dict:
+) -> FESResult:
+    """Generate a 2D free-energy surface.
+
+    Parameters
+    ----------
+    cv1, cv2
+        Collective variable samples.
+    bins
+        Number of histogram bins in ``(x, y)``.
+    temperature
+        Simulation temperature in Kelvin.
+    periodic
+        Flags indicating whether each dimension is periodic.
+    smoothing
+        Placeholder smoothing option; currently only ``"cosine"`` is
+        recognised.
+
+    Returns
+    -------
+    FESResult
+        Dataclass containing the free-energy surface and bin edges.
+    """
+
     # Map smoothing flag to gaussian sigma; cosine placeholder maps to 0.6
     sigma = 0.6 if smoothing == "cosine" else 0.6
     out = _generate_2d_fes(
@@ -297,7 +347,7 @@ def generate_fes_and_pick_minima(
         smoothing=smoothing,
     )
     minima = _pick_frames_around_minima(
-        cv1, cv2, fes["F"], fes["xedges"], fes["yedges"], deltaF_kJmol=deltaF_kJmol
+        cv1, cv2, fes.F, fes.xedges, fes.yedges, deltaF_kJmol=deltaF_kJmol
     )
     return {
         "i": int(i),
@@ -376,10 +426,33 @@ def analyze_msm(
     analysis_temperatures: Optional[List[float]] = None,
     use_effective_for_uncertainty: bool = True,
     use_tica: bool = True,
+    random_state: int = 42,
 ) -> Path:
     """Build and analyze an MSM, saving plots and artifacts.
 
-    Returns the analysis output directory.
+    Parameters
+    ----------
+    trajectory_files:
+        Trajectory file paths.
+    topology_pdb:
+        Topology in PDB format.
+    output_dir:
+        Destination directory.
+    feature_type:
+        Feature specification string.
+    analysis_temperatures:
+        Optional list of temperatures for analysis.
+    use_effective_for_uncertainty:
+        Whether to use effective counts for uncertainty.
+    use_tica:
+        Whether to apply TICA reduction.
+    random_state:
+        Seed for deterministic clustering.
+
+    Returns
+    -------
+    Path
+        The analysis output directory.
     """
     msm_out = Path(output_dir) / "msm_analysis"
 
@@ -388,6 +461,7 @@ def analyze_msm(
         topology_file=str(topology_pdb),
         temperatures=analysis_temperatures or [300.0],
         output_dir=str(msm_out),
+        random_state=random_state,
     )
     if use_effective_for_uncertainty:
         msm.count_mode = "sliding"
@@ -399,7 +473,7 @@ def analyze_msm(
 
     # Cluster
     N_CLUSTERS = 8
-    msm.cluster_features(n_clusters=int(N_CLUSTERS))
+    msm.cluster_features(n_states=int(N_CLUSTERS))
 
     # Method selection
     method = (
@@ -500,7 +574,7 @@ def find_conformations(
     specs = feature_specs if feature_specs is not None else ["phi_psi"]
     X, cols, periodic = compute_features(traj, feature_specs=specs)
     Y = reduce_features(X, method="vamp", lag=10, n_components=3)
-    labels = cluster_microstates(Y, method="minibatchkmeans", n_clusters=8)
+    labels = cluster_microstates(Y, method="minibatchkmeans", n_states=8)
 
     dtrajs = [labels]
     observed_states = int(np.max(labels)) + 1 if labels.size else 0
@@ -563,7 +637,7 @@ def find_conformations(
     minima = fes_info["minima"]
     fname = f"fes_{sanitize_label_for_filename(names[0])}_vs_{sanitize_label_for_filename(names[1])}.png"
     _ = save_fes_contour(
-        fes["F"], fes["xedges"], fes["yedges"], names[0], names[1], str(out), fname
+        fes.F, fes.xedges, fes.yedges, names[0], names[1], str(out), fname
     )
 
     for idx, entry in enumerate(minima.get("minima", [])):
