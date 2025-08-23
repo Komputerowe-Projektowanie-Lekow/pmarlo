@@ -16,6 +16,7 @@ from .replica_exchange.replica_exchange import ReplicaExchange
 from .simulation.simulation import Simulation
 from .utils.msm_utils import candidate_lag_ladder
 from .utils.replica_utils import power_of_two_temperature_ladder
+from .utils.seed import set_global_seed
 
 __version__ = "0.1.0"
 __author__ = "PMARLO Development Team"
@@ -31,4 +32,5 @@ __all__ = [
     "LegacyPipeline",
     "power_of_two_temperature_ladder",
     "candidate_lag_ladder",
+    "set_global_seed",
 ]

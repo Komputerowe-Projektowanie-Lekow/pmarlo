@@ -30,7 +30,7 @@ from scipy.ndimage import gaussian_filter
 from scipy.sparse import csc_matrix, issparse, save_npz
 from sklearn.cluster import MiniBatchKMeans
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("pmarlo")
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -462,13 +462,19 @@ class EnhancedMSM:
         if self.features is not None:
             logger.info(f"Features computed: {self.features.shape}")
 
-    def cluster_features(self, n_clusters: int = 100, algorithm: str = "kmeans"):
-        """
-        Cluster features to create discrete states.
+    def cluster_features(
+        self,
+        n_clusters: int = 100,
+        algorithm: str = "kmeans",
+        random_state: int | None = 42,
+    ) -> None:
+        """Cluster features to create discrete states.
 
         Args:
-            n_clusters: Number of clusters (states)
-            algorithm: Clustering algorithm ('kmeans', 'gmm')
+            n_clusters: Number of clusters (states).
+            algorithm: Clustering algorithm (currently only ``"kmeans"``).
+            random_state: Seed for the clustering estimator. ``None`` uses
+                scikit-learn's global RNG state.
         """
         logger.info(
             f"Clustering features into {n_clusters} states using {algorithm}..."
@@ -491,7 +497,9 @@ class EnhancedMSM:
             n_clusters = 10
 
         if algorithm == "kmeans":
-            clusterer = MiniBatchKMeans(n_clusters=n_clusters, random_state=42)
+            clusterer = MiniBatchKMeans(
+                n_clusters=n_clusters, random_state=random_state
+            )
             labels = clusterer.fit_predict(self.features)
             self.cluster_centers = clusterer.cluster_centers_
         else:

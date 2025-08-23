@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-import random
 from pathlib import Path
 from typing import Union
 
-import numpy as np
+from ..utils.seed import set_global_seed
 
 
 def timestamp_dir(base_dir: Union[str, Path]) -> Path:
@@ -31,9 +30,8 @@ def tests_data_dir() -> Path:
 
 
 def set_seed(seed: int | None) -> None:
-    """Seed Python and NumPy RNGs for experiment reproducibility."""
+    """Seed RNGs for experiment reproducibility."""
 
     if seed is None:
         return
-    random.seed(int(seed))
-    np.random.seed(int(seed))
+    set_global_seed(int(seed))

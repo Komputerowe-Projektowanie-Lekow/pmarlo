@@ -31,7 +31,7 @@ from .system_builder import (
 )
 from .trajectory import ClosableDCDReporter
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("pmarlo")
 
 
 class ReplicaExchange:
@@ -53,7 +53,8 @@ class ReplicaExchange:
         dcd_stride: int = 1,
         config: Optional[RemdConfig] = None,
         random_seed: Optional[int] = None,
-    ):  # Explicit opt-in for auto-setup
+        random_state: int | None = None,
+    ):
         """
         Initialize the replica exchange simulation.
 
@@ -64,6 +65,8 @@ class ReplicaExchange:
             output_dir: Directory to store output files
             exchange_frequency: Number of steps between exchange attempts
             auto_setup: Whether to automatically set up replicas during initialization
+            random_seed: Deprecated; use ``random_state``
+            random_state: Seed for stochastic components
         """
         self.pdb_file = pdb_file
         self.forcefield_files = forcefield_files or [
@@ -93,15 +96,22 @@ class ReplicaExchange:
                 )
             except Exception:
                 self.frames_per_replica_target = None
-        self.random_seed: int = (
-            int(getattr(config, "random_seed", 0))
-            if (config and getattr(config, "random_seed", None) is not None)
-            else (
-                int(random_seed)
-                if random_seed is not None
-                else (int.from_bytes(os.urandom(8), "little") & 0x7FFFFFFF)
-            )
-        )
+        if (
+            random_state is not None
+            and random_seed is not None
+            and random_state != random_seed
+        ):
+            logger.warning("random_state overrides random_seed when both are provided")
+        seed_source: Optional[int] = None
+        if random_state is not None:
+            seed_source = int(random_state)
+        elif config and getattr(config, "random_seed", None) is not None:
+            seed_source = int(getattr(config, "random_seed"))
+        elif random_seed is not None:
+            seed_source = int(random_seed)
+        else:
+            seed_source = int.from_bytes(os.urandom(8), "little") & 0x7FFFFFFF
+        self.random_seed = int(seed_source)
         self.rng = np.random.default_rng(self.random_seed)
 
         # Initialize replicas - Fixed: Added proper type annotations
@@ -174,6 +184,7 @@ class ReplicaExchange:
             dcd_stride=config.dcd_stride,
             config=config,
             random_seed=getattr(config, "random_seed", None),
+            random_state=getattr(config, "random_state", None),
         )
 
     def plan_reporter_stride(
@@ -1445,9 +1456,8 @@ class ReplicaExchange:
 
         # Effective equilibration steps actually integrated (heating + temp equil)
         if equilibration_steps > 0:
-            effective_equil_steps = (
-                max(100, equilibration_steps * 40 // 100)
-                + max(100, equilibration_steps * 60 // 100)
+            effective_equil_steps = max(100, equilibration_steps * 40 // 100) + max(
+                100, equilibration_steps * 60 // 100
             )
         else:
             effective_equil_steps = 0

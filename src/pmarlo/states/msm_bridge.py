@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple, cast
 import json
 import numpy as np
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("pmarlo")
 
 
 def build_simple_msm(
@@ -100,11 +100,7 @@ def _stationary_from_model_or_T(msm: object, T: np.ndarray) -> np.ndarray:
 def _fit_msm_fallback(
     dtrajs: List[np.ndarray], n_states: int, lag: int
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    This function is used to fit the MSM using the fallback method.
-    It uses the Dirichlet-regularized ML counts to estimate the transition matrix,
-    and the stationary distribution is computed from the transition matrix.
-    """
+    """Fit an MSM using a simple Dirichlet-regularized count matrix."""
     counts: Dict[Tuple[int, int], float] = defaultdict(float)
     alpha = 2.0
     for dtraj in dtrajs:
@@ -119,8 +115,8 @@ def _fit_msm_fallback(
         C[i, j] += c
     T = _row_normalize(C)
     pi = _stationary_from_T(T)
-    print(f"fit_msm_fallback: Transition matrix shape: {T.shape}")
-    print(f"fit_msm_fallback: Stationary distribution shape: {pi.shape}")
+    logger.info("fit_msm_fallback: Transition matrix shape: %s", T.shape)
+    logger.info("fit_msm_fallback: Stationary distribution shape: %s", pi.shape)
     return T, pi
 
 
@@ -142,10 +138,19 @@ def _stationary_from_T(T: np.ndarray) -> np.ndarray:
 
 
 def pcca_like_macrostates(
-    T: np.ndarray, n_macrostates: int = 4, random_state: int = 42
+    T: np.ndarray, n_macrostates: int = 4, random_state: int | None = 42
 ) -> Optional[np.ndarray]:
-    """Compute metastable sets using PCCA+ (deeptime), fallback to k-means on eigenvectors.
-    Returns hard labels per microstate.
+    """Compute metastable sets via PCCA+ or spectral k-means fallback.
+
+    Args:
+        T: Microstate transition matrix.
+        n_macrostates: Desired number of macrostates.
+        random_state: Seed for the k-means fallback. ``None`` uses scikit-learn's
+            global RNG state.
+
+    Returns:
+        Hard macrostate labels for each microstate or ``None`` if decomposition
+        fails.
     """
     if T.size == 0 or T.shape[0] <= n_macrostates:
         return None
@@ -185,7 +190,7 @@ def _canonicalize_macro_labels(labels: np.ndarray, T: np.ndarray) -> np.ndarray:
     unique = np.unique(labels)
     order = np.argsort(-pops[unique])
     mapping = {int(unique[idx]): int(i) for i, idx in enumerate(order)}
-    return np.asarray([mapping[int(l)] for l in labels], dtype=int)
+    return np.asarray([mapping[int(label)] for label in labels], dtype=int)
 
 
 def compute_macro_populations(

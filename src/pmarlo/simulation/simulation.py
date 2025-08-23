@@ -10,6 +10,7 @@ system preparation.
 
 from collections import defaultdict
 
+import logging
 import mdtraj as md
 import numpy as np
 import openmm
@@ -26,14 +27,13 @@ try:
 except ImportError:
     PDBFixer = None
     HAS_PDBFIXER = False
-import logging
 import os
 from pathlib import Path
 from typing import Optional, Tuple
 
 import matplotlib.pyplot as plt
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("pmarlo")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 TESTS_DIR = BASE_DIR / "tests" / "data"
@@ -55,6 +55,7 @@ class Simulation:
         use_metadynamics: bool = True,
         dcd_stride: int = 1000,
         random_seed: Optional[int] = None,
+        random_state: int | None = None,
     ):
         """
         Initialize the Simulation.
@@ -65,7 +66,8 @@ class Simulation:
             steps: Number of production steps
             output_dir: Directory for output files
             use_metadynamics: Whether to use metadynamics biasing
-            random_seed: Seed for deterministic integrator behaviour
+            random_seed: Deprecated; use ``random_state``
+            random_state: Seed for deterministic integrator behaviour
         """
         self.pdb_file = pdb_file
         self.temperature = temperature
@@ -73,7 +75,13 @@ class Simulation:
         self.output_dir = Path(output_dir)
         self.use_metadynamics = use_metadynamics
         self.dcd_stride = dcd_stride
-        self.random_seed = random_seed
+        if (
+            random_state is not None
+            and random_seed is not None
+            and random_state != random_seed
+        ):
+            logger.warning("random_state overrides random_seed when both are provided")
+        self.random_seed = random_state if random_state is not None else random_seed
 
         # OpenMM objects
         self.openmm_simulation = None
@@ -157,7 +165,7 @@ def prepare_system(
         pdb, system, integrator, platform, platform_properties
     )
     _minimize_and_equilibrate(simulation)
-    print("✔ Build & equilibration complete\n")
+    logger.info("✔ Build & equilibration complete")
     return simulation, meta
 
 
@@ -321,7 +329,7 @@ def _minimize_and_equilibrate(simulation: app.Simulation) -> None:
 
 
 def _print_production_stage_start() -> None:
-    print("Stage 3/5  –  production run...")
+    logger.info("Stage 3/5  –  production run...")
 
 
 def _resolve_output_dir(output_dir: Optional[Path]) -> Path:
@@ -390,8 +398,10 @@ def _save_bias_if_present(
     bias_array = np.array(bias_list)
     bias_file = output_dir / "bias_for_run.npy"
     np.save(str(bias_file), bias_array)
-    print(
-        f"[INFO] Saved bias array for this run to {bias_file} (length: {len(bias_array)})"
+    logger.info(
+        "Saved bias array for this run to %s (length: %s)",
+        bias_file,
+        len(bias_array),
     )
 
 
@@ -416,7 +426,7 @@ def production_run(steps, simulation, meta, output_dir=None):
         bias_list = []
 
     _save_final_state(simulation, out_dir)
-    print("✔ MD + biasing finished\n")
+    logger.info("✔ MD + biasing finished")
 
     _cleanup_dcd(simulation, dcd_reporter)
     _save_bias_if_present(meta, bias_list, out_dir)
@@ -426,11 +436,11 @@ def production_run(steps, simulation, meta, output_dir=None):
 
 def feature_extraction(dcd_path, pdb_path):
     """Extract features from trajectory for MSM analysis."""
-    print("Stage 4/5  –  featurisation + clustering ...")
+    logger.info("Stage 4/5  –  featurisation + clustering ...")
 
     # Load the trajectory and compute φ dihedral angles
     t = md.load(dcd_path, top=pdb_path)
-    print("Number of frames loaded:", t.n_frames)
+    logger.info("Number of frames loaded: %s", t.n_frames)
     phi_vals, _ = md.compute_phi(t)
     phi_vals = phi_vals.squeeze()
     X = np.cos(phi_vals)
@@ -438,13 +448,13 @@ def feature_extraction(dcd_path, pdb_path):
 
     kmeans = MiniBatchKMeans(n_clusters=40, random_state=0).fit(X)
     states = kmeans.labels_
-    print("✔ Clustering done\n")
+    logger.info("✔ Clustering done")
     return states
 
 
 def build_transition_model(states, bias=None):
     """Build transition model from clustered states."""
-    print("Stage 5/5  –  Markov model ...")
+    logger.info("Stage 5/5  –  Markov model ...")
 
     tau = 20  # frames → 40 ps
     C = defaultdict(float)
@@ -477,7 +487,7 @@ def build_transition_model(states, bias=None):
     pi /= pi.sum()
     DG = -kT * np.log(pi)  # 0.593 kcal/mol ≈ kT at 300 K
 
-    print("✔ Finished – free energies (kcal/mol) written to DG array")
+    logger.info("✔ Finished – free energies (kcal/mol) written to DG array")
     return DG
 
 
