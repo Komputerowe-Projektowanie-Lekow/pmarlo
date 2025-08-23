@@ -18,6 +18,13 @@ import openmm.unit as unit
 from openmm.app.metadynamics import BiasVariable, Metadynamics
 from sklearn.cluster import MiniBatchKMeans
 
+# Compatibility shim for OpenMM XML deserialization API changes
+if not hasattr(openmm.XmlSerializer, "load"):
+    # Older OpenMM releases expose ``deserialize`` instead of ``load``.
+    # Provide a small alias so downstream code can rely on ``load``
+    # regardless of the installed OpenMM version.
+    openmm.XmlSerializer.load = openmm.XmlSerializer.deserialize  # type: ignore[attr-defined]
+
 # PDBFixer is optional - users can install with: pip install "pmarlo[fixer]"
 try:
     from pdbfixer import PDBFixer
@@ -32,6 +39,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 import matplotlib.pyplot as plt
+from pmarlo.utils.seed import set_global_seed
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +85,8 @@ class Simulation:
         self.use_metadynamics = use_metadynamics
         self.dcd_stride = dcd_stride
         self.random_seed = random_state if random_state is not None else random_seed
+        if self.random_seed is not None:
+            set_global_seed(int(self.random_seed))
 
         # OpenMM objects
         self.openmm_simulation = None
