@@ -20,19 +20,43 @@ FEATURE_REGISTRY: Dict[str, FeatureComputer] = {}
 
 
 def register_feature(fc: FeatureComputer) -> None:
-    FEATURE_REGISTRY[fc.name] = fc
+    """Register a feature implementation.
+
+    The registry is case-insensitive to make user-provided specifications
+    robust to capitalization.  Only a single instance is stored per feature
+    name to avoid unnecessary copies.
+    """
+
+    FEATURE_REGISTRY[fc.name.lower()] = fc
 
 
 def get_feature(name: str) -> FeatureComputer:
-    if name not in FEATURE_REGISTRY:
+    """Retrieve a registered feature implementation by name.
+
+    Parameters
+    ----------
+    name:
+        Name of the feature.  Lookup is case-insensitive.
+    """
+
+    key = name.lower()
+    if key not in FEATURE_REGISTRY:
         raise KeyError(f"Feature '{name}' is not registered")
-    return FEATURE_REGISTRY[name]
+    return FEATURE_REGISTRY[key]
 
 
 def _normalize_and_split_feature_spec(s: str) -> Tuple[str, str | None]:
+    """Normalize a feature specification string.
+
+    This helper normalizes the prefix of the specification to lower case so
+    that both namespaced (e.g. ``"dist:AtomPair"``) and simple names
+    (e.g. ``"Rg"``) can be resolved in a case-insensitive manner.
+    """
+
     s = s.strip()
     if ":" not in s:
-        return s, None
+        # Simple feature name
+        return s.lower(), None
     prefix_local, rest_local = s.split(":", 1)
     return prefix_local.strip().lower(), rest_local.strip()
 
@@ -94,8 +118,8 @@ def parse_feature_spec(spec: str) -> Tuple[str, Dict[str, Any]]:
     if prefix in {"ssfrac", "secondary"}:
         return "ssfrac", {}
 
-    # Default: return as-is
-    return spec.strip(), {}
+    # Default: return normalized original spec (preserve unknown namespaces)
+    return spec.strip().lower(), {}
 
 
 def _parse_name_args(s: str) -> Tuple[str, Tuple[str, ...]]:
