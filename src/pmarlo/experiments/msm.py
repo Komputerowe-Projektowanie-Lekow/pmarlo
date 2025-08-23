@@ -55,7 +55,7 @@ def _perform_msm_analysis_with_tracking(config: MSMConfig, run_dir: Path):
             trajectory_files=config.trajectory_files,
             topology_file=config.topology_file,
             output_dir=str(run_dir / "msm"),
-            n_clusters=config.n_clusters,
+            n_states=config.n_clusters,
             lag_time=config.lag_time,
             feature_type=config.feature_type,
             temperatures=config.temperatures,

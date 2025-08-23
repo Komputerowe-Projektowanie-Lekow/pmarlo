@@ -94,7 +94,7 @@ def run_conformation_finder(
     X, cols, periodic = api.compute_features(traj, feature_specs=specs)
     # Try VAMP for robustness; fallback remains in api if unavailable
     Y = api.reduce_features(X, method="vamp", lag=10, n_components=3)
-    labels = api.cluster_microstates(Y, method="minibatchkmeans", n_clusters=20)
+    labels = api.cluster_microstates(Y, method="minibatchkmeans", n_states=20)
 
     # 2) MSM from labels → macrostates (PCCA+-like)
     dtrajs = [labels]  # single trajectory
@@ -159,11 +159,11 @@ def run_conformation_finder(
         msm_tmp.n_states = int(np.max(labels) + 1)
         msm_tmp.lag_time = int(chosen_lag)
         ck = msm_tmp.compute_ck_test_macrostates(n_macrostates=3, factors=[2, 3])
-        if ck is not None:
+        if ck.mse:
             import json as _json  # type: ignore
 
             with open(OUT_DIR / "ck_macro.json", "w", encoding="utf-8") as f:
-                _json.dump(ck, f, indent=2)
+                _json.dump(ck.to_dict(), f, indent=2)
     except Exception:
         pass
     try:
@@ -257,8 +257,8 @@ def run_conformation_finder(
     items.append(
         {
             "type": "FES",
-            "bins_x": int(len(fes["xedges"]) - 1),
-            "bins_y": int(len(fes["yedges"]) - 1),
+            "bins_x": int(len(fes.xedges) - 1),
+            "bins_y": int(len(fes.yedges) - 1),
             "pair": {"x": names[0], "y": names[1]},
             "periodic": {"x": bool(per_i), "y": bool(per_j)},
         }
@@ -286,7 +286,7 @@ def run_conformation_finder(
     # Save a FES plot with a filename reflecting the selected pair
     fname = f"fes_{_sanitize(names[0])}_vs_{_sanitize(names[1])}.png"
     _ = save_fes_contour(
-        fes["F"], fes["xedges"], fes["yedges"], names[0], names[1], str(OUT_DIR), fname
+        fes.F, fes.xedges, fes.yedges, names[0], names[1], str(OUT_DIR), fname
     )
 
     write_conformations_csv_json(str(OUT_DIR), items)

@@ -24,6 +24,7 @@ from ..results import REMDResult
 from ..utils.replica_utils import exponential_temperature_ladder
 from .config import RemdConfig
 from .diagnostics import compute_exchange_statistics
+from .demux_metadata import DemuxMetadata
 from .platform_selector import select_platform_and_properties
 from .system_builder import (
     create_system,
@@ -33,7 +34,7 @@ from .system_builder import (
 )
 from .trajectory import ClosableDCDReporter
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("pmarlo")
 
 
 class ReplicaExchange:
@@ -1445,9 +1446,22 @@ class ReplicaExchange:
         else:
             effective_equil_steps = 0
 
+        # Prepare temperature schedule mapping
+        temp_schedule: Dict[str, Dict[str, float]] = {
+            str(rid): {} for rid in range(self.n_replicas)
+        }
+
+        frames_per_segment: Optional[int] = None
+
         # Build per-segment slices
         for s, replica_states in enumerate(self.exchange_history):
             try:
+                # Record temperature assignment for provenance
+                for replica_idx, temp_state in enumerate(replica_states):
+                    temp_schedule[str(replica_idx)][str(s)] = float(
+                        self.temperatures[int(temp_state)]
+                    )
+
                 # Which replica was at the target temperature during this segment
                 replica_at_target = None
                 for replica_idx, temp_state in enumerate(replica_states):
@@ -1478,6 +1492,8 @@ class ReplicaExchange:
                 if end_frame > start_frame:
                     segment = traj[start_frame:end_frame]
                     demux_segments.append(segment)
+                    if frames_per_segment is None:
+                        frames_per_segment = int(end_frame - start_frame)
             except Exception:
                 continue
 
@@ -1492,6 +1508,22 @@ class ReplicaExchange:
                 logger.info(
                     f"Total frames at target temperature: {int(demux_traj.n_frames)}"
                 )
+
+                timestep_ps = float(
+                    self.integrators[0].getStepSize().value_in_unit(unit.picoseconds)
+                    if self.integrators
+                    else 0.0
+                )
+                metadata = DemuxMetadata(
+                    exchange_frequency_steps=int(self.exchange_frequency),
+                    integration_timestep_ps=timestep_ps,
+                    frames_per_segment=int(frames_per_segment or 0),
+                    temperature_schedule=temp_schedule,
+                )
+                meta_path = demux_file.with_suffix(".meta.json")
+                metadata.to_json(meta_path)
+                logger.info(f"Demultiplexed metadata saved: {meta_path}")
+
                 return str(demux_file)
             except Exception as e:
                 logger.error(f"Error saving demultiplexed trajectory: {e}")
