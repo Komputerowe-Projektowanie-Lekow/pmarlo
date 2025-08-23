@@ -9,3 +9,7 @@ The core code is in the /src/ directory, where the pmarlo package is stored. And
 All of the changes should be checked with tox and pytest. After some changes in the algorithmic changes you should create some intelligent unit test suite/integration suite to test if your work didn't draw any setback in the codebase.
 
 If you see any unintelligent design flaws you are able to make some changes to make them improved, more clear and maintanable.
+
+You can see all the information about the package and additional more devops things in the /mdfiles/ directory and the README.md file.
+
+Those are the commands that I used in the whole package creation, if you want you can inspire yourself in the /mdfiles/commands.md
