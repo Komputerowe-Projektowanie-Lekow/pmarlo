@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 
+import logging
 import mdtraj as md  # type: ignore
 import numpy as np
 
@@ -23,6 +24,9 @@ from .states.msm_bridge import lump_micro_to_macro_T as _lump_micro_to_macro_T
 from .states.msm_bridge import pcca_like_macrostates as _pcca_like
 from .states.picker import pick_frames_around_minima as _pick_frames_around_minima
 from .utils.msm_utils import candidate_lag_ladder
+
+
+logger = logging.getLogger("pmarlo")
 
 
 def compute_features(
@@ -97,9 +101,10 @@ def reduce_features(
 
 def cluster_microstates(
     Y: np.ndarray,
-    method: Literal["minibatchkmeans", "kmeans"] = "kmeans",
+    method: Literal["auto", "minibatchkmeans", "kmeans"] = "auto",
     n_states: int | Literal["auto"] = "auto",
     random_state: int = 42,
+    minibatch_threshold: int = 5_000_000,
     **kwargs,
 ) -> np.ndarray:
     """Public wrapper around :func:`cluster.micro.cluster_microstates`.
@@ -109,11 +114,16 @@ def cluster_microstates(
     Y:
         Reduced feature array.
     method:
-        Clustering algorithm to use.
+        Clustering algorithm to use.  ``"auto"`` selects
+        ``MiniBatchKMeans`` when the dataset size exceeds
+        ``minibatch_threshold``.
     n_states:
         Number of states or ``"auto"`` to select via silhouette.
     random_state:
         Seed for deterministic clustering.
+    minibatch_threshold:
+        Product of frames and features above which ``MiniBatchKMeans`` is used
+        when ``method="auto"``.
 
     Returns
     -------
@@ -126,6 +136,7 @@ def cluster_microstates(
         method=method,
         n_states=n_states,
         random_state=random_state,
+        minibatch_threshold=minibatch_threshold,
         **kwargs,
     )
     return result.labels
@@ -427,6 +438,9 @@ def analyze_msm(
     use_effective_for_uncertainty: bool = True,
     use_tica: bool = True,
     random_state: int = 42,
+    traj_stride: int = 1,
+    atom_selection: str | Sequence[int] | None = None,
+    chunk_size: int = 1000,
 ) -> Path:
     """Build and analyze an MSM, saving plots and artifacts.
 
@@ -448,6 +462,13 @@ def analyze_msm(
         Whether to apply TICA reduction.
     random_state:
         Seed for deterministic clustering.
+    traj_stride:
+        Stride for loading trajectory frames.
+    atom_selection:
+        MDTraj atom selection string or explicit atom indices used when
+        loading trajectories.
+    chunk_size:
+        Number of frames per chunk when streaming trajectories from disk.
 
     Returns
     -------
@@ -465,7 +486,9 @@ def analyze_msm(
     )
     if use_effective_for_uncertainty:
         msm.count_mode = "sliding"
-    msm.load_trajectories()
+    msm.load_trajectories(
+        stride=traj_stride, atom_selection=atom_selection, chunk_size=chunk_size
+    )
     ft = feature_type
     if use_tica and ("tica" not in feature_type.lower()):
         ft = f"{feature_type}_tica"
@@ -562,14 +585,65 @@ def find_conformations(
     output_dir: str | Path,
     feature_specs: Optional[List[str]] = None,
     requested_pair: Optional[Tuple[str, str]] = None,
+    traj_stride: int = 1,
+    atom_selection: str | Sequence[int] | None = None,
+    chunk_size: int = 1000,
 ) -> Path:
-    """Find MSM- and FES-based representative conformations; save CSV/JSON and PDBs.
+    """Find MSM- and FES-based representative conformations.
 
-    Returns the output directory path.
+    Parameters
+    ----------
+    topology_pdb:
+        Topology file in PDB format.
+    trajectory_choice:
+        Trajectory file to analyze.
+    output_dir:
+        Directory where results are written.
+    feature_specs:
+        Feature specification strings.
+    requested_pair:
+        Optional pair of feature names for FES plotting.
+    traj_stride:
+        Stride for loading trajectory frames.
+    atom_selection:
+        MDTraj atom selection string or indices used when loading the
+        trajectory.
+    chunk_size:
+        Frames per chunk when streaming the trajectory.
+
+    Returns
+    -------
+    Path
+        The output directory path.
     """
     out = Path(output_dir)
 
-    traj = md.load(str(trajectory_choice), top=str(topology_pdb))
+    atom_indices: Sequence[int] | None = None
+    if atom_selection is not None:
+        topo = md.load_topology(str(topology_pdb))
+        if isinstance(atom_selection, str):
+            atom_indices = topo.select(atom_selection)
+        else:
+            atom_indices = list(atom_selection)
+
+    logger.info(
+        "Streaming trajectory %s with stride=%d, chunk=%d%s",
+        trajectory_choice,
+        traj_stride,
+        chunk_size,
+        f", selection={atom_selection}" if atom_selection else "",
+    )
+    traj: md.Trajectory | None = None
+    for chunk in md.iterload(
+        str(trajectory_choice),
+        top=str(topology_pdb),
+        stride=traj_stride,
+        atom_indices=atom_indices,
+        chunk=chunk_size,
+    ):
+        traj = chunk if traj is None else traj.join(chunk)
+    if traj is None:
+        raise ValueError("No frames loaded from trajectory")
 
     specs = feature_specs if feature_specs is not None else ["phi_psi"]
     X, cols, periodic = compute_features(traj, feature_specs=specs)

@@ -20,11 +20,10 @@ import logging
 import pickle
 import warnings
 
-from collections import defaultdict
 from dataclasses import dataclass, field
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union, Literal
+from typing import Any, Dict, List, Optional, Tuple, Union, Literal, Sequence
 
 import matplotlib.pyplot as plt
 import mdtraj as md
@@ -43,6 +42,7 @@ from ..replica_exchange.demux_metadata import DemuxMetadata
 
 from pmarlo.states.msm_bridge import _row_normalize, _stationary_from_T
 from pmarlo.utils.msm_utils import ensure_connected_counts
+
 logger = logging.getLogger("pmarlo")
 
 # Suppress warnings for cleaner output
@@ -134,18 +134,16 @@ class EnhancedMSM:
         self.lag_time = 20  # Default lag time
         self.frame_stride: Optional[int] = None  # Optional: frames per saved sample
 
-
         # Explicit feature processing settings
         self.feature_stride: int = 1
         self.tica_lag: int = 0
         self.tica_components: Optional[int] = None
         self.effective_frames: int = 0
         self.raw_frames: int = 0
-          
+
         self.time_per_frame_ps: Optional[float] = None
         self.demux_metadata: Optional[DemuxMetadata] = None
         self.total_frames: Optional[int] = None
-
 
         # Estimation controls
         self.estimator_backend: str = "deeptime"  # or "pmarlo" for fallback/debug
@@ -168,52 +166,93 @@ class EnhancedMSM:
             f"Enhanced MSM initialized for {len(self.trajectory_files)} trajectories"
         )
 
-    def load_trajectories(self, stride: int = 1) -> None:
+    def load_trajectories(
+        self,
+        stride: int = 1,
+        atom_selection: str | Sequence[int] | None = None,
+        chunk_size: int = 1000,
+    ) -> None:
         """Load trajectory data for analysis.
 
-        If a metadata file with the same stem as a trajectory exists, it is
-        loaded to determine the physical time per frame.
+        Trajectories are streamed from disk using :func:`mdtraj.iterload` to
+        avoid loading the entire file into memory at once.  This is
+        particularly useful for large DCD files.  When ``atom_selection`` is
+        provided, only the selected atoms are loaded.
 
-        Args:
-            stride: Stride for loading frames (1 = every frame)
+        Parameters
+        ----------
+        stride:
+            Stride for loading frames (``1`` loads every frame).
+        atom_selection:
+            Either an MDTraj atom selection string or an explicit sequence of
+            atom indices to retain.  ``None`` selects all atoms.
+        chunk_size:
+            Number of frames to read per chunk when streaming from disk.
         """
-        logger.info("Loading trajectory data...")
+
+        logger.info("Loading trajectory data (streaming mode)...")
+
+        atom_indices: Sequence[int] | None = None
+        if atom_selection is not None:
+            topo = md.load_topology(self.topology_file)
+            if isinstance(atom_selection, str):
+                atom_indices = topo.select(atom_selection)
+            else:
+                atom_indices = list(atom_selection)
 
         self.trajectories = []
         for i, traj_file in enumerate(self.trajectory_files):
             path = Path(traj_file)
-            if path.exists():
-                traj = md.load(traj_file, top=self.topology_file, stride=stride)
-                self.trajectories.append(traj)
-                logger.info(f"Loaded trajectory {i+1}: {traj.n_frames} frames")
-
-                meta_path = path.with_suffix(".meta.json")
-                if meta_path.exists() and self.demux_metadata is None:
-                    try:
-                        meta = DemuxMetadata.from_json(meta_path)
-                        self.demux_metadata = meta
-                        stride_frames = (
-                            meta.exchange_frequency_steps // meta.frames_per_segment
-                        )
-                        self.frame_stride = stride_frames
-                        self.time_per_frame_ps = (
-                            meta.integration_timestep_ps * stride_frames
-                        )
-                        logger.info(
-                            "Loaded demux metadata: stride=%d, dt=%.4f ps",
-                            stride_frames,
-                            self.time_per_frame_ps,
-                        )
-                    except Exception as exc:  # pragma: no cover - defensive
-                        logger.warning(f"Failed to parse metadata {meta_path}: {exc}")
-            else:
+            if not path.exists():
                 logger.warning(f"Trajectory file not found: {traj_file}")
+                continue
+
+            logger.info(
+                "Streaming trajectory %s with stride=%d, chunk=%d%s",
+                traj_file,
+                stride,
+                chunk_size,
+                f", selection={atom_selection}" if atom_selection else "",
+            )
+            joined: md.Trajectory | None = None
+            for chunk in md.iterload(
+                traj_file,
+                top=self.topology_file,
+                stride=stride,
+                atom_indices=atom_indices,
+                chunk=chunk_size,
+            ):
+                joined = chunk if joined is None else joined.join(chunk)
+            if joined is None:
+                logger.warning(f"No frames loaded from {traj_file}")
+                continue
+            self.trajectories.append(joined)
+            logger.info("Loaded trajectory %d: %d frames", i + 1, joined.n_frames)
+
+            meta_path = path.with_suffix(".meta.json")
+            if meta_path.exists() and self.demux_metadata is None:
+                try:
+                    meta = DemuxMetadata.from_json(meta_path)
+                    self.demux_metadata = meta
+                    stride_frames = (
+                        meta.exchange_frequency_steps // meta.frames_per_segment
+                    )
+                    self.frame_stride = stride_frames
+                    self.time_per_frame_ps = (
+                        meta.integration_timestep_ps * stride_frames
+                    )
+                    logger.info(
+                        "Loaded demux metadata: stride=%d, dt=%.4f ps",
+                        stride_frames,
+                        self.time_per_frame_ps,
+                    )
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.warning(f"Failed to parse metadata {meta_path}: {exc}")
 
         if not self.trajectories:
             raise ValueError("No trajectories loaded successfully")
 
         logger.info(f"Total trajectories loaded: {len(self.trajectories)}")
-        # Track total frames for adaptive clustering heuristics
         try:
             self.total_frames = int(sum(int(t.n_frames) for t in self.trajectories))
         except Exception:
@@ -886,70 +925,72 @@ class EnhancedMSM:
         )
 
     def compute_implied_timescales(
-    self,
-    lag_times: Optional[List[int]] = None,
-    n_timescales: int = 5,
-):
-    """
-    Compute implied timescales for MSM validation.
+        self,
+        lag_times: Optional[List[int]] = None,
+        n_timescales: int = 5,
+    ) -> None:
+        """Compute implied timescales for MSM validation.
 
-    Args:
-        lag_times: List of lag times to test
-        n_timescales: Number of timescales to compute
-    """
-    logger.info("Computing implied timescales...")
+        Parameters
+        ----------
+        lag_times:
+            List of lag times to test.
+        n_timescales:
+            Number of timescales to compute.
+        """
+        logger.info("Computing implied timescales...")
 
-    # 1) Zbuduj domyślną listę lagów (np. rosnącą siatkę)
-    lag_times = self._its_default_lag_times(lag_times)
+        # 1) Zbuduj domyślną listę lagów (np. rosnącą siatkę)
+        lag_times = self._its_default_lag_times(lag_times)
 
-    # 2) Sprawdź, czy trajektorie są wystarczająco długie,
-    #    oraz wyznacz największy dopuszczalny lag z danych
-    if getattr(self, "dtrajs", None):
-        max_valid_lag = min(len(dt) for dt in self.dtrajs) - 1
-    else:
-        max_valid_lag = 0
+        # 2) Sprawdź, czy trajektorie są wystarczająco długie,
+        #    oraz wyznacz największy dopuszczalny lag z danych
+        if getattr(self, "dtrajs", None):
+            max_valid_lag = min(len(dt) for dt in self.dtrajs) - 1
+        else:
+            max_valid_lag = 0
 
-    if max_valid_lag < 1:
-        logger.warning("Trajectories too short for implied timescales")
-        self.implied_timescales = {
-            "lag_times": [],
-            "timescales": np.empty((0, n_timescales)),
-        }
-        return
+        if max_valid_lag < 1:
+            logger.warning("Trajectories too short for implied timescales")
+            self.implied_timescales = {
+                "lag_times": [],
+                "timescales": np.empty((0, n_timescales)),
+            }
+            return
 
-    # 3) Ostrzeż i przytnij lags wykraczające ponad max_valid_lag
-    original_lag_times = list(lag_times)
-    if any(lag_val > max_valid_lag for lag_val in original_lag_times):
-        logger.warning("Capping lag times above max_valid_lag=%s", max_valid_lag)
-    lag_times = [lt for lt in original_lag_times if 1 <= lt <= max_valid_lag]
+        # 3) Ostrzeż i przytnij lags wykraczające ponad max_valid_lag
+        original_lag_times = list(lag_times)
+        if any(lag_val > max_valid_lag for lag_val in original_lag_times):
+            logger.warning("Capping lag times above max_valid_lag=%s", max_valid_lag)
+        lag_times = [lt for lt in original_lag_times if 1 <= lt <= max_valid_lag]
 
-    if not lag_times:
-        self.implied_timescales = {
-            "lag_times": [],
-            "timescales": np.empty((0, n_timescales)),
-        }
-        return
+        if not lag_times:
+            self.implied_timescales = {
+                "lag_times": [],
+                "timescales": np.empty((0, n_timescales)),
+            }
+            return
 
-    # 4) Dodatkowy limit: efektywna liczba ramek (np. po filtracji/TRAM)
-    max_lag = max(lag_times)
-    eff = getattr(self, "effective_frames", None)
-    if eff is not None and eff > 0 and max_lag >= eff:
-        raise ValueError(
-            f"Maximum lag {max_lag} exceeds available effective frames {eff}"
-        )
+        # 4) Dodatkowy limit: efektywna liczba ramek (np. po filtracji/TRAM)
+        max_lag = max(lag_times)
+        eff = getattr(self, "effective_frames", None)
+        if eff is not None and eff > 0 and max_lag >= eff:
+            raise ValueError(
+                f"Maximum lag {max_lag} exceeds available effective frames {eff}"
+            )
 
-    # 5) Liczenie ITS z deeptime (z fallbackiem) i normalizacja długości wierszy
-    timescales_data: List[List[float]] = []
-    for lag in lag_times:
-        ts_row = self._its_try_deeptime_timescales(lag, n_timescales)
-        if ts_row is None:
-            ts_row = self._its_fallback_timescales(lag, n_timescales)
-        timescales_data.append(self._its_trim_pad(ts_row, n_timescales))
+        # 5) Liczenie ITS z deeptime (z fallbackiem) i normalizacja długości wierszy
+        timescales_data: List[List[float]] = []
+        for lag in lag_times:
+            ts_row = self._its_try_deeptime_timescales(lag, n_timescales)
+            if ts_row is None:
+                ts_row = self._its_fallback_timescales(lag, n_timescales)
+            timescales_data.append(self._its_trim_pad(ts_row, n_timescales))
 
-    # 6) Zapisz wyniki i posprzątaj stan
-    self._its_assign_results(lag_times, timescales_data)
-    self._its_restore_original_msm()
-    self._its_log_complete()
+        # 6) Zapisz wyniki i posprzątaj stan
+        self._its_assign_results(lag_times, timescales_data)
+        self._its_restore_original_msm()
+        self._its_log_complete()
 
     # ---------------- Helper methods for implied timescales (C901 split) ----------------
 
@@ -2436,6 +2477,9 @@ def run_complete_msm_analysis(
     lag_time: int = 20,
     feature_type: str = "phi_psi",
     temperatures: Optional[List[float]] = None,
+    stride: int = 1,
+    atom_selection: str | Sequence[int] | None = None,
+    chunk_size: int = 1000,
 ) -> EnhancedMSM:
     """
     Run complete MSM analysis pipeline.
@@ -2448,6 +2492,9 @@ def run_complete_msm_analysis(
         lag_time: Lag time for MSM construction
         feature_type: Type of features to use
         temperatures: Temperatures for TRAM analysis
+        stride: Frame stride when loading trajectories
+        atom_selection: MDTraj atom selection string or indices
+        chunk_size: Frames per chunk when streaming trajectories
 
     Returns:
         EnhancedMSM object with completed analysis
@@ -2455,7 +2502,7 @@ def run_complete_msm_analysis(
     msm = _initialize_msm_analyzer(
         trajectory_files, topology_file, temperatures, output_dir
     )
-    _load_and_prepare(msm, feature_type, n_states)
+    _load_and_prepare(msm, feature_type, n_states, stride, atom_selection, chunk_size)
     _build_and_validate_msm(msm, temperatures, lag_time)
     fes_success = _maybe_generate_fes(msm, feature_type)
     _finalize_results_and_plots(msm, fes_success)
@@ -2481,9 +2528,16 @@ def _initialize_msm_analyzer(
 
 
 def _load_and_prepare(
-    msm: EnhancedMSM, feature_type: str, n_states: int | Literal["auto"]
+    msm: EnhancedMSM,
+    feature_type: str,
+    n_states: int | Literal["auto"],
+    stride: int,
+    atom_selection: str | Sequence[int] | None,
+    chunk_size: int,
 ) -> None:
-    msm.load_trajectories()
+    msm.load_trajectories(
+        stride=stride, atom_selection=atom_selection, chunk_size=chunk_size
+    )
     # Save a quick φ/ψ sanity scatter before feature building (helps spot issues early)
     try:
         msm.save_phi_psi_scatter_diagnostics()
