@@ -55,8 +55,26 @@ class TestOtherLadders:
         assert temps[0] == pytest.approx(300.0)
         assert temps[-1] == pytest.approx(360.0)
 
+    def test_linear_ladder_handles_swapped_bounds(self):
+        temps = linear_temperature_ladder(360.0, 300.0, 4)
+        assert temps[0] == pytest.approx(300.0)
+        assert temps[-1] == pytest.approx(360.0)
+
     def test_exponential_ladder_count_and_bounds(self):
         temps = exponential_temperature_ladder(300.0, 360.0, 5)
         assert len(temps) == 5
         assert temps[0] == pytest.approx(300.0)
         assert temps[-1] == pytest.approx(360.0)
+
+    def test_exponential_ladder_handles_swapped_bounds(self):
+        temps = exponential_temperature_ladder(360.0, 300.0, 5)
+        assert temps[0] == pytest.approx(300.0)
+        assert temps[-1] == pytest.approx(360.0)
+
+    @pytest.mark.parametrize(
+        "func",
+        [linear_temperature_ladder, exponential_temperature_ladder, power_of_two_temperature_ladder],
+    )
+    def test_invalid_n_replicas_raises(self, func):
+        with pytest.raises(ValueError):
+            func(300.0, 360.0, 0)

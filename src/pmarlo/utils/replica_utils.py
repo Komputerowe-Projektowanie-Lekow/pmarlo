@@ -1,19 +1,29 @@
 from __future__ import annotations
 
-from typing import List
+import logging
 
 import numpy as np
 
 
+logger = logging.getLogger(__name__)
+
+
 def linear_temperature_ladder(
     min_temp: float, max_temp: float, n_replicas: int
-) -> List[float]:
+) -> list[float]:
     """Generate a linearly spaced temperature ladder inclusive of bounds."""
-    if n_replicas <= 0:
-        return []
+    if n_replicas < 1:
+        raise ValueError("n_replicas must be positive")
     if n_replicas == 1:
         return [float(min_temp)]
-    temps = np.linspace(min_temp, max_temp, n_replicas)
+    tmin, tmax = sorted((float(min_temp), float(max_temp)))
+    logger.debug(
+        "Generating linear ladder from %s to %s with %d replicas",
+        tmin,
+        tmax,
+        n_replicas,
+    )
+    temps = np.linspace(tmin, tmax, n_replicas)
     return [float(t) for t in temps]
 
 
@@ -22,25 +32,32 @@ def exponential_temperature_ladder(
 ) -> List[float]:
     """Generate an exponentially spaced temperature ladder inclusive of bounds.
 
-    This uses :func:`numpy.geomspace` which ensures a strictly monotonic ladder
-    and avoids the awkward ``max_temp / max_temp`` guard that previously caused
-    all-zero schedules when ``min_temp`` was zero.  REMD requires positive
-    temperatures so we raise a :class:`ValueError` if either bound is non-
-    positive.
+    Uses :func:`numpy.geomspace` to ensure strictly monotonic spacing.
+    REMD requires positive temperatures, so both bounds must be > 0.
     """
     if n_replicas <= 0:
-        return []
+        raise ValueError("n_replicas must be positive")
     if n_replicas == 1:
         return [float(min_temp)]
     if min_temp <= 0 or max_temp <= 0:
         raise ValueError("Temperatures must be positive for exponential ladder")
-    temps = np.geomspace(min_temp, max_temp, n_replicas)
+
+    tmin, tmax = sorted((float(min_temp), float(max_temp)))
+
+    logger.debug(
+        "Generating exponential ladder from %s to %s with %d replicas",
+        tmin,
+        tmax,
+        n_replicas,
+    )
+
+    temps = np.geomspace(tmin, tmax, n_replicas)
     return [float(t) for t in temps]
 
 
 def power_of_two_temperature_ladder(
     min_temp: float, max_temp: float, n_replicas: int | None = None
-) -> List[float]:
+) -> list[float]:
     """Generate a temperature ladder with a power-of-two number of replicas.
 
     Behavior:
@@ -76,8 +93,18 @@ def power_of_two_temperature_ladder(
         delta = tmax - tmin
         approx_points = int(max(2, round(delta / target_step) + 1))
         npts = _next_power_of_two(approx_points)
+        logger.debug(
+            "Choosing power-of-two replicas: delta=%s approx=%s npts=%s",
+            delta,
+            approx_points,
+            npts,
+        )
     else:
-        npts = _next_power_of_two(int(n_replicas))
+        n_rep = int(n_replicas)
+        if n_rep < 1:
+            raise ValueError("n_replicas must be positive")
+        npts = _next_power_of_two(n_rep)
+        logger.debug("Rounded n_replicas=%s to power-of-two=%s", n_rep, npts)
 
     # Guard upper bound to a reasonable maximum (avoid extremely large ladders by mistake)
     npts = int(max(2, min(npts, 1 << 12)))  # cap at 4096 for safety
