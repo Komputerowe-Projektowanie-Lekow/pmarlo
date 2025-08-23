@@ -30,7 +30,7 @@ from scipy.ndimage import gaussian_filter
 from scipy.sparse import csc_matrix, issparse, save_npz
 from sklearn.cluster import MiniBatchKMeans
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("pmarlo")
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -90,6 +90,12 @@ class EnhancedMSM:
         self.free_energies: Optional[np.ndarray] = None
         self.lag_time = 20  # Default lag time
         self.frame_stride: Optional[int] = None  # Optional: frames per saved sample
+        # Explicit feature processing settings
+        self.feature_stride: int = 1
+        self.tica_lag: int = 0
+        self.tica_components: Optional[int] = None
+        self.effective_frames: int = 0
+        self.raw_frames: int = 0
 
         # Estimation controls
         self.estimator_backend: str = "deeptime"  # or "pmarlo" for fallback/debug
@@ -326,27 +332,62 @@ class EnhancedMSM:
             pass
 
     def compute_features(
-        self, feature_type: str = "phi_psi", n_features: Optional[int] = None
-    ):
-        """
-        Compute features from trajectory data.
+        self,
+        feature_type: str = "phi_psi",
+        n_features: Optional[int] = None,
+        feature_stride: int = 1,
+        tica_lag: int = 0,
+        tica_components: Optional[int] = None,
+    ) -> None:
+        """Compute features from trajectory data.
 
-        Args:
-            feature_type: Type of features to compute
-                ('phi_psi', 'distances', 'contacts')
-            n_features: Number of features to compute (auto if None)
+        Parameters
+        ----------
+        feature_type:
+            Type of features to compute (``"phi_psi"``, ``"distances"``, ``"contacts"``).
+        n_features:
+            Number of features to compute (auto if ``None``).
+        feature_stride:
+            Subsampling stride applied to the trajectories before feature
+            computation.
+        tica_lag:
+            Lag time (in frames) used for the optional TICA projection.  When
+            greater than zero, the first ``tica_lag`` frames are discarded from
+            each trajectory after projection to ensure consistent effective
+            lengths.
+        tica_components:
+            Number of TICA components to keep.  When ``None`` and ``tica_lag`` is
+            non-zero, the ``n_features`` hint is used.
         """
         self._log_compute_features_start(feature_type)
+        self.feature_stride = int(max(1, feature_stride))
+        self.tica_lag = int(max(0, tica_lag))
+        self.tica_components = tica_components
+        self.raw_frames = sum(traj.n_frames for traj in self.trajectories)
+
+        proc_trajs = [traj[:: self.feature_stride] for traj in self.trajectories]
+        self.trajectories = proc_trajs
+        strided_frames = sum(traj.n_frames for traj in proc_trajs)
+
         all_features: List[np.ndarray] = []
-        for traj in self.trajectories:
+        for traj in proc_trajs:
             traj_features = self._compute_features_for_traj(
                 traj, feature_type, n_features
             )
             all_features.append(traj_features)
         self.features = self._combine_all_features(all_features)
-        self._log_features_shape()
-        # Optional: apply TICA projection (2-5 components) when requested
-        self._maybe_apply_tica(feature_type, n_features)
+
+        # Optional: apply TICA projection when requested
+        if (
+            tica_components is not None
+            or self.tica_lag > 0
+            or "tica" in feature_type.lower()
+        ):
+            self._maybe_apply_tica(tica_components or n_features, self.tica_lag)
+
+        effective_frames = self.features.shape[0] if self.features is not None else 0
+        self.effective_frames = effective_frames
+        self._log_features_shape(self.raw_frames, strided_frames, effective_frames)
 
     # ---------------- Feature computation helper methods ----------------
 
@@ -458,9 +499,21 @@ class EnhancedMSM:
     def _combine_all_features(self, feature_blocks: List[np.ndarray]) -> np.ndarray:
         return np.vstack(feature_blocks)
 
-    def _log_features_shape(self) -> None:
-        if self.features is not None:
-            logger.info(f"Features computed: {self.features.shape}")
+    def _log_features_shape(
+        self, raw_frames: int, strided_frames: int, effective_frames: int
+    ) -> None:
+        """Log frame accounting after feature computation."""
+        if self.features is None:
+            return
+        logger.info(f"Features computed: ({strided_frames}, {self.features.shape[1]})")
+        logger.info(
+            "Raw frames: %d → %d after feature_stride=%d; effective frames after lag %d: %d",
+            raw_frames,
+            strided_frames,
+            self.feature_stride,
+            self.tica_lag,
+            effective_frames,
+        )
 
     def cluster_features(self, n_clusters: int = 100, algorithm: str = "kmeans"):
         """
@@ -556,7 +609,7 @@ class EnhancedMSM:
                     logger.info(
                         "Applying default 3-component TICA prior to MSM to reduce noise"
                     )
-                    self._maybe_apply_tica("tica", 3)
+                    self._maybe_apply_tica(3, self.tica_lag or self.lag_time)
         except Exception:
             pass
 
@@ -574,15 +627,20 @@ class EnhancedMSM:
 
     # ---------------- TICA (time-lagged ICA) support ----------------
 
-    def _maybe_apply_tica(
-        self, feature_type: str, n_components_hint: Optional[int]
-    ) -> None:
-        """Apply TICA via deeptime when requested; respects trajectory boundaries."""
-        if self.features is None:
+    def _maybe_apply_tica(self, n_components_hint: Optional[int], lag: int) -> None:
+        """Apply TICA via deeptime when requested.
+
+        Parameters
+        ----------
+        n_components_hint:
+            Desired number of TICA components.  ``None`` skips projection.
+        lag:
+            Lag time (in frames) used in the TICA estimation and to discard the
+            first ``lag`` frames of each trajectory after transformation.
+        """
+        if self.features is None or n_components_hint is None:
             return
-        if "tica" not in feature_type.lower():
-            return
-        n_components = int(max(2, min(5, (n_components_hint or 3))))
+        n_components = int(max(2, min(5, n_components_hint)))
         try:
             from deeptime.decomposition import TICA as _DT_TICA  # type: ignore
 
@@ -593,16 +651,24 @@ class EnhancedMSM:
                 Xs.append(self.features[start:end])
                 start = end
 
-            tica = _DT_TICA(lagtime=int(max(1, self.lag_time)), dim=n_components)
+            tica = _DT_TICA(lagtime=int(max(1, lag or 1)), dim=n_components)
             tica_model = tica.fit(Xs).fetch_model()
-            self.features = np.vstack([tica_model.transform(x) for x in Xs])
+            Ys = [tica_model.transform(x)[int(max(0, lag)) :] for x in Xs]
+            self.features = np.vstack(Ys)
+            self.trajectories = [traj[int(max(0, lag)) :] for traj in self.trajectories]
             if hasattr(tica_model, "eigenvectors_"):
                 self.tica_components_ = tica_model.eigenvectors_  # type: ignore[attr-defined]
             if hasattr(tica_model, "eigenvalues_"):
                 self.tica_eigenvalues_ = tica_model.eigenvalues_  # type: ignore[attr-defined]
-            logger.info(f"Applied deeptime TICA to {n_components} components")
+            self.tica_components = n_components
+            logger.info("Applied deeptime TICA to %d components", n_components)
         except Exception as e:
-            logger.warning(f"deeptime TICA failed ({e}); proceeding without TICA")
+            logger.warning("deeptime TICA failed (%s); proceeding without TICA", e)
+            if lag > 0:
+                self.features = self.features[int(max(0, lag)) :]
+                self.trajectories = [
+                    traj[int(max(0, lag)) :] for traj in self.trajectories
+                ]
 
     def _build_standard_msm(self, lag_time: int, count_mode: str = "sliding") -> None:
         """Estimate transition counts and matrix for a discrete MSM.
@@ -616,6 +682,11 @@ class EnhancedMSM:
             separated by ``lag_time`` while ``"strided"`` advances the starting
             frame by ``lag_time`` after each counted transition.
         """
+
+        if self.effective_frames and lag_time >= self.effective_frames:
+            raise ValueError(
+                f"lag_time {lag_time} exceeds available effective frames {self.effective_frames}"
+            )
 
         use_deeptime = False
         if self.estimator_backend == "deeptime":
@@ -795,6 +866,11 @@ class EnhancedMSM:
         logger.info("Computing implied timescales...")
 
         lag_times = self._its_default_lag_times(lag_times)
+        max_lag = max(lag_times) if lag_times else 0
+        if self.effective_frames and max_lag >= self.effective_frames:
+            raise ValueError(
+                f"Maximum lag {max_lag} exceeds available effective frames {self.effective_frames}"
+            )
         timescales_data: List[List[float]] = []
 
         for lag in lag_times:
