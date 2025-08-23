@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Optional, Tuple
+
+import warnings
 
 import numpy as np
 from scipy.ndimage import gaussian_filter
@@ -20,14 +22,51 @@ class PMFResult:
 
 @dataclass
 class FESResult:
-    """Result of a two-dimensional free-energy surface calculation."""
+    """Result of a two-dimensional free-energy surface calculation.
+
+    Parameters
+    ----------
+    F
+        Free-energy surface values in kJ/mol.
+    xedges, yedges
+        Bin edges along the x and y axes.
+    levels_kJmol
+        Optional contour levels used for plotting.
+    metadata
+        Free-form dictionary for additional information such as ``counts`` or
+        ``temperature``. The field ensures that the dataclass remains easily
+        serialisable.
+    """
 
     F: np.ndarray
     xedges: np.ndarray
     yedges: np.ndarray
-    counts: np.ndarray
-    periodic: Tuple[bool, bool]
-    temperature: float
+    levels_kJmol: np.ndarray | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __getitem__(self, key: str) -> Any:  # pragma: no cover - compatibility shim
+        """Dictionary-style access with deprecation warning.
+
+        Historically :class:`FESResult` behaved like a mapping. To preserve
+        backwards compatibility, this method allows ``fes["F"]``-style access
+        while emitting a :class:`DeprecationWarning`.
+        """
+
+        warnings.warn(
+            "Dictionary-style access to FESResult is deprecated; use attributes "
+            "instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        mapping = {
+            "F": self.F,
+            "xedges": self.xedges,
+            "yedges": self.yedges,
+            "levels_kJmol": self.levels_kJmol,
+        }
+        if key in mapping:
+            return mapping[key]
+        raise KeyError(key)
 
 
 def _kT_kJ_per_mol(temperature_kelvin: float) -> float:
@@ -91,7 +130,9 @@ def generate_1d_pmf(
     F = np.where(H > 0, -kT * np.log(H_clipped), np.inf)
     if np.any(np.isfinite(F)):
         F -= np.nanmin(F)
-    return PMFResult(F=F, edges=edges, counts=H, periodic=periodic, temperature=temperature)
+    return PMFResult(
+        F=F, edges=edges, counts=H, periodic=periodic, temperature=temperature
+    )
 
 
 def generate_2d_fes(
@@ -141,11 +182,9 @@ def generate_2d_fes(
     F = np.where(H > 0, -kT * np.log(H_clipped), np.inf)
     if np.any(np.isfinite(F)):
         F -= np.nanmin(F)
-    return FESResult(
-        F=F,
-        xedges=xedges,
-        yedges=yedges,
-        counts=H,
-        periodic=periodic,
-        temperature=temperature,
-    )
+    metadata = {
+        "counts": H,
+        "periodic": periodic,
+        "temperature": temperature,
+    }
+    return FESResult(F=F, xedges=xedges, yedges=yedges, metadata=metadata)

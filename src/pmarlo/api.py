@@ -9,7 +9,7 @@ import numpy as np
 from .cluster.micro import cluster_microstates as _cluster_microstates
 from .features import get_feature
 from .features.base import parse_feature_spec
-from .fes.surfaces import generate_2d_fes as _generate_2d_fes
+from .fes.surfaces import FESResult, generate_2d_fes as _generate_2d_fes
 from .markov_state_model.markov_state_model import EnhancedMSM as MarkovStateModel
 from .reduce.reducers import pca_reduce, tica_reduce, vamp_reduce
 from .replica_exchange.config import RemdConfig
@@ -110,7 +110,29 @@ def generate_free_energy_surface(
     temperature: float = 300.0,
     periodic: Tuple[bool, bool] = (False, False),
     smoothing: Optional[Literal["cosine"]] = None,
-) -> dict:
+) -> FESResult:
+    """Generate a 2D free-energy surface.
+
+    Parameters
+    ----------
+    cv1, cv2
+        Collective variable samples.
+    bins
+        Number of histogram bins in ``(x, y)``.
+    temperature
+        Simulation temperature in Kelvin.
+    periodic
+        Flags indicating whether each dimension is periodic.
+    smoothing
+        Placeholder smoothing option; currently only ``"cosine"`` is
+        recognised.
+
+    Returns
+    -------
+    FESResult
+        Dataclass containing the free-energy surface and bin edges.
+    """
+
     # Map smoothing flag to gaussian sigma; cosine placeholder maps to 0.6
     sigma = 0.6 if smoothing == "cosine" else 0.6
     out = _generate_2d_fes(
@@ -297,7 +319,7 @@ def generate_fes_and_pick_minima(
         smoothing=smoothing,
     )
     minima = _pick_frames_around_minima(
-        cv1, cv2, fes["F"], fes["xedges"], fes["yedges"], deltaF_kJmol=deltaF_kJmol
+        cv1, cv2, fes.F, fes.xedges, fes.yedges, deltaF_kJmol=deltaF_kJmol
     )
     return {
         "i": int(i),
@@ -563,7 +585,7 @@ def find_conformations(
     minima = fes_info["minima"]
     fname = f"fes_{sanitize_label_for_filename(names[0])}_vs_{sanitize_label_for_filename(names[1])}.png"
     _ = save_fes_contour(
-        fes["F"], fes["xedges"], fes["yedges"], names[0], names[1], str(out), fname
+        fes.F, fes.xedges, fes.yedges, names[0], names[1], str(out), fname
     )
 
     for idx, entry in enumerate(minima.get("minima", [])):
