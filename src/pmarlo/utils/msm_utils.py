@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+
+import numpy as np
 
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("pmarlo")
 
 
 def candidate_lag_ladder(
@@ -85,3 +88,63 @@ def candidate_lag_ladder(
     picks[0] = 0
     picks[-1] = len(filtered) - 1
     return [filtered[i] for i in picks]
+
+
+@dataclass(slots=True)
+class ConnectedCountResult:
+    """Result of :func:`ensure_connected_counts`.
+
+    Attributes
+    ----------
+    counts:
+        The trimmed count matrix with pseudocounts added.
+    active:
+        Indices of states that remained after removing disconnected rows
+        and columns.
+    """
+
+    counts: np.ndarray
+    active: np.ndarray
+
+    def to_dict(self) -> dict[str, list[list[float]] | list[int]]:
+        """Return a JSON serialisable representation."""
+        return {"counts": self.counts.tolist(), "active": self.active.tolist()}
+
+
+def ensure_connected_counts(
+    C: np.ndarray, alpha: float = 1e-3, epsilon: float = 1e-12
+) -> ConnectedCountResult:
+    """Regularise and trim a transition count matrix.
+
+    A small Dirichlet pseudocount ``alpha`` is added to every element of the
+    matrix. States whose corresponding row *and* column sums are below
+    ``epsilon`` are removed, returning the active submatrix and the indices of
+    the retained states.
+
+    Parameters
+    ----------
+    C:
+        Square matrix of observed transition counts.
+    alpha:
+        Pseudocount added to each cell to avoid zeros.
+    epsilon:
+        Threshold below which a state is considered disconnected.
+
+    Returns
+    -------
+    ConnectedCountResult
+        Dataclass containing the trimmed count matrix and the mapping of
+        active state indices.
+    """
+
+    if C.ndim != 2 or C.shape[0] != C.shape[1]:
+        raise ValueError("count matrix must be square")
+
+    totals = C.sum(axis=1) + C.sum(axis=0)
+    active = np.where(totals > epsilon)[0]
+    if active.size == 0:
+        return ConnectedCountResult(np.zeros((0, 0), dtype=float), active)
+
+    C_active = C[np.ix_(active, active)].astype(float)
+    C_active += float(alpha)
+    return ConnectedCountResult(C_active, active)
