@@ -21,6 +21,7 @@ from .protein.protein import Protein
 from .replica_exchange.config import RemdConfig
 from .replica_exchange.replica_exchange import ReplicaExchange, run_remd_simulation
 from .simulation.simulation import Simulation
+from .utils.seed import set_global_seed
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ class Pipeline:
         checkpoint_id: Optional[str] = None,
         auto_continue: bool = True,
         enable_checkpoints: bool = True,
+        random_state: int | None = None,
     ):
         """
         Initialize the PMARLO pipeline.
@@ -60,6 +62,7 @@ class Pipeline:
             use_replica_exchange: Whether to use replica exchange
             use_metadynamics: Whether to use metadynamics
             checkpoint_id: Optional checkpoint ID for resuming runs
+            random_state: Seed for reproducible behaviour across components.
         """
         self.pdb_file = pdb_file
         self.output_dir = Path(output_dir)
@@ -67,6 +70,10 @@ class Pipeline:
         self.n_states = n_states
         self.use_replica_exchange = use_replica_exchange
         self.use_metadynamics = use_metadynamics
+        self.random_state = random_state
+
+        if random_state is not None:
+            set_global_seed(int(random_state))
 
         # Set default temperatures if not provided
         if temperatures is None:

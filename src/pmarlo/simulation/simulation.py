@@ -55,6 +55,7 @@ class Simulation:
         use_metadynamics: bool = True,
         dcd_stride: int = 1000,
         random_seed: Optional[int] = None,
+        random_state: int | None = None,
     ):
         """
         Initialize the Simulation.
@@ -65,7 +66,9 @@ class Simulation:
             steps: Number of production steps
             output_dir: Directory for output files
             use_metadynamics: Whether to use metadynamics biasing
-            random_seed: Seed for deterministic integrator behaviour
+            random_seed: Seed for deterministic integrator behaviour. Deprecated,
+                use ``random_state``.
+            random_state: Seed for deterministic integrator behaviour.
         """
         self.pdb_file = pdb_file
         self.temperature = temperature
@@ -73,7 +76,7 @@ class Simulation:
         self.output_dir = Path(output_dir)
         self.use_metadynamics = use_metadynamics
         self.dcd_stride = dcd_stride
-        self.random_seed = random_seed
+        self.random_seed = random_state if random_state is not None else random_seed
 
         # OpenMM objects
         self.openmm_simulation = None
@@ -143,15 +146,31 @@ def prepare_system(
     use_metadynamics: bool = True,
     output_dir: Optional[Path] = None,
     random_seed: Optional[int] = None,
+    random_state: int | None = None,
 ) -> Tuple["openmm.app.Simulation", Optional["Metadynamics"]]:
-    """Prepare the molecular system with forcefield and optional metadynamics."""
+    """Prepare the molecular system with forcefield and optional metadynamics.
+
+    Parameters
+    ----------
+    pdb_file_name:
+        Path to the PDB structure.
+    temperature:
+        Simulation temperature in Kelvin.
+    use_metadynamics:
+        Whether to include a metadynamics bias.
+    output_dir:
+        Optional output directory for intermediate files.
+    random_seed, random_state:
+        Seeds for the OpenMM integrator. ``random_state`` takes precedence.
+    """
     pdb = _load_pdb(pdb_file_name)
     forcefield = _create_forcefield()
     system = _create_system(pdb, forcefield)
     meta = _maybe_create_metadynamics(
         system, pdb_file_name, temperature, use_metadynamics, output_dir
     )
-    integrator = _create_integrator(temperature, random_seed)
+    seed = random_state if random_state is not None else random_seed
+    integrator = _create_integrator(temperature, seed)
     platform, platform_properties = _select_platform()
     simulation = _create_openmm_simulation(
         pdb, system, integrator, platform, platform_properties

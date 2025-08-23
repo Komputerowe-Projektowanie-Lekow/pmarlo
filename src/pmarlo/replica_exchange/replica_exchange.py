@@ -56,6 +56,7 @@ class ReplicaExchange:
         dcd_stride: int = 1,
         config: Optional[RemdConfig] = None,
         random_seed: Optional[int] = None,
+        random_state: int | None = None,
     ):  # Explicit opt-in for auto-setup
         """
         Initialize the replica exchange simulation.
@@ -67,6 +68,9 @@ class ReplicaExchange:
             output_dir: Directory to store output files
             exchange_frequency: Number of steps between exchange attempts
             auto_setup: Whether to automatically set up replicas during initialization
+            random_state: Seed for deterministic behaviour. ``random_seed`` is
+                accepted for backward compatibility and is overridden by
+                ``random_state`` when both are provided.
         """
         self.pdb_file = pdb_file
         self.forcefield_files = forcefield_files or [
@@ -96,16 +100,17 @@ class ReplicaExchange:
                 )
             except Exception:
                 self.frames_per_replica_target = None
-        self.random_seed: int = (
-            int(getattr(config, "random_seed", 0))
-            if (config and getattr(config, "random_seed", None) is not None)
-            else (
-                int(random_seed)
-                if random_seed is not None
-                else (int.from_bytes(os.urandom(8), "little") & 0x7FFFFFFF)
-            )
-        )
-        self.rng = np.random.default_rng(self.random_seed)
+        if config and getattr(config, "random_seed", None) is not None:
+            seed = int(getattr(config, "random_seed"))
+        elif random_state is not None:
+            seed = int(random_state)
+        elif random_seed is not None:
+            seed = int(random_seed)
+        else:
+            seed = int.from_bytes(os.urandom(8), "little") & 0x7FFFFFFF
+
+        self.random_seed = seed
+        self.rng = np.random.default_rng(seed)
 
         # Initialize replicas - Fixed: Added proper type annotations
         self.n_replicas = len(self.temperatures)
