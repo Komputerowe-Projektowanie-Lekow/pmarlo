@@ -19,7 +19,7 @@ import pickle
 import warnings
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union, Literal
 
 import matplotlib.pyplot as plt
 import mdtraj as md
@@ -29,8 +29,9 @@ from scipy import constants
 from scipy.ndimage import gaussian_filter
 from scipy.sparse import csc_matrix, issparse, save_npz
 from sklearn.cluster import MiniBatchKMeans
+from ..cluster.micro import ClusteringResult, cluster_microstates
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("pmarlo")
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -50,6 +51,7 @@ class EnhancedMSM:
         topology_file: Optional[str] = None,
         temperatures: Optional[List[float]] = None,
         output_dir: str = "output/msm_analysis",
+        random_state: int = 42,
     ):
         """
         Initialize the Enhanced MSM analyzer.
@@ -78,6 +80,7 @@ class EnhancedMSM:
         self.features: Optional[np.ndarray] = None
         self.cluster_centers: Optional[np.ndarray] = None
         self.n_states = 0
+        self.random_state = int(random_state)
 
         # MSM data - Fixed: Initialize with proper types instead of None
         self.transition_matrix: Optional[np.ndarray] = (
@@ -462,40 +465,34 @@ class EnhancedMSM:
         if self.features is not None:
             logger.info(f"Features computed: {self.features.shape}")
 
-    def cluster_features(self, n_clusters: int = 100, algorithm: str = "kmeans"):
-        """
-        Cluster features to create discrete states.
-
-        Args:
-            n_clusters: Number of clusters (states)
-            algorithm: Clustering algorithm ('kmeans', 'gmm')
-        """
-        logger.info(
-            f"Clustering features into {n_clusters} states using {algorithm}..."
-        )
+    def cluster_features(
+        self,
+        n_states: int | Literal["auto"] = "auto",
+        algorithm: str = "kmeans",
+        random_state: int | None = None,
+    ) -> None:
+        """Cluster features to create discrete states."""
 
         if self.features is None:
             raise ValueError("Features must be computed before clustering")
 
-        # Adaptive microstate reduction for Stage-1: prefer 10–20 states for ~40k frames
-        try:
-            num_frames = int(self.features.shape[0]) if self.features is not None else 0
-        except Exception:
-            num_frames = 0
-        if n_clusters > 20 and 0 < num_frames <= 40000:
-            logger.info(
-                f"Reducing requested clusters from {n_clusters} to 20 for low data volume ({num_frames} frames)"
-            )
-            n_clusters = 20
-        if n_clusters < 10:
-            n_clusters = 10
+        rng = self.random_state if random_state is None else random_state
+        logger.info(
+            "Clustering features using %s: requested=%s",
+            algorithm,
+            n_states,
+        )
 
-        if algorithm == "kmeans":
-            clusterer = MiniBatchKMeans(n_clusters=n_clusters, random_state=42)
-            labels = clusterer.fit_predict(self.features)
-            self.cluster_centers = clusterer.cluster_centers_
-        else:
-            raise ValueError(f"Clustering algorithm {algorithm} not implemented")
+        result: ClusteringResult = cluster_microstates(
+            self.features,
+            method=(
+                algorithm if algorithm in ["kmeans", "minibatchkmeans"] else "kmeans"
+            ),
+            n_states=n_states,
+            random_state=rng,
+        )
+        labels = result.labels
+        self.cluster_centers = result.centers
 
         # Split labels back into trajectories
         self.dtrajs = []
@@ -505,29 +502,13 @@ class EnhancedMSM:
             self.dtrajs.append(labels[start_idx:end_idx])
             start_idx = end_idx
 
-        # Remap labels to contiguous states to drop empty clusters
-        try:
-            unique_states = np.unique(labels)
-            remap = {
-                int(old): int(new) for new, old in enumerate(sorted(unique_states))
-            }
-            if len(remap) != int(n_clusters):
-                logger.info(
-                    "Compressing %d clusters to %d observed states",
-                    int(n_clusters),
-                    len(remap),
-                )
-            # Apply remap to dtrajs
-            new_dtrajs: List[np.ndarray] = []
-            for dt in self.dtrajs:
-                new_dtrajs.append(np.array([remap[int(x)] for x in dt], dtype=int))
-            self.dtrajs = new_dtrajs
-            self.n_states = int(len(remap))
-        except Exception:
-            # Fallback: keep original labeling if remap fails
-            self.n_states = int(n_clusters)
-
-        logger.info(f"Clustering completed: {self.n_states} states")
+        self.n_states = int(result.n_states)
+        logger.info(
+            "Clustering completed: requested=%s, actual=%d%s",
+            n_states,
+            self.n_states,
+            f" ({result.rationale})" if result.rationale else "",
+        )
 
     def build_msm(self, lag_time: int = 20, method: str = "standard") -> None:
         """Build Markov State Model from discrete trajectories.
@@ -2155,7 +2136,7 @@ def run_complete_msm_analysis(
     trajectory_files: Union[str, List[str]],
     topology_file: str,
     output_dir: str = "output/msm_analysis",
-    n_clusters: int = 100,
+    n_states: int | Literal["auto"] = 100,
     lag_time: int = 20,
     feature_type: str = "phi_psi",
     temperatures: Optional[List[float]] = None,
@@ -2167,7 +2148,7 @@ def run_complete_msm_analysis(
         trajectory_files: Trajectory file(s) to analyze
         topology_file: Topology file (PDB)
         output_dir: Output directory
-        n_clusters: Number of states for clustering
+        n_states: Number of states for clustering or ``"auto"``
         lag_time: Lag time for MSM construction
         feature_type: Type of features to use
         temperatures: Temperatures for TRAM analysis
@@ -2178,7 +2159,7 @@ def run_complete_msm_analysis(
     msm = _initialize_msm_analyzer(
         trajectory_files, topology_file, temperatures, output_dir
     )
-    _load_and_prepare(msm, feature_type, n_clusters)
+    _load_and_prepare(msm, feature_type, n_states)
     _build_and_validate_msm(msm, temperatures, lag_time)
     fes_success = _maybe_generate_fes(msm, feature_type)
     _finalize_results_and_plots(msm, fes_success)
@@ -2203,7 +2184,9 @@ def _initialize_msm_analyzer(
     )
 
 
-def _load_and_prepare(msm: EnhancedMSM, feature_type: str, n_clusters: int) -> None:
+def _load_and_prepare(
+    msm: EnhancedMSM, feature_type: str, n_states: int | Literal["auto"]
+) -> None:
     msm.load_trajectories()
     # Save a quick φ/ψ sanity scatter before feature building (helps spot issues early)
     try:
@@ -2211,7 +2194,7 @@ def _load_and_prepare(msm: EnhancedMSM, feature_type: str, n_clusters: int) -> N
     except Exception:
         pass
     msm.compute_features(feature_type=feature_type)
-    msm.cluster_features(n_clusters=n_clusters)
+    msm.cluster_features(n_states=n_states)
 
 
 def _build_and_validate_msm(

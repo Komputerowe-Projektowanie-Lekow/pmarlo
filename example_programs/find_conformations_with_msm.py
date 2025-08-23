@@ -94,7 +94,7 @@ def run_conformation_finder(
     X, cols, periodic = api.compute_features(traj, feature_specs=specs)
     # Try VAMP for robustness; fallback remains in api if unavailable
     Y = api.reduce_features(X, method="vamp", lag=10, n_components=3)
-    labels = api.cluster_microstates(Y, method="minibatchkmeans", n_clusters=20)
+    labels = api.cluster_microstates(Y, method="minibatchkmeans", n_states=20)
 
     # 2) MSM from labels → macrostates (PCCA+-like)
     dtrajs = [labels]  # single trajectory
