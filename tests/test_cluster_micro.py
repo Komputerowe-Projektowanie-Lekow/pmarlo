@@ -7,9 +7,9 @@ from pmarlo.cluster.micro import cluster_microstates
 
 def test_returns_empty_for_no_samples():
     Y = np.empty((0, 2))
-    labels = cluster_microstates(Y, n_clusters=2)
-    assert labels.size == 0
-    assert labels.dtype == int
+    result = cluster_microstates(Y, n_states=2)
+    assert result.labels.size == 0
+    assert result.n_states == 0
 
 
 def test_raises_for_no_features():
@@ -23,5 +23,17 @@ def test_kmeans_uses_int_n_init():
     with patch("pmarlo.cluster.micro.KMeans") as mock_kmeans:
         instance = mock_kmeans.return_value
         instance.fit_predict.return_value = np.zeros(10, dtype=int)
-        cluster_microstates(Y, method="kmeans", n_clusters=2)
+        cluster_microstates(Y, method="kmeans", n_states=2)
         assert isinstance(mock_kmeans.call_args.kwargs["n_init"], int)
+
+
+def test_auto_and_fixed_states():
+    from sklearn.datasets import make_blobs
+
+    X, _ = make_blobs(n_samples=200, centers=8, n_features=2, random_state=0)
+    fixed = cluster_microstates(X, n_states=8, random_state=0)
+    assert len(np.unique(fixed.labels)) == 8
+
+    auto = cluster_microstates(X, n_states="auto", random_state=0)
+    assert 4 <= auto.n_states <= 20
+    assert auto.rationale is not None
