@@ -11,7 +11,7 @@ import logging
 import os
 import pickle
 import shutil
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -27,6 +27,7 @@ class CheckpointManager:
         output_base_dir: str = "output",
         pipeline_steps: Optional[List[str]] = None,
         auto_continue: bool = False,
+        max_retries: int = 3,
     ):
         """
         Initialize checkpoint manager.
@@ -36,6 +37,7 @@ class CheckpointManager:
             output_base_dir: Base directory for all outputs
             pipeline_steps: Custom list of pipeline steps (uses default if None)
             auto_continue: Automatically detect and continue interrupted runs
+            max_retries: Maximum retry attempts for a failed step
         """
         self.output_base_dir = Path(output_base_dir)
         self.run_id = run_id or self._generate_run_id()
@@ -44,6 +46,10 @@ class CheckpointManager:
         self.state_file = self.run_dir / "state.pkl"
         self.config_file = self.run_dir / "config.json"
         self.auto_continue = auto_continue
+        self.max_retries = max_retries
+
+        # Track start times for running steps (not persisted)
+        self.step_start_times: Dict[str, datetime] = {}
 
         # Ensure output directory exists
         self.output_base_dir.mkdir(exist_ok=True)
@@ -119,7 +125,15 @@ class CheckpointManager:
         return self.life_data
 
     def mark_step_started(self, step_name: str) -> None:
-        """Mark a step as started."""
+        """Mark a step as started and clear previous failures."""
+        failed_steps = self.life_data["failed_steps"]
+        if isinstance(failed_steps, list):
+            for step in failed_steps:
+                if isinstance(step, dict) and step.get("name") == step_name:
+                    step["in_progress"] = True
+                    break
+
+        self.step_start_times[step_name] = datetime.now()
         self.life_data["current_stage"] = step_name
         self.life_data["status"] = "running"
         self.save_life_data()
@@ -154,16 +168,13 @@ class CheckpointManager:
             ]
             self.life_data["completed_steps"].append(step_data)
 
+        self.step_start_times.pop(step_name, None)
         self.save_life_data()
         logger.info(f"Step completed: {step_name}")
 
     def mark_step_failed(self, step_name: str, error_msg: str) -> None:
-        """Mark a step as failed."""
-        step_data = {
-            "name": step_name,
-            "failed_at": datetime.now().isoformat(),
-            "error": error_msg,
-        }
+        """Mark a step as failed and handle retry tracking."""
+        retries = 1
 
         # Remove from completed if it was there
         completed_steps = self.life_data["completed_steps"]
@@ -174,19 +185,66 @@ class CheckpointManager:
                 if isinstance(s, dict) and s.get("name") != step_name
             ]
 
-        # Add to failed (or update if already there)
         failed_steps = self.life_data["failed_steps"]
-        if isinstance(failed_steps, list):
-            self.life_data["failed_steps"] = [
-                s
-                for s in failed_steps
-                if isinstance(s, dict) and s.get("name") != step_name
-            ]
-            self.life_data["failed_steps"].append(step_data)
+        if not isinstance(failed_steps, list):
+            failed_steps = []
 
+        updated = False
+        for step in failed_steps:
+            if isinstance(step, dict) and step.get("name") == step_name:
+                retries = int(step.get("retries", 0)) + 1
+                step.update(
+                    {
+                        "failed_at": datetime.now().isoformat(),
+                        "error": error_msg,
+                        "retries": retries,
+                        "in_progress": False,
+                    }
+                )
+                updated = True
+                break
+
+        if not updated:
+            failed_steps.append(
+                {
+                    "name": step_name,
+                    "failed_at": datetime.now().isoformat(),
+                    "error": error_msg,
+                    "retries": retries,
+                    "in_progress": False,
+                }
+            )
+
+        self.life_data["failed_steps"] = failed_steps
         self.life_data["status"] = "failed"
+        self.step_start_times.pop(step_name, None)
+
+        if retries >= self.max_retries:
+            completed_steps = self.life_data.get("completed_steps")
+            if isinstance(completed_steps, list):
+                completed_steps = [
+                    s
+                    for s in completed_steps
+                    if isinstance(s, dict) and s.get("name") != step_name
+                ]
+                completed_steps.append(
+                    {
+                        "name": step_name,
+                        "completed_at": datetime.now().isoformat(),
+                        "metadata": {"failed": True, "error": error_msg},
+                    }
+                )
+                self.life_data["completed_steps"] = completed_steps
+
+            logger.error(
+                f"Step failed: {step_name} - {error_msg} (max retries {self.max_retries} reached)"
+            )
+        else:
+            logger.error(
+                f"Step failed: {step_name} - {error_msg} (retry {retries}/{self.max_retries})"
+            )
+
         self.save_life_data()
-        logger.error(f"Step failed: {step_name} - {error_msg}")
 
     def clear_failed_step(self, step_name: str) -> None:
         """Clear a step from failed list (when retrying)."""
@@ -202,8 +260,22 @@ class CheckpointManager:
         if not self.life_data["failed_steps"]:
             self.life_data["status"] = "running"
 
+        self.step_start_times.pop(step_name, None)
         self.save_life_data()
         logger.info(f"Cleared failed status for step: {step_name}")
+
+    def has_timed_out(self, step_name: str, timeout_seconds: int) -> bool:
+        """Check if a running step has exceeded the timeout."""
+        started_at = self.step_start_times.get(step_name)
+        if not started_at:
+            return False
+
+        if datetime.now() - started_at > timedelta(seconds=timeout_seconds):
+            logger.warning(
+                f"Step {step_name} timed out after {timeout_seconds} seconds"
+            )
+            return True
+        return False
 
     def is_step_completed(self, step_name: str) -> bool:
         """Check if a step has been completed."""
@@ -261,8 +333,22 @@ class CheckpointManager:
         return self._extract_names_from_step_dicts(self.life_data["completed_steps"])
 
     def _get_failed_step_names(self) -> List[str]:
-        """Return names of failed steps from life_data."""
-        return self._extract_names_from_step_dicts(self.life_data["failed_steps"])
+        """Return names of failed steps that can still be retried."""
+        names: List[str] = []
+        failed_steps = self.life_data["failed_steps"]
+        if isinstance(failed_steps, list):
+            for step in failed_steps:
+                if isinstance(step, dict):
+                    name = step.get("name")
+                    retries = int(step.get("retries", 0))
+                    in_progress = step.get("in_progress", False)
+                    if (
+                        isinstance(name, str)
+                        and retries < self.max_retries
+                        and not in_progress
+                    ):
+                        names.append(name)
+        return names
 
     def _has_failed_steps(self, failed_names: List[str]) -> bool:
         """True if there is at least one failed step name."""
