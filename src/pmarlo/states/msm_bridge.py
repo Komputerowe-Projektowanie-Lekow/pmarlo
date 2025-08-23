@@ -4,6 +4,7 @@ import logging
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple, cast
 
+import json
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -40,12 +41,17 @@ def _infer_n_states(dtrajs: List[np.ndarray], n_states: Optional[int]) -> int:
     if n_states is not None:
         logger.debug(f"infer_n_states: States provided, using {n_states}")
         return int(n_states)
-    max_state = 0
+    # Start below zero so that trajectories with only negative labels
+    # (often used as "unassigned") do not contribute to the count.
+    max_state = -1
     for dt in dtrajs:
         if dt.size:
-            max_state = max(max_state, int(np.max(dt)))
-    logger.debug(f"infer_n_states: Using {max_state + 1} states")
-    return int(max_state + 1)
+            m = int(np.max(dt))
+            if m >= 0:
+                max_state = max(max_state, m)
+    n = int(max_state + 1) if max_state >= 0 else 0
+    logger.debug(f"infer_n_states: Using {n} states")
+    return n
 
 
 def _fit_msm_deeptime(
@@ -151,7 +157,8 @@ def pcca_like_macrostates(
         # Hard assignments from membership matrix
         chi = np.asarray(model.memberships, dtype=float)
         labels = np.argmax(chi, axis=1)
-        return cast(np.ndarray, labels.astype(int))
+        labels = _canonicalize_macro_labels(labels.astype(int), T)
+        return cast(np.ndarray, labels)
     except Exception:
         # Fallback: spectral embedding + k-means
         eigvals, eigvecs = np.linalg.eig(T.T)
@@ -163,9 +170,22 @@ def pcca_like_macrostates(
 
             km = MiniBatchKMeans(n_clusters=n_macrostates, random_state=random_state)
             labels = km.fit_predict(comps)
-            return cast(np.ndarray, labels.astype(int))
+            labels = _canonicalize_macro_labels(labels.astype(int), T)
+            return cast(np.ndarray, labels)
         except Exception:
             return None
+
+
+def _canonicalize_macro_labels(labels: np.ndarray, T: np.ndarray) -> np.ndarray:
+    """Renumber macrostate labels to ensure deterministic, consecutive ids."""
+    if labels.size == 0:
+        return labels.astype(int)
+    pi_micro = _stationary_from_T(T)
+    pops = compute_macro_populations(pi_micro, labels)
+    unique = np.unique(labels)
+    order = np.argsort(-pops[unique])
+    mapping = {int(unique[idx]): int(i) for i, idx in enumerate(order)}
+    return np.asarray([mapping[int(l)] for l in labels], dtype=int)
 
 
 def compute_macro_populations(
@@ -226,3 +246,19 @@ def compute_macro_mfpt(T_macro: np.ndarray) -> np.ndarray:
         mfpt[mask, j] = t
         mfpt[j, j] = 0.0
     return mfpt
+
+
+def serialize_macro_mapping(micro_to_macro: np.ndarray) -> str:
+    """Serialize micro→macro mapping to a JSON string."""
+    data = {"micro_to_macro": [int(x) for x in micro_to_macro.tolist()]}
+    return json.dumps(data)
+
+
+def deserialize_macro_mapping(data: str) -> np.ndarray:
+    """Deserialize micro→macro mapping from JSON string."""
+    try:
+        obj = json.loads(data)
+        arr = obj.get("micro_to_macro", [])
+        return np.asarray(arr, dtype=int)
+    except Exception:
+        return np.array([], dtype=int)
