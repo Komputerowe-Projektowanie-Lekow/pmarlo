@@ -97,10 +97,38 @@ def reduce_features(
 
 def cluster_microstates(
     Y: np.ndarray,
-    method: Literal["minibatchkmeans", "kmeans"] = "minibatchkmeans",
+    method: Literal["minibatchkmeans", "kmeans"] = "kmeans",
+    n_states: int | Literal["auto"] = "auto",
+    random_state: int = 42,
     **kwargs,
 ) -> np.ndarray:
-    return _cluster_microstates(Y, method=method, **kwargs)
+    """Public wrapper around :func:`cluster.micro.cluster_microstates`.
+
+    Parameters
+    ----------
+    Y:
+        Reduced feature array.
+    method:
+        Clustering algorithm to use.
+    n_states:
+        Number of states or ``"auto"`` to select via silhouette.
+    random_state:
+        Seed for deterministic clustering.
+
+    Returns
+    -------
+    np.ndarray
+        Integer labels per frame.
+    """
+
+    result = _cluster_microstates(
+        Y,
+        method=method,
+        n_states=n_states,
+        random_state=random_state,
+        **kwargs,
+    )
+    return result.labels
 
 
 def generate_free_energy_surface(
@@ -398,10 +426,33 @@ def analyze_msm(
     analysis_temperatures: Optional[List[float]] = None,
     use_effective_for_uncertainty: bool = True,
     use_tica: bool = True,
+    random_state: int = 42,
 ) -> Path:
     """Build and analyze an MSM, saving plots and artifacts.
 
-    Returns the analysis output directory.
+    Parameters
+    ----------
+    trajectory_files:
+        Trajectory file paths.
+    topology_pdb:
+        Topology in PDB format.
+    output_dir:
+        Destination directory.
+    feature_type:
+        Feature specification string.
+    analysis_temperatures:
+        Optional list of temperatures for analysis.
+    use_effective_for_uncertainty:
+        Whether to use effective counts for uncertainty.
+    use_tica:
+        Whether to apply TICA reduction.
+    random_state:
+        Seed for deterministic clustering.
+
+    Returns
+    -------
+    Path
+        The analysis output directory.
     """
     msm_out = Path(output_dir) / "msm_analysis"
 
@@ -410,6 +461,7 @@ def analyze_msm(
         topology_file=str(topology_pdb),
         temperatures=analysis_temperatures or [300.0],
         output_dir=str(msm_out),
+        random_state=random_state,
     )
     if use_effective_for_uncertainty:
         msm.count_mode = "sliding"
@@ -421,7 +473,7 @@ def analyze_msm(
 
     # Cluster
     N_CLUSTERS = 8
-    msm.cluster_features(n_clusters=int(N_CLUSTERS))
+    msm.cluster_features(n_states=int(N_CLUSTERS))
 
     # Method selection
     method = (
@@ -522,7 +574,7 @@ def find_conformations(
     specs = feature_specs if feature_specs is not None else ["phi_psi"]
     X, cols, periodic = compute_features(traj, feature_specs=specs)
     Y = reduce_features(X, method="vamp", lag=10, n_components=3)
-    labels = cluster_microstates(Y, method="minibatchkmeans", n_clusters=8)
+    labels = cluster_microstates(Y, method="minibatchkmeans", n_states=8)
 
     dtrajs = [labels]
     observed_states = int(np.max(labels)) + 1 if labels.size else 0
