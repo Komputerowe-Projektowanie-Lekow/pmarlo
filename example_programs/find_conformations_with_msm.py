@@ -257,8 +257,8 @@ def run_conformation_finder(
     items.append(
         {
             "type": "FES",
-            "bins_x": int(len(fes["xedges"]) - 1),
-            "bins_y": int(len(fes["yedges"]) - 1),
+            "bins_x": int(len(fes.xedges) - 1),
+            "bins_y": int(len(fes.yedges) - 1),
             "pair": {"x": names[0], "y": names[1]},
             "periodic": {"x": bool(per_i), "y": bool(per_j)},
         }
@@ -286,7 +286,7 @@ def run_conformation_finder(
     # Save a FES plot with a filename reflecting the selected pair
     fname = f"fes_{_sanitize(names[0])}_vs_{_sanitize(names[1])}.png"
     _ = save_fes_contour(
-        fes["F"], fes["xedges"], fes["yedges"], names[0], names[1], str(OUT_DIR), fname
+        fes.F, fes.xedges, fes.yedges, names[0], names[1], str(OUT_DIR), fname
     )
 
     write_conformations_csv_json(str(OUT_DIR), items)
