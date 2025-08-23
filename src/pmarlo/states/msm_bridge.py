@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, List, Optional, Tuple, cast
 
 import json
 import numpy as np
 
-logger = logging.getLogger(__name__)
+from pmarlo.utils.msm_utils import ensure_connected_counts
+
+logger = logging.getLogger("pmarlo")
 
 
 def build_simple_msm(
@@ -27,8 +28,12 @@ def build_simple_msm(
     n_states = _infer_n_states(dtrajs, n_states)
     logger.info(f"build_simple_msm: Using {n_states} states")
 
-    # Deeptime-based estimation
-    T, pi = _fit_msm_deeptime(dtrajs, n_states, lag, count_mode)
+    # Deeptime-based estimation with fallback
+    try:
+        T, pi = _fit_msm_deeptime(dtrajs, n_states, lag, count_mode)
+    except Exception as exc:  # pragma: no cover - triggered without deeptime
+        logger.warning("Falling back to internal MSM estimator due to error: %s", exc)
+        T, pi = _fit_msm_fallback(dtrajs, n_states, lag, count_mode)
     logger.info(f"build_simple_msm: Transition matrix shape: {T.shape}")
     logger.info(f"build_simple_msm: Stationary distribution shape: {pi.shape}")
     return T, pi
@@ -66,62 +71,59 @@ def _fit_msm_deeptime(
     and the MaximumLikelihoodMSM to fit the MSM.
     """
     from deeptime.markov import TransitionCountEstimator  # type: ignore
-    from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
 
     tce = TransitionCountEstimator(
         lagtime=int(max(1, lag)),
         count_mode=str(count_mode),
         sparse=False,
     )
-
     count_model = tce.fit(dtrajs).fetch_model()
-
-    # Most processes here are not assumed reversible
-    ml = MaximumLikelihoodMSM(reversible=False)
-    msm = ml.fit(count_model).fetch_model()
-    logger.debug(f"fit_msm_deeptime: MSM model: {msm}")
-
-    T = np.asarray(msm.transition_matrix, dtype=float)
-    pi = _stationary_from_model_or_T(msm, T)
-    logger.debug(f"fit_msm_deeptime: Transition matrix shape: {T.shape}")
-    logger.debug(f"fit_msm_deeptime: Stationary distribution shape: {pi.shape}")
-    return T, cast(np.ndarray, pi)
-
-
-def _stationary_from_model_or_T(msm: object, T: np.ndarray) -> np.ndarray:
-    if (
-        hasattr(msm, "stationary_distribution")
-        and getattr(msm, "stationary_distribution") is not None
-    ):
-        return np.asarray(getattr(msm, "stationary_distribution"), dtype=float)
-    return _stationary_from_T(T)
+    C_raw = np.asarray(count_model.count_matrix, dtype=float)
+    res = ensure_connected_counts(C_raw)
+    if res.counts.size == 0:
+        return _expand_results(n_states, res.active, np.zeros((0, 0)), np.zeros((0,)))
+    T_active = _row_normalize(res.counts)
+    pi_active = _stationary_from_T(T_active)
+    return _expand_results(n_states, res.active, T_active, pi_active)
 
 
 def _fit_msm_fallback(
-    dtrajs: List[np.ndarray], n_states: int, lag: int
+    dtrajs: List[np.ndarray], n_states: int, lag: int, count_mode: str
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     This function is used to fit the MSM using the fallback method.
     It uses the Dirichlet-regularized ML counts to estimate the transition matrix,
     and the stationary distribution is computed from the transition matrix.
     """
-    counts: Dict[Tuple[int, int], float] = defaultdict(float)
-    alpha = 2.0
+    counts = np.zeros((n_states, n_states), dtype=float)
+    step = lag if count_mode == "strided" else 1
     for dtraj in dtrajs:
         if dtraj.size <= lag:
             continue
-        for i in range(0, dtraj.size - lag):
+        for i in range(0, dtraj.size - lag, step):
             a = int(dtraj[i])
             b = int(dtraj[i + lag])
-            counts[(a, b)] += 1.0
-    C = np.full((n_states, n_states), alpha, dtype=float)
-    for (i, j), c in counts.items():
-        C[i, j] += c
-    T = _row_normalize(C)
-    pi = _stationary_from_T(T)
-    print(f"fit_msm_fallback: Transition matrix shape: {T.shape}")
-    print(f"fit_msm_fallback: Stationary distribution shape: {pi.shape}")
-    return T, pi
+            if a < 0 or b < 0 or a >= n_states or b >= n_states:
+                continue
+            counts[a, b] += 1.0
+    res = ensure_connected_counts(counts)
+    if res.counts.size == 0:
+        return _expand_results(n_states, res.active, np.zeros((0, 0)), np.zeros((0,)))
+    T_active = _row_normalize(res.counts)
+    pi_active = _stationary_from_T(T_active)
+    return _expand_results(n_states, res.active, T_active, pi_active)
+
+
+def _expand_results(
+    n_states: int, active: np.ndarray, T_active: np.ndarray, pi_active: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Expand MSM results back to the original state space."""
+    T_full = np.eye(n_states, dtype=float)
+    pi_full = np.zeros((n_states,), dtype=float)
+    if active.size:
+        T_full[np.ix_(active, active)] = T_active
+        pi_full[active] = pi_active
+    return T_full, pi_full
 
 
 def _row_normalize(C: np.ndarray) -> np.ndarray[Any, Any]:
@@ -185,7 +187,7 @@ def _canonicalize_macro_labels(labels: np.ndarray, T: np.ndarray) -> np.ndarray:
     unique = np.unique(labels)
     order = np.argsort(-pops[unique])
     mapping = {int(unique[idx]): int(i) for i, idx in enumerate(order)}
-    return np.asarray([mapping[int(l)] for l in labels], dtype=int)
+    return np.asarray([mapping[int(lbl)] for lbl in labels], dtype=int)
 
 
 def compute_macro_populations(

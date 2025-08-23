@@ -11,6 +11,7 @@ allowing for better exploration of conformational space across multiple temperat
 import logging
 import os
 import pickle
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -19,9 +20,11 @@ import openmm
 from openmm import Platform, unit
 from openmm.app import ForceField, PDBFile, Simulation
 
+from ..results import REMDResult
 from ..utils.replica_utils import exponential_temperature_ladder
 from .config import RemdConfig
 from .diagnostics import compute_exchange_statistics
+from .demux_metadata import DemuxMetadata
 from .platform_selector import select_platform_and_properties
 from .system_builder import (
     create_system,
@@ -31,7 +34,7 @@ from .system_builder import (
 )
 from .trajectory import ClosableDCDReporter
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("pmarlo")
 
 
 class ReplicaExchange:
@@ -1317,39 +1320,31 @@ class ReplicaExchange:
         with open(checkpoint_file, "wb") as f:
             pickle.dump(checkpoint_data, f)
 
-    def save_results(self):
+    def save_results(self) -> None:
         """Save final simulation results."""
-        results_file = self.output_dir / "remd_results.pkl"
-        results = {
-            "temperatures": self.temperatures,
-            "n_replicas": self.n_replicas,
-            "exchange_frequency": self.exchange_frequency,
-            "exchange_attempts": self.exchange_attempts,
-            "exchanges_accepted": self.exchanges_accepted,
-            "final_acceptance_rate": self.exchanges_accepted
+        results_file = self.output_dir / "analysis_results.pkl"
+        json_file = self.output_dir / "analysis_results.json"
+        result = REMDResult(
+            temperatures=np.asarray(self.temperatures),
+            n_replicas=self.n_replicas,
+            exchange_frequency=self.exchange_frequency,
+            exchange_attempts=self.exchange_attempts,
+            exchanges_accepted=self.exchanges_accepted,
+            final_acceptance_rate=self.exchanges_accepted
             / max(1, self.exchange_attempts),
-            "replica_states": self.replica_states,
-            "state_replicas": self.state_replicas,
-            "exchange_history": self.exchange_history,
-            "trajectory_files": [str(f) for f in self.trajectory_files],
-            # Diagnostics
-            "acceptance_matrix": (
-                self.acceptance_matrix.tolist()
-                if self.acceptance_matrix is not None
-                else None
-            ),
-            "replica_visitation_histogram": (
-                self.replica_visit_counts.tolist()
-                if self.replica_visit_counts is not None
-                else None
-            ),
-            "frames_per_replica": self._compute_frames_per_replica(),
-            "effective_sample_size": None,  # Placeholder for TRAM/MBAR ESS if applied
-        }
-
-        with open(results_file, "wb") as f:
-            pickle.dump(results, f)
-
+            replica_states=self.replica_states,
+            state_replicas=self.state_replicas,
+            exchange_history=self.exchange_history,
+            trajectory_files=[str(f) for f in self.trajectory_files],
+            acceptance_matrix=self.acceptance_matrix,
+            replica_visitation_histogram=self.replica_visit_counts,
+            frames_per_replica=self._compute_frames_per_replica(),
+            effective_sample_size=None,
+        )
+        with open(results_file, "wb") as pkl_f:
+            pickle.dump({"remd": result}, pkl_f)
+        with open(json_file, "w") as json_f:
+            json.dump({"remd": result.to_dict(metadata_only=True)}, json_f)
         logger.info(f"Results saved to {results_file}")
 
     def _compute_frames_per_replica(self) -> List[int]:
@@ -1445,16 +1440,28 @@ class ReplicaExchange:
 
         # Effective equilibration steps actually integrated (heating + temp equil)
         if equilibration_steps > 0:
-            effective_equil_steps = (
-                max(100, equilibration_steps * 40 // 100)
-                + max(100, equilibration_steps * 60 // 100)
+            effective_equil_steps = max(100, equilibration_steps * 40 // 100) + max(
+                100, equilibration_steps * 60 // 100
             )
         else:
             effective_equil_steps = 0
 
+        # Prepare temperature schedule mapping
+        temp_schedule: Dict[str, Dict[str, float]] = {
+            str(rid): {} for rid in range(self.n_replicas)
+        }
+
+        frames_per_segment: Optional[int] = None
+
         # Build per-segment slices
         for s, replica_states in enumerate(self.exchange_history):
             try:
+                # Record temperature assignment for provenance
+                for replica_idx, temp_state in enumerate(replica_states):
+                    temp_schedule[str(replica_idx)][str(s)] = float(
+                        self.temperatures[int(temp_state)]
+                    )
+
                 # Which replica was at the target temperature during this segment
                 replica_at_target = None
                 for replica_idx, temp_state in enumerate(replica_states):
@@ -1485,6 +1492,8 @@ class ReplicaExchange:
                 if end_frame > start_frame:
                     segment = traj[start_frame:end_frame]
                     demux_segments.append(segment)
+                    if frames_per_segment is None:
+                        frames_per_segment = int(end_frame - start_frame)
             except Exception:
                 continue
 
@@ -1499,6 +1508,22 @@ class ReplicaExchange:
                 logger.info(
                     f"Total frames at target temperature: {int(demux_traj.n_frames)}"
                 )
+
+                timestep_ps = float(
+                    self.integrators[0].getStepSize().value_in_unit(unit.picoseconds)
+                    if self.integrators
+                    else 0.0
+                )
+                metadata = DemuxMetadata(
+                    exchange_frequency_steps=int(self.exchange_frequency),
+                    integration_timestep_ps=timestep_ps,
+                    frames_per_segment=int(frames_per_segment or 0),
+                    temperature_schedule=temp_schedule,
+                )
+                meta_path = demux_file.with_suffix(".meta.json")
+                metadata.to_json(meta_path)
+                logger.info(f"Demultiplexed metadata saved: {meta_path}")
+
                 return str(demux_file)
             except Exception as e:
                 logger.error(f"Error saving demultiplexed trajectory: {e}")
