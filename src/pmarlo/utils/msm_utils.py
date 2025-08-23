@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-from typing import List, Optional
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 def candidate_lag_ladder(
     min_lag: int = 1,
     max_lag: int = 200,
-    n_candidates: Optional[int] = None,
-) -> List[int]:
+    n_candidates: int | None = None,
+) -> list[int]:
     """Generate a robust set of candidate lag times for MSM ITS analysis.
 
     Behavior:
@@ -25,11 +28,17 @@ def candidate_lag_ladder(
     Returns:
         An increasing list of integer lag times.
     """
-    lo = int(max(1, min_lag))
-    hi = int(max(lo, max_lag))
+    lo = int(min_lag)
+    hi = int(max_lag)
+    if lo < 1:
+        raise ValueError("min_lag must be >= 1")
+    if hi < lo:
+        raise ValueError("max_lag must be >= min_lag")
+    if n_candidates is not None and n_candidates < 1:
+        raise ValueError("n_candidates must be positive")
 
     # Curated ladder spanning typical analysis ranges
-    base: List[int] = [
+    base: list[int] = [
         1,
         2,
         3,
@@ -52,15 +61,17 @@ def candidate_lag_ladder(
         2000,
     ]
 
-    filtered: List[int] = [x for x in base if lo <= x <= hi]
+    filtered: list[int] = [x for x in base if lo <= x <= hi]
     if not filtered:
-        # Fallback: minimal sensible ladder within bounds
-        if lo == hi:
-            return [lo]
-        return [lo, hi]
+        logger.warning("No predefined lags in range [%s, %s]", lo, hi)
+        return [lo] if lo == hi else [lo, hi]
 
-    if n_candidates is None or n_candidates <= 0 or n_candidates >= len(filtered):
+    if n_candidates is None or n_candidates >= len(filtered):
         return filtered
+
+    logger.debug(
+        "Downsampling %d lag values to %d candidates", len(filtered), n_candidates
+    )
 
     # Downsample approximately evenly over the filtered ladder, keep endpoints
     if n_candidates == 1:
