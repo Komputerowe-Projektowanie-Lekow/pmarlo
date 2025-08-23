@@ -1,13 +1,21 @@
+"""Microstate clustering utilities.
+
+This module provides a thin wrapper around scikit-learn's clustering
+algorithms with a small amount of logic to automatically select between
+``KMeans`` and ``MiniBatchKMeans`` depending on the size of the dataset.  The
+auto-selection helps avoid out-of-memory errors when clustering very large
+data sets.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal, cast
 
+import logging
 import numpy as np
 from sklearn.cluster import KMeans, MiniBatchKMeans
 from sklearn.metrics import silhouette_score
-
-import logging
 
 logger = logging.getLogger("pmarlo")
 
@@ -24,12 +32,39 @@ class ClusteringResult:
 
 def cluster_microstates(
     Y: np.ndarray,
-    method: Literal["minibatchkmeans", "kmeans"] = "kmeans",
+    method: Literal["auto", "minibatchkmeans", "kmeans"] = "auto",
     n_states: int | Literal["auto"] = "auto",
     random_state: int = 42,
+    minibatch_threshold: int = 5_000_000,
     **kwargs,
 ) -> ClusteringResult:
-    """Cluster reduced data into microstates and return clustering result."""
+    """Cluster reduced data into microstates and return clustering result.
+
+    Parameters
+    ----------
+    Y:
+        Reduced feature matrix of shape ``(n_frames, n_features)``.
+    method:
+        Clustering algorithm to use.  When ``"auto"`` (the default) the
+        function switches to ``MiniBatchKMeans`` when
+        ``n_frames * n_features`` exceeds ``minibatch_threshold``.
+    n_states:
+        Number of microstates to identify or ``"auto"`` to select the number
+        based on the silhouette score.
+    random_state:
+        Seed for deterministic clustering.
+    minibatch_threshold:
+        Product of frames and features above which ``MiniBatchKMeans`` is used
+        when ``method="auto"``.
+    **kwargs:
+        Additional keyword arguments forwarded to the underlying scikit-learn
+        estimator.
+
+    Returns
+    -------
+    ClusteringResult
+        Labels and metadata describing the clustering.
+    """
 
     if Y.shape[0] == 0:
         return ClusteringResult(labels=np.zeros((0,), dtype=int), n_states=0)
@@ -56,9 +91,25 @@ def cluster_microstates(
     else:
         n_states = int(n_states)
 
-    if method == "minibatchkmeans":
+    # Determine clustering algorithm
+    chosen_method: str
+    if method == "auto":
+        n_total = int(Y.shape[0] * Y.shape[1])
+        if n_total > minibatch_threshold:
+            logger.info(
+                "Dataset size %d exceeds threshold %d; using MiniBatchKMeans",
+                n_total,
+                minibatch_threshold,
+            )
+            chosen_method = "minibatchkmeans"
+        else:
+            chosen_method = "kmeans"
+    else:
+        chosen_method = method
+
+    if chosen_method == "minibatchkmeans":
         km = MiniBatchKMeans(n_clusters=n_states, random_state=random_state, **kwargs)
-    elif method == "kmeans":
+    elif chosen_method == "kmeans":
         km = KMeans(n_clusters=n_states, random_state=random_state, n_init=10, **kwargs)
     else:
         raise ValueError(f"Unsupported clustering method: {method}")
