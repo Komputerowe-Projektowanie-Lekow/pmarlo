@@ -11,6 +11,10 @@ import logging
 logger = logging.getLogger("pmarlo")
 
 
+class DemuxIntegrityError(Exception):
+    """Raised when demultiplexing metadata is inconsistent or corrupted."""
+
+
 @dataclass
 class DemuxMetadata:
     """Container for provenance of a demultiplexed trajectory.
