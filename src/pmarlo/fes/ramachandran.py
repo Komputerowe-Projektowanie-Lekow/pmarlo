@@ -83,6 +83,37 @@ def compute_ramachandran(
     angles_deg = np.degrees(angles)
     angles_deg = ((angles_deg + 180.0) % 360.0) - 180.0
     angles_deg[angles_deg <= -180.0] += 360.0
+
+    # Self-check for nearly identical φ/ψ streams
+    if angles_deg.shape[0] > 1:
+        corr = float(np.corrcoef(angles_deg[:, 0], angles_deg[:, 1])[0, 1])
+    else:
+        corr = 0.0
+    if abs(corr) > 0.99:
+        logger.warning("phi/psi nearly identical; check residue mapping")
+        for alt in common_res:
+            if alt == chosen:
+                continue
+            alt_phi_col = phi_res.index(alt)
+            alt_psi_col = psi_res.index(alt)
+            alt_angles = np.stack(
+                [phi[:, alt_phi_col], psi[:, alt_psi_col]], axis=1
+            ).astype(np.float64)
+            alt_deg = np.degrees(alt_angles)
+            alt_deg = ((alt_deg + 180.0) % 360.0) - 180.0
+            alt_deg[alt_deg <= -180.0] += 360.0
+            if alt_deg.shape[0] > 1:
+                alt_corr = float(np.corrcoef(alt_deg[:, 0], alt_deg[:, 1])[0, 1])
+            else:
+                alt_corr = 0.0
+            if abs(alt_corr) <= 0.99:
+                angles_deg = alt_deg
+                phi_col = alt_phi_col
+                psi_col = alt_psi_col
+                chosen = alt
+                break
+
+    logger.info("phi_res=%d, psi_res=%d", phi_res[phi_col], psi_res[psi_col])
     return angles_deg.astype(np.float64, copy=False)
 
 
