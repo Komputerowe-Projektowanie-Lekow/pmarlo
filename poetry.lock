@@ -134,7 +134,7 @@ version = "5.2.0"
 description = "Universal encoding detector for Python 3"
 optional = false
 python-versions = ">=3.7"
-groups = ["dev"]
+groups = ["main", "dev"]
 files = [
     {file = "chardet-5.2.0-py3-none-any.whl", hash = "sha256:e1cf59446890a00105fe7b7912492ea04b6e6f06d4b742b2c788469e34c82970"},
     {file = "chardet-5.2.0.tar.gz", hash = "sha256:1b3b6ff479a8c414bc3fa2c0852995695c4a026dcd6d0633b2dd092ca39c1cf7"},
@@ -495,6 +495,50 @@ docs = ["ipython", "matplotlib", "numpydoc", "sphinx"]
 tests = ["pytest", "pytest-cov", "pytest-xdist"]
 
 [[package]]
+name = "deeptime"
+version = "0.4.5"
+description = "Python library for analysis of time series data including dimensionality reduction, clustering, and Markov model estimation."
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+files = [
+    {file = "deeptime-0.4.5-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:d6974d6e736a46e366858c415160beea2e86fdb1fb51e7b69c83dbdf545fb219"},
+    {file = "deeptime-0.4.5-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:28d7084f858ab1801f526fe1c996a152947c93b41b48db98055278f2a435d0a3"},
+    {file = "deeptime-0.4.5-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:88f849730e055f2bcc592ee486e47dbefc23088d49655327363fb0acce983a16"},
+    {file = "deeptime-0.4.5-cp310-cp310-win_amd64.whl", hash = "sha256:168f89346265a8f244f430a44b79384f9a319ce04748d5a03a7d9f16920b085e"},
+    {file = "deeptime-0.4.5-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:a755ebad819f396a2969fdd6a17fa10958807cf4d649f63213d60caccf543099"},
+    {file = "deeptime-0.4.5-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:499a8a955ad8e9160b86e69b2860c30561e5cf6b72d12170746a345dbc3570a9"},
+    {file = "deeptime-0.4.5-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:d2c1e148bc6c9cf027347834dd5ba1a5bf51f9cd01e375162f3bd516195b7ccd"},
+    {file = "deeptime-0.4.5-cp311-cp311-win_amd64.whl", hash = "sha256:ea7bead327a709eb703ecb5c2bb6f7a6c18d892b195b6e23840baea61d74fae5"},
+    {file = "deeptime-0.4.5-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:ff05e51b0763392f3b64b854545a6e41cf9a445fb642d3e690fcafa261cdb3f5"},
+    {file = "deeptime-0.4.5-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:69a09c60f9d0e12c035b7be4742fab1988d8e589064492f555c1b9c0b2f1c941"},
+    {file = "deeptime-0.4.5-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:ec9aeb7c2624b63d86f0a011a229ef0d9c643696ae84c78fe19f68c8cfc1bdea"},
+    {file = "deeptime-0.4.5-cp312-cp312-win_amd64.whl", hash = "sha256:7888d7a8f2f69ea1b0a723ad55652b224d64495a76431e57efab08abc610d1ae"},
+    {file = "deeptime-0.4.5-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:d9532eb850416907fe13ed63cf895133879be6afe1c9534bec002f0d60554274"},
+    {file = "deeptime-0.4.5-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:cd54f676377f6f6de42b830ed459b4ad49fc3e87822225a1c626ddef62861758"},
+    {file = "deeptime-0.4.5-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:7fa7a6960cb656dd61b0fd788bc86ae98600cfa3566ef13d55236e1904ee0cab"},
+    {file = "deeptime-0.4.5-cp313-cp313-win_amd64.whl", hash = "sha256:714145dcdb1cc5bdcaa11901482370f75364b32e0ea106d7990e7025ba3a0558"},
+    {file = "deeptime-0.4.5-cp39-cp39-macosx_10_9_x86_64.whl", hash = "sha256:b1bfca912b9e23fdc5dfbf6863b79362654021088d9d8d21c8e06e7ffeea8c92"},
+    {file = "deeptime-0.4.5-cp39-cp39-macosx_11_0_arm64.whl", hash = "sha256:bfc49855b21d5a3cb308db119844d928ae61910cd6c985cf6bed56e043d3ffd6"},
+    {file = "deeptime-0.4.5-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:c4c0b7a504c81201918673488f9f69c0e1fa435825b64e3bf92f4b7925adf469"},
+    {file = "deeptime-0.4.5-cp39-cp39-win_amd64.whl", hash = "sha256:04a3230920d3daf487d5324d174d001547b225d9e2c4a9c96b6c05950ae83b1a"},
+    {file = "deeptime-0.4.5.tar.gz", hash = "sha256:e290101e8a63f2338091866af671821e4d972b9d4fabf3fee4a14777f9aef414"},
+]
+
+[package.dependencies]
+numpy = "*"
+scikit-learn = ">=1.5.0"
+scipy = ">=1.9.0"
+threadpoolctl = ">=3.1.0"
+
+[package.extras]
+deep-learning = ["torch"]
+docs = ["jupyter", "matplotlib", "mdshare", "memory_profiler", "nbconvert", "nbsphinx", "networkx", "sphinx", "sphinx-gallery", "sphinxcontrib-bibtex", "sphinxcontrib-katex", "torch", "tqdm"]
+plotting = ["matplotlib", "networkx"]
+tests = ["cmake (>=3.24)", "coverage[toml]", "cython (>=0.29.30)", "flaky (>=3.7.0)", "matplotlib", "networkx", "ninja ; platform_system != \"Windows\"", "pybind11 (>=2.10.1)", "pytest (>=7.1.2)", "pytest-cov (>=3.0.0)", "pytest-xdist (>=2.5.0)", "torch (>=1.12.0) ; platform_system != \"Darwin\" and platform_system != \"Windows\"", "tqdm (>=4.64.0)"]
+units = ["pint (>=0.20)"]
+
+[[package]]
 name = "distlib"
 version = "0.4.0"
 description = "Distribution utilities"
@@ -599,6 +643,40 @@ symfont = ["sympy"]
 type1 = ["xattr ; sys_platform == \"darwin\""]
 unicode = ["unicodedata2 (>=15.1.0) ; python_version <= \"3.12\""]
 woff = ["brotli (>=1.0.1) ; platform_python_implementation == \"CPython\"", "brotlicffi (>=0.8.0) ; platform_python_implementation != \"CPython\"", "zopfli (>=0.1.4)"]
+
+[[package]]
+name = "gitdb"
+version = "4.0.12"
+description = "Git Object Database"
+optional = false
+python-versions = ">=3.7"
+groups = ["main"]
+files = [
+    {file = "gitdb-4.0.12-py3-none-any.whl", hash = "sha256:67073e15955400952c6565cc3e707c554a4eea2e428946f7a4c162fab9bd9bcf"},
+    {file = "gitdb-4.0.12.tar.gz", hash = "sha256:5ef71f855d191a3326fcfbc0d5da835f26b13fbcba60c32c21091c349ffdb571"},
+]
+
+[package.dependencies]
+smmap = ">=3.0.1,<6"
+
+[[package]]
+name = "gitpython"
+version = "3.1.45"
+description = "GitPython is a Python library used to interact with Git repositories"
+optional = false
+python-versions = ">=3.7"
+groups = ["main"]
+files = [
+    {file = "gitpython-3.1.45-py3-none-any.whl", hash = "sha256:8908cb2e02fb3b93b7eb0f2827125cb699869470432cc885f019b8fd0fccff77"},
+    {file = "gitpython-3.1.45.tar.gz", hash = "sha256:85b0ee964ceddf211c41b9f27a49086010a190fd8132a24e21f362a4b36a791c"},
+]
+
+[package.dependencies]
+gitdb = ">=4.0.1,<5"
+
+[package.extras]
+doc = ["sphinx (>=7.1.2,<7.2)", "sphinx-autodoc-typehints", "sphinx_rtd_theme"]
+test = ["coverage[toml]", "ddt (>=1.1.1,!=1.4.3)", "mock ; python_version < \"3.8\"", "mypy", "pre-commit", "pytest (>=7.3.1)", "pytest-cov", "pytest-instafail", "pytest-mock", "pytest-sugar", "typing-extensions ; python_version < \"3.11\""]
 
 [[package]]
 name = "identify"
@@ -795,7 +873,7 @@ version = "3.0.0"
 description = "Python port of markdown-it. Markdown parsing, done right!"
 optional = false
 python-versions = ">=3.8"
-groups = ["dev"]
+groups = ["main", "dev"]
 files = [
     {file = "markdown-it-py-3.0.0.tar.gz", hash = "sha256:e3f60a94fa066dc52ec76661e37c851cb232d92f9886b15cb560aaada2df8feb"},
     {file = "markdown_it_py-3.0.0-py3-none-any.whl", hash = "sha256:355216845c60bd96232cd8d8c40e8f9765cc86f46880e43a8fd22dc1a1a8cab1"},
@@ -1001,7 +1079,7 @@ version = "0.1.2"
 description = "Markdown URL utilities"
 optional = false
 python-versions = ">=3.7"
-groups = ["dev"]
+groups = ["main", "dev"]
 files = [
     {file = "mdurl-0.1.2-py3-none-any.whl", hash = "sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8"},
     {file = "mdurl-0.1.2.tar.gz", hash = "sha256:bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba"},
@@ -1296,7 +1374,7 @@ description = "pdbfixer: Fixes problems in PDB files"
 optional = true
 python-versions = "*"
 groups = ["main"]
-markers = "extra == \"fixer\""
+markers = "python_version == \"3.11\" and extra == \"fixer\""
 files = []
 develop = false
 
@@ -1523,7 +1601,7 @@ version = "2.19.2"
 description = "Pygments is a syntax highlighting package written in Python."
 optional = false
 python-versions = ">=3.8"
-groups = ["docs", "tests"]
+groups = ["main", "docs", "tests"]
 files = [
     {file = "pygments-2.19.2-py3-none-any.whl", hash = "sha256:86540386c03d588bb81d44bc3928634ff26449851e99741617ecb9037ee5ec0b"},
     {file = "pygments-2.19.2.tar.gz", hash = "sha256:636cb2477cec7f8952536970bc533bc43743542f70392ae026374600add5b887"},
@@ -1531,6 +1609,24 @@ files = [
 
 [package.extras]
 windows-terminal = ["colorama (>=0.4.6)"]
+
+[[package]]
+name = "pygount"
+version = "3.1.0"
+description = "count source lines of code (SLOC) using pygments"
+optional = false
+python-versions = "<4,>=3.9"
+groups = ["main"]
+files = [
+    {file = "pygount-3.1.0-py3-none-any.whl", hash = "sha256:974aaf7a77d7f93aefc220639a897364cdd88a77e5a102d7063f73f8b7100955"},
+    {file = "pygount-3.1.0.tar.gz", hash = "sha256:2f4b064ac1689ba43bdf84bef244e7a45f27e315feae6fb19d1209c56a580361"},
+]
+
+[package.dependencies]
+chardet = ">=5,<6"
+gitpython = ">=3.1,<4.0"
+pygments = ">=2,<3"
+rich = ">=9"
 
 [[package]]
 name = "pyparsing"
@@ -1759,6 +1855,25 @@ socks = ["PySocks (>=1.5.6,!=1.5.7)"]
 use-chardet-on-py3 = ["chardet (>=3.0.2,<6)"]
 
 [[package]]
+name = "rich"
+version = "14.1.0"
+description = "Render rich text, tables, progress bars, syntax highlighting, markdown and more to the terminal"
+optional = false
+python-versions = ">=3.8.0"
+groups = ["main"]
+files = [
+    {file = "rich-14.1.0-py3-none-any.whl", hash = "sha256:536f5f1785986d6dbdea3c75205c473f970777b4a0d6c6dd1b696aa05a3fa04f"},
+    {file = "rich-14.1.0.tar.gz", hash = "sha256:e497a48b844b0320d45007cdebfeaeed8db2a4f4bcf49f15e455cfc4af11eaa8"},
+]
+
+[package.dependencies]
+markdown-it-py = ">=2.2.0"
+pygments = ">=2.13.0,<3.0.0"
+
+[package.extras]
+jupyter = ["ipywidgets (>=7.5.1,<9)"]
+
+[[package]]
 name = "scikit-learn"
 version = "1.7.1"
 description = "A set of python modules for machine learning and data mining"
@@ -1916,6 +2031,18 @@ groups = ["main"]
 files = [
     {file = "six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274"},
     {file = "six-1.17.0.tar.gz", hash = "sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81"},
+]
+
+[[package]]
+name = "smmap"
+version = "5.0.2"
+description = "A pure Python implementation of a sliding window memory map manager"
+optional = false
+python-versions = ">=3.7"
+groups = ["main"]
+files = [
+    {file = "smmap-5.0.2-py3-none-any.whl", hash = "sha256:b30115f0def7d7531d22a0fb6502488d879e75b260a9db4d0819cfb25403af5e"},
+    {file = "smmap-5.0.2.tar.gz", hash = "sha256:26ea65a03958fa0c8a1c7e8c7a58fdc77221b8910f6be2131affade476898ad5"},
 ]
 
 [[package]]
@@ -2204,4 +2331,4 @@ fixer = ["pdbfixer"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.13"
-content-hash = "7bb3c75eb5ee5e1a21e595096048395b0a2d4b5bc50b6d56c2968f67883e86ed"
+content-hash = "bf5566748c567541c27ca844dfe4d4387084ded6c68b8c33096238671eb31c5d"

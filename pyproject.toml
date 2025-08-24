@@ -45,6 +45,8 @@ dependencies = [
   "openmm>=8.0,<9.0",
   "rdkit>=2024.03.1,<2025.0",
   "psutil>=5.9,<6.1",
+  "pygount>=2.6,<3.2",
+  "deeptime>=0.4.5,<0.5",
 ]
 
 # ─────────────────────── Optional runtime extras ──────────────────────
@@ -142,7 +144,7 @@ ignore_errors = true
 # aby odblokować zielone "tox -e type"; docelowo usuniemy te wpisy po refaktorze.
 module = [
   "pmarlo.pipeline",
-  "pmarlo.markov_state_model.markov_state_model",
+  "pmarlo.markov_state_model.enhanced_msm",
   "pmarlo.experiments.simulation",
   "pmarlo.main",
 ]

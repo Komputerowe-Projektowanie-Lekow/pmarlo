@@ -21,3 +21,7 @@ global-exclude .pytest_cache
 global-exclude output
 global-exclude bias
 global-exclude .git*
+
+# Do not ship ops-only artifacts in sdist (remain in repo only)
+prune deploy
+prune docker

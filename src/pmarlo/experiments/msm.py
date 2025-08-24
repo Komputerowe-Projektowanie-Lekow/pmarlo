@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List
 
-from ..markov_state_model.markov_state_model import run_complete_msm_analysis
+from ..markov_state_model.enhanced_msm import run_complete_msm_analysis
 from .benchmark_utils import (
     build_msm_baseline_object,
     compute_threshold_comparison,
@@ -26,7 +26,7 @@ from .kpi import (
     default_kpi_metrics,
     write_benchmark_json,
 )
-from .utils import timestamp_dir
+from .utils import set_seed, timestamp_dir
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,9 @@ class MSMConfig:
     lag_time: int = 20
     feature_type: str = "phi_psi"
     temperatures: List[float] | None = None
+    stride: int = 1
+    atom_selection: str | None = None
+    seed: int | None = None
 
 
 def _create_run_directory(output_dir: str) -> Path:
@@ -54,10 +57,12 @@ def _perform_msm_analysis_with_tracking(config: MSMConfig, run_dir: Path):
             trajectory_files=config.trajectory_files,
             topology_file=config.topology_file,
             output_dir=str(run_dir / "msm"),
-            n_clusters=config.n_clusters,
+            n_states=config.n_clusters,
             lag_time=config.lag_time,
             feature_type=config.feature_type,
             temperatures=config.temperatures,
+            stride=config.stride,
+            atom_selection=config.atom_selection,
         )
     return msm, tracker
 
@@ -136,12 +141,19 @@ def _compute_msm_diagnostics(msm) -> Dict:
     its_convergence_score = compute_its_convergence_score(
         getattr(msm, "implied_timescales", None)
     )
+    # Macrostate CK test (factors 2,3) if available
+    ck_macro = None
+    try:
+        ck_macro = msm.compute_ck_test_macrostates(n_macrostates=3, factors=[2, 3])
+    except Exception:
+        ck_macro = None
     return {
         "spectral_gap": spectral_gap,
         "stationary_entropy": stationary_entropy,
         "row_stochasticity_mad": row_stochasticity_mad,
         "detailed_balance_mad": detailed_balance_mad,
         "its_convergence_score": its_convergence_score,
+        "ck_macro": ck_macro,
     }
 
 
@@ -217,7 +229,7 @@ def _build_enriched_input(
         "seconds_per_step": None,
         "num_exchange_attempts": None,
         "overall_acceptance_rate": None,
-        "seed": None,
+        "seed": config.seed,
     }
 
 
@@ -272,6 +284,7 @@ def run_msm_experiment(config: MSMConfig) -> Dict:
 
     Returns a dictionary pointing to the run directory and summary file content.
     """
+    set_seed(config.seed)
     run_dir = _create_run_directory(config.output_dir)
 
     msm, tracker = _perform_msm_analysis_with_tracking(config, run_dir)

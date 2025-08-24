@@ -28,7 +28,7 @@ from .kpi import (
     default_kpi_metrics,
     write_benchmark_json,
 )
-from .utils import timestamp_dir
+from .utils import set_seed, timestamp_dir
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ class SimulationConfig:
     temperature: float = 300.0
     n_states: int = 40
     use_metadynamics: bool = True
+    seed: int | None = None
 
 
 def _create_run_dir(output_root: str) -> Path:
@@ -60,6 +61,8 @@ def _configure_pipeline(config: SimulationConfig, run_dir: Path) -> Pipeline:
         output_dir=str(run_dir),
         auto_continue=False,
         enable_checkpoints=False,
+        # Ensure we record frames frequently enough for short tests
+        # (propagated to Simulation via Pipeline)
     )
 
 
@@ -249,7 +252,7 @@ def _enrich_input(
         "detailed_balance_mad": detailed_balance_mad,
         "ck_mse_factor2": ck_mse_factor2,
         **get_environment_info(),
-        "seed": None,
+        "seed": config.seed,
         "num_frames": metrics.get("num_frames"),
         "num_exchange_attempts": None,
     }
@@ -306,6 +309,7 @@ def run_simulation_experiment(config: SimulationConfig) -> Dict:
     equilibration using the existing Pipeline with use_replica_exchange=False.
     Returns a dict with artifact paths and quick metrics.
     """
+    set_seed(config.seed)
     run_dir = _create_run_dir(config.output_dir)
     pipeline = _configure_pipeline(config, run_dir)
     _setup_protein_with_fallback(pipeline, config.pdb_file)

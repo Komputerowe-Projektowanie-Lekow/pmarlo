@@ -30,6 +30,11 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
+
+## Documentation
+Documentation was made using cognition powered by Devin. Here is the link https://deepwiki.com/Komputerowe-Projektowanie-Lekow/pmarlo. It will be updated weekly whenever new features, bug fixes, or other changes are made.
+
+
 ## Verified Usage Example
 
 The following example demonstrates the verified functionality of PMARLO:
@@ -53,6 +58,19 @@ pipeline = Pipeline(
 )
 results = pipeline.run()
 ```
+
+## Complexity
+
+Currently based on the pygount, the amount of lines of code is ~ 6000 lines, which is quite big number, where we can make package less bloated in the next updates.
+
+utilities
+  Files: 1 | Code: 102 | Comment: 15
+tests
+  Files: 8 | Code: 679 | Comment: 229
+src
+  Files: 24 | Code: 5483 | Comment: 1176
+example_programs
+  Files: 3 | Code: 365 | Comment: 92
 
 ## Package Structure
 

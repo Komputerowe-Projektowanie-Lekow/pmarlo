@@ -40,9 +40,12 @@ except ImportError:
     from .manager.checkpoint_manager import CheckpointManager, list_runs
 
 import argparse
+import random
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional, cast
+
+import numpy as np
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 TESTS_DIR = BASE_DIR / "tests" / "data"
@@ -394,6 +397,7 @@ Examples:
     _add_mode_argument(parser)
     _add_steps_argument(parser)
     _add_states_argument(parser)
+    _add_random_state_argument(parser)
     _add_id_argument(parser)
     _add_continue_argument(parser)
     _add_no_auto_continue_argument(parser)
@@ -434,6 +438,15 @@ def _add_states_argument(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=50,
         help="Number of MSM states (default: 50)",
+    )
+
+
+def _add_random_state_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--random-state",
+        type=int,
+        default=42,
+        help="Seed for random number generators",
     )
 
 
@@ -546,6 +559,8 @@ def main():
     args = _parse_args_or_default(parser)
     if _handle_list_runs_flag(args):
         return
+    random.seed(args.random_state)
+    np.random.seed(args.random_state)
     _print_program_header(args.mode)
     handlers = _get_mode_handlers()
     handler = handlers.get(args.mode)
