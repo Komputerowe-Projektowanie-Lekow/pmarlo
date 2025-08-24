@@ -27,9 +27,10 @@ def test_plateau_detection_recovers_known_timescale():
     res = msm.implied_timescales
     assert res is not None
     assert res.recommended_lag_window is not None
-    start, end = res.recommended_lag_window
-    lags = res.lag_times
-    mask = (lags >= start) & (lags <= end)
+    start_ps, end_ps = res.recommended_lag_window
+    dt_ps = msm.time_per_frame_ps or 1.0
+    lags = res.lag_times * dt_ps
+    mask = (lags >= start_ps) & (lags <= end_ps)
     ts = res.timescales[mask, 0]
     assert np.nanmax(ts) - np.nanmin(ts) <= 0.1 * np.nanmean(ts)
     # theoretical timescale for p=0.05

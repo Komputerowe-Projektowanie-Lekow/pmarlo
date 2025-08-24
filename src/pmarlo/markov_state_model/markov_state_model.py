@@ -40,7 +40,7 @@ from pmarlo.utils.msm_utils import ensure_connected_counts
 from ..cluster.micro import ClusteringResult, cluster_microstates
 from ..replica_exchange.demux_metadata import DemuxMetadata
 from ..results import FESResult, ITSResult, MSMResult
-from .utils import safe_timescales
+from .utils import format_lag_window_ps, safe_timescales
 
 logger = logging.getLogger("pmarlo")
 
@@ -1150,6 +1150,12 @@ class EnhancedMSM:
         recommended = self._select_lag_window(
             np.array(lag_times), eigen_means_arr, plateau_m, plateau_epsilon
         )
+        dt_ps = self.time_per_frame_ps or 1.0
+        recommended_ps = (
+            (recommended[0] * dt_ps, recommended[1] * dt_ps)
+            if recommended is not None
+            else None
+        )
 
         self.implied_timescales = ITSResult(
             lag_times=np.array(lag_times, dtype=int),
@@ -1159,7 +1165,7 @@ class EnhancedMSM:
             timescales_ci=ts_ci_arr,
             rates=rate_means_arr,
             rates_ci=rate_ci_arr,
-            recommended_lag_window=recommended,
+            recommended_lag_window=recommended_ps,
         )
 
         logger.info("Implied timescales computation completed")
@@ -2510,78 +2516,95 @@ class EnhancedMSM:
             plt.show()
 
     def plot_implied_timescales(self, save_file: Optional[str] = None):
-        """Plot implied timescales for MSM validation."""
-        if self.implied_timescales is None:
-            raise ValueError("Implied timescales must be computed first")
+    """Plot implied timescales for MSM validation."""
+    if self.implied_timescales is None:
+        raise ValueError("Implied timescales must be computed first")
 
-        res = self.implied_timescales
-        lag_times = np.asarray(res.lag_times, dtype=float)
-        timescales = np.asarray(res.timescales, dtype=float)
-        ts_ci = np.asarray(res.timescales_ci, dtype=float)
+    res = self.implied_timescales
+    lag_times = np.asarray(res.lag_times, dtype=float)            # in frames
+    timescales = np.asarray(res.timescales, dtype=float)          # in frames
+    ts_ci = np.asarray(res.timescales_ci, dtype=float)            # in frames
 
-        dt_ps = self.time_per_frame_ps or 1.0
-        lag_ps = lag_times * dt_ps
-        ts_ps = timescales * dt_ps
-        ts_ci_ps = ts_ci * dt_ps
+    # Convert frames -> physical time (ps) using time_per_frame_ps
+    dt_ps = self.time_per_frame_ps or 1.0
+    lag_ps = lag_times * dt_ps
+    ts_ps = timescales * dt_ps
+    ts_ci_ps = ts_ci * dt_ps
 
-        unit_label = "ps"
-        scale = 1.0
-        if (np.max(lag_ps) >= 1000.0) or (np.max(ts_ps) >= 1000.0):
-            unit_label = "ns"
-            scale = 1e-3
+    # Choose axis time unit
+    unit_label = "ps"
+    scale = 1.0
+    if (np.max(lag_ps) >= 1000.0) or (np.max(ts_ps) >= 1000.0):
+        unit_label = "ns"
+        scale = 1e-3
 
-        lag_plot = lag_ps * scale
-        ts_plot = ts_ps * scale
-        ts_ci_plot = ts_ci_ps * scale
+    lag_plot = lag_ps * scale
+    ts_plot = ts_ps * scale
+    ts_ci_plot = ts_ci_ps * scale
 
-        plt.figure(figsize=(10, 6))
-        for i in range(ts_plot.shape[1]):
-            mask = (
-                np.isfinite(ts_plot[:, i])
-                & np.isfinite(ts_ci_plot[:, i, 0])
-                & np.isfinite(ts_ci_plot[:, i, 1])
+    plt.figure(figsize=(10, 6))
+    for i in range(ts_plot.shape[1]):
+        mask = (
+            np.isfinite(ts_plot[:, i])
+            & np.isfinite(ts_ci_plot[:, i, 0])
+            & np.isfinite(ts_ci_plot[:, i, 1])
+        )
+        if np.any(mask):
+            plt.plot(
+                lag_plot[mask],
+                ts_plot[mask, i],
+                "o-",
+                label=f"τ{i+1} ({unit_label})",
             )
-            if np.any(mask):
-                plt.plot(
-                    lag_plot[mask],
-                    ts_plot[mask, i],
-                    "o-",
-                    label=f"τ{i+1} ({unit_label})",
-                )
-                plt.fill_between(
-                    lag_plot[mask],
-                    ts_ci_plot[mask, i, 0],
-                    ts_ci_plot[mask, i, 1],
-                    alpha=0.2,
-                )
-            else:
-                plt.plot([], [], label=f"τ{i+1} ({unit_label})")
-        plt.plot([], [], " ", label="NaNs indicate unstable eigenvalues at this τ")
-
-        if res.recommended_lag_window is not None:
-            start, end = res.recommended_lag_window
-            start_ps = start * dt_ps
-            end_ps = end * dt_ps
-            plt.axvspan(
-                start_ps * scale,
-                end_ps * scale,
-                color="gray",
-                alpha=0.1,
-                label=f"Recommended τ: {start_ps * scale:.3g}–{end_ps * scale:.3g} {unit_label}",
+            plt.fill_between(
+                lag_plot[mask],
+                ts_ci_plot[mask, i, 0],
+                ts_ci_plot[mask, i, 1],
+                alpha=0.2,
             )
+        else:
+            # keep legend entry even if this timescale is fully NaN at plotted lags
+            plt.plot([], [], label=f"τ{i+1} ({unit_label})")
 
-        plt.xlabel(f"Lag Time ({unit_label})")
-        plt.ylabel(f"Implied Timescale ({unit_label})")
-        plt.title("Implied Timescales Analysis")
-        plt.legend()
-        plt.grid(True, alpha=0.3)
+    # Informational legend entry about NaNs
+    plt.plot([], [], " ", label="NaNs indicate unstable eigenvalues at this τ")
 
-        if save_file:
-            plt.savefig(
-                self.output_dir / f"{save_file}.png", dpi=300, bbox_inches="tight"
-            )
+    title = "Implied Timescales Analysis"
 
-        plt.show()
+    # --- Resolved block: draw recommended lag window consistently ---
+    if getattr(res, "recommended_lag_window", None) is not None:
+        start_val, end_val = res.recommended_lag_window
+
+        # Heuristic: if the window lies within the range of lag *frames*,
+        # treat it as frames and convert; otherwise assume it's already in ps.
+        max_lag_frames = np.max(lag_times) if lag_times.size > 0 else np.nan
+        in_frames = np.isfinite(max_lag_frames) and (end_val <= max_lag_frames + 1e-9)
+
+        if in_frames:
+            start_ps = float(start_val) * dt_ps
+            end_ps = float(end_val) * dt_ps
+        else:
+            start_ps = float(start_val)
+            end_ps = float(end_val)
+
+        # Shade the recommended window and draw dashed borders, using axis units
+        plt.axvspan(start_ps * scale, end_ps * scale, color="gray", alpha=0.1)
+        plt.axvline(start_ps * scale, color="gray", linestyle="--", alpha=0.7)
+        plt.axvline(end_ps * scale, color="gray", linestyle="--", alpha=0.7)
+
+        title += f"\nRecommended τ: {start_ps * scale:.3g}–{end_ps * scale:.3g} {unit_label}"
+    # --- end resolved block ---
+
+    plt.xlabel(f"Lag Time ({unit_label})")
+    plt.ylabel(f"Implied Timescale ({unit_label})")
+    plt.title(title)
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+
+    if save_file:
+        plt.savefig(self.output_dir / f"{save_file}.png", dpi=300, bbox_inches="tight")
+
+    plt.show()
 
     def plot_implied_rates(self, save_file: Optional[str] = None) -> None:
         """Plot implied rates with confidence intervals."""
@@ -2637,18 +2660,16 @@ class EnhancedMSM:
                 plt.plot([], [], label=f"k{i+1} ({rate_unit})")
         plt.plot([], [], " ", label="NaNs indicate unstable eigenvalues at this τ")
 
+        title = "Implied Rates"
         if res.recommended_lag_window is not None:
-            start, end = res.recommended_lag_window
-            plt.axvspan(
-                start * dt_ps * lag_scale,
-                end * dt_ps * lag_scale,
-                color="gray",
-                alpha=0.1,
-            )
+            start_ps, end_ps = res.recommended_lag_window
+            plt.axvline(start_ps * lag_scale, color="gray", linestyle="--", alpha=0.7)
+            plt.axvline(end_ps * lag_scale, color="gray", linestyle="--", alpha=0.7)
+            title += f"\nRecommended τ: {format_lag_window_ps((start_ps, end_ps))}"
 
         plt.xlabel(f"Lag Time ({lag_unit})")
         plt.ylabel(f"Rate ({rate_unit})")
-        plt.title("Implied Rates")
+        plt.title(title)
         plt.legend()
         plt.grid(True, alpha=0.3)
 
