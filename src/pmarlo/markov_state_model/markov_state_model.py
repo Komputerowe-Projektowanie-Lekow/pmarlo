@@ -1889,16 +1889,39 @@ class EnhancedMSM:
         """Create comprehensive state summary table."""
         logger.info("Creating state summary table...")
         self._validate_state_table_prerequisites()
-        state_data = self._build_basic_state_info()
+        state_data: Dict[str, Any] = {"state_id": range(self.n_states)}
         frame_counts, total_frames = self._count_frames_per_state()
-        state_data["frame_count"] = frame_counts.astype(int)
-        state_data["frame_percentage"] = 100 * frame_counts / max(total_frames, 1)
-        representative_frames, centroid_features = self._find_representatives()
+        state_data["counts"] = frame_counts.astype(int)
+        population = frame_counts / max(total_frames, 1)
+        state_data["population"] = population
+        kT = (
+            constants.k
+            * float(self.temperatures[0])
+            * constants.Avogadro
+            / 1000.0
+        )
+        free_from_pop = -kT * np.log(np.clip(population, 1e-12, None))
+        state_data["free_energy_kJ_mol"] = free_from_pop
+        if self.free_energies is not None:
+            diff = np.abs(free_from_pop - self.free_energies)
+            if np.any(diff > 0.2):
+                logger.warning(
+                    "Free energies from populations differ from MSM output by more than 0.2 kJ/mol"
+                )
+        representative_frames, _ = self._find_representatives()
         rep_traj_array, rep_frame_array = self._representative_arrays(
             representative_frames
         )
         state_data["representative_traj"] = rep_traj_array
         state_data["representative_frame"] = rep_frame_array
+        state_data["representative_frame_index"] = self._global_rep_indices(
+            representative_frames
+        )
+        mean_phi_deg, mean_psi_deg = self._mean_phi_psi_per_state()
+        state_data["mean_phi_deg"] = mean_phi_deg
+        state_data["mean_psi_deg"] = mean_psi_deg
+        fe_err = self._bootstrap_free_energy_errors(frame_counts)
+        state_data["free_energy_error"] = fe_err
         self._attach_cluster_centers(state_data)
         self.state_table = pd.DataFrame(state_data)
         logger.info(f"State table created with {len(self.state_table)} states")
@@ -1918,20 +1941,7 @@ class EnhancedMSM:
             raise ValueError("MSM must be built before creating state table")
 
     def _build_basic_state_info(self) -> Dict[str, Any]:
-        return {
-            "state_id": range(self.n_states),
-            "population": self.stationary_distribution,
-            "free_energy_kJ_mol": (
-                self.free_energies
-                if self.free_energies is not None
-                else np.zeros(self.n_states)
-            ),
-            "free_energy_kcal_mol": (
-                self.free_energies * 0.239006
-                if self.free_energies is not None
-                else np.zeros(self.n_states)
-            ),
-        }
+        return {"state_id": range(self.n_states)}
 
     def _count_frames_per_state(self) -> tuple[np.ndarray, int]:
         frame_counts = np.zeros(self.n_states)
@@ -1941,6 +1951,66 @@ class EnhancedMSM:
                 frame_counts[state] += 1
                 total_frames += 1
         return frame_counts, total_frames
+
+    def _mean_phi_psi_per_state(self) -> tuple[np.ndarray, np.ndarray]:
+        if self.features is None or self.features.shape[1] < 2:
+            return (
+                np.full(self.n_states, np.nan),
+                np.full(self.n_states, np.nan),
+            )
+        phi_sum = np.zeros(self.n_states)
+        psi_sum = np.zeros(self.n_states)
+        counts = np.zeros(self.n_states)
+        frame_idx = 0
+        for dtraj in self.dtrajs:
+            for state in dtraj:
+                phi_sum[state] += self.features[frame_idx, 0]
+                psi_sum[state] += self.features[frame_idx, 1]
+                counts[state] += 1
+                frame_idx += 1
+        with np.errstate(divide="ignore", invalid="ignore"):
+            mean_phi = np.rad2deg(phi_sum / counts)
+            mean_psi = np.rad2deg(psi_sum / counts)
+        return mean_phi, mean_psi
+
+    def _global_rep_indices(
+        self, representative_frames: list[tuple[int, int]]
+    ) -> np.ndarray:
+        lengths = [len(d) for d in self.dtrajs]
+        offsets = np.cumsum([0] + lengths[:-1])
+        indices: list[int] = []
+        for traj_idx, local in representative_frames:
+            if traj_idx < 0 or local < 0:
+                indices.append(-1)
+            else:
+                indices.append(int(offsets[traj_idx] + local))
+        return np.array(indices)
+
+    def _bootstrap_counts(
+        self, assignments: np.ndarray, n_boot: int = 200
+    ) -> np.ndarray:
+        rng = np.random.default_rng()
+        samples = np.empty((n_boot, self.n_states), dtype=float)
+        for i in range(n_boot):
+            resample = rng.choice(assignments, size=assignments.size, replace=True)
+            samples[i] = np.bincount(resample, minlength=self.n_states)
+        return samples
+
+    def _bootstrap_free_energy_errors(
+        self, counts: np.ndarray, n_boot: int = 200
+    ) -> np.ndarray:
+        if not self.dtrajs:
+            return np.zeros(self.n_states)
+        assignments = np.concatenate(self.dtrajs)
+        samples = self._bootstrap_counts(assignments, n_boot)
+        kT = (
+            constants.k
+            * float(self.temperatures[0])
+            * constants.Avogadro
+            / 1000.0
+        )
+        fe_samples = -kT * np.log(np.clip(samples / assignments.size, 1e-12, None))
+        return np.nanstd(fe_samples, axis=0)
 
     def _find_representatives(
         self,
@@ -2131,6 +2201,7 @@ class EnhancedMSM:
         # Trajectories and tables
         self._save_discrete_trajectories(prefix)
         self._save_state_table_file(prefix)
+        self._save_free_energy_bar_plot(prefix)
 
         # FES
         self._save_fes_array(prefix)
@@ -2239,6 +2310,27 @@ class EnhancedMSM:
             self.output_dir / f"{prefix}_fes.npy",
             self.fes_data["free_energy"],
         )
+
+    def _save_free_energy_bar_plot(self, prefix: str) -> None:
+        """Save bar plot of state free energies with bootstrap error bars."""
+        if self.state_table is None:
+            return
+        try:
+            import matplotlib.pyplot as _plt  # type: ignore
+        except Exception:
+            logger.warning("matplotlib not available, skipping free energy bar plot")
+            return
+        fe = self.state_table.get("free_energy_kJ_mol")
+        if fe is None:
+            return
+        err = self.state_table.get("free_energy_error", pd.Series(np.zeros(len(fe))))
+        fig, ax = _plt.subplots()
+        ax.bar(self.state_table["state_id"], fe, yerr=err, capsize=4)
+        ax.set_xlabel("State")
+        ax.set_ylabel("Free energy (kJ/mol)")
+        fig.tight_layout()
+        fig.savefig(self.output_dir / f"{prefix}_free_energy_bar.png")
+        _plt.close(fig)
 
     def _log_save_completion(self) -> None:
         """Emit a final log confirming save destination."""
