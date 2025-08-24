@@ -1,6 +1,6 @@
 import numpy as np
 
-from pmarlo.markov_state_model.markov_state_model import EnhancedMSM
+from pmarlo.markov_state_model.enhanced_msm import EnhancedMSM
 from pmarlo.states.msm_bridge import build_simple_msm
 
 

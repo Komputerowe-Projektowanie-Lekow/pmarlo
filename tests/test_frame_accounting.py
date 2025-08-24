@@ -5,7 +5,7 @@ import mdtraj as md
 import numpy as np
 import pytest
 
-from pmarlo.markov_state_model.markov_state_model import EnhancedMSM
+from pmarlo.markov_state_model.enhanced_msm import EnhancedMSM
 
 
 def _dummy_traj(n_frames: int) -> md.Trajectory:

@@ -7,6 +7,7 @@ Markov State Model module for PMARLO.
 Provides enhanced MSM analysis with TRAM/dTRAM and comprehensive reporting.
 """
 
-from .markov_state_model import EnhancedMSM as MarkovStateModel
+from .enhanced_msm import EnhancedMSM as MarkovStateModel
+from .enhanced_msm import run_complete_msm_analysis
 
-__all__ = ["MarkovStateModel"]
+__all__ = ["MarkovStateModel", "run_complete_msm_analysis"]

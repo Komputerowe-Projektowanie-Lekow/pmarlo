@@ -1,6 +1,6 @@
 import numpy as np
 
-from pmarlo.markov_state_model.markov_state_model import EnhancedMSM
+from pmarlo.markov_state_model.enhanced_msm import EnhancedMSM
 
 
 def test_plateau_detection_recovers_known_timescale():

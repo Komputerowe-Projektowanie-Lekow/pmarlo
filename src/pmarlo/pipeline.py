@@ -15,8 +15,8 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from .manager.checkpoint_manager import CheckpointManager
-from .markov_state_model.markov_state_model import EnhancedMSM as MarkovStateModel
-from .markov_state_model.markov_state_model import run_complete_msm_analysis
+from .markov_state_model.enhanced_msm import EnhancedMSM as MarkovStateModel
+from .markov_state_model.enhanced_msm import run_complete_msm_analysis
 from .protein.protein import Protein
 from .replica_exchange.config import RemdConfig
 from .replica_exchange.replica_exchange import ReplicaExchange, run_remd_simulation
