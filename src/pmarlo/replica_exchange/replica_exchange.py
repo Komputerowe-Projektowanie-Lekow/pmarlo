@@ -13,7 +13,7 @@ import os
 import pickle
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import openmm
@@ -202,6 +202,76 @@ class ReplicaExchange:
         stride = max(1, production_steps // max(1, target_frames))
         self.reporter_stride = stride
         return stride
+
+    def plan_runtime(
+        self,
+        walltime: float,
+        throughput_estimator: Callable[[], float] | float,
+        transitions_per_state: int = 50,
+        n_states: Optional[int] = None,
+        equilibration_fraction: float = 0.1,
+        dry_run: bool = False,
+    ) -> Dict[str, int]:
+        """Plan steps, stride and exchange frequency for a walltime budget.
+
+        Parameters
+        ----------
+        walltime:
+            Total wall-clock time budget in seconds.
+        throughput_estimator:
+            Either a callable returning estimated MD steps per second or a
+            numeric value.
+        transitions_per_state:
+            Minimum effective transitions required per state.
+        n_states:
+            Number of states; defaults to the number of replicas.
+        equilibration_fraction:
+            Fraction of total steps reserved for equilibration.
+        dry_run:
+            If ``True``, only compute and log the plan without mutating
+            instance attributes.
+        """
+
+        steps_per_second = (
+            float(throughput_estimator())
+            if callable(throughput_estimator)
+            else float(throughput_estimator)
+        )
+        total_steps = int(max(1, walltime * steps_per_second))
+        min_equil = 200
+        equilibration_steps = int(
+            max(min_equil, total_steps * equilibration_fraction)
+        )
+        production_steps = max(0, total_steps - equilibration_steps)
+        states = int(n_states or self.n_replicas)
+        target_frames = max(1, transitions_per_state * states)
+        stride = max(1, production_steps // target_frames)
+        exchange_frequency = max(1, production_steps // target_frames)
+        expected_frames = production_steps // stride
+        plan = {
+            "total_steps": total_steps,
+            "equilibration_steps": equilibration_steps,
+            "exchange_frequency": exchange_frequency,
+            "reporter_stride": stride,
+            "expected_frames": expected_frames,
+        }
+        logger.info(
+            (
+                "Runtime plan: total_steps=%d equilibration=%d stride=%d "
+                "exchange_frequency=%d expected_frames=%d"
+            ),
+            total_steps,
+            equilibration_steps,
+            stride,
+            exchange_frequency,
+            expected_frames,
+        )
+        if not dry_run:
+            self.exchange_frequency = exchange_frequency
+            self.plan_reporter_stride(
+                total_steps, equilibration_steps, target_frames=target_frames
+            )
+        return plan
 
     def _generate_temperature_ladder(
         self,
