@@ -15,6 +15,7 @@ This module provides advanced MSM analysis capabilities including:
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import pickle
@@ -1326,6 +1327,105 @@ class EnhancedMSM:
 
         self._persist_ck_micro_results(result, n_sel, int(self.lag_time))
         return result
+
+    def select_lag_time_ck(
+        self,
+        tau_candidates: Sequence[int],
+        factor: int = 2,
+        mse_epsilon: float = 0.05,
+    ) -> int:
+        """Select lag time by CK MSE plateau with monotonic slowest ITS.
+
+        Parameters
+        ----------
+        tau_candidates:
+            Iterable of lag times (in frames) to evaluate.
+        factor:
+            Lag-time multiple for the CK test (default is ``2``).
+        mse_epsilon:
+            Relative MSE improvement threshold to declare a plateau.
+
+        Returns
+        -------
+        int
+            Selected lag time (frames).
+        """
+
+        out = self.output_dir
+        out.mkdir(parents=True, exist_ok=True)
+
+        mses: list[float] = []
+        taus: list[int] = []
+        prev_mse: float | None = None
+        prev_its: float | None = None
+        selected = int(tau_candidates[0])
+
+        for tau in tau_candidates:
+            tau = int(tau)
+            T1, _ = self._count_micro_T(self.dtrajs, self.n_states, tau)
+            # slowest implied timescale
+            evals = np.sort(np.real(np.linalg.eigvals(T1)))[::-1]
+            if len(evals) > 1 and 0 < evals[1] < 1:
+                ts = -tau / np.log(evals[1])
+            else:
+                ts = float("inf")
+            taus.append(tau)
+
+            T_emp, Ck = self._count_micro_T(
+                self.dtrajs, self.n_states, tau * int(factor)
+            )
+            if np.any(Ck.sum(axis=1) == 0):
+                mse = float("inf")
+            else:
+                T_theory = np.linalg.matrix_power(T1, int(factor))
+                diff = T_theory - T_emp
+                mse = float(np.mean(diff * diff))
+            mses.append(mse)
+
+            if prev_its is not None and ts < prev_its:
+                break
+            if prev_mse is not None:
+                if mse > prev_mse:
+                    break
+                rel = (prev_mse - mse) / max(prev_mse, 1e-12)
+                if rel <= mse_epsilon:
+                    break
+            selected = tau
+            prev_mse = mse
+            prev_its = ts
+        else:
+            # no early break; pick minimal MSE
+            idx = int(np.nanargmin(mses))
+            selected = taus[idx]
+
+        # persist CSV
+        csv_path = out / "ck_mse.csv"
+        with csv_path.open("w", newline="") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(["tau", "mse"])
+            for t, m in zip(taus, mses):
+                writer.writerow([t, m])
+
+        # plot
+        plt.figure()
+        if mses:
+            plt.plot(taus, mses, marker="o")
+            plt.xlabel("lag time (frames)")
+            plt.ylabel("CK MSE")
+        plt.tight_layout()
+        try:
+            plt.savefig(out / "ck.png")
+        finally:
+            plt.close()
+
+        self.lag_time = int(selected)
+        tau_ps = (
+            float(selected) * float(self.time_per_frame_ps)
+            if self.time_per_frame_ps is not None
+            else float(selected)
+        )
+        print(f"Selected τ = {tau_ps} ps by CK")
+        return int(selected)
 
     # ---------------- Macrostate CK test with eigen-gap check ----------------
 
