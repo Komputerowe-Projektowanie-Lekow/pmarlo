@@ -81,6 +81,72 @@ def _suppress_plugin_output() -> Iterator[None]:
                 logging.getLogger(name).setLevel(level)
 
 
+def _resolve_path(path: str | None) -> str | None:
+    """Resolve relative paths robustly for tests and different CWDs."""
+    if path is None:
+        return None
+    if os.path.isabs(path):
+        return path
+    alt = os.path.join(os.getcwd(), path)
+    if os.path.exists(alt):
+        return alt
+    try:
+        from pathlib import Path as _Path
+
+        # Repository root is three levels up from this file: io -> pmarlo -> src -> repo
+        root = _Path(__file__).resolve().parents[3]
+        candidate = root / path.replace("/", os.sep)
+        if candidate.exists():
+            return str(candidate)
+    except Exception:  # pragma: no cover
+        pass
+    return path
+
+
+def _make_iterload_generator(
+    filename: str,
+    *,
+    top: str | md.Trajectory | None,
+    stride: int,
+    atom_indices: Sequence[int] | None,
+    chunk: int,
+):
+    return md.iterload(
+        _resolve_path(filename) or filename,
+        top=_resolve_path(top) if isinstance(top, str) else top,
+        stride=stride,
+        atom_indices=atom_indices,
+        chunk=chunk,
+    )
+
+
+def _yield_frames_plain(gen) -> Iterator[md.Trajectory]:
+    try:
+        for chunk_traj in gen:
+            yield chunk_traj
+    finally:
+        gen.close()
+
+
+def _yield_frames_with_logging(
+    gen, *, chunk: int, stride: int, logger: logging.Logger
+) -> Iterator[md.Trajectory]:
+    try:
+        total = 0
+        for chunk_traj in gen:
+            total += int(getattr(chunk_traj, "n_frames", 0))
+            if total % max(1, chunk) == 0:
+                logger.info(
+                    "[iterload] streamed %d frames (chunk=%d, stride=%d)",
+                    total,
+                    int(chunk),
+                    int(stride),
+                )
+            yield chunk_traj
+    finally:
+        gen.close()
+
+
 def iterload(
     filename: str,
     *,
@@ -106,7 +172,8 @@ def iterload(
     """
 
     logger = logging.getLogger("pmarlo")
-    gen = md.iterload(
+
+    gen = _make_iterload_generator(
         filename,
         top=top,
         stride=stride,
@@ -115,25 +182,10 @@ def iterload(
     )
 
     if verbose_plugin_logs:
-        try:
-            for chunk_traj in gen:
-                yield chunk_traj
-        finally:
-            gen.close()
+        yield from _yield_frames_plain(gen)
         return
 
     with _suppress_plugin_output():
-        try:
-            total = 0
-            for chunk_traj in gen:
-                total += int(getattr(chunk_traj, "n_frames", 0))
-                if total % max(1, chunk) == 0:
-                    logger.info(
-                        "[iterload] streamed %d frames (chunk=%d, stride=%d)",
-                        total,
-                        int(chunk),
-                        int(stride),
-                    )
-                yield chunk_traj
-        finally:
-            gen.close()
+        yield from _yield_frames_with_logging(
+            gen, chunk=int(chunk), stride=int(stride), logger=logger
+        )

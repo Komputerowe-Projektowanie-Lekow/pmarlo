@@ -37,7 +37,7 @@ if __name__ == "__main__":
     out_dir = ensure_output_dir(OUT_DIR)
 
     steps = 2000
-    temperatures = power_of_two_temperature_ladder(300.0, 340.0, None)
+    temperatures = power_of_two_temperature_ladder(300.0, 340.0, 4)
 
     traj_files, analysis_temps = api.run_replica_exchange(
         pdb_file=pdb_path,

@@ -40,6 +40,7 @@ from typing import Optional, Tuple
 
 import matplotlib.pyplot as plt
 
+from pmarlo.utils.progress import ProgressPrinter
 from pmarlo.utils.seed import set_global_seed
 
 logger = logging.getLogger(__name__)
@@ -295,25 +296,22 @@ def _select_platform() -> Tuple[openmm.Platform, dict]:
         platform_properties = {
             "Precision": "mixed",
             "UseFastMath": "false",
-            "DeterministicForces": "true",
         }
-        logger.info("Using CUDA (mixed precision, deterministic forces)")
+        logger.info("Using CUDA (mixed precision)")
     except Exception:
         try:
             try:
                 platform = openmm.Platform.getPlatformByName("HIP")
                 platform_properties = {
                     "Precision": "mixed",
-                    "DeterministicForces": "true",
                 }
-                logger.info("Using HIP (deterministic forces)")
+                logger.info("Using HIP")
             except Exception:
                 platform = openmm.Platform.getPlatformByName("OpenCL")
                 platform_properties = {
                     "Precision": "mixed",
-                    "DeterministicForces": "true",
                 }
-                logger.info("Using OpenCL (deterministic forces)")
+                logger.info("Using OpenCL")
         except Exception:
             platform = openmm.Platform.getPlatformByName("CPU")
             try:
@@ -384,7 +382,10 @@ def _run_metadynamics(
     meta: Metadynamics, simulation: app.Simulation, total_steps: int, step_size: int
 ) -> list[float]:
     bias_list: list[float] = []
-    for _ in range(total_steps // step_size):
+    full_chunks = total_steps // step_size
+    remainder = total_steps % step_size
+
+    for _ in range(full_chunks):
         meta.step(simulation, step_size)
         simulation.step(0)
         try:
@@ -392,6 +393,16 @@ def _run_metadynamics(
         except AttributeError:
             bias_val = 0.0
         for _ in range(step_size):
+            bias_list.append(float(bias_val))
+
+    if remainder:
+        meta.step(simulation, remainder)
+        simulation.step(0)
+        try:
+            bias_val = meta._currentBias  # type: ignore[attr-defined]
+        except AttributeError:
+            bias_val = 0.0
+        for _ in range(remainder):
             bias_list.append(float(bias_val))
     return bias_list
 
@@ -436,14 +447,48 @@ def production_run(steps, simulation, meta, output_dir=None):
     stride = _determine_dcd_stride(simulation)
     dcd_reporter = _attach_dcd_reporter(simulation, dcd_filename, stride)
 
-    total_steps = steps
+    total_steps = int(steps)
     step_size = 10
 
+    progress = ProgressPrinter(total_steps)
+
     if meta is not None:
-        bias_list = _run_metadynamics(meta, simulation, total_steps, step_size)
+        # Metadynamics runs in chunks; update progress after every chunk
+        full_chunks = total_steps // step_size
+        remainder = total_steps % step_size
+        bias_list: list[float] = []
+
+        done = 0
+        for _ in range(full_chunks):
+            part = _run_metadynamics(meta, simulation, step_size, step_size)
+            bias_list.extend(part)
+            done += step_size
+            progress.draw(done)
+            progress.newline_if_active()
+        if remainder:
+            part = _run_metadynamics(meta, simulation, remainder, remainder)
+            bias_list.extend(part)
+            done += remainder
+            progress.draw(done)
+            progress.newline_if_active()
     else:
-        _run_plain_md(simulation, total_steps)
+        # Plain MD – step in chunks to surface progress
+        full_chunks = total_steps // step_size
+        remainder = total_steps % step_size
+        done = 0
+        for _ in range(full_chunks):
+            simulation.step(step_size)
+            done += step_size
+            progress.draw(done)
+            progress.newline_if_active()
+        if remainder:
+            simulation.step(remainder)
+            done += remainder
+            progress.draw(done)
+            progress.newline_if_active()
         bias_list = []
+
+    progress.close()
 
     _save_final_state(simulation, out_dir)
     print("✔ MD + biasing finished\n")
