@@ -26,4 +26,5 @@ class RemdConfig:
 
     # Diagnostics/targets
     target_frames_per_replica: int = 5000
+    target_accept: float = 0.30
     random_seed: Optional[int] = None
