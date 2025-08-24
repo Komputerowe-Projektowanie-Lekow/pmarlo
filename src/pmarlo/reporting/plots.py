@@ -42,6 +42,7 @@ def save_fes_contour(
     ylabel: str,
     output_dir: str,
     filename: str,
+    mask: Optional[np.ndarray] = None,
 ) -> Optional[str]:
     try:
         import matplotlib.pyplot as plt
@@ -55,6 +56,16 @@ def save_fes_contour(
     plt.figure(figsize=(7, 6))
     c = plt.contourf(x_centers, y_centers, F.T, levels=20, cmap="viridis")
     plt.colorbar(c, label="Free Energy (kJ/mol)")
+    if mask is not None:
+        m = np.ma.masked_where(~mask.T, mask.T)
+        plt.contourf(
+            x_centers,
+            y_centers,
+            m,
+            levels=[0.5, 1.5],
+            colors="none",
+            hatches=["////"],
+        )
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
     plt.title(f"FES ({xlabel} vs {ylabel})")

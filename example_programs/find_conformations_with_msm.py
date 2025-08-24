@@ -286,7 +286,14 @@ def run_conformation_finder(
     # Save a FES plot with a filename reflecting the selected pair
     fname = f"fes_{_sanitize(names[0])}_vs_{_sanitize(names[1])}.png"
     _ = save_fes_contour(
-        fes.F, fes.xedges, fes.yedges, names[0], names[1], str(OUT_DIR), fname
+        fes.F,
+        fes.xedges,
+        fes.yedges,
+        names[0],
+        names[1],
+        str(OUT_DIR),
+        fname,
+        mask=fes.metadata.get("mask"),
     )
 
     write_conformations_csv_json(str(OUT_DIR), items)
