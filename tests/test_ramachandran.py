@@ -1,5 +1,5 @@
-import numpy as np
 import mdtraj as md
+import numpy as np
 from mdtraj.core.element import carbon
 
 from pmarlo.fes import compute_ramachandran, periodic_hist2d
@@ -49,7 +49,7 @@ def test_angle_wrapping_invariance(monkeypatch) -> None:
 def test_periodic_histogram_mass_conservation() -> None:
     phi = np.array([179.0, -179.0])
     psi = np.array([10.0, 10.0])
-    H, xedges, yedges = periodic_hist2d(phi, psi, bins=(10, 10), smoothing=None)
+    H, xedges, yedges = periodic_hist2d(phi, psi, bins=(10, 10))
     assert H.sum() == 2.0
     col = np.digitize([10.0], yedges) - 1
     assert H[0, col[0]] == 2.0
