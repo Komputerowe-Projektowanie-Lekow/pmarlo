@@ -1,9 +1,9 @@
 import logging
-import numpy as np
-import mdtraj as md
-import pytest
-
 from pathlib import Path
+
+import mdtraj as md
+import numpy as np
+import pytest
 
 from pmarlo.markov_state_model.markov_state_model import EnhancedMSM
 
@@ -30,3 +30,11 @@ def test_effective_frames_and_tau_guard(
     with pytest.raises(ValueError):
         msm.build_msm(lag_time=200)
     assert f"effective frames after lag 200: {expected}" in caplog.text
+
+
+def test_used_frames_with_tica_lag(tmp_path: Path) -> None:
+    traj = _dummy_traj(1000)
+    msm = EnhancedMSM(output_dir=str(tmp_path))
+    msm.trajectories = [traj]
+    msm.compute_features(tica_lag=100, tica_components=2)
+    assert msm.effective_frames >= 900

@@ -6,7 +6,7 @@ from typing import Any, List, Optional, Tuple, cast
 import json
 import numpy as np
 
-from pmarlo.utils.msm_utils import ensure_connected_counts
+from pmarlo.utils.msm_utils import check_transition_matrix, ensure_connected_counts
 
 logger = logging.getLogger("pmarlo")
 
@@ -36,6 +36,7 @@ def build_simple_msm(
         T, pi = _fit_msm_fallback(dtrajs, n_states, lag, count_mode)
     logger.info(f"build_simple_msm: Transition matrix shape: {T.shape}")
     logger.info(f"build_simple_msm: Stationary distribution shape: {pi.shape}")
+    check_transition_matrix(T, pi)
     return T, pi
 
 
