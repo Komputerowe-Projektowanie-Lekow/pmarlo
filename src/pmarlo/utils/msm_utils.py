@@ -148,3 +148,76 @@ def ensure_connected_counts(
     C_active = C[np.ix_(active, active)].astype(float)
     C_active += float(alpha)
     return ConnectedCountResult(C_active, active)
+
+
+def check_transition_matrix(
+    T: np.ndarray,
+    pi: np.ndarray,
+    *,
+    row_tol: float = 1e-12,
+    stat_tol: float = 1e-8,
+) -> None:
+    """Validate a transition matrix and stationary distribution.
+
+    The following conditions are enforced:
+
+    * Each row of ``T`` sums to 1 within ``row_tol``.
+    * All elements of ``T`` are non-negative.
+    * The provided ``pi`` is a left eigenvector of ``T`` with unit eigenvalue
+      up to ``stat_tol`` in the infinity norm.
+
+    Parameters
+    ----------
+    T:
+        Transition matrix.
+    pi:
+        Stationary distribution corresponding to ``T``.
+    row_tol:
+        Permitted deviation from exact row stochasticity.
+    stat_tol:
+        Permitted deviation of ``pi`` from the left eigenvector equation.
+
+    Raises
+    ------
+    ValueError
+        If any of the checks fail. The error message includes the offending
+        state indices to ease debugging.
+    """
+
+    if T.ndim != 2 or T.shape[0] != T.shape[1]:
+        raise ValueError("transition matrix must be square")
+    if pi.shape != (T.shape[0],):
+        raise ValueError("stationary distribution size mismatch")
+    if T.size == 0:
+        return
+
+    rowsum = T.sum(axis=1)
+    row_err = np.abs(rowsum - 1.0)
+    neg_idx = np.where(T < 0)
+    if neg_idx[0].size:
+        pairs = list(zip(neg_idx[0].tolist(), neg_idx[1].tolist()))
+        vals = T[neg_idx].tolist()
+        raise ValueError(f"Negative probabilities at {pairs}: {vals}")
+
+    bad_rows = np.where(row_err > row_tol)[0]
+    if bad_rows.size:
+        devs = row_err[bad_rows].tolist()
+        raise ValueError(
+            f"Non-stochastic rows at indices {bad_rows.tolist()}: {devs}"
+        )
+
+    pi_res = np.abs(pi @ T - pi)
+    max_err = float(np.max(pi_res)) if pi_res.size else 0.0
+    if max_err > stat_tol:
+        idx = int(np.argmax(pi_res))
+        raise ValueError(
+            f"Stationary distribution mismatch at state {idx} with error {max_err}"
+        )
+
+    min_entry = T.min(axis=1)
+    lines = ["state row_err min_T pi_res"]
+    for i in range(T.shape[0]):
+        lines.append(
+            f"{i:5d} {row_err[i]:.2e} {min_entry[i]:.2e} {pi_res[i]:.2e}"
+        )
+    logger.debug("MSM diagnostics:\n%s", "\n".join(lines))
