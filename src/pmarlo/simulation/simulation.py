@@ -18,6 +18,13 @@ import openmm.unit as unit
 from openmm.app.metadynamics import BiasVariable, Metadynamics
 from sklearn.cluster import MiniBatchKMeans
 
+# Compatibility shim for OpenMM XML deserialization API changes
+if not hasattr(openmm.XmlSerializer, "load"):
+    # Older OpenMM releases expose ``deserialize`` instead of ``load``.
+    # Provide a small alias so downstream code can rely on ``load``
+    # regardless of the installed OpenMM version.
+    openmm.XmlSerializer.load = openmm.XmlSerializer.deserialize  # type: ignore[attr-defined]
+
 # PDBFixer is optional - users can install with: pip install "pmarlo[fixer]"
 try:
     from pdbfixer import PDBFixer
@@ -32,6 +39,9 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 import matplotlib.pyplot as plt
+
+from pmarlo.utils.progress import ProgressPrinter
+from pmarlo.utils.seed import set_global_seed
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +64,8 @@ class Simulation:
         output_dir: str = "output/simulation",
         use_metadynamics: bool = True,
         dcd_stride: int = 1000,
+        random_seed: Optional[int] = None,
+        random_state: int | None = None,
     ):
         """
         Initialize the Simulation.
@@ -64,6 +76,9 @@ class Simulation:
             steps: Number of production steps
             output_dir: Directory for output files
             use_metadynamics: Whether to use metadynamics biasing
+            random_seed: Seed for deterministic integrator behaviour. Deprecated,
+                use ``random_state``.
+            random_state: Seed for deterministic integrator behaviour.
         """
         self.pdb_file = pdb_file
         self.temperature = temperature
@@ -71,6 +86,9 @@ class Simulation:
         self.output_dir = Path(output_dir)
         self.use_metadynamics = use_metadynamics
         self.dcd_stride = dcd_stride
+        self.random_seed = random_state if random_state is not None else random_seed
+        if self.random_seed is not None:
+            set_global_seed(int(self.random_seed))
 
         # OpenMM objects
         self.openmm_simulation = None
@@ -86,7 +104,11 @@ class Simulation:
     ) -> Tuple["openmm.app.Simulation", Optional["Metadynamics"]]:
         """Prepare the molecular system with forcefield and optional metadynamics."""
         simulation, meta = prepare_system(
-            self.pdb_file, self.temperature, self.use_metadynamics, self.output_dir
+            self.pdb_file,
+            self.temperature,
+            self.use_metadynamics,
+            self.output_dir,
+            self.random_seed,
         )
         return simulation, meta
 
@@ -96,6 +118,12 @@ class Simulation:
             openmm_simulation = self.openmm_simulation
         if meta is None:
             meta = self.meta
+
+        # Make this Simulation instance discoverable by reporters/utilities
+        try:
+            setattr(openmm_simulation, "_owner", self)
+        except Exception:
+            pass
 
         trajectory_file = production_run(
             self.steps, openmm_simulation, meta, self.output_dir
@@ -129,15 +157,32 @@ def prepare_system(
     temperature: float = 300.0,
     use_metadynamics: bool = True,
     output_dir: Optional[Path] = None,
+    random_seed: Optional[int] = None,
+    random_state: int | None = None,
 ) -> Tuple["openmm.app.Simulation", Optional["Metadynamics"]]:
-    """Prepare the molecular system with forcefield and optional metadynamics."""
+    """Prepare the molecular system with forcefield and optional metadynamics.
+
+    Parameters
+    ----------
+    pdb_file_name:
+        Path to the PDB structure.
+    temperature:
+        Simulation temperature in Kelvin.
+    use_metadynamics:
+        Whether to include a metadynamics bias.
+    output_dir:
+        Optional output directory for intermediate files.
+    random_seed, random_state:
+        Seeds for the OpenMM integrator. ``random_state`` takes precedence.
+    """
     pdb = _load_pdb(pdb_file_name)
     forcefield = _create_forcefield()
     system = _create_system(pdb, forcefield)
     meta = _maybe_create_metadynamics(
-        system, pdb_file_name, use_metadynamics, output_dir
+        system, pdb_file_name, temperature, use_metadynamics, output_dir
     )
-    integrator = _create_integrator(temperature)
+    seed = random_state if random_state is not None else random_seed
+    integrator = _create_integrator(temperature, seed)
     platform, platform_properties = _select_platform()
     simulation = _create_openmm_simulation(
         pdb, system, integrator, platform, platform_properties
@@ -174,6 +219,7 @@ def _create_system(pdb: app.PDBFile, forcefield: app.ForceField) -> openmm.Syste
 def _maybe_create_metadynamics(
     system: openmm.System,
     pdb_file_name: str,
+    temperature: float,
     use_metadynamics: bool,
     output_dir: Optional[Path],
 ) -> Optional[Metadynamics]:
@@ -200,7 +246,7 @@ def _maybe_create_metadynamics(
     return Metadynamics(
         system,
         [phi_cv],
-        temperature=temperature_quantity(300.0),
+        temperature=temperature_quantity(temperature),
         biasFactor=10.0,
         height=1.0 * unit.kilojoules_per_mole,
         frequency=500,  # hill every 1 ps (500 × 2 fs)
@@ -232,10 +278,15 @@ def _clear_existing_bias_files(bias_dir: Path) -> None:
                 pass
 
 
-def _create_integrator(temperature: float) -> openmm.Integrator:
-    return openmm.LangevinIntegrator(
+def _create_integrator(
+    temperature: float, random_seed: Optional[int] = None
+) -> openmm.Integrator:
+    integrator = openmm.LangevinIntegrator(
         temperature * unit.kelvin, 1 / unit.picosecond, 2 * unit.femtoseconds
     )
+    if random_seed is not None:
+        integrator.setRandomNumberSeed(int(random_seed))
+    return integrator
 
 
 def _select_platform() -> Tuple[openmm.Platform, dict]:
@@ -244,17 +295,22 @@ def _select_platform() -> Tuple[openmm.Platform, dict]:
         platform = openmm.Platform.getPlatformByName("CUDA")
         platform_properties = {
             "Precision": "mixed",
-            "UseFastMath": "true",
-            "DeterministicForces": "false",
+            "UseFastMath": "false",
         }
-        logger.info("Using CUDA (mixed precision, fast math)")
+        logger.info("Using CUDA (mixed precision)")
     except Exception:
         try:
             try:
                 platform = openmm.Platform.getPlatformByName("HIP")
-                logger.info("Using HIP (AMD GPU)")
+                platform_properties = {
+                    "Precision": "mixed",
+                }
+                logger.info("Using HIP")
             except Exception:
                 platform = openmm.Platform.getPlatformByName("OpenCL")
+                platform_properties = {
+                    "Precision": "mixed",
+                }
                 logger.info("Using OpenCL")
         except Exception:
             platform = openmm.Platform.getPlatformByName("CPU")
@@ -279,6 +335,11 @@ def _create_openmm_simulation(
         pdb.topology, system, integrator, platform, platform_properties or None
     )
     simulation.context.setPositions(pdb.positions)
+    # Expose owner to allow reporters to access stride settings
+    try:
+        setattr(simulation, "_owner", None)
+    except Exception:
+        pass
     return simulation
 
 
@@ -287,63 +348,153 @@ def _minimize_and_equilibrate(simulation: app.Simulation) -> None:
     simulation.step(1000)
 
 
-def production_run(steps, simulation, meta, output_dir=None):
-    """Run production molecular dynamics simulation."""
+def _print_production_stage_start() -> None:
     print("Stage 3/5  –  production run...")
 
-    if output_dir is None:
-        output_dir = Path("output") / "simulation"
-    else:
-        output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
 
-    dcd_filename = str(output_dir / "traj.dcd")
-    # Respect Simulation.dcd_stride if available via bound simulation.owner;
-    # default 1000
+def _resolve_output_dir(output_dir: Optional[Path]) -> Path:
+    return Path("output") / "simulation" if output_dir is None else Path(output_dir)
+
+
+def _compose_dcd_filename(output_dir: Path) -> str:
+    return str(output_dir / "traj.dcd")
+
+
+def _determine_dcd_stride(simulation: app.Simulation) -> int:
     try:
         stride = getattr(getattr(simulation, "_owner", None), "dcd_stride", 1000)
+        if not isinstance(stride, int) or stride <= 0:
+            return 1000
+        return int(stride)
     except Exception:
-        stride = 1000
-    dcd = app.DCDReporter(dcd_filename, int(max(1, stride)))
-    simulation.reporters.append(dcd)
+        return 1000
 
-    total_steps = steps
-    step_size = 10
-    bias_list = []
 
-    if meta is not None:
-        for i in range(total_steps // step_size):
-            meta.step(simulation, step_size)
-            simulation.step(0)  # triggers reporters
-            try:
-                bias_val = meta._currentBias
-            except AttributeError:
-                bias_val = 0.0
-            for _ in range(step_size):
-                bias_list.append(bias_val)
-    else:
-        # Run without metadynamics
-        simulation.step(total_steps)
+def _attach_dcd_reporter(
+    simulation: app.Simulation, dcd_filename: str, stride: int
+) -> app.DCDReporter:
+    reporter = app.DCDReporter(dcd_filename, int(max(1, stride)))
+    simulation.reporters.append(reporter)
+    return reporter
 
+
+def _run_metadynamics(
+    meta: Metadynamics, simulation: app.Simulation, total_steps: int, step_size: int
+) -> list[float]:
+    bias_list: list[float] = []
+    full_chunks = total_steps // step_size
+    remainder = total_steps % step_size
+
+    for _ in range(full_chunks):
+        meta.step(simulation, step_size)
+        simulation.step(0)
+        try:
+            bias_val = meta._currentBias  # type: ignore[attr-defined]
+        except AttributeError:
+            bias_val = 0.0
+        for _ in range(step_size):
+            bias_list.append(float(bias_val))
+
+    if remainder:
+        meta.step(simulation, remainder)
+        simulation.step(0)
+        try:
+            bias_val = meta._currentBias  # type: ignore[attr-defined]
+        except AttributeError:
+            bias_val = 0.0
+        for _ in range(remainder):
+            bias_list.append(float(bias_val))
+    return bias_list
+
+
+def _run_plain_md(simulation: app.Simulation, total_steps: int) -> None:
+    simulation.step(total_steps)
+
+
+def _save_final_state(simulation: app.Simulation, output_dir: Path) -> None:
     simulation.saveState(str(output_dir / "final.xml"))
-    print("✔ MD + biasing finished\n")
 
-    # Remove DCDReporter and force garbage collection to finalize file
-    simulation.reporters.remove(dcd)
+
+def _cleanup_dcd(simulation: app.Simulation, reporter: app.DCDReporter) -> None:
+    simulation.reporters.remove(reporter)
     import gc
 
-    del dcd
+    del reporter
     gc.collect()
 
+
+def _save_bias_if_present(
+    meta: Optional[Metadynamics], bias_list: list[float], output_dir: Path
+) -> None:
+    if meta is None:
+        return
+    bias_array = np.array(bias_list)
+    bias_file = output_dir / "bias_for_run.npy"
+    np.save(str(bias_file), bias_array)
+    print(
+        f"[INFO] Saved bias array for this run to {bias_file} (length: {len(bias_array)})"
+    )
+
+
+def production_run(steps, simulation, meta, output_dir=None):
+    """Run production molecular dynamics simulation."""
+    _print_production_stage_start()
+
+    out_dir = _resolve_output_dir(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    dcd_filename = _compose_dcd_filename(out_dir)
+    stride = _determine_dcd_stride(simulation)
+    dcd_reporter = _attach_dcd_reporter(simulation, dcd_filename, stride)
+
+    total_steps = int(steps)
+    step_size = 10
+
+    progress = ProgressPrinter(total_steps)
+
     if meta is not None:
-        # Save the bias array for this run
-        bias_array = np.array(bias_list)
-        bias_file = output_dir / "bias_for_run.npy"
-        np.save(str(bias_file), bias_array)
-        print(
-            f"[INFO] Saved bias array for this run to {bias_file} "
-            f"(length: {len(bias_array)})"
-        )
+        # Metadynamics runs in chunks; update progress after every chunk
+        full_chunks = total_steps // step_size
+        remainder = total_steps % step_size
+        bias_list: list[float] = []
+
+        done = 0
+        for _ in range(full_chunks):
+            part = _run_metadynamics(meta, simulation, step_size, step_size)
+            bias_list.extend(part)
+            done += step_size
+            progress.draw(done)
+            progress.newline_if_active()
+        if remainder:
+            part = _run_metadynamics(meta, simulation, remainder, remainder)
+            bias_list.extend(part)
+            done += remainder
+            progress.draw(done)
+            progress.newline_if_active()
+    else:
+        # Plain MD – step in chunks to surface progress
+        full_chunks = total_steps // step_size
+        remainder = total_steps % step_size
+        done = 0
+        for _ in range(full_chunks):
+            simulation.step(step_size)
+            done += step_size
+            progress.draw(done)
+            progress.newline_if_active()
+        if remainder:
+            simulation.step(remainder)
+            done += remainder
+            progress.draw(done)
+            progress.newline_if_active()
+        bias_list = []
+
+    progress.close()
+
+    _save_final_state(simulation, out_dir)
+    print("✔ MD + biasing finished\n")
+
+    _cleanup_dcd(simulation, dcd_reporter)
+    _save_bias_if_present(meta, bias_list, out_dir)
 
     return dcd_filename
 

@@ -5,6 +5,11 @@
 final.xml
 /example_programs/programs_outputs/free_energy_landscape/*
 /example_programs/programs_outputs/free_energy_landscape_long/*
+/example_programs/programs_outputs/all_capabilities/*
+/example_programs/programs_outputs/free_energy_conformations_msm/*
+
+/utilities/
+
 
 # Build and distribution files
 /build/
@@ -12,7 +17,13 @@ final.xml
 /experiments_output/msm/*
 /experiments_output/replica_exchange/*
 /experiments_output/simulation/*
+/experiments_output_all/
 
+
+/mdfiles/prompts.md
+/mdfiles/README_EXPERIMENTS.md
+/mdfiles/plan.md
+/mdfiles/plan2.md
 
 # IDE files
 /.idea/
@@ -33,6 +44,7 @@ dist/
 .venv/
 env/
 venv/
+.tox/
 
 # OS files
 .DS_Store

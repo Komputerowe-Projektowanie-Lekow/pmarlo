@@ -6,10 +6,14 @@ import os
 from pathlib import Path
 
 from pmarlo import MarkovStateModel, Pipeline, Protein, ReplicaExchange, Simulation
+from pmarlo.replica_exchange.config import RemdConfig
 
 # Configure logging to show all messages in console
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(message)s", datefmt="%H:%M:%S"
+    level=logging.INFO,
+    format="%(asctime)s - %(message)s",
+    datefmt="%H:%M:%S",
+    force=True,
 )
 logger = logging.getLogger(__name__)
 
@@ -26,8 +30,14 @@ def verify_components():
         )  # Using pre-fixed PDB
         print("✔ Protein component initialized")
 
-        replica_exchange = ReplicaExchange(
-            protein_path, temperatures=[300, 310, 320], auto_setup=False
+        replica_exchange = ReplicaExchange.from_config(
+            RemdConfig(
+                pdb_file=protein_path, temperatures=[300, 310, 320], auto_setup=False
+            )
+        )
+        # Plan stride minimally for short verification
+        replica_exchange.plan_reporter_stride(
+            total_steps=500, equilibration_steps=50, target_frames=100
         )
         replica_exchange.setup_replicas()
         print("✔ Replica Exchange component initialized")

@@ -15,11 +15,13 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from .manager.checkpoint_manager import CheckpointManager
-from .markov_state_model.markov_state_model import EnhancedMSM as MarkovStateModel
-from .markov_state_model.markov_state_model import run_complete_msm_analysis
+from .markov_state_model.enhanced_msm import EnhancedMSM as MarkovStateModel
+from .markov_state_model.enhanced_msm import run_complete_msm_analysis
 from .protein.protein import Protein
+from .replica_exchange.config import RemdConfig
 from .replica_exchange.replica_exchange import ReplicaExchange, run_remd_simulation
 from .simulation.simulation import Simulation
+from .utils.seed import set_global_seed
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,7 @@ class Pipeline:
         checkpoint_id: Optional[str] = None,
         auto_continue: bool = True,
         enable_checkpoints: bool = True,
+        random_state: int | None = None,
     ):
         """
         Initialize the PMARLO pipeline.
@@ -59,6 +62,7 @@ class Pipeline:
             use_replica_exchange: Whether to use replica exchange
             use_metadynamics: Whether to use metadynamics
             checkpoint_id: Optional checkpoint ID for resuming runs
+            random_state: Seed for reproducible behaviour across components.
         """
         self.pdb_file = pdb_file
         self.output_dir = Path(output_dir)
@@ -66,6 +70,10 @@ class Pipeline:
         self.n_states = n_states
         self.use_replica_exchange = use_replica_exchange
         self.use_metadynamics = use_metadynamics
+        self.random_state = random_state
+
+        if random_state is not None:
+            set_global_seed(int(random_state))
 
         # Set default temperatures if not provided
         if temperatures is None:
@@ -178,10 +186,12 @@ class Pipeline:
 
         remd_output_dir = self.output_dir / "replica_exchange"
 
-        self.replica_exchange = ReplicaExchange(
-            pdb_file=str(self.prepared_pdb),
-            temperatures=self.temperatures,
-            output_dir=str(remd_output_dir),
+        self.replica_exchange = ReplicaExchange.from_config(
+            RemdConfig(
+                pdb_file=str(self.prepared_pdb),
+                temperatures=self.temperatures,
+                output_dir=str(remd_output_dir),
+            )
         )
 
         # CRITICAL FIX: Initialize replicas before returning
@@ -193,6 +203,12 @@ class Pipeline:
 
             bias_variables = setup_bias_variables(str(self.prepared_pdb))
 
+        # Plan stride for pipeline run before reporters are created
+        self.replica_exchange.plan_reporter_stride(
+            total_steps=int(self.steps),
+            equilibration_steps=min(self.steps // 10, 200),
+            target_frames=5000,
+        )
         self.replica_exchange.setup_replicas(bias_variables=bias_variables)
 
         logger.info(f"Replica exchange setup with {len(self.temperatures)} replicas")
@@ -217,6 +233,8 @@ class Pipeline:
             steps=self.steps,
             output_dir=str(sim_output_dir),
             use_metadynamics=self.use_metadynamics,
+            # Ensure DCD is produced even for short test runs
+            dcd_stride=max(1, min(100, self.steps // 10) if self.steps else 10),
         )
 
         logger.info(
@@ -390,7 +408,7 @@ class Pipeline:
         )
         return self.temperatures
 
-    def _stage_single_simulation(self):
+    def _stage_single_simulation(self) -> tuple[str, np.ndarray]:
         step_name = "simulation"
         if (
             not self.checkpoint_manager
@@ -418,18 +436,18 @@ class Pipeline:
         state = self.checkpoint_manager.load_state() if self.checkpoint_manager else {}
         trajectory_file_from_state = state.get("trajectory_file")
         states_from_state = state.get("states")
-        trajectory_file: str = (
+        trajectory_file_loaded: str = (
             str(trajectory_file_from_state)
             if trajectory_file_from_state is not None
             else ""
         )
-        states = (
+        states_loaded = (
             np.array(states_from_state)
             if states_from_state is not None
             else np.array([])
         )
-        self.trajectory_files = [trajectory_file]
-        return trajectory_file, states
+        self.trajectory_files = [trajectory_file_loaded]
+        return trajectory_file_loaded, states_loaded
 
     def _stage_msm_analysis(self, analysis_temperatures: List[float]) -> Dict[str, Any]:
         step_name = "msm_analysis"
@@ -716,21 +734,23 @@ class LegacyPipeline:
         print(f"Started new run with ID: {cm.run_id}")
         return cm
 
-    def _legacy_init_paths(self):
+    def _legacy_init_paths(self) -> tuple[Path, Path, Path, Path]:
         pdb_file = Path(self.pdb_file)
         cm = self.checkpoint_manager
         if cm is None:
-            # Fallback to default directories under output_dir when no CM
-            pdb_fixed_path = self.output_dir / "inputs" / "prepared.pdb"
-            remd_output_dir = self.output_dir / "trajectories"
-            msm_output_dir = self.output_dir / "analysis"
+            # Fallback to default directories under base output directory when no CM
+            pdb_fixed_path = self.output_base_dir / "inputs" / "prepared.pdb"
+            remd_output_dir = self.output_base_dir / "trajectories"
+            msm_output_dir = self.output_base_dir / "analysis"
             return pdb_file, pdb_fixed_path, remd_output_dir, msm_output_dir
         pdb_fixed_path = cm.run_dir / "inputs" / "prepared.pdb"
         remd_output_dir = cm.run_dir / "trajectories"
         msm_output_dir = cm.run_dir / "analysis"
         return pdb_file, pdb_fixed_path, remd_output_dir, msm_output_dir
 
-    def _legacy_save_config(self, steps: int, n_states: int, pdb_file: Path) -> Dict:
+    def _legacy_save_config(
+        self, steps: int, n_states: int, pdb_file: Path
+    ) -> Dict[str, Any]:
         cm = self.checkpoint_manager
         base_config: Dict[str, Any] = {
             "pdb_file": str(pdb_file),
@@ -866,7 +886,7 @@ class LegacyPipeline:
             trajectory_files=trajectory_files,
             topology_file=str(pdb_fixed_path),
             output_dir=str(msm_output_dir),
-            n_clusters=n_states,
+            n_states=n_states,
             lag_time=10,
             feature_type="phi_psi",
             temperatures=analysis_temperatures,

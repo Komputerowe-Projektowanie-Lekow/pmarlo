@@ -6,14 +6,15 @@ from pathlib import Path
 from .msm import MSMConfig, run_msm_experiment
 from .replica_exchange import ReplicaExchangeConfig, run_replica_exchange_experiment
 from .simulation import SimulationConfig, run_simulation_experiment
+from .utils import tests_data_dir
 
 # CLI sets logging level; modules themselves do not configure basicConfig
 
 
 def _tests_data_dir() -> Path:
-    # Resolve to package root / tests / data
-    here = Path(__file__).resolve().parents[2]
-    return here / "tests" / "data"
+    """Return the path to ``tests/data`` for use as CLI defaults."""
+
+    return tests_data_dir()
 
 
 def main():
@@ -76,6 +77,12 @@ def main():
     msm.add_argument("--clusters", type=int, default=60)
     msm.add_argument("--lag", type=int, default=20)
     msm.add_argument("--out", default="experiments_output/msm")
+    msm.add_argument("--stride", type=int, default=1, help="Trajectory frame stride")
+    msm.add_argument(
+        "--atom-selection",
+        default=None,
+        help="MDTraj atom selection string to subset atoms",
+    )
 
     args = parser.parse_args()
 
@@ -86,7 +93,9 @@ def main():
     elif args.verbose >= 2:
         log_level = logging.DEBUG
     logging.basicConfig(
-        level=log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+        level=log_level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,
     )
 
     if args.cmd == "simulation":
@@ -117,6 +126,8 @@ def main():
             output_dir=args.out,
             n_clusters=args.clusters,
             lag_time=args.lag,
+            stride=args.stride,
+            atom_selection=args.atom_selection,
         )
         result = run_msm_experiment(cfg)
 

@@ -6,6 +6,7 @@ Tests for the Simulation class.
 """
 
 from importlib.util import find_spec
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -105,3 +106,64 @@ class TestSimulationFunctions:
 
         assert output_dir.exists()
         assert output_dir.is_dir()
+
+
+class TestDeterministicSimulation:
+    """Smoke and determinism tests for short simulations."""
+
+    @pytest.mark.skipif(
+        find_spec("openmm") is None,
+        reason="Requires OpenMM",
+    )
+    def test_short_simulation_smoke(self, test_fixed_pdb_file, temp_output_dir):
+        run_dir = temp_output_dir / "smoke"
+        sim = Simulation(
+            pdb_file=str(test_fixed_pdb_file),
+            temperature=300.0,
+            steps=20,
+            output_dir=str(run_dir),
+            use_metadynamics=False,
+            random_seed=42,
+        )
+        sim.openmm_simulation, sim.meta = sim.prepare_system()
+        traj = sim.run_production()
+        assert Path(traj).exists()
+        assert (run_dir / "final.xml").exists()
+
+    @pytest.mark.skipif(
+        find_spec("openmm") is None,
+        reason="Requires OpenMM",
+    )
+    def test_deterministic_run_with_seed(self, test_fixed_pdb_file, temp_output_dir):
+        run1 = temp_output_dir / "run1"
+        sim1 = Simulation(
+            pdb_file=str(test_fixed_pdb_file),
+            temperature=300.0,
+            steps=20,
+            output_dir=str(run1),
+            use_metadynamics=False,
+            random_seed=123,
+        )
+        sim1.openmm_simulation, sim1.meta = sim1.prepare_system()
+        sim1.run_production()
+
+        run2 = temp_output_dir / "run2"
+        sim2 = Simulation(
+            pdb_file=str(test_fixed_pdb_file),
+            temperature=300.0,
+            steps=20,
+            output_dir=str(run2),
+            use_metadynamics=False,
+            random_seed=123,
+        )
+        sim2.openmm_simulation, sim2.meta = sim2.prepare_system()
+        sim2.run_production()
+
+        import openmm
+        import openmm.unit as unit
+
+        state1 = openmm.XmlSerializer.load((run1 / "final.xml").read_text())
+        state2 = openmm.XmlSerializer.load((run2 / "final.xml").read_text())
+        pos1 = state1.getPositions(asNumpy=True).value_in_unit(unit.nanometer)
+        pos2 = state2.getPositions(asNumpy=True).value_in_unit(unit.nanometer)
+        assert np.allclose(pos1, pos2)
