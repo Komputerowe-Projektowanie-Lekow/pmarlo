@@ -150,7 +150,9 @@ def generate_free_energy_surface(
     bins: Tuple[int, int] = (100, 100),
     temperature: float = 300.0,
     periodic: Tuple[bool, bool] = (False, False),
-    smoothing: Optional[Literal["cosine"]] = None,
+    smooth: bool = True,
+    min_count: int = 1,
+    kde_bw_deg: Tuple[float, float] = (20.0, 20.0),
 ) -> FESResult:
     """Generate a 2D free-energy surface.
 
@@ -164,9 +166,12 @@ def generate_free_energy_surface(
         Simulation temperature in Kelvin.
     periodic
         Flags indicating whether each dimension is periodic.
-    smoothing
-        Placeholder smoothing option; currently only ``"cosine"`` is
-        recognised.
+    smooth
+        If ``True``, blend a periodic KDE with the histogram to fill holes.
+    min_count
+        Histogram bins with fewer samples are replaced by KDE values.
+    kde_bw_deg
+        Bandwidth in degrees for the periodic KDE when ``smooth`` is ``True``.
 
     Returns
     -------
@@ -174,15 +179,15 @@ def generate_free_energy_surface(
         Dataclass containing the free-energy surface and bin edges.
     """
 
-    # Map smoothing flag to gaussian sigma; cosine placeholder maps to 0.6
-    sigma = 0.6 if smoothing == "cosine" else 0.6
     out = _generate_2d_fes(
         cv1,
         cv2,
         bins=bins,
         temperature=temperature,
         periodic=periodic,
-        smoothing_sigma=sigma,
+        smooth=smooth,
+        min_count=min_count,
+        kde_bw_deg=kde_bw_deg,
     )
     return out
 
@@ -331,7 +336,9 @@ def generate_fes_and_pick_minima(
     requested_pair: Optional[Tuple[str, str]] = None,
     bins: Tuple[int, int] = (60, 60),
     temperature: float = 300.0,
-    smoothing: Optional[Literal["cosine"]] = "cosine",
+    smooth: bool = True,
+    min_count: int = 1,
+    kde_bw_deg: Tuple[float, float] = (20.0, 20.0),
     deltaF_kJmol: float = 3.0,
 ) -> Dict[str, Any]:
     """High-level helper to generate a 2D FES on selected pair and pick minima.
@@ -360,7 +367,9 @@ def generate_fes_and_pick_minima(
         bins=bins,
         temperature=temperature,
         periodic=(per_i, per_j),
-        smoothing=smoothing,
+        smooth=smooth,
+        min_count=min_count,
+        kde_bw_deg=kde_bw_deg,
     )
     minima = _pick_frames_around_minima(
         cv1, cv2, fes.F, fes.xedges, fes.yedges, deltaF_kJmol=deltaF_kJmol
@@ -706,7 +715,9 @@ def find_conformations(
         requested_pair=requested_pair,
         bins=(adaptive_bins, adaptive_bins),
         temperature=300.0,
-        smoothing="cosine",
+        smooth=True,
+        min_count=1,
+        kde_bw_deg=(20.0, 20.0),
         deltaF_kJmol=3.0,
     )
     names = fes_info["names"]
@@ -714,7 +725,14 @@ def find_conformations(
     minima = fes_info["minima"]
     fname = f"fes_{sanitize_label_for_filename(names[0])}_vs_{sanitize_label_for_filename(names[1])}.png"
     _ = save_fes_contour(
-        fes.F, fes.xedges, fes.yedges, names[0], names[1], str(out), fname
+        fes.F,
+        fes.xedges,
+        fes.yedges,
+        names[0],
+        names[1],
+        str(out),
+        fname,
+        mask=fes.metadata.get("mask"),
     )
 
     for idx, entry in enumerate(minima.get("minima", [])):
