@@ -36,16 +36,12 @@ except Exception:  # pragma: no cover
     pass
 
 if TYPE_CHECKING:
-    from .markov_state_model.markov_state_model import (
-        EnhancedMSM as MarkovStateModelType,
-    )
+    from .markov_state_model.enhanced_msm import EnhancedMSM as MarkovStateModelType
 
 MarkovStateModel: Optional[Type["MarkovStateModelType"]] = None
 
 try:  # Markov state model may be unavailable in minimal installs
-    from .markov_state_model.markov_state_model import (
-        EnhancedMSM as _EnhancedMSMRuntime,
-    )
+    from .markov_state_model.enhanced_msm import EnhancedMSM as _EnhancedMSMRuntime
 
     MarkovStateModel = _EnhancedMSMRuntime
 except Exception:  # pragma: no cover - defensive against optional deps

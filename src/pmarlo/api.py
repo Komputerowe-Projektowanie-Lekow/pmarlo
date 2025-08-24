@@ -13,7 +13,7 @@ from .features import get_feature
 from .features.base import parse_feature_spec
 from .fes.surfaces import FESResult
 from .fes.surfaces import generate_2d_fes as _generate_2d_fes
-from .markov_state_model.markov_state_model import EnhancedMSM as MarkovStateModel
+from .markov_state_model.enhanced_msm import EnhancedMSM as MarkovStateModel
 from .reduce.reducers import pca_reduce, tica_reduce, vamp_reduce
 from .replica_exchange.config import RemdConfig
 from .replica_exchange.replica_exchange import ReplicaExchange
