@@ -189,14 +189,15 @@ def generate_1d_pmf(
     )
 
 
-def generate_2d_fes(
+def generate_2d_fes(  # noqa: C901
     cv1: np.ndarray,
     cv2: np.ndarray,
     bins: Tuple[int, int] = (100, 100),
     temperature: float = 300.0,
     periodic: Tuple[bool, bool] = (False, False),
     ranges: Optional[Tuple[Tuple[float, float], Tuple[float, float]]] = None,
-    smooth: bool = True,
+    smooth: bool = False,
+    inpaint: bool = False,
     min_count: int = 1,
     kde_bw_deg: Tuple[float, float] = (20.0, 20.0),
     epsilon: float = 1e-6,
@@ -229,15 +230,43 @@ def generate_2d_fes(
     if not np.isfinite(xr + yr).all() or xr[0] >= xr[1] or yr[0] >= yr[1]:
         raise ValueError("ranges must be finite with min < max for both axes")
 
-    H_counts, xedges, yedges = np.histogram2d(
-        x, y, bins=bins, range=(xr, yr), density=False
-    )
+    # Wrap periodic coordinates into the specified range
+    if periodic[0]:
+        x = ((x - xr[0]) % (xr[1] - xr[0])) + xr[0]
+    if periodic[1]:
+        y = ((y - yr[0]) % (yr[1] - yr[0])) + yr[0]
+
+    # Build edges with an extra bin to allow for periodic wrapping
+    bx, by = bins
+    x_edges = np.linspace(xr[0], xr[1], bx + 1)
+    y_edges = np.linspace(yr[0], yr[1], by + 1)
+    if periodic[0]:
+        dx = x_edges[1] - x_edges[0]
+        x_hist_edges = np.concatenate([x_edges, [x_edges[-1] + dx]])
+    else:
+        x_hist_edges = x_edges
+    if periodic[1]:
+        dy = y_edges[1] - y_edges[0]
+        y_hist_edges = np.concatenate([y_edges, [y_edges[-1] + dy]])
+    else:
+        y_hist_edges = y_edges
+
+    H_counts, _, _ = np.histogram2d(x, y, bins=(x_hist_edges, y_hist_edges))
+    if periodic[0]:
+        H_counts[0, :] += H_counts[-1, :]
+        H_counts = H_counts[:-1, :]
+    if periodic[1]:
+        H_counts[:, 0] += H_counts[:, -1]
+        H_counts = H_counts[:, :-1]
+
+    xedges = x_edges
+    yedges = y_edges
     bin_area = np.diff(xedges)[0] * np.diff(yedges)[0]
     H_density = H_counts / (H_counts.sum() * bin_area)
     mask = H_counts < min_count
 
     kde_density = np.zeros_like(H_density)
-    if smooth:
+    if smooth or inpaint:
         if all(periodic):
             bw_rad = (np.radians(kde_bw_deg[0]), np.radians(kde_bw_deg[1]))
             kde_density = periodic_kde_2d(
@@ -248,26 +277,30 @@ def generate_2d_fes(
             kde_density = gaussian_filter(H_density, sigma=0.6, mode=mode)
             kde_density /= kde_density.sum() * bin_area
 
-    blended = H_density.copy()
+    density = H_density.copy()
     if smooth:
-        blended[mask] = kde_density[mask]
-    blended /= blended.sum() * bin_area
+        density = kde_density
+    if inpaint:
+        density[mask] = kde_density[mask]
+    density /= density.sum() * bin_area
 
-    final_mask = mask & (kde_density < epsilon)
-    logger.info(
-        "FES masked fraction before=%0.3f after=%0.3f",
-        mask.mean(),
-        final_mask.mean(),
-    )
+    masked_fraction = float(mask.sum()) / mask.size
+    logger.info("FES masked fraction=%0.3f", masked_fraction)
+    if masked_fraction > 0.30:
+        logger.warning(
+            "More than 30%% of bins are empty (%.1f%%)", masked_fraction * 100
+        )
 
+    final_mask = mask if not inpaint else np.zeros_like(mask, dtype=bool)
     kT = _kT_kJ_per_mol(temperature)
     tiny = np.finfo(float).tiny
-    F = np.where(blended > tiny, -kT * np.log(blended), np.inf)
-    F = np.where(final_mask, np.nan, F)
+    F = np.where(density > tiny, -kT * np.log(density), np.inf)
+    if not inpaint:
+        F = np.where(final_mask, np.nan, F)
     if np.any(np.isfinite(F)):
         F -= np.nanmin(F)
     metadata = {
-        "counts": blended,
+        "counts": density,
         "periodic": periodic,
         "temperature": temperature,
         "mask": final_mask,

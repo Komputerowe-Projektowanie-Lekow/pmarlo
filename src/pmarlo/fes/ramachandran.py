@@ -7,9 +7,8 @@ from typing import Iterable, Sequence
 import mdtraj as md  # type: ignore
 import numpy as np
 from numpy.typing import NDArray
-from scipy.ndimage import gaussian_filter
 
-from .surfaces import _kT_kJ_per_mol
+from .surfaces import _kT_kJ_per_mol, periodic_kde_2d
 
 logger = logging.getLogger("pmarlo")
 
@@ -22,11 +21,12 @@ class RamachandranResult:
     phi_edges: NDArray[np.float64]
     psi_edges: NDArray[np.float64]
     counts: NDArray[np.float64]
+    mask: NDArray[np.bool_]
     finite_fraction: float
     temperature: float
 
 
-def compute_ramachandran(
+def compute_ramachandran(  # noqa: C901
     traj: md.Trajectory,
     selection: int | str | Sequence[int] | None = None,
 ) -> NDArray[np.float64]:
@@ -121,9 +121,8 @@ def periodic_hist2d(
     phi: NDArray[np.float64],
     psi: NDArray[np.float64],
     bins: tuple[int, int] = (42, 42),
-    smoothing: float | None = 1.0,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
-    """Compute a periodic 2D histogram with optional Gaussian smoothing."""
+    """Compute a periodic 2D histogram."""
 
     x = np.asarray(phi, dtype=float).ravel()
     y = np.asarray(psi, dtype=float).ravel()
@@ -134,16 +133,11 @@ def periodic_hist2d(
     x_edges = np.linspace(-180.0, 180.0, bx + 2)
     y_edges = np.linspace(-180.0, 180.0, by + 2)
     H_raw, _, _ = np.histogram2d(x, y, bins=(x_edges, y_edges))
-    H: NDArray[np.float64] = np.asarray(H_raw, dtype=float)
-
+    H = np.asarray(H_raw, dtype=float)
     H[0, :] += H[-1, :]
     H = H[:-1, :]
     H[:, 0] += H[:, -1]
     H = H[:, :-1]
-
-    if smoothing and smoothing > 0:
-        H = gaussian_filter(H, sigma=float(smoothing), mode="wrap")
-
     return H, x_edges[:-1], y_edges[:-1]
 
 
@@ -153,7 +147,9 @@ def compute_ramachandran_fes(
     bins: tuple[int, int] = (42, 42),
     temperature: float = 300.0,
     min_count: int = 5,
-    smoothing: float | None = 1.0,
+    smooth: bool = False,
+    inpaint: bool = False,
+    kde_bw_deg: tuple[float, float] = (20.0, 20.0),
     stride: int | None = None,
     tau: float | None = None,
 ) -> RamachandranResult:
@@ -171,9 +167,12 @@ def compute_ramachandran_fes(
         Temperature in Kelvin.
     min_count
         Minimum count to consider a bin populated.
-    smoothing
-        Standard deviation for Gaussian smoothing. ``None`` or ``0`` disables
-        smoothing.
+    smooth
+        If ``True``, use periodic Gaussian KDE to smooth the density.
+    inpaint
+        If ``True``, fill empty bins using the KDE estimate.
+    kde_bw_deg
+        Bandwidth in degrees for the KDE when smoothing or inpainting.
     stride
         Use every ``stride``-th frame. If ``None``, determined from ``tau``.
     tau
@@ -186,19 +185,43 @@ def compute_ramachandran_fes(
     stride = max(1, int(stride))
 
     angles = compute_ramachandran(traj, selection)[::stride]
-    H, xedges, yedges = periodic_hist2d(
-        angles[:, 0], angles[:, 1], bins=bins, smoothing=smoothing
-    )
+    H, xedges, yedges = periodic_hist2d(angles[:, 0], angles[:, 1], bins=bins)
 
+    mask = H < float(min_count)
     total: float = float(np.sum(H))
     if total == 0:
         raise ValueError("Histogram is empty; check input trajectory and selection")
-    p = H / total
+    bin_area = np.diff(xedges)[0] * np.diff(yedges)[0]
+    density = H / (total * bin_area)
+
+    kde_density = np.zeros_like(density)
+    if smooth or inpaint:
+        bw_rad = (np.radians(kde_bw_deg[0]), np.radians(kde_bw_deg[1]))
+        kde_density = periodic_kde_2d(
+            np.radians(angles[:, 0]),
+            np.radians(angles[:, 1]),
+            bw=bw_rad,
+            gridsize=bins,
+        )
+    if smooth:
+        density = kde_density
+    if inpaint:
+        density[mask] = kde_density[mask]
+    density /= density.sum() * bin_area
+
+    masked_fraction = float(mask.sum()) / mask.size
+    logger.info("Ramachandran FES masked bins: %.1f%%", masked_fraction * 100.0)
+    if masked_fraction > 0.30:
+        logger.warning(
+            "More than 30%% of Ramachandran bins are empty (%.1f%%)",
+            masked_fraction * 100.0,
+        )
+
     kT = _kT_kJ_per_mol(temperature)
     tiny = np.finfo(float).tiny
-    F = np.full_like(H, np.inf, dtype=float)
-    mask = H >= float(min_count)
-    F[mask] = -kT * np.log(np.clip(p[mask], tiny, None))
+    F = np.where(density > tiny, -kT * np.log(density), np.inf)
+    if not inpaint:
+        F = np.where(mask, np.nan, F)
     if np.any(np.isfinite(F)):
         F -= np.nanmin(F)
     finite_fraction = float(np.isfinite(F).sum()) / F.size
@@ -213,6 +236,7 @@ def compute_ramachandran_fes(
         phi_edges=xedges,
         psi_edges=yedges,
         counts=H,
+        mask=mask,
         finite_fraction=finite_fraction,
         temperature=float(temperature),
     )

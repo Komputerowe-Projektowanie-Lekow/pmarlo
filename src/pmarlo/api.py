@@ -150,7 +150,8 @@ def generate_free_energy_surface(
     bins: Tuple[int, int] = (100, 100),
     temperature: float = 300.0,
     periodic: Tuple[bool, bool] = (False, False),
-    smooth: bool = True,
+    smooth: bool = False,
+    inpaint: bool = False,
     min_count: int = 1,
     kde_bw_deg: Tuple[float, float] = (20.0, 20.0),
 ) -> FESResult:
@@ -167,11 +168,14 @@ def generate_free_energy_surface(
     periodic
         Flags indicating whether each dimension is periodic.
     smooth
-        If ``True``, blend a periodic KDE with the histogram to fill holes.
+        If ``True``, smooth the density with a periodic KDE.
+    inpaint
+        If ``True``, fill empty bins using the KDE estimate.
     min_count
-        Histogram bins with fewer samples are replaced by KDE values.
+        Histogram bins with fewer samples are marked as empty unless ``inpaint``
+        is ``True``.
     kde_bw_deg
-        Bandwidth in degrees for the periodic KDE when ``smooth`` is ``True``.
+        Bandwidth in degrees for the periodic KDE when smoothing or inpainting.
 
     Returns
     -------
@@ -186,6 +190,7 @@ def generate_free_energy_surface(
         temperature=temperature,
         periodic=periodic,
         smooth=smooth,
+        inpaint=inpaint,
         min_count=min_count,
         kde_bw_deg=kde_bw_deg,
     )
@@ -443,7 +448,7 @@ def run_replica_exchange(
     return traj_files, temperatures
 
 
-def analyze_msm(
+def analyze_msm(  # noqa: C901
     trajectory_files: List[str],
     topology_pdb: str | Path,
     output_dir: str | Path,
@@ -589,7 +594,7 @@ def analyze_msm(
     return msm_out
 
 
-def find_conformations(
+def find_conformations(  # noqa: C901
     topology_pdb: str | Path,
     trajectory_choice: str | Path,
     output_dir: str | Path,
