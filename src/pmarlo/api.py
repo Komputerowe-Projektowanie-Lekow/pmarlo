@@ -632,7 +632,9 @@ def find_conformations(
         f", selection={atom_selection}" if atom_selection else "",
     )
     traj: md.Trajectory | None = None
-    for chunk in md.iterload(
+    from pmarlo.io import trajectory as traj_io
+
+    for chunk in traj_io.iterload(
         str(trajectory_choice),
         top=str(topology_pdb),
         stride=traj_stride,
