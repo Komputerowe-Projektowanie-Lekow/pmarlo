@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 
-import logging
 import mdtraj as md  # type: ignore
 import numpy as np
 
+from .analysis.ck import run_ck as _run_ck
 from .cluster.micro import cluster_microstates as _cluster_microstates
 from .features import get_feature
 from .features.base import parse_feature_spec
-from .fes.surfaces import FESResult, generate_2d_fes as _generate_2d_fes
+from .fes.surfaces import FESResult
+from .fes.surfaces import generate_2d_fes as _generate_2d_fes
 from .markov_state_model.markov_state_model import EnhancedMSM as MarkovStateModel
 from .reduce.reducers import pca_reduce, tica_reduce, vamp_reduce
 from .replica_exchange.config import RemdConfig
@@ -24,7 +26,6 @@ from .states.msm_bridge import lump_micro_to_macro_T as _lump_micro_to_macro_T
 from .states.msm_bridge import pcca_like_macrostates as _pcca_like
 from .states.picker import pick_frames_around_minima as _pick_frames_around_minima
 from .utils.msm_utils import candidate_lag_ladder
-
 
 logger = logging.getLogger("pmarlo")
 
@@ -552,13 +553,9 @@ def analyze_msm(
 
     msm.build_msm(lag_time=chosen_lag, method=method)
 
-    # CK tests, plots, representatives, FES
+    # CK test with macro → micro fallback
     try:
-        msm.compute_ck_test_macrostates(n_macrostates=3, factors=[2, 3, 4])
-    except Exception:
-        pass
-    try:
-        msm.compute_ck_test_micro(factors=[2, 3, 4])
+        _run_ck(msm.dtrajs, msm.lag_time, msm.output_dir, macro_k=3)
     except Exception:
         pass
 
