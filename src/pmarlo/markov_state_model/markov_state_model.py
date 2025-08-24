@@ -1034,16 +1034,13 @@ class EnhancedMSM:
         rate_means: list[list[float]] = []
         rate_ci: list[list[list[float]]] = []
 
-        q_low = 50.0 * (1.0 - ci)
-        q_high = 100.0 - q_low
+        alpha_tail = 50.0 * (1.0 - ci)
+        q_low = alpha_tail
+        q_high = 100.0 - alpha_tail
 
         for lag in lag_times:
             try:
                 from deeptime.markov import TransitionCountEstimator  # type: ignore
-                from deeptime.markov.msm import (  # type: ignore
-                    BayesianMSM,
-                    MaximumLikelihoodMSM,
-                )
             except Exception as e:  # pragma: no cover
                 logger.error("deeptime import failed: %s", e)
                 raise
@@ -1062,28 +1059,19 @@ class EnhancedMSM:
                 rate_ci.append([[np.nan, np.nan]] * n_timescales)
                 continue
 
-            matrices: np.ndarray
-            try:
-                bmsm = BayesianMSM(n_samples=n_samples, reversible=True)
-                posterior = bmsm.fit_from_counts(res.counts).fetch_model()
-                matrices = np.array(
-                    [m.transition_matrix for m in posterior.samples], dtype=float
-                )
-            except Exception as e:
-                logger.warning(
-                    "Bayesian MSM failed for lag %s: %s; using ML estimator", lag, e
-                )
-                try:
-                    ml = MaximumLikelihoodMSM(reversible=True)
-                    model = ml.fit_from_counts(res.counts).fetch_model()
-                    matrices = np.expand_dims(model.transition_matrix, 0)
-                except Exception as e2:  # pragma: no cover
-                    logger.error(
-                        "Maximum likelihood MSM failed for lag %s: %s", lag, e2
-                    )
-                    matrices = np.empty((0, res.counts.shape[0], res.counts.shape[1]))
-
-            if matrices.size == 0:
+            C_rev = 0.5 * (res.counts + res.counts.T)
+            row_sums = C_rev.sum(axis=1, keepdims=True)
+            matrices: list[np.ndarray] = []
+            for _ in range(n_samples):
+                T_sample = np.zeros_like(C_rev)
+                for i in range(C_rev.shape[0]):
+                    T_sample[i] = np.random.dirichlet(C_rev[i])
+                C_sample = T_sample * row_sums
+                C_sym = 0.5 * (C_sample + C_sample.T)
+                T = C_sym / C_sym.sum(axis=1, keepdims=True)
+                matrices.append(T)
+            matrices_arr = np.asarray(matrices, dtype=float)
+            if matrices_arr.size == 0:
                 eval_means.append([np.nan] * n_timescales)
                 eval_ci.append([[np.nan, np.nan]] * n_timescales)
                 ts_means.append([np.nan] * n_timescales)
@@ -1093,16 +1081,22 @@ class EnhancedMSM:
                 continue
 
             eig_samples: list[np.ndarray] = []
-            for T in matrices:
-                eigenvals = np.real(np.linalg.eigvals(T))
+            for T in matrices_arr:
+                pi = T.sum(axis=1)
+                pi /= np.sum(pi)
+                sym = np.diag(np.sqrt(pi)) @ T @ np.diag(1.0 / np.sqrt(pi))
+                sym = 0.5 * (sym + sym.T)
+                eigenvals = np.linalg.eigvalsh(sym)
                 eigenvals = np.sort(eigenvals)[::-1]
-                eig_samples.append(eigenvals[1 : n_timescales + 1])
+                eig = eigenvals[1 : n_timescales + 1]
+                eig[eig <= 0] = np.nan
+                eig_samples.append(eig)
             eig_arr = np.asarray(eig_samples, dtype=float)
 
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
-                eval_mean = np.nanmean(eig_arr, axis=0)
+                eval_med = np.nanmedian(eig_arr, axis=0)
                 eval_lo = np.nanpercentile(eig_arr, q_low, axis=0)
                 eval_hi = np.nanpercentile(eig_arr, q_high, axis=0)
 
@@ -1111,25 +1105,25 @@ class EnhancedMSM:
                     ts_arr, where=np.isfinite(ts_arr), out=np.full_like(ts_arr, np.nan)
                 )
 
-                ts_mean = np.nanmean(ts_arr, axis=0)
+                ts_med = np.nanmedian(ts_arr, axis=0)
                 ts_lo = np.nanpercentile(ts_arr, q_low, axis=0)
                 ts_hi = np.nanpercentile(ts_arr, q_high, axis=0)
 
-                rate_mean = np.nanmean(rate_arr, axis=0)
+                rate_med = np.nanmedian(rate_arr, axis=0)
                 rate_lo = np.nanpercentile(rate_arr, q_low, axis=0)
                 rate_hi = np.nanpercentile(rate_arr, q_high, axis=0)
 
-            if np.all(rate_mean < 1e-12):
+            if np.all(rate_med < 1e-12):
                 logger.warning(
                     "Rates collapsed to near zero at lag %s; data may be insufficient",
                     lag,
                 )
 
-            eval_means.append(eval_mean.tolist())
+            eval_means.append(eval_med.tolist())
             eval_ci.append(np.stack([eval_lo, eval_hi], axis=1).tolist())
-            ts_means.append(ts_mean.tolist())
+            ts_means.append(ts_med.tolist())
             ts_ci.append(np.stack([ts_lo, ts_hi], axis=1).tolist())
-            rate_means.append(rate_mean.tolist())
+            rate_means.append(rate_med.tolist())
             rate_ci.append(np.stack([rate_lo, rate_hi], axis=1).tolist())
 
         eigen_means_arr = np.asarray(eval_means)
@@ -2362,11 +2356,14 @@ class EnhancedMSM:
 
         if res.recommended_lag_window is not None:
             start, end = res.recommended_lag_window
+            start_ps = start * dt_ps
+            end_ps = end * dt_ps
             plt.axvspan(
-                start * dt_ps * scale,
-                end * dt_ps * scale,
+                start_ps * scale,
+                end_ps * scale,
                 color="gray",
                 alpha=0.1,
+                label=f"Recommended τ: {start_ps * scale:.3g}–{end_ps * scale:.3g} {unit_label}",
             )
 
         plt.xlabel(f"Lag Time ({unit_label})")
