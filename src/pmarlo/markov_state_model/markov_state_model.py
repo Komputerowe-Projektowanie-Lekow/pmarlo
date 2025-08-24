@@ -217,7 +217,9 @@ class EnhancedMSM:
                 f", selection={atom_selection}" if atom_selection else "",
             )
             joined: md.Trajectory | None = None
-            for chunk in md.iterload(
+            from pmarlo.io import trajectory as traj_io
+
+            for chunk in traj_io.iterload(
                 traj_file,
                 top=self.topology_file,
                 stride=stride,
