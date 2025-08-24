@@ -31,3 +31,10 @@ def safe_timescales(lag: float, eigvals: np.ndarray, eps: float = EPS) -> np.nda
     invalid = (eigvals <= 0) | (eigvals >= 1)
     timescales[invalid] = np.nan
     return timescales
+
+
+def format_lag_window_ps(window: tuple[float, float]) -> str:
+    """Return a pretty string for a lag-time window in picoseconds."""
+
+    start_ps, end_ps = window
+    return f"{start_ps:.3f}–{end_ps:.3f} ps"

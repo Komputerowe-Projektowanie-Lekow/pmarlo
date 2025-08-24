@@ -39,7 +39,7 @@ from pmarlo.utils.msm_utils import ensure_connected_counts
 from ..cluster.micro import ClusteringResult, cluster_microstates
 from ..replica_exchange.demux_metadata import DemuxMetadata
 from ..results import FESResult, ITSResult, MSMResult
-from .utils import safe_timescales
+from .utils import format_lag_window_ps, safe_timescales
 
 logger = logging.getLogger("pmarlo")
 
@@ -1143,6 +1143,12 @@ class EnhancedMSM:
         recommended = self._select_lag_window(
             np.array(lag_times), eigen_means_arr, plateau_m, plateau_epsilon
         )
+        dt_ps = self.time_per_frame_ps or 1.0
+        recommended_ps = (
+            (recommended[0] * dt_ps, recommended[1] * dt_ps)
+            if recommended is not None
+            else None
+        )
 
         self.implied_timescales = ITSResult(
             lag_times=np.array(lag_times, dtype=int),
@@ -1152,7 +1158,7 @@ class EnhancedMSM:
             timescales_ci=ts_ci_arr,
             rates=rate_means_arr,
             rates_ci=rate_ci_arr,
-            recommended_lag_window=recommended,
+            recommended_lag_window=recommended_ps,
         )
 
         logger.info("Implied timescales computation completed")
@@ -2360,18 +2366,16 @@ class EnhancedMSM:
                 plt.plot([], [], label=f"τ{i+1} ({unit_label})")
         plt.plot([], [], " ", label="NaNs indicate unstable eigenvalues at this τ")
 
+        title = "Implied Timescales Analysis"
         if res.recommended_lag_window is not None:
-            start, end = res.recommended_lag_window
-            plt.axvspan(
-                start * dt_ps * scale,
-                end * dt_ps * scale,
-                color="gray",
-                alpha=0.1,
-            )
+            start_ps, end_ps = res.recommended_lag_window
+            plt.axvline(start_ps * scale, color="gray", linestyle="--", alpha=0.7)
+            plt.axvline(end_ps * scale, color="gray", linestyle="--", alpha=0.7)
+            title += f"\nRecommended τ: {format_lag_window_ps((start_ps, end_ps))}"
 
         plt.xlabel(f"Lag Time ({unit_label})")
         plt.ylabel(f"Implied Timescale ({unit_label})")
-        plt.title("Implied Timescales Analysis")
+        plt.title(title)
         plt.legend()
         plt.grid(True, alpha=0.3)
 
@@ -2436,18 +2440,16 @@ class EnhancedMSM:
                 plt.plot([], [], label=f"k{i+1} ({rate_unit})")
         plt.plot([], [], " ", label="NaNs indicate unstable eigenvalues at this τ")
 
+        title = "Implied Rates"
         if res.recommended_lag_window is not None:
-            start, end = res.recommended_lag_window
-            plt.axvspan(
-                start * dt_ps * lag_scale,
-                end * dt_ps * lag_scale,
-                color="gray",
-                alpha=0.1,
-            )
+            start_ps, end_ps = res.recommended_lag_window
+            plt.axvline(start_ps * lag_scale, color="gray", linestyle="--", alpha=0.7)
+            plt.axvline(end_ps * lag_scale, color="gray", linestyle="--", alpha=0.7)
+            title += f"\nRecommended τ: {format_lag_window_ps((start_ps, end_ps))}"
 
         plt.xlabel(f"Lag Time ({lag_unit})")
         plt.ylabel(f"Rate ({rate_unit})")
-        plt.title("Implied Rates")
+        plt.title(title)
         plt.legend()
         plt.grid(True, alpha=0.3)
 

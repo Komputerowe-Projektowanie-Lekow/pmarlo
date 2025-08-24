@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import pickle
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional, Type, TypeVar
 
 import numpy as np
-
-import logging
 
 logger = logging.getLogger("pmarlo")
 
@@ -177,4 +176,4 @@ class ITSResult(BaseResult):
     timescales_ci: np.ndarray
     rates: np.ndarray
     rates_ci: np.ndarray
-    recommended_lag_window: Optional[tuple[int, int]] = None
+    recommended_lag_window: Optional[tuple[float, float]] = None
