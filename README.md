@@ -19,42 +19,63 @@ A Python package for protein simulation and Markov state model chain generation,
 ## Installation
 
 ```bash
-# Clone the repository
+# From PyPI (recommended)
+pip install pmarlo
+
+# From source (development)
 git clone https://github.com/Komputerowe-Projektowanie-Lekow/pmarlo.git
 cd pmarlo
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Install in development mode
 pip install -e .
 ```
+
+- Python: 3.11–3.12
+- Optional: `pip install pmarlo[fixer]` to include `pdbfixer` (only available on Python < 3.12)
 
 
 ## Documentation
 Documentation was made using cognition powered by Devin. Here is the link https://deepwiki.com/Komputerowe-Projektowanie-Lekow/pmarlo. It will be updated weekly whenever new features, bug fixes, or other changes are made.
 
 
-## Verified Usage Example
-
-The following example demonstrates the verified functionality of PMARLO:
+## Quickstart
 
 ```python
-from pmarlo import Protein, ReplicaExchange, Simulation, MarkovStateModel, Pipeline
+from pmarlo.pipeline import run_pmarlo
 
-# Initialize components
-protein = Protein("protein.pdb", ph=7.0, auto_prepare=True)
-replica_exchange = ReplicaExchange("protein.pdb", temperatures=[300, 310, 320], auto_setup=False)
-replica_exchange.setup_replicas()
-simulation = Simulation("protein.pdb", temperature=300, steps=1000)
-markov_state_model = MarkovStateModel()
-
-# Run complete pipeline
-pipeline = Pipeline(
-    "protein.pdb",
+results = run_pmarlo(
+    pdb_file="protein.pdb",
     temperatures=[300, 310, 320],
     steps=1000,
-    auto_continue=True
+    n_states=50,
+)
+```
+
+### Clean API example
+
+```python
+from pmarlo import Protein, ReplicaExchange, RemdConfig, Simulation, Pipeline
+
+# Prepare protein
+protein = Protein("protein.pdb", ph=7.0)
+
+# Replica Exchange (auto-setup plans reporter stride automatically)
+remd = ReplicaExchange.from_config(
+    RemdConfig(
+        pdb_file="protein.pdb",
+        temperatures=[300.0, 310.0, 320.0],
+        auto_setup=True,
+        dcd_stride=10,
+    )
+)
+
+# Single-temperature simulation (optional)
+simulation = Simulation("protein.pdb", temperature=300.0, steps=1000)
+
+# Full pipeline
+pipeline = Pipeline(
+    pdb_file="protein.pdb",
+    temperatures=[300.0, 310.0, 320.0],
+    steps=1000,
+    auto_continue=True,
 )
 results = pipeline.run()
 ```
@@ -63,62 +84,79 @@ results = pipeline.run()
 
 Currently based on the pygount, the amount of lines of code is ~ 6000 lines, which is quite big number, where we can make package less bloated in the next updates.
 
-utilities
-  Files: 1 | Code: 102 | Comment: 15
-tests
-  Files: 8 | Code: 679 | Comment: 229
-src
-  Files: 24 | Code: 5483 | Comment: 1176
-example_programs
-  Files: 3 | Code: 365 | Comment: 92
+### v0.0.23
+
+- utilities - Files: 1 | Code: 102 | Comment: 15
+- tests - Files: 8 | Code: 679 | Comment: 229
+- src - Files: 24 | Code: 5483 | Comment: 1176
+- example_programs - Files: 3 | Code: 365 | Comment: 92
+
+### v0.0.33
+
+- pmarlo\utilities - Files: 1 | Code: 105 | Comment: 15
+- pmarlo\tests - Files: 52 | Code: 2012 | Comment: 210
+- pmarlo\src - Files: 72 | Code: 10237 | Comment: 1936
+- pmarlo\example_programs - Files: 4 | Code: 188 | Comment: 27
 
 ## Package Structure
 
 ```
 pmarlo/
-├── src/
-│   ├── __init__.py              # Main package exports
-│   ├── pipeline.py              # Pipeline orchestration
+├── src/pmarlo/
+│   ├── __init__.py                  # Public API (Protein, ReplicaExchange, RemdConfig, ...)
+│   ├── pipeline.py                  # High-level Pipeline + run_pmarlo helper
+│   ├── main.py                      # CLI entry-point (installed as `pmarlo`)
 │   ├── protein/
-│   │   ├── __init__.py
-│   │   └── protein.py           # Protein class
+│   │   └── protein.py               # Protein preparation
 │   ├── replica_exchange/
-│   │   ├── __init__.py
-│   │   └── replica_exchange.py  # ReplicaExchange class
+│   │   ├── config.py                # RemdConfig (immutable settings)
+│   │   └── replica_exchange.py      # ReplicaExchange implementation
 │   ├── simulation/
-│   │   ├── __init__.py
-│   │   └── simulation.py        # Simulation class
+│   │   └── simulation.py            # Single-temperature MD
 │   ├── markov_state_model/
-│   │   ├── __init__.py
-│   │   └── markov_state_model.py # MarkovStateModel class
-│   └── manager/
-│       ├── __init__.py
-│       └── checkpoint_manager.py # Checkpoint management
+│   │   ├── enhanced_msm.py          # Enhanced MSM orchestrator
+│   │   └── _*.py                    # Modular MSM mixins
+│   ├── features/ | reduce/ | cluster/ | fes/ | states/
+│   │   └── ...                      # Analysis and utilities
+│   ├── reporting/                   # Plots and exports
+│   └── manager/checkpoint_manager.py# Checkpoint management
 ```
 
-## Verification
-
-You can verify your PMARLO installation using the provided verification script:
+## Verification and CLI
 
 ```bash
-python verify_pmarlo.py
+# Show CLI options
+pmarlo --help
+
+# Run a minimal example
+pmarlo --mode simple
 ```
 
-This will test:
-1. Component initialization (Protein, ReplicaExchange, Simulation, MarkovStateModel)
-2. Basic pipeline execution with default parameters
+Smoke test in Python:
+
+```bash
+python - <<'PY'
+import pmarlo
+print("PMARLO", pmarlo.__version__)
+PY
+```
 
 ## Dependencies
 
-- numpy >= 1.18.0
-- scipy >= 1.5.0
-- matplotlib >= 3.2.0
-- pandas >= 1.1.0
-- scikit-learn >= 0.23.0
-- mdtraj >= 1.9.0
-- openmm >= 7.5.0
-- pdbfixer >= 1.7
-- rdkit >= 2020.09.1
+- numpy >= 1.24, < 2.3
+- scipy >= 1.10, < 2.0
+- matplotlib >= 3.6, < 4.0
+- pandas >= 1.5, < 3.0
+- scikit-learn >= 1.2, < 2.0
+- mdtraj >= 1.9, < 2.0
+- openmm >= 8.0, < 9.0
+- rdkit >= 2024.03.1, < 2025.0
+- psutil >= 5.9, < 6.1
+- pygount >= 2.6, < 3.2
+- deeptime >= 0.4.5, < 0.5
+
+Optional on Python < 3.12:
+- pdbfixer (install via extra: `pmarlo[fixer]`)
 
 <!-- Badges: -->
 
