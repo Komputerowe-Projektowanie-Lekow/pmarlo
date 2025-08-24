@@ -23,7 +23,7 @@ from openmm.app import ForceField, PDBFile, Simulation
 from ..results import REMDResult
 from ..utils.replica_utils import exponential_temperature_ladder
 from .config import RemdConfig
-from .diagnostics import compute_exchange_statistics
+from .diagnostics import compute_exchange_statistics, retune_temperature_ladder
 from .demux_metadata import DemuxMetadata
 from .platform_selector import select_platform_and_properties
 from .system_builder import (
@@ -54,6 +54,7 @@ class ReplicaExchange:
         exchange_frequency: int = 50,  # Very frequent exchanges for testing
         auto_setup: bool = False,
         dcd_stride: int = 1,
+        target_accept: float = 0.30,
         config: Optional[RemdConfig] = None,
         random_seed: Optional[int] = None,
         random_state: int | None = None,
@@ -68,6 +69,7 @@ class ReplicaExchange:
             output_dir: Directory to store output files
             exchange_frequency: Number of steps between exchange attempts
             auto_setup: Whether to automatically set up replicas during initialization
+            target_accept: Desired per-pair exchange acceptance probability
             random_state: Seed for deterministic behaviour. ``random_seed`` is
                 accepted for backward compatibility and is overridden by
                 ``random_state`` when both are provided.
@@ -81,6 +83,7 @@ class ReplicaExchange:
         self.output_dir = Path(output_dir)
         self.exchange_frequency = exchange_frequency
         self.dcd_stride = dcd_stride
+        self.target_accept = target_accept
         self.reporter_stride: Optional[int] = None
         self._replica_reporter_stride: List[int] = []
         self.frames_per_replica_target: Optional[int] = None
@@ -180,6 +183,7 @@ class ReplicaExchange:
             exchange_frequency=config.exchange_frequency,
             auto_setup=config.auto_setup,
             dcd_stride=config.dcd_stride,
+            target_accept=config.target_accept,
             config=config,
             random_seed=getattr(config, "random_seed", None),
         )
@@ -1352,6 +1356,47 @@ class ReplicaExchange:
             json.dump({"remd": result.to_dict(metadata_only=True)}, json_f)
         logger.info(f"Results saved to {results_file}")
 
+    def tune_temperature_ladder(
+        self, target_acceptance: Optional[float] = None
+    ) -> List[float]:
+        """Adjust the temperature ladder for a desired acceptance rate.
+
+        Uses :func:`retune_temperature_ladder` to estimate new temperature
+        spacings based on the accumulated pairwise acceptance statistics. The
+        suggested temperatures replace ``self.temperatures``; callers should
+        re-run :meth:`setup_replicas` before continuing the simulation.
+
+        Parameters
+        ----------
+        target_acceptance:
+            Desired neighbour acceptance probability. If ``None``,
+            :attr:`target_accept` is used.
+
+        Returns
+        -------
+        List[float]
+            The updated temperature ladder.
+        """
+
+        target = (
+            float(target_acceptance)
+            if target_acceptance is not None
+            else float(self.target_accept)
+        )
+        logger.info(
+            "Retuning temperature ladder toward target acceptance %.2f", target
+        )
+        stats = retune_temperature_ladder(
+            self.temperatures,
+            self.pair_attempt_counts,
+            self.pair_accept_counts,
+            target_acceptance=target,
+            dry_run=True,
+        )
+        self.temperatures = stats["suggested_temperatures"]
+        self.n_replicas = len(self.temperatures)
+        return self.temperatures
+
     def _compute_frames_per_replica(self) -> List[int]:
         frames: List[int] = []
         for traj_file in self.trajectory_files:
@@ -1633,6 +1678,8 @@ def run_remd_simulation(
     temperatures: Optional[List[float]] = None,
     use_metadynamics: bool = True,
     checkpoint_manager=None,
+    target_accept: float = 0.30,
+    tuning_steps: int = 0,
 ) -> Optional[str]:  # Fixed: Changed return type to Optional[str] to allow None returns
     """
     Convenience function to run a complete REMD simulation.
@@ -1645,6 +1692,9 @@ def run_remd_simulation(
         temperatures: Temperature ladder (auto-generated if None)
         use_metadynamics: Whether to use metadynamics biasing
         checkpoint_manager: CheckpointManager instance for state tracking
+        target_accept: Desired per-pair acceptance probability when tuning
+        tuning_steps: If >0, run a short pre-production simulation for ladder
+            tuning with this many steps
 
     Returns:
         Path to demultiplexed trajectory at 300K, or None if failed
@@ -1665,6 +1715,7 @@ def run_remd_simulation(
         temperatures=temperatures,
         output_dir=output_dir,
         exchange_frequency=50,  # Very frequent exchanges for testing
+        target_accept=target_accept,
     )
 
     # Plan DCD reporter stride before reporters are created in setup
@@ -1676,6 +1727,11 @@ def run_remd_simulation(
 
     # Set up replicas
     remd.setup_replicas(bias_variables=bias_variables)
+
+    if tuning_steps > 0:
+        remd.run_simulation(total_steps=tuning_steps, equilibration_steps=0)
+        remd.tune_temperature_ladder()
+        remd.setup_replicas(bias_variables=bias_variables)
 
     # Save state
     if checkpoint_manager:
@@ -1710,6 +1766,7 @@ def run_remd_simulation(
             temperatures=temperatures,
             output_dir=output_dir,
             exchange_frequency=50,
+            target_accept=target_accept,
         )
 
         # Set up bias variables if they were used
@@ -1725,6 +1782,10 @@ def run_remd_simulation(
         # Only setup replicas if we haven't done energy minimization yet
         if not checkpoint_manager.is_step_completed("energy_minimization"):
             remd.setup_replicas(bias_variables=bias_variables)
+            if tuning_steps > 0:
+                remd.run_simulation(total_steps=tuning_steps, equilibration_steps=0)
+                remd.tune_temperature_ladder()
+                remd.setup_replicas(bias_variables=bias_variables)
     else:
         # Non-checkpoint mode (legacy)
         bias_variables = setup_bias_variables(pdb_file) if use_metadynamics else None
@@ -1733,6 +1794,7 @@ def run_remd_simulation(
             temperatures=temperatures,
             output_dir=output_dir,
             exchange_frequency=50,
+            target_accept=target_accept,
         )
         # Plan reporter stride prior to setup
         remd.plan_reporter_stride(
@@ -1741,6 +1803,10 @@ def run_remd_simulation(
             target_frames=5000,
         )
         remd.setup_replicas(bias_variables=bias_variables)
+        if tuning_steps > 0:
+            remd.run_simulation(total_steps=tuning_steps, equilibration_steps=0)
+            remd.tune_temperature_ladder()
+            remd.setup_replicas(bias_variables=bias_variables)
 
     # Run simulation with checkpoint integration
     remd.run_simulation(
