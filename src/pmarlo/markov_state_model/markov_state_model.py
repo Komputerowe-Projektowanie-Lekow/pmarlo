@@ -19,11 +19,9 @@ import json
 import logging
 import pickle
 import warnings
-
 from dataclasses import dataclass, field
-
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union, Literal, Sequence, cast
+from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple, Union, cast
 
 import matplotlib.pyplot as plt
 import mdtraj as md
@@ -35,13 +33,13 @@ from scipy.sparse import csc_matrix, issparse, save_npz
 from scipy.sparse.csgraph import connected_components
 from sklearn.cluster import MiniBatchKMeans
 
-from ..cluster.micro import ClusteringResult, cluster_microstates
-from ..results import FESResult, ITSResult, MSMResult
-
-from ..replica_exchange.demux_metadata import DemuxMetadata
-
 from pmarlo.states.msm_bridge import _row_normalize, _stationary_from_T
 from pmarlo.utils.msm_utils import ensure_connected_counts
+
+from ..cluster.micro import ClusteringResult, cluster_microstates
+from ..replica_exchange.demux_metadata import DemuxMetadata
+from ..results import FESResult, ITSResult, MSMResult
+from .utils import safe_timescales
 
 logger = logging.getLogger("pmarlo")
 
@@ -1042,7 +1040,10 @@ class EnhancedMSM:
         for lag in lag_times:
             try:
                 from deeptime.markov import TransitionCountEstimator  # type: ignore
-                from deeptime.markov.msm import BayesianMSM, MaximumLikelihoodMSM  # type: ignore
+                from deeptime.markov.msm import (  # type: ignore
+                    BayesianMSM,
+                    MaximumLikelihoodMSM,
+                )
             except Exception as e:  # pragma: no cover
                 logger.error("deeptime import failed: %s", e)
                 raise
@@ -1098,20 +1099,25 @@ class EnhancedMSM:
                 eig_samples.append(eigenvals[1 : n_timescales + 1])
             eig_arr = np.asarray(eig_samples, dtype=float)
 
-            eval_mean = np.nanmean(eig_arr, axis=0)
-            eval_lo = np.nanpercentile(eig_arr, q_low, axis=0)
-            eval_hi = np.nanpercentile(eig_arr, q_high, axis=0)
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=RuntimeWarning)
 
-            ts_arr = -lag / np.log(eig_arr)
-            rate_arr = 1.0 / ts_arr
+                eval_mean = np.nanmean(eig_arr, axis=0)
+                eval_lo = np.nanpercentile(eig_arr, q_low, axis=0)
+                eval_hi = np.nanpercentile(eig_arr, q_high, axis=0)
 
-            ts_mean = np.nanmean(ts_arr, axis=0)
-            ts_lo = np.nanpercentile(ts_arr, q_low, axis=0)
-            ts_hi = np.nanpercentile(ts_arr, q_high, axis=0)
+                ts_arr = safe_timescales(lag, eig_arr)
+                rate_arr = np.reciprocal(
+                    ts_arr, where=np.isfinite(ts_arr), out=np.full_like(ts_arr, np.nan)
+                )
 
-            rate_mean = np.nanmean(rate_arr, axis=0)
-            rate_lo = np.nanpercentile(rate_arr, q_low, axis=0)
-            rate_hi = np.nanpercentile(rate_arr, q_high, axis=0)
+                ts_mean = np.nanmean(ts_arr, axis=0)
+                ts_lo = np.nanpercentile(ts_arr, q_low, axis=0)
+                ts_hi = np.nanpercentile(ts_arr, q_high, axis=0)
+
+                rate_mean = np.nanmean(rate_arr, axis=0)
+                rate_lo = np.nanpercentile(rate_arr, q_low, axis=0)
+                rate_hi = np.nanpercentile(rate_arr, q_high, axis=0)
 
             if np.all(rate_mean < 1e-12):
                 logger.warning(
@@ -2332,13 +2338,27 @@ class EnhancedMSM:
 
         plt.figure(figsize=(10, 6))
         for i in range(ts_plot.shape[1]):
-            plt.plot(lag_plot, ts_plot[:, i], "o-", label=f"τ{i+1} ({unit_label})")
-            plt.fill_between(
-                lag_plot,
-                ts_ci_plot[:, i, 0],
-                ts_ci_plot[:, i, 1],
-                alpha=0.2,
+            mask = (
+                np.isfinite(ts_plot[:, i])
+                & np.isfinite(ts_ci_plot[:, i, 0])
+                & np.isfinite(ts_ci_plot[:, i, 1])
             )
+            if np.any(mask):
+                plt.plot(
+                    lag_plot[mask],
+                    ts_plot[mask, i],
+                    "o-",
+                    label=f"τ{i+1} ({unit_label})",
+                )
+                plt.fill_between(
+                    lag_plot[mask],
+                    ts_ci_plot[mask, i, 0],
+                    ts_ci_plot[mask, i, 1],
+                    alpha=0.2,
+                )
+            else:
+                plt.plot([], [], label=f"τ{i+1} ({unit_label})")
+        plt.plot([], [], " ", label="NaNs indicate unstable eigenvalues at this τ")
 
         if res.recommended_lag_window is not None:
             start, end = res.recommended_lag_window
@@ -2394,13 +2414,27 @@ class EnhancedMSM:
 
         plt.figure(figsize=(10, 6))
         for i in range(rate_plot.shape[1]):
-            plt.plot(lag_plot, rate_plot[:, i], "o-", label=f"k{i+1} ({rate_unit})")
-            plt.fill_between(
-                lag_plot,
-                rate_ci_plot[:, i, 0],
-                rate_ci_plot[:, i, 1],
-                alpha=0.2,
+            mask = (
+                np.isfinite(rate_plot[:, i])
+                & np.isfinite(rate_ci_plot[:, i, 0])
+                & np.isfinite(rate_ci_plot[:, i, 1])
             )
+            if np.any(mask):
+                plt.plot(
+                    lag_plot[mask],
+                    rate_plot[mask, i],
+                    "o-",
+                    label=f"k{i+1} ({rate_unit})",
+                )
+                plt.fill_between(
+                    lag_plot[mask],
+                    rate_ci_plot[mask, i, 0],
+                    rate_ci_plot[mask, i, 1],
+                    alpha=0.2,
+                )
+            else:
+                plt.plot([], [], label=f"k{i+1} ({rate_unit})")
+        plt.plot([], [], " ", label="NaNs indicate unstable eigenvalues at this τ")
 
         if res.recommended_lag_window is not None:
             start, end = res.recommended_lag_window
@@ -2560,12 +2594,10 @@ class EnhancedMSM:
             if T.size == 0:
                 continue
             evals = np.sort(np.real(np.linalg.eigvals(T)))[::-1]
-            times: List[float] = []
-            for i in range(1, min(6, len(evals))):
-                if 0.0 < evals[i] < 1.0:
-                    times.append(-self.lag_time / np.log(evals[i]))
-            if times:
-                ts_list.append(np.array(times, dtype=float))
+            ts = safe_timescales(self.lag_time, evals[1 : min(6, len(evals))])
+            ts = ts[np.isfinite(ts)]
+            if ts.size:
+                ts_list.append(ts)
         return ts_list
 
     def _bmsm_collect_populations(self, samples_model: Any) -> List[np.ndarray]:
