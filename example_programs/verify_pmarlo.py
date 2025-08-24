@@ -28,7 +28,7 @@ def verify_components():
         protein = Protein(
             protein_path, ph=7.0, auto_prepare=False
         )  # Using pre-fixed PDB
-        print("✔ Protein component initialized")
+        print(" Protein component initialized")
 
         replica_exchange = ReplicaExchange.from_config(
             RemdConfig(
@@ -40,13 +40,13 @@ def verify_components():
             total_steps=500, equilibration_steps=50, target_frames=100
         )
         replica_exchange.setup_replicas()
-        print("✔ Replica Exchange component initialized")
+        print(" Replica Exchange component initialized")
 
         simulation = Simulation(protein_path, temperature=300, steps=1000)
-        print("✔ Simulation component initialized")
+        print(" Simulation component initialized")
 
         markov_state_model = MarkovStateModel()
-        print("✔ Markov State Model component initialized")
+        print(" Markov State Model component initialized")
 
         print("\nAll components initialized successfully!")
         return True
@@ -87,6 +87,6 @@ if __name__ == "__main__":
 
     print("\n" + "=" * 30)
     if components_ok and pipeline_ok:
-        print("✔ PMARLO verification completed successfully!")
+        print(" PMARLO verification completed successfully!")
     else:
-        print("⚠ Some verifications failed. Check the logs above.")
+        print(" Some verifications failed. Check the logs above.")
