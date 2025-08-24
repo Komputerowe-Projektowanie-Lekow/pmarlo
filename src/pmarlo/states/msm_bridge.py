@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, List, Optional, Tuple, cast
 
-import json
 import numpy as np
 
 from pmarlo.utils.msm_utils import check_transition_matrix, ensure_connected_counts

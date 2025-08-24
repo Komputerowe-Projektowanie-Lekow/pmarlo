@@ -1,4 +1,5 @@
 import numpy as np
+
 from pmarlo.markov_state_model.markov_state_model import EnhancedMSM
 
 

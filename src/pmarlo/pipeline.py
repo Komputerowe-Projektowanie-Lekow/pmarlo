@@ -408,7 +408,7 @@ class Pipeline:
         )
         return self.temperatures
 
-    def _stage_single_simulation(self):
+    def _stage_single_simulation(self) -> tuple[str, np.ndarray]:
         step_name = "simulation"
         if (
             not self.checkpoint_manager
@@ -436,18 +436,18 @@ class Pipeline:
         state = self.checkpoint_manager.load_state() if self.checkpoint_manager else {}
         trajectory_file_from_state = state.get("trajectory_file")
         states_from_state = state.get("states")
-        trajectory_file: str = (
+        trajectory_file_loaded: str = (
             str(trajectory_file_from_state)
             if trajectory_file_from_state is not None
             else ""
         )
-        states = (
+        states_loaded = (
             np.array(states_from_state)
             if states_from_state is not None
             else np.array([])
         )
-        self.trajectory_files = [trajectory_file]
-        return trajectory_file, states
+        self.trajectory_files = [trajectory_file_loaded]
+        return trajectory_file_loaded, states_loaded
 
     def _stage_msm_analysis(self, analysis_temperatures: List[float]) -> Dict[str, Any]:
         step_name = "msm_analysis"
@@ -734,21 +734,23 @@ class LegacyPipeline:
         print(f"Started new run with ID: {cm.run_id}")
         return cm
 
-    def _legacy_init_paths(self):
+    def _legacy_init_paths(self) -> tuple[Path, Path, Path, Path]:
         pdb_file = Path(self.pdb_file)
         cm = self.checkpoint_manager
         if cm is None:
-            # Fallback to default directories under output_dir when no CM
-            pdb_fixed_path = self.output_dir / "inputs" / "prepared.pdb"
-            remd_output_dir = self.output_dir / "trajectories"
-            msm_output_dir = self.output_dir / "analysis"
+            # Fallback to default directories under base output directory when no CM
+            pdb_fixed_path = self.output_base_dir / "inputs" / "prepared.pdb"
+            remd_output_dir = self.output_base_dir / "trajectories"
+            msm_output_dir = self.output_base_dir / "analysis"
             return pdb_file, pdb_fixed_path, remd_output_dir, msm_output_dir
         pdb_fixed_path = cm.run_dir / "inputs" / "prepared.pdb"
         remd_output_dir = cm.run_dir / "trajectories"
         msm_output_dir = cm.run_dir / "analysis"
         return pdb_file, pdb_fixed_path, remd_output_dir, msm_output_dir
 
-    def _legacy_save_config(self, steps: int, n_states: int, pdb_file: Path) -> Dict:
+    def _legacy_save_config(
+        self, steps: int, n_states: int, pdb_file: Path
+    ) -> Dict[str, Any]:
         cm = self.checkpoint_manager
         base_config: Dict[str, Any] = {
             "pdb_file": str(pdb_file),

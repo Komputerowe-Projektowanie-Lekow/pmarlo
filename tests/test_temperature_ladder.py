@@ -73,7 +73,11 @@ class TestOtherLadders:
 
     @pytest.mark.parametrize(
         "func",
-        [linear_temperature_ladder, exponential_temperature_ladder, power_of_two_temperature_ladder],
+        [
+            linear_temperature_ladder,
+            exponential_temperature_ladder,
+            power_of_two_temperature_ladder,
+        ],
     )
     def test_invalid_n_replicas_raises(self, func):
         with pytest.raises(ValueError):

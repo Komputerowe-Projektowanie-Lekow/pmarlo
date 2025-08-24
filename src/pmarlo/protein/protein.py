@@ -44,14 +44,6 @@ class Protein:
             ValueError: If the PDB file does not exist, is empty, or has an invalid
                 extension
         """
-        # If automatic preparation is requested but PDBFixer is unavailable,
-        # raise ImportError immediately to match expected behavior.
-        if auto_prepare and not HAS_PDBFIXER:
-            raise ImportError(
-                "PDBFixer is required for protein preparation but is not installed. "
-                "Install it with: pip install 'pmarlo[fixer]' or set auto_prepare=False to skip preparation."
-            )
-
         pdb_path = self._resolve_pdb_path(pdb_file)
         self.random_state = random_state
         self._validate_file_exists(pdb_path)
@@ -64,55 +56,7 @@ class Protein:
         self._initialize_properties_dict()
         self._maybe_prepare(auto_prepare, preparation_options, ph)
         if not auto_prepare:
-            # Load protein data without PDBFixer using MDTraj and compute basic properties
-            try:
-                import mdtraj as md
-            except Exception as e:
-                print(f"Warning: MDTraj not available: {e}")
-            else:
-                try:
-                    traj = md.load(self.pdb_file)
-                except Exception as e:  # pragma: no cover - error path
-                    raise ValueError(f"Failed to parse PDB file: {e}") from e
-
-                import numpy as np
-
-                if not np.isfinite(traj.xyz).all():
-                    raise ValueError("PDB contains invalid (non-finite) coordinates")
-
-                topo = traj.topology
-                self.properties["num_atoms"] = traj.n_atoms
-                self.properties["num_residues"] = topo.n_residues
-                # MDTraj topology.chains is an iterator; use n_chains for count
-                self.properties["num_chains"] = topo.n_chains
-
-                # Compute approximate molecular weight (sum of atomic masses) and heavy atom count
-                total_mass = 0.0
-                heavy_atoms = 0
-                for atom in topo.atoms:
-                    # Some elements may have mass None; treat as 0.0
-                    mass = getattr(atom.element, "mass", None)
-                    if mass is None:
-                        mass = 0.0
-                    total_mass += float(mass)
-                    if getattr(atom.element, "number", 0) != 1:
-                        heavy_atoms += 1
-                self.properties["molecular_weight"] = total_mass
-                self.properties["exact_molecular_weight"] = total_mass
-                self.properties["heavy_atoms"] = heavy_atoms
-
-                # Keep numeric defaults for descriptors when RDKit not used
-                # (tests expect ints/floats, not None)
-                self.properties["charge"] = float(self.properties.get("charge", 0.0))
-                self.properties["logp"] = float(self.properties.get("logp", 0.0))
-                self.properties["hbd"] = int(self.properties.get("hbd", 0))
-                self.properties["hba"] = int(self.properties.get("hba", 0))
-                self.properties["rotatable_bonds"] = int(
-                    self.properties.get("rotatable_bonds", 0)
-                )
-                self.properties["aromatic_rings"] = int(
-                    self.properties.get("aromatic_rings", 0)
-                )
+            self._load_basic_properties_without_preparation()
 
     # --- Initialization helpers to reduce complexity ---
 
@@ -222,6 +166,62 @@ class Protein:
             prep_options = preparation_options or {}
             prep_options.setdefault("ph", ph)
             self.prepare(**prep_options)
+
+    def _load_basic_properties_without_preparation(self) -> None:
+        """Load topology with MDTraj and compute basic properties when not prepared.
+
+        This mirrors the previous inline initialization logic for the
+        auto_prepare=False path without increasing __init__ complexity.
+        """
+        try:
+            import mdtraj as md
+        except Exception as e:
+            print(f"Warning: MDTraj not available: {e}")
+            return
+
+        try:
+            traj = md.load(self.pdb_file)
+        except Exception as e:  # pragma: no cover - error path
+            raise ValueError(f"Failed to parse PDB file: {e}") from e
+
+        import numpy as np
+
+        if not np.isfinite(traj.xyz).all():
+            raise ValueError("PDB contains invalid (non-finite) coordinates")
+
+        topo = traj.topology
+        self.properties["num_atoms"] = traj.n_atoms
+        self.properties["num_residues"] = topo.n_residues
+        # MDTraj topology.chains is an iterator; use n_chains for count
+        self.properties["num_chains"] = topo.n_chains
+
+        # Compute approximate molecular weight (sum of atomic masses) and heavy atom count
+        total_mass = 0.0
+        heavy_atoms = 0
+        for atom in topo.atoms:
+            # Some elements may have mass None; treat as 0.0
+            mass = getattr(atom.element, "mass", None)
+            if mass is None:
+                mass = 0.0
+            total_mass += float(mass)
+            if getattr(atom.element, "number", 0) != 1:
+                heavy_atoms += 1
+        self.properties["molecular_weight"] = total_mass
+        self.properties["exact_molecular_weight"] = total_mass
+        self.properties["heavy_atoms"] = heavy_atoms
+
+        # Keep numeric defaults for descriptors when RDKit not used
+        # (tests expect ints/floats, not None)
+        self.properties["charge"] = float(self.properties.get("charge", 0.0))
+        self.properties["logp"] = float(self.properties.get("logp", 0.0))
+        self.properties["hbd"] = int(self.properties.get("hbd", 0))
+        self.properties["hba"] = int(self.properties.get("hba", 0))
+        self.properties["rotatable_bonds"] = int(
+            self.properties.get("rotatable_bonds", 0)
+        )
+        self.properties["aromatic_rings"] = int(
+            self.properties.get("aromatic_rings", 0)
+        )
 
     def prepare(
         self,

@@ -3,18 +3,19 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from pmarlo.experiments.simulation import SimulationConfig, run_simulation_experiment
+from pmarlo.experiments.msm import MSMConfig, run_msm_experiment
 from pmarlo.experiments.replica_exchange import (
     ReplicaExchangeConfig,
     run_replica_exchange_experiment,
 )
-from pmarlo.experiments.msm import MSMConfig, run_msm_experiment
+from pmarlo.experiments.simulation import SimulationConfig, run_simulation_experiment
 
 
 def test_simulation_experiment_uses_seed(monkeypatch, tmp_path):
     captured = {}
     monkeypatch.setattr(
-        "pmarlo.experiments.simulation.set_seed", lambda s: captured.setdefault("seed", s)
+        "pmarlo.experiments.simulation.set_seed",
+        lambda s: captured.setdefault("seed", s),
     )
 
     dummy_states = np.array([0, 1])
@@ -112,9 +113,7 @@ def test_msm_experiment_uses_seed(monkeypatch, tmp_path):
         (tmp_path / "msm").mkdir(parents=True, exist_ok=True)
         return DummyMSMObj()
 
-    with patch(
-        "pmarlo.experiments.msm.run_complete_msm_analysis", dummy_run_complete
-    ):
+    with patch("pmarlo.experiments.msm.run_complete_msm_analysis", dummy_run_complete):
         cfg = MSMConfig(
             trajectory_files=["tests/data/traj.dcd"],
             topology_file="tests/data/3gd8-fixed.pdb",

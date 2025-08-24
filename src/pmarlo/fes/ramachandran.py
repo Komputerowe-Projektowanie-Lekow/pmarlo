@@ -124,8 +124,8 @@ def periodic_hist2d(
 ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
     """Compute a periodic 2D histogram."""
 
-    x = np.asarray(phi, dtype=float).ravel()
-    y = np.asarray(psi, dtype=float).ravel()
+    x: NDArray[np.float64] = np.asarray(phi, dtype=np.float64).ravel()
+    y: NDArray[np.float64] = np.asarray(psi, dtype=np.float64).ravel()
     if x.shape != y.shape:
         raise ValueError("phi and psi must have the same shape")
 
@@ -133,12 +133,15 @@ def periodic_hist2d(
     x_edges = np.linspace(-180.0, 180.0, bx + 2)
     y_edges = np.linspace(-180.0, 180.0, by + 2)
     H_raw, _, _ = np.histogram2d(x, y, bins=(x_edges, y_edges))
-    H = np.asarray(H_raw, dtype=float)
+    H: NDArray[np.float64] = np.asarray(H_raw, dtype=np.float64)
     H[0, :] += H[-1, :]
     H = H[:-1, :]
     H[:, 0] += H[:, -1]
     H = H[:, :-1]
-    return H, x_edges[:-1], y_edges[:-1]
+    H = H.astype(np.float64, copy=False)
+    xout: NDArray[np.float64] = x_edges[:-1].astype(np.float64, copy=False)
+    yout: NDArray[np.float64] = y_edges[:-1].astype(np.float64, copy=False)
+    return (H, xout, yout)
 
 
 def compute_ramachandran_fes(

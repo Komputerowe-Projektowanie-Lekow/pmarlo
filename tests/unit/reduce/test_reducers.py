@@ -1,5 +1,7 @@
 import sys
+
 import numpy as np
+
 from pmarlo.reduce.reducers import pca_reduce, tica_reduce
 
 

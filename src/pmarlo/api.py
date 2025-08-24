@@ -18,7 +18,11 @@ from .reduce.reducers import pca_reduce, tica_reduce, vamp_reduce
 from .replica_exchange.config import RemdConfig
 from .replica_exchange.replica_exchange import ReplicaExchange
 from .reporting.export import write_conformations_csv_json
-from .reporting.plots import save_fes_contour, save_transition_matrix_heatmap
+from .reporting.plots import (
+    save_fes_contour,
+    save_pmf_line,
+    save_transition_matrix_heatmap,
+)
 from .states.msm_bridge import build_simple_msm as _build_simple_msm
 from .states.msm_bridge import compute_macro_mfpt as _compute_macro_mfpt
 from .states.msm_bridge import compute_macro_populations as _compute_macro_populations
@@ -30,6 +34,274 @@ from .utils.msm_utils import candidate_lag_ladder
 logger = logging.getLogger("pmarlo")
 
 
+def _align_trajectory(
+    traj: md.Trajectory,
+    atom_selection: str | Sequence[int] | None = "name CA",
+) -> md.Trajectory:
+    """Return an aligned copy of the trajectory using the provided atom selection.
+
+    For invariance across frames, we superpose all frames to the first frame
+    on C-alpha atoms by default. If the selection fails, the input trajectory
+    is returned unchanged.
+    """
+    try:
+        top = traj.topology
+        if isinstance(atom_selection, str):
+            atom_indices = top.select(atom_selection)
+        elif atom_selection is None:
+            atom_indices = top.select("name CA")
+        else:
+            atom_indices = list(atom_selection)
+        if atom_indices is None or len(atom_indices) == 0:
+            return traj
+        ref = traj[0]
+        aligned = traj.superpose(ref, atom_indices=atom_indices)
+        return aligned
+    except Exception:
+        return traj
+
+
+def _trig_expand_periodic(X: np.ndarray, periodic: np.ndarray) -> np.ndarray:
+    """Expand periodic columns of X into cos/sin, keep non-periodic as-is.
+
+    Parameters
+    ----------
+    X:
+        Feature matrix of shape (n_frames, n_features).
+    periodic:
+        Boolean array of shape (n_features,) indicating periodic columns.
+
+    Returns
+    -------
+    np.ndarray
+        Expanded feature matrix with shape (n_frames, n_nonperiodic + 2*n_periodic).
+    """
+    if X.size == 0:
+        return X
+    if periodic.size != X.shape[1]:
+        # Best-effort: assume non-periodic if mismatch
+        periodic = np.zeros((X.shape[1],), dtype=bool)
+    cols: List[np.ndarray] = []
+    for j in range(X.shape[1]):
+        col = X[:, j]
+        if bool(periodic[j]):
+            cols.append(np.cos(col))
+            cols.append(np.sin(col))
+        else:
+            cols.append(col)
+    return np.vstack(cols).T if cols else X
+
+
+def compute_universal_metric(
+    traj: md.Trajectory,
+    feature_specs: Optional[Sequence[str]] = None,
+    align: bool = True,
+    atom_selection: str | Sequence[int] | None = "name CA",
+    method: Literal["vamp", "tica", "pca"] = "vamp",
+    lag: int = 10,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Compute a universal 1D metric from multiple CVs with alignment and reduction.
+
+    Steps:
+    - Optional superposition of trajectory frames (default: C-alpha atoms)
+    - Compute a broad set of default features if none are specified
+      (phi/psi, chi1, Rg, SASA, HBond count, secondary-structure fractions)
+    - Trig-expand periodic columns to handle angular wrap-around
+    - Reduce to a single component via VAMP/TICA/PCA
+
+    Returns the 1D metric array (n_frames,) and metadata.
+    """
+    logger.info(
+        "[universal] Starting computation (align=%s, method=%s, lag=%s)",
+        bool(align),
+        method,
+        int(lag),
+    )
+    traj_in = _align_trajectory(traj, atom_selection=atom_selection) if align else traj
+    if align:
+        try:
+            logger.info("[universal] Alignment complete: %d frames", traj_in.n_frames)
+        except Exception:
+            logger.info("[universal] Alignment complete")
+    specs = (
+        list(feature_specs)
+        if feature_specs is not None
+        else ["phi_psi", "chi1", "Rg", "sasa", "hbonds_count", "ssfrac"]
+    )
+    logger.info("[universal] Computing features: %s", ", ".join(specs))
+    X, cols, periodic = compute_features(traj_in, feature_specs=specs)
+    logger.info(
+        "[universal] Features computed: shape=%s, columns=%d", tuple(X.shape), len(cols)
+    )
+    if X.size == 0:
+        return np.zeros((traj.n_frames,), dtype=float), {
+            "columns": cols,
+            "periodic": periodic,
+            "reduction": method,
+            "lag": int(lag),
+            "aligned": bool(align),
+            "specs": specs,
+        }
+    logger.info("[universal] Trig-expanding periodic columns")
+    Xe = _trig_expand_periodic(X, periodic)
+    logger.info("[universal] Expanded shape=%s", tuple(Xe.shape))
+    if method == "pca":
+        logger.info("[universal] Reducing with PCA → 1D")
+        Y = pca_reduce(Xe, n_components=1)
+    elif method == "tica":
+        logger.info("[universal] Reducing with TICA(lag=%d) → 1D", int(max(1, lag)))
+        Y = tica_reduce(Xe, lag=int(max(1, lag)), n_components=1)
+    else:
+        # VAMP default
+        logger.info("[universal] Reducing with VAMP(lag=%d) → 1D", int(max(1, lag)))
+        Y = vamp_reduce(Xe, lag=int(max(1, lag)), n_components=1, score_dims=[1])
+    metric = Y.reshape(-1)
+    logger.info("[universal] Metric ready: %d frames", metric.shape[0])
+    meta: Dict[str, Any] = {
+        "columns": cols,
+        "periodic": periodic,
+        "reduction": method,
+        "lag": int(lag),
+        "aligned": bool(align),
+        "specs": specs,
+    }
+    return metric, meta
+
+
+def compute_universal_embedding(
+    traj: md.Trajectory,
+    feature_specs: Optional[Sequence[str]] = None,
+    align: bool = True,
+    atom_selection: str | Sequence[int] | None = "name CA",
+    method: Literal["vamp", "tica", "pca"] = "vamp",
+    lag: int = 10,
+    n_components: int = 2,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Compute a universal low-dimensional embedding (≥1D) from many CVs.
+
+    Returns array of shape (n_frames, n_components) and metadata.
+    """
+    specs = (
+        list(feature_specs)
+        if feature_specs is not None
+        else ["phi_psi", "chi1", "Rg", "sasa", "hbonds_count", "ssfrac"]
+    )
+    traj_in = _align_trajectory(traj, atom_selection=atom_selection) if align else traj
+    X, cols, periodic = compute_features(traj_in, feature_specs=specs)
+    Xe = _trig_expand_periodic(X, periodic)
+    k = int(max(1, n_components))
+    if method == "pca":
+        Y = pca_reduce(Xe, n_components=k)
+    elif method == "tica":
+        Y = tica_reduce(Xe, lag=int(max(1, lag)), n_components=k)
+    else:
+        Y = vamp_reduce(Xe, lag=int(max(1, lag)), n_components=k)
+    meta: Dict[str, Any] = {
+        "columns": cols,
+        "periodic": periodic,
+        "reduction": method,
+        "lag": int(lag),
+        "aligned": bool(align),
+        "specs": specs,
+        "n_components": k,
+    }
+    return Y, meta
+
+
+# ------------------------------ Feature helpers (refactor) ------------------------------
+
+
+def _init_feature_accumulators() -> (
+    tuple[List[str], List[np.ndarray], List[np.ndarray]]
+):
+    columns: List[str] = []
+    feats: List[np.ndarray] = []
+    periodic_flags: List[np.ndarray] = []
+    return columns, feats, periodic_flags
+
+
+def _parse_spec(spec: str) -> tuple[str, Dict[str, Any]]:
+    feat_name, kwargs = parse_feature_spec(spec)
+    return feat_name, kwargs
+
+
+def _compute_feature_block(
+    traj: md.Trajectory, feat_name: str, kwargs: Dict[str, Any]
+) -> tuple[Any, np.ndarray]:
+    fc = get_feature(feat_name)
+    X = fc.compute(traj, **kwargs)
+    return fc, X
+
+
+def _log_feature_progress(feat_name: str, X: np.ndarray) -> None:
+    try:
+        logger.info("[features] %-14s → shape=%s", feat_name, tuple(X.shape))
+    except Exception:
+        logger.info("[features] %s computed", feat_name)
+
+
+def _feature_labels(
+    fc: Any, feat_name: str, n_cols: int, kwargs: Dict[str, Any]
+) -> List[str]:
+    labels = getattr(fc, "labels", None)
+    if isinstance(labels, list) and len(labels) == n_cols:
+        return list(labels)
+    if feat_name == "phi_psi" and n_cols > 0:
+        half = max(0, n_cols // 2)
+        return [f"phi_{i}" for i in range(half)] + [
+            f"psi_{i}" for i in range(n_cols - half)
+        ]
+    label_base = feat_name
+    if feat_name == "distance_pair" and "i" in kwargs and "j" in kwargs:
+        label_base = f"dist:atoms:{kwargs['i']}-{kwargs['j']}"
+    return [f"{label_base}_{i}" if n_cols > 1 else label_base for i in range(n_cols)]
+
+
+def _append_feature_outputs(
+    feats: List[np.ndarray],
+    periodic_flags: List[np.ndarray],
+    columns: List[str],
+    fc: Any,
+    X: np.ndarray,
+    feat_name: str,
+    kwargs: Dict[str, Any],
+) -> None:
+    if X.size == 0:
+        return
+    feats.append(X)
+    n_cols = X.shape[1]
+    columns.extend(_feature_labels(fc, feat_name, n_cols, kwargs))
+    periodic_flags.append(fc.is_periodic())
+
+
+def _frame_mismatch_info(feats: List[np.ndarray]) -> tuple[int, bool, List[int]]:
+    lengths = [int(f.shape[0]) for f in feats]
+    min_frames = min(lengths) if lengths else 0
+    mismatch = any(length != min_frames for length in lengths)
+    return min_frames, mismatch, lengths
+
+
+def _truncate_to_min_frames(
+    feats: List[np.ndarray], min_frames: int
+) -> List[np.ndarray]:
+    return [f[:min_frames] for f in feats]
+
+
+def _stack_and_build_periodic(
+    feats: List[np.ndarray], periodic_flags: List[np.ndarray]
+) -> tuple[np.ndarray, np.ndarray]:
+    X_all = np.hstack(feats)
+    if periodic_flags:
+        periodic = np.concatenate(periodic_flags)
+    else:
+        periodic = np.zeros((X_all.shape[1],), dtype=bool)
+    return X_all, periodic
+
+
+def _empty_feature_matrix(traj: md.Trajectory) -> tuple[np.ndarray, np.ndarray]:
+    return np.zeros((traj.n_frames, 0), dtype=float), np.zeros((0,), dtype=bool)
+
+
 def compute_features(
     traj: md.Trajectory, feature_specs: Sequence[str], cache_path: Optional[str] = None
 ) -> Tuple[np.ndarray, List[str], np.ndarray]:
@@ -39,46 +311,28 @@ def compute_features(
     Caching is a no-op for now to preserve behavior.
     Returns (X, columns, periodic).
     """
-    columns: List[str] = []
-    feats: List[np.ndarray] = []
-    periodic_flags: List[np.ndarray] = []
+    columns, feats, periodic_flags = _init_feature_accumulators()
 
     for spec in feature_specs:
-        # Phase B: parse spec into (feature_name, kwargs)
-        feat_name, kwargs = parse_feature_spec(spec)
-        fc = get_feature(feat_name)
-        X = fc.compute(traj, **kwargs)
-        if X.size == 0:
-            continue
-        feats.append(X)
-        # Column labels: prefer feature-provided labels; else best-effort generic names
-        n_cols = X.shape[1]
-        labels = getattr(fc, "labels", None)
-        if isinstance(labels, list) and len(labels) == n_cols:
-            columns.extend(labels)
-        elif feat_name == "phi_psi" and n_cols > 0:
-            # Fallback for phi/psi if labels missing: packed as [phi..., psi...]
-            half = max(0, n_cols // 2)
-            columns.extend([f"phi_{i}" for i in range(half)])
-            columns.extend([f"psi_{i}" for i in range(n_cols - half)])
-        else:
-            label_base = feat_name
-            if feat_name == "distance_pair" and "i" in kwargs and "j" in kwargs:
-                label_base = f"dist:atoms:{kwargs['i']}-{kwargs['j']}"
-            for i in range(n_cols):
-                columns.append(f"{label_base}_{i}" if n_cols > 1 else label_base)
-        periodic_flags.append(fc.is_periodic())
+        feat_name, kwargs = _parse_spec(spec)
+        fc, X = _compute_feature_block(traj, feat_name, kwargs)
+        _log_feature_progress(feat_name, X)
+        _append_feature_outputs(
+            feats, periodic_flags, columns, fc, X, feat_name, kwargs
+        )
 
     if feats:
-        X_all = np.hstack(feats)
-        periodic = (
-            np.concatenate(periodic_flags)
-            if periodic_flags
-            else np.zeros((X_all.shape[1],), dtype=bool)
-        )
+        min_frames, mismatch, lengths = _frame_mismatch_info(feats)
+        if mismatch:
+            logger.warning(
+                "[features] Frame count mismatch across features: %s → truncating to %d",
+                lengths,
+                min_frames,
+            )
+        feats = _truncate_to_min_frames(feats, min_frames)
+        X_all, periodic = _stack_and_build_periodic(feats, periodic_flags)
     else:
-        X_all = np.zeros((traj.n_frames, 0), dtype=float)
-        periodic = np.zeros((0,), dtype=bool)
+        X_all, periodic = _empty_feature_matrix(traj)
 
     return X_all, columns, periodic
 
@@ -312,9 +566,9 @@ def select_fes_pair(
         return i, j, pi, pj
 
     # 2) Residue-aware phi/psi pairing
-    pair = _fes_pair_from_phi_psi_maps(cols)
-    if pair is not None:
-        i, j, rid = pair
+    pair_phi_psi = _fes_pair_from_phi_psi_maps(cols)
+    if pair_phi_psi is not None:
+        i, j, rid = pair_phi_psi
         pi, pj = _fes_periodic_pair_flags(periodic, i, j)
         logger.info("FES φ/ψ pair selected: phi_res=%d, psi_res=%d", rid, rid)
         return i, j, pi, pj
@@ -581,10 +835,67 @@ def analyze_msm(  # noqa: C901
     except Exception:
         total_frames_fes = 0
     adaptive_bins = max(20, min(50, int((total_frames_fes or 0) ** 0.5))) or 20
-    msm.generate_free_energy_surface(
-        cv1_name="phi", cv2_name="psi", bins=int(adaptive_bins), temperature=300.0
-    )
-    msm.plot_free_energy_surface(save_file="free_energy_surface", interactive=False)
+
+    # Plot FES/PMF based on feature_type
+    if feature_type.lower().startswith("universal"):
+        try:
+            # Build one universal embedding and reuse for PMF(1D) and FES(2D)
+            traj_all = None
+            for t in msm.trajectories:
+                traj_all = t if traj_all is None else traj_all.join(t)
+            if traj_all is not None:
+                # Choose method with Literal-typed variable for mypy
+                if "vamp" in feature_type.lower():
+                    red_method: Literal["vamp", "tica", "pca"] = "vamp"
+                elif "tica" in feature_type.lower():
+                    red_method = "tica"
+                else:
+                    red_method = "pca"
+                Y2, _ = compute_universal_embedding(
+                    traj_all,
+                    feature_specs=None,
+                    align=True,
+                    method=red_method,
+                    lag=int(max(1, msm.lag_time or 10)),
+                    n_components=2,
+                )
+                # 1) PMF on IC1
+                from .fes.surfaces import generate_1d_pmf
+
+                pmf = generate_1d_pmf(
+                    Y2[:, 0], bins=int(max(30, adaptive_bins)), temperature=300.0
+                )
+                _ = save_pmf_line(
+                    pmf.F,
+                    pmf.edges,
+                    xlabel="universal IC1",
+                    output_dir=str(msm.output_dir),
+                    filename="pmf_universal_ic1.png",
+                )
+                # 2) 2D FES on (IC1, IC2)
+                fes2 = generate_free_energy_surface(
+                    Y2[:, 0],
+                    Y2[:, 1],
+                    bins=(int(adaptive_bins), int(adaptive_bins)),
+                    temperature=300.0,
+                    periodic=(False, False),
+                    smooth=True,
+                    min_count=1,
+                )
+                _ = save_fes_contour(
+                    fes2.F,
+                    fes2.xedges,
+                    fes2.yedges,
+                    "universal IC1",
+                    "universal IC2",
+                    str(msm.output_dir),
+                    "fes_universal_ic1_vs_ic2.png",
+                )
+        except Exception:
+            pass
+    else:
+        # Disable phi/psi-specific FES in analyze_msm default path
+        pass
     msm.plot_implied_timescales(save_file="implied_timescales")
     msm.plot_free_energy_profile(save_file="free_energy_profile")
     msm.create_state_table()
@@ -651,6 +962,7 @@ def find_conformations(  # noqa: C901
     traj: md.Trajectory | None = None
     from pmarlo.io import trajectory as traj_io
 
+    loaded_frames = 0
     for chunk in traj_io.iterload(
         str(trajectory_choice),
         top=str(topology_pdb),
@@ -659,6 +971,9 @@ def find_conformations(  # noqa: C901
         chunk=chunk_size,
     ):
         traj = chunk if traj is None else traj.join(chunk)
+        loaded_frames += int(chunk.n_frames)
+        if loaded_frames % max(1, chunk_size) == 0:
+            logger.info("[stream] Loaded %d frames so far...", loaded_frames)
     if traj is None:
         raise ValueError("No frames loaded from trajectory")
 
@@ -713,32 +1028,38 @@ def find_conformations(  # noqa: C901
             )
 
     adaptive_bins = max(30, min(80, int((getattr(traj, "n_frames", 0) or 1) ** 0.5)))
-    fes_info = generate_fes_and_pick_minima(
-        X,
-        cols,
-        periodic,
-        requested_pair=requested_pair,
-        bins=(adaptive_bins, adaptive_bins),
-        temperature=300.0,
-        smooth=True,
-        min_count=1,
-        kde_bw_deg=(20.0, 20.0),
-        deltaF_kJmol=3.0,
-    )
+    try:
+        fes_info = generate_fes_and_pick_minima(
+            X,
+            cols,
+            periodic,
+            requested_pair=requested_pair,
+            bins=(adaptive_bins, adaptive_bins),
+            temperature=300.0,
+            smooth=True,
+            min_count=1,
+            kde_bw_deg=(20.0, 20.0),
+            deltaF_kJmol=3.0,
+        )
+    except RuntimeError as e:
+        # Gracefully skip when selected pair is identical or unsuitable
+        logger.warning("Skipping FES minima picking: %s", e)
+        fes_info = {"names": ("N/A", "N/A"), "fes": None, "minima": {"minima": []}}
     names = fes_info["names"]
     fes = fes_info["fes"]
     minima = fes_info["minima"]
     fname = f"fes_{sanitize_label_for_filename(names[0])}_vs_{sanitize_label_for_filename(names[1])}.png"
-    _ = save_fes_contour(
-        fes.F,
-        fes.xedges,
-        fes.yedges,
-        names[0],
-        names[1],
-        str(out),
-        fname,
-        mask=fes.metadata.get("mask"),
-    )
+    if fes is not None:
+        _ = save_fes_contour(
+            fes.F,
+            fes.xedges,
+            fes.yedges,
+            names[0],
+            names[1],
+            str(out),
+            fname,
+            mask=fes.metadata.get("mask"),
+        )
 
     for idx, entry in enumerate(minima.get("minima", [])):
         frames = entry.get("frames", [])

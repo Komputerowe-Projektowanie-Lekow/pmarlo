@@ -1,5 +1,5 @@
-import numpy as np
 import mdtraj as md
+import numpy as np
 from mdtraj.core.element import carbon
 
 from pmarlo import api

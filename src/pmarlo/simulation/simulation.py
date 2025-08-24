@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 import matplotlib.pyplot as plt
+
 from pmarlo.utils.seed import set_global_seed
 
 logger = logging.getLogger(__name__)

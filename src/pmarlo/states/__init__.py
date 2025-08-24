@@ -13,4 +13,3 @@ __all__ = [
     "serialize_macro_mapping",
     "deserialize_macro_mapping",
 ]
-

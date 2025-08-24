@@ -9,8 +9,8 @@ def _preprocess(X: np.ndarray, scale: bool = True) -> np.ndarray:
     """Center and optionally scale features in a NaN-safe manner."""
     Xp = np.asarray(X, dtype=float)
     mean = np.nanmean(Xp, axis=0, keepdims=True)
-    mean = np.nan_to_num(mean, nan=0.0)
-    Xp = np.nan_to_num(Xp - mean, nan=0.0)
+    mean = cast(np.ndarray, np.nan_to_num(mean, nan=0.0))
+    Xp = cast(np.ndarray, np.nan_to_num(Xp - mean, nan=0.0))
     if scale:
         std = np.nanstd(Xp, axis=0, keepdims=True)
         std = np.nan_to_num(std, nan=1.0)

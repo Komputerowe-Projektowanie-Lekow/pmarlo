@@ -1,11 +1,11 @@
+import mdtraj as md
 import numpy as np
 import pytest
-import mdtraj as md
 from mdtraj.core.element import carbon
 
 from pmarlo.features import get_feature
 from pmarlo.features.base import parse_feature_spec
-from pmarlo.features.builtins import DistancePairFeature, ContactsPairFeature
+from pmarlo.features.builtins import ContactsPairFeature, DistancePairFeature
 
 
 def _simple_traj(distance: float = 0.5, *, nan: bool = False) -> md.Trajectory:
@@ -49,4 +49,3 @@ def test_contacts_pair_boundary_and_validation() -> None:
         feat.compute(traj, i=0, j=2, rcut=0.5)
     with pytest.raises(ValueError):
         feat.compute(traj, i=0, j=1, rcut=-1.0)
-
