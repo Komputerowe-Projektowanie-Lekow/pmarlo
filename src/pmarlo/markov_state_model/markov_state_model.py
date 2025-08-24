@@ -729,7 +729,7 @@ class EnhancedMSM:
             Desired number of TICA components.  ``None`` skips projection.
         lag:
             Lag time (in frames) used in the TICA estimation and to discard the
-            first ``lag`` frames of each trajectory after transformation.
+            first ``lag`` frames of the combined trajectory after transformation.
         """
         if self.features is None or n_components_hint is None:
             return
@@ -746,9 +746,17 @@ class EnhancedMSM:
 
             tica = _DT_TICA(lagtime=int(max(1, lag or 1)), dim=n_components)
             tica_model = tica.fit(Xs).fetch_model()
-            Ys = [tica_model.transform(x)[int(max(0, lag)) :] for x in Xs]
+            Ys = [tica_model.transform(x) for x in Xs]
             self.features = np.vstack(Ys)
-            self.trajectories = [traj[int(max(0, lag)) :] for traj in self.trajectories]
+            if lag > 0:
+                drop = int(max(0, lag))
+                self.features = self.features[drop:]
+                remaining = drop
+                while self.trajectories and remaining >= self.trajectories[0].n_frames:
+                    remaining -= self.trajectories[0].n_frames
+                    self.trajectories.pop(0)
+                if self.trajectories and remaining > 0:
+                    self.trajectories[0] = self.trajectories[0][remaining:]
             if hasattr(tica_model, "eigenvectors_"):
                 self.tica_components_ = tica_model.eigenvectors_  # type: ignore[attr-defined]
             if hasattr(tica_model, "eigenvalues_"):
@@ -758,10 +766,14 @@ class EnhancedMSM:
         except Exception as e:
             logger.warning("deeptime TICA failed (%s); proceeding without TICA", e)
             if lag > 0:
-                self.features = self.features[int(max(0, lag)) :]
-                self.trajectories = [
-                    traj[int(max(0, lag)) :] for traj in self.trajectories
-                ]
+                drop = int(max(0, lag))
+                self.features = self.features[drop:]
+                remaining = drop
+                while self.trajectories and remaining >= self.trajectories[0].n_frames:
+                    remaining -= self.trajectories[0].n_frames
+                    self.trajectories.pop(0)
+                if self.trajectories and remaining > 0:
+                    self.trajectories[0] = self.trajectories[0][remaining:]
 
     def _build_standard_msm(self, lag_time: int, count_mode: str = "sliding") -> None:
         """Estimate transition counts and matrix for a discrete MSM.
