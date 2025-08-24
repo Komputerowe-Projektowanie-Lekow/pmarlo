@@ -250,13 +250,15 @@ def _fes_build_phi_psi_maps(
     return phi_map_local, psi_map_local
 
 
-def _fes_pair_from_phi_psi_maps(cols: Sequence[str]) -> Tuple[int, int] | None:
+def _fes_pair_from_phi_psi_maps(
+    cols: Sequence[str],
+) -> Tuple[int, int, int] | None:
     phi_map_local, psi_map_local = _fes_build_phi_psi_maps(cols)
     common_residues = sorted(set(phi_map_local).intersection(psi_map_local))
     if not common_residues:
         return None
     rid0 = common_residues[0]
-    return phi_map_local[rid0], psi_map_local[rid0]
+    return phi_map_local[rid0], psi_map_local[rid0], rid0
 
 
 def _fes_highest_variance_pair(X: np.ndarray) -> Tuple[int, int] | None:
@@ -302,8 +304,9 @@ def select_fes_pair(
     # 2) Residue-aware phi/psi pairing
     pair = _fes_pair_from_phi_psi_maps(cols)
     if pair is not None:
-        i, j = pair
+        i, j, rid = pair
         pi, pj = _fes_periodic_pair_flags(periodic, i, j)
+        logger.info("FES φ/ψ pair selected: phi_res=%d, psi_res=%d", rid, rid)
         return i, j, pi, pj
 
     # 3) Highest-variance fallback
