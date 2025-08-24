@@ -175,16 +175,13 @@ def compute_ramachandran_fes(
         Standard deviation for Gaussian smoothing. ``None`` or ``0`` disables
         smoothing.
     stride
-        Use every ``stride``-th frame. If ``None``, determined from ``tau``.
+        Use every ``stride``-th frame. Defaults to ``1`` (use all frames).
     tau
-        Correlation time in frames. If provided and ``stride`` is ``None``, the
-        stride defaults to ``max(1, int(tau / 2))``.
+        Correlation time in frames. Retained for compatibility but no longer
+        alters the frame stride.
     """
 
-    if stride is None:
-        stride = max(1, int(tau / 2)) if tau is not None else 1
-    stride = max(1, int(stride))
-
+    stride = max(1, int(stride or 1))
     angles = compute_ramachandran(traj, selection)[::stride]
     H, xedges, yedges = periodic_hist2d(
         angles[:, 0], angles[:, 1], bins=bins, smoothing=smoothing

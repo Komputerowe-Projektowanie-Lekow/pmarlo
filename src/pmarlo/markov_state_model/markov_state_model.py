@@ -15,6 +15,7 @@ This module provides advanced MSM analysis capabilities including:
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import pickle
@@ -728,7 +729,7 @@ class EnhancedMSM:
             Desired number of TICA components.  ``None`` skips projection.
         lag:
             Lag time (in frames) used in the TICA estimation and to discard the
-            first ``lag`` frames of each trajectory after transformation.
+            first ``lag`` frames of the combined trajectory after transformation.
         """
         if self.features is None or n_components_hint is None:
             return
@@ -745,9 +746,17 @@ class EnhancedMSM:
 
             tica = _DT_TICA(lagtime=int(max(1, lag or 1)), dim=n_components)
             tica_model = tica.fit(Xs).fetch_model()
-            Ys = [tica_model.transform(x)[int(max(0, lag)) :] for x in Xs]
+            Ys = [tica_model.transform(x) for x in Xs]
             self.features = np.vstack(Ys)
-            self.trajectories = [traj[int(max(0, lag)) :] for traj in self.trajectories]
+            if lag > 0:
+                drop = int(max(0, lag))
+                self.features = self.features[drop:]
+                remaining = drop
+                while self.trajectories and remaining >= self.trajectories[0].n_frames:
+                    remaining -= self.trajectories[0].n_frames
+                    self.trajectories.pop(0)
+                if self.trajectories and remaining > 0:
+                    self.trajectories[0] = self.trajectories[0][remaining:]
             if hasattr(tica_model, "eigenvectors_"):
                 self.tica_components_ = tica_model.eigenvectors_  # type: ignore[attr-defined]
             if hasattr(tica_model, "eigenvalues_"):
@@ -757,10 +766,14 @@ class EnhancedMSM:
         except Exception as e:
             logger.warning("deeptime TICA failed (%s); proceeding without TICA", e)
             if lag > 0:
-                self.features = self.features[int(max(0, lag)) :]
-                self.trajectories = [
-                    traj[int(max(0, lag)) :] for traj in self.trajectories
-                ]
+                drop = int(max(0, lag))
+                self.features = self.features[drop:]
+                remaining = drop
+                while self.trajectories and remaining >= self.trajectories[0].n_frames:
+                    remaining -= self.trajectories[0].n_frames
+                    self.trajectories.pop(0)
+                if self.trajectories and remaining > 0:
+                    self.trajectories[0] = self.trajectories[0][remaining:]
 
     def _build_standard_msm(self, lag_time: int, count_mode: str = "sliding") -> None:
         """Estimate transition counts and matrix for a discrete MSM.
@@ -1034,16 +1047,13 @@ class EnhancedMSM:
         rate_means: list[list[float]] = []
         rate_ci: list[list[list[float]]] = []
 
-        q_low = 50.0 * (1.0 - ci)
-        q_high = 100.0 - q_low
+        alpha_tail = 50.0 * (1.0 - ci)
+        q_low = alpha_tail
+        q_high = 100.0 - alpha_tail
 
         for lag in lag_times:
             try:
                 from deeptime.markov import TransitionCountEstimator  # type: ignore
-                from deeptime.markov.msm import (  # type: ignore
-                    BayesianMSM,
-                    MaximumLikelihoodMSM,
-                )
             except Exception as e:  # pragma: no cover
                 logger.error("deeptime import failed: %s", e)
                 raise
@@ -1062,28 +1072,19 @@ class EnhancedMSM:
                 rate_ci.append([[np.nan, np.nan]] * n_timescales)
                 continue
 
-            matrices: np.ndarray
-            try:
-                bmsm = BayesianMSM(n_samples=n_samples, reversible=True)
-                posterior = bmsm.fit_from_counts(res.counts).fetch_model()
-                matrices = np.array(
-                    [m.transition_matrix for m in posterior.samples], dtype=float
-                )
-            except Exception as e:
-                logger.warning(
-                    "Bayesian MSM failed for lag %s: %s; using ML estimator", lag, e
-                )
-                try:
-                    ml = MaximumLikelihoodMSM(reversible=True)
-                    model = ml.fit_from_counts(res.counts).fetch_model()
-                    matrices = np.expand_dims(model.transition_matrix, 0)
-                except Exception as e2:  # pragma: no cover
-                    logger.error(
-                        "Maximum likelihood MSM failed for lag %s: %s", lag, e2
-                    )
-                    matrices = np.empty((0, res.counts.shape[0], res.counts.shape[1]))
-
-            if matrices.size == 0:
+            C_rev = 0.5 * (res.counts + res.counts.T)
+            row_sums = C_rev.sum(axis=1, keepdims=True)
+            matrices: list[np.ndarray] = []
+            for _ in range(n_samples):
+                T_sample = np.zeros_like(C_rev)
+                for i in range(C_rev.shape[0]):
+                    T_sample[i] = np.random.dirichlet(C_rev[i])
+                C_sample = T_sample * row_sums
+                C_sym = 0.5 * (C_sample + C_sample.T)
+                T = C_sym / C_sym.sum(axis=1, keepdims=True)
+                matrices.append(T)
+            matrices_arr = np.asarray(matrices, dtype=float)
+            if matrices_arr.size == 0:
                 eval_means.append([np.nan] * n_timescales)
                 eval_ci.append([[np.nan, np.nan]] * n_timescales)
                 ts_means.append([np.nan] * n_timescales)
@@ -1093,16 +1094,22 @@ class EnhancedMSM:
                 continue
 
             eig_samples: list[np.ndarray] = []
-            for T in matrices:
-                eigenvals = np.real(np.linalg.eigvals(T))
+            for T in matrices_arr:
+                pi = T.sum(axis=1)
+                pi /= np.sum(pi)
+                sym = np.diag(np.sqrt(pi)) @ T @ np.diag(1.0 / np.sqrt(pi))
+                sym = 0.5 * (sym + sym.T)
+                eigenvals = np.linalg.eigvalsh(sym)
                 eigenvals = np.sort(eigenvals)[::-1]
-                eig_samples.append(eigenvals[1 : n_timescales + 1])
+                eig = eigenvals[1 : n_timescales + 1]
+                eig[eig <= 0] = np.nan
+                eig_samples.append(eig)
             eig_arr = np.asarray(eig_samples, dtype=float)
 
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
-                eval_mean = np.nanmean(eig_arr, axis=0)
+                eval_med = np.nanmedian(eig_arr, axis=0)
                 eval_lo = np.nanpercentile(eig_arr, q_low, axis=0)
                 eval_hi = np.nanpercentile(eig_arr, q_high, axis=0)
 
@@ -1111,25 +1118,25 @@ class EnhancedMSM:
                     ts_arr, where=np.isfinite(ts_arr), out=np.full_like(ts_arr, np.nan)
                 )
 
-                ts_mean = np.nanmean(ts_arr, axis=0)
+                ts_med = np.nanmedian(ts_arr, axis=0)
                 ts_lo = np.nanpercentile(ts_arr, q_low, axis=0)
                 ts_hi = np.nanpercentile(ts_arr, q_high, axis=0)
 
-                rate_mean = np.nanmean(rate_arr, axis=0)
+                rate_med = np.nanmedian(rate_arr, axis=0)
                 rate_lo = np.nanpercentile(rate_arr, q_low, axis=0)
                 rate_hi = np.nanpercentile(rate_arr, q_high, axis=0)
 
-            if np.all(rate_mean < 1e-12):
+            if np.all(rate_med < 1e-12):
                 logger.warning(
                     "Rates collapsed to near zero at lag %s; data may be insufficient",
                     lag,
                 )
 
-            eval_means.append(eval_mean.tolist())
+            eval_means.append(eval_med.tolist())
             eval_ci.append(np.stack([eval_lo, eval_hi], axis=1).tolist())
-            ts_means.append(ts_mean.tolist())
+            ts_means.append(ts_med.tolist())
             ts_ci.append(np.stack([ts_lo, ts_hi], axis=1).tolist())
-            rate_means.append(rate_mean.tolist())
+            rate_means.append(rate_med.tolist())
             rate_ci.append(np.stack([rate_lo, rate_hi], axis=1).tolist())
 
         eigen_means_arr = np.asarray(eval_means)
@@ -1332,6 +1339,105 @@ class EnhancedMSM:
 
         self._persist_ck_micro_results(result, n_sel, int(self.lag_time))
         return result
+
+    def select_lag_time_ck(
+        self,
+        tau_candidates: Sequence[int],
+        factor: int = 2,
+        mse_epsilon: float = 0.05,
+    ) -> int:
+        """Select lag time by CK MSE plateau with monotonic slowest ITS.
+
+        Parameters
+        ----------
+        tau_candidates:
+            Iterable of lag times (in frames) to evaluate.
+        factor:
+            Lag-time multiple for the CK test (default is ``2``).
+        mse_epsilon:
+            Relative MSE improvement threshold to declare a plateau.
+
+        Returns
+        -------
+        int
+            Selected lag time (frames).
+        """
+
+        out = self.output_dir
+        out.mkdir(parents=True, exist_ok=True)
+
+        mses: list[float] = []
+        taus: list[int] = []
+        prev_mse: float | None = None
+        prev_its: float | None = None
+        selected = int(tau_candidates[0])
+
+        for tau in tau_candidates:
+            tau = int(tau)
+            T1, _ = self._count_micro_T(self.dtrajs, self.n_states, tau)
+            # slowest implied timescale
+            evals = np.sort(np.real(np.linalg.eigvals(T1)))[::-1]
+            if len(evals) > 1 and 0 < evals[1] < 1:
+                ts = -tau / np.log(evals[1])
+            else:
+                ts = float("inf")
+            taus.append(tau)
+
+            T_emp, Ck = self._count_micro_T(
+                self.dtrajs, self.n_states, tau * int(factor)
+            )
+            if np.any(Ck.sum(axis=1) == 0):
+                mse = float("inf")
+            else:
+                T_theory = np.linalg.matrix_power(T1, int(factor))
+                diff = T_theory - T_emp
+                mse = float(np.mean(diff * diff))
+            mses.append(mse)
+
+            if prev_its is not None and ts < prev_its:
+                break
+            if prev_mse is not None:
+                if mse > prev_mse:
+                    break
+                rel = (prev_mse - mse) / max(prev_mse, 1e-12)
+                if rel <= mse_epsilon:
+                    break
+            selected = tau
+            prev_mse = mse
+            prev_its = ts
+        else:
+            # no early break; pick minimal MSE
+            idx = int(np.nanargmin(mses))
+            selected = taus[idx]
+
+        # persist CSV
+        csv_path = out / "ck_mse.csv"
+        with csv_path.open("w", newline="") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(["tau", "mse"])
+            for t, m in zip(taus, mses):
+                writer.writerow([t, m])
+
+        # plot
+        plt.figure()
+        if mses:
+            plt.plot(taus, mses, marker="o")
+            plt.xlabel("lag time (frames)")
+            plt.ylabel("CK MSE")
+        plt.tight_layout()
+        try:
+            plt.savefig(out / "ck.png")
+        finally:
+            plt.close()
+
+        self.lag_time = int(selected)
+        tau_ps = (
+            float(selected) * float(self.time_per_frame_ps)
+            if self.time_per_frame_ps is not None
+            else float(selected)
+        )
+        print(f"Selected τ = {tau_ps} ps by CK")
+        return int(selected)
 
     # ---------------- Macrostate CK test with eigen-gap check ----------------
 
@@ -1895,16 +2001,39 @@ class EnhancedMSM:
         """Create comprehensive state summary table."""
         logger.info("Creating state summary table...")
         self._validate_state_table_prerequisites()
-        state_data = self._build_basic_state_info()
+        state_data: Dict[str, Any] = {"state_id": range(self.n_states)}
         frame_counts, total_frames = self._count_frames_per_state()
-        state_data["frame_count"] = frame_counts.astype(int)
-        state_data["frame_percentage"] = 100 * frame_counts / max(total_frames, 1)
-        representative_frames, centroid_features = self._find_representatives()
+        state_data["counts"] = frame_counts.astype(int)
+        population = frame_counts / max(total_frames, 1)
+        state_data["population"] = population
+        kT = (
+            constants.k
+            * float(self.temperatures[0])
+            * constants.Avogadro
+            / 1000.0
+        )
+        free_from_pop = -kT * np.log(np.clip(population, 1e-12, None))
+        state_data["free_energy_kJ_mol"] = free_from_pop
+        if self.free_energies is not None:
+            diff = np.abs(free_from_pop - self.free_energies)
+            if np.any(diff > 0.2):
+                logger.warning(
+                    "Free energies from populations differ from MSM output by more than 0.2 kJ/mol"
+                )
+        representative_frames, _ = self._find_representatives()
         rep_traj_array, rep_frame_array = self._representative_arrays(
             representative_frames
         )
         state_data["representative_traj"] = rep_traj_array
         state_data["representative_frame"] = rep_frame_array
+        state_data["representative_frame_index"] = self._global_rep_indices(
+            representative_frames
+        )
+        mean_phi_deg, mean_psi_deg = self._mean_phi_psi_per_state()
+        state_data["mean_phi_deg"] = mean_phi_deg
+        state_data["mean_psi_deg"] = mean_psi_deg
+        fe_err = self._bootstrap_free_energy_errors(frame_counts)
+        state_data["free_energy_error"] = fe_err
         self._attach_cluster_centers(state_data)
         self.state_table = pd.DataFrame(state_data)
         logger.info(f"State table created with {len(self.state_table)} states")
@@ -1924,20 +2053,7 @@ class EnhancedMSM:
             raise ValueError("MSM must be built before creating state table")
 
     def _build_basic_state_info(self) -> Dict[str, Any]:
-        return {
-            "state_id": range(self.n_states),
-            "population": self.stationary_distribution,
-            "free_energy_kJ_mol": (
-                self.free_energies
-                if self.free_energies is not None
-                else np.zeros(self.n_states)
-            ),
-            "free_energy_kcal_mol": (
-                self.free_energies * 0.239006
-                if self.free_energies is not None
-                else np.zeros(self.n_states)
-            ),
-        }
+        return {"state_id": range(self.n_states)}
 
     def _count_frames_per_state(self) -> tuple[np.ndarray, int]:
         frame_counts = np.zeros(self.n_states)
@@ -1947,6 +2063,66 @@ class EnhancedMSM:
                 frame_counts[state] += 1
                 total_frames += 1
         return frame_counts, total_frames
+
+    def _mean_phi_psi_per_state(self) -> tuple[np.ndarray, np.ndarray]:
+        if self.features is None or self.features.shape[1] < 2:
+            return (
+                np.full(self.n_states, np.nan),
+                np.full(self.n_states, np.nan),
+            )
+        phi_sum = np.zeros(self.n_states)
+        psi_sum = np.zeros(self.n_states)
+        counts = np.zeros(self.n_states)
+        frame_idx = 0
+        for dtraj in self.dtrajs:
+            for state in dtraj:
+                phi_sum[state] += self.features[frame_idx, 0]
+                psi_sum[state] += self.features[frame_idx, 1]
+                counts[state] += 1
+                frame_idx += 1
+        with np.errstate(divide="ignore", invalid="ignore"):
+            mean_phi = np.rad2deg(phi_sum / counts)
+            mean_psi = np.rad2deg(psi_sum / counts)
+        return mean_phi, mean_psi
+
+    def _global_rep_indices(
+        self, representative_frames: list[tuple[int, int]]
+    ) -> np.ndarray:
+        lengths = [len(d) for d in self.dtrajs]
+        offsets = np.cumsum([0] + lengths[:-1])
+        indices: list[int] = []
+        for traj_idx, local in representative_frames:
+            if traj_idx < 0 or local < 0:
+                indices.append(-1)
+            else:
+                indices.append(int(offsets[traj_idx] + local))
+        return np.array(indices)
+
+    def _bootstrap_counts(
+        self, assignments: np.ndarray, n_boot: int = 200
+    ) -> np.ndarray:
+        rng = np.random.default_rng()
+        samples = np.empty((n_boot, self.n_states), dtype=float)
+        for i in range(n_boot):
+            resample = rng.choice(assignments, size=assignments.size, replace=True)
+            samples[i] = np.bincount(resample, minlength=self.n_states)
+        return samples
+
+    def _bootstrap_free_energy_errors(
+        self, counts: np.ndarray, n_boot: int = 200
+    ) -> np.ndarray:
+        if not self.dtrajs:
+            return np.zeros(self.n_states)
+        assignments = np.concatenate(self.dtrajs)
+        samples = self._bootstrap_counts(assignments, n_boot)
+        kT = (
+            constants.k
+            * float(self.temperatures[0])
+            * constants.Avogadro
+            / 1000.0
+        )
+        fe_samples = -kT * np.log(np.clip(samples / assignments.size, 1e-12, None))
+        return np.nanstd(fe_samples, axis=0)
 
     def _find_representatives(
         self,
@@ -2137,6 +2313,7 @@ class EnhancedMSM:
         # Trajectories and tables
         self._save_discrete_trajectories(prefix)
         self._save_state_table_file(prefix)
+        self._save_free_energy_bar_plot(prefix)
 
         # FES
         self._save_fes_array(prefix)
@@ -2246,6 +2423,27 @@ class EnhancedMSM:
             self.fes_data["free_energy"],
         )
 
+    def _save_free_energy_bar_plot(self, prefix: str) -> None:
+        """Save bar plot of state free energies with bootstrap error bars."""
+        if self.state_table is None:
+            return
+        try:
+            import matplotlib.pyplot as _plt  # type: ignore
+        except Exception:
+            logger.warning("matplotlib not available, skipping free energy bar plot")
+            return
+        fe = self.state_table.get("free_energy_kJ_mol")
+        if fe is None:
+            return
+        err = self.state_table.get("free_energy_error", pd.Series(np.zeros(len(fe))))
+        fig, ax = _plt.subplots()
+        ax.bar(self.state_table["state_id"], fe, yerr=err, capsize=4)
+        ax.set_xlabel("State")
+        ax.set_ylabel("Free energy (kJ/mol)")
+        fig.tight_layout()
+        fig.savefig(self.output_dir / f"{prefix}_free_energy_bar.png")
+        _plt.close(fig)
+
     def _log_save_completion(self) -> None:
         """Emit a final log confirming save destination."""
         logger.info(f"Analysis results saved to {self.output_dir}")
@@ -2318,73 +2516,95 @@ class EnhancedMSM:
             plt.show()
 
     def plot_implied_timescales(self, save_file: Optional[str] = None):
-        """Plot implied timescales for MSM validation."""
-        if self.implied_timescales is None:
-            raise ValueError("Implied timescales must be computed first")
+    """Plot implied timescales for MSM validation."""
+    if self.implied_timescales is None:
+        raise ValueError("Implied timescales must be computed first")
 
-        res = self.implied_timescales
-        lag_times = np.asarray(res.lag_times, dtype=float)
-        timescales = np.asarray(res.timescales, dtype=float)
-        ts_ci = np.asarray(res.timescales_ci, dtype=float)
+    res = self.implied_timescales
+    lag_times = np.asarray(res.lag_times, dtype=float)            # in frames
+    timescales = np.asarray(res.timescales, dtype=float)          # in frames
+    ts_ci = np.asarray(res.timescales_ci, dtype=float)            # in frames
 
-        dt_ps = self.time_per_frame_ps or 1.0
-        lag_ps = lag_times * dt_ps
-        ts_ps = timescales * dt_ps
-        ts_ci_ps = ts_ci * dt_ps
+    # Convert frames -> physical time (ps) using time_per_frame_ps
+    dt_ps = self.time_per_frame_ps or 1.0
+    lag_ps = lag_times * dt_ps
+    ts_ps = timescales * dt_ps
+    ts_ci_ps = ts_ci * dt_ps
 
-        unit_label = "ps"
-        scale = 1.0
-        if (np.max(lag_ps) >= 1000.0) or (np.max(ts_ps) >= 1000.0):
-            unit_label = "ns"
-            scale = 1e-3
+    # Choose axis time unit
+    unit_label = "ps"
+    scale = 1.0
+    if (np.max(lag_ps) >= 1000.0) or (np.max(ts_ps) >= 1000.0):
+        unit_label = "ns"
+        scale = 1e-3
 
-        lag_plot = lag_ps * scale
-        ts_plot = ts_ps * scale
-        ts_ci_plot = ts_ci_ps * scale
+    lag_plot = lag_ps * scale
+    ts_plot = ts_ps * scale
+    ts_ci_plot = ts_ci_ps * scale
 
-        plt.figure(figsize=(10, 6))
-        for i in range(ts_plot.shape[1]):
-            mask = (
-                np.isfinite(ts_plot[:, i])
-                & np.isfinite(ts_ci_plot[:, i, 0])
-                & np.isfinite(ts_ci_plot[:, i, 1])
+    plt.figure(figsize=(10, 6))
+    for i in range(ts_plot.shape[1]):
+        mask = (
+            np.isfinite(ts_plot[:, i])
+            & np.isfinite(ts_ci_plot[:, i, 0])
+            & np.isfinite(ts_ci_plot[:, i, 1])
+        )
+        if np.any(mask):
+            plt.plot(
+                lag_plot[mask],
+                ts_plot[mask, i],
+                "o-",
+                label=f"τ{i+1} ({unit_label})",
             )
-            if np.any(mask):
-                plt.plot(
-                    lag_plot[mask],
-                    ts_plot[mask, i],
-                    "o-",
-                    label=f"τ{i+1} ({unit_label})",
-                )
-                plt.fill_between(
-                    lag_plot[mask],
-                    ts_ci_plot[mask, i, 0],
-                    ts_ci_plot[mask, i, 1],
-                    alpha=0.2,
-                )
-            else:
-                plt.plot([], [], label=f"τ{i+1} ({unit_label})")
-        plt.plot([], [], " ", label="NaNs indicate unstable eigenvalues at this τ")
-
-        title = "Implied Timescales Analysis"
-        if res.recommended_lag_window is not None:
-            start_ps, end_ps = res.recommended_lag_window
-            plt.axvline(start_ps * scale, color="gray", linestyle="--", alpha=0.7)
-            plt.axvline(end_ps * scale, color="gray", linestyle="--", alpha=0.7)
-            title += f"\nRecommended τ: {format_lag_window_ps((start_ps, end_ps))}"
-
-        plt.xlabel(f"Lag Time ({unit_label})")
-        plt.ylabel(f"Implied Timescale ({unit_label})")
-        plt.title(title)
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-
-        if save_file:
-            plt.savefig(
-                self.output_dir / f"{save_file}.png", dpi=300, bbox_inches="tight"
+            plt.fill_between(
+                lag_plot[mask],
+                ts_ci_plot[mask, i, 0],
+                ts_ci_plot[mask, i, 1],
+                alpha=0.2,
             )
+        else:
+            # keep legend entry even if this timescale is fully NaN at plotted lags
+            plt.plot([], [], label=f"τ{i+1} ({unit_label})")
 
-        plt.show()
+    # Informational legend entry about NaNs
+    plt.plot([], [], " ", label="NaNs indicate unstable eigenvalues at this τ")
+
+    title = "Implied Timescales Analysis"
+
+    # --- Resolved block: draw recommended lag window consistently ---
+    if getattr(res, "recommended_lag_window", None) is not None:
+        start_val, end_val = res.recommended_lag_window
+
+        # Heuristic: if the window lies within the range of lag *frames*,
+        # treat it as frames and convert; otherwise assume it's already in ps.
+        max_lag_frames = np.max(lag_times) if lag_times.size > 0 else np.nan
+        in_frames = np.isfinite(max_lag_frames) and (end_val <= max_lag_frames + 1e-9)
+
+        if in_frames:
+            start_ps = float(start_val) * dt_ps
+            end_ps = float(end_val) * dt_ps
+        else:
+            start_ps = float(start_val)
+            end_ps = float(end_val)
+
+        # Shade the recommended window and draw dashed borders, using axis units
+        plt.axvspan(start_ps * scale, end_ps * scale, color="gray", alpha=0.1)
+        plt.axvline(start_ps * scale, color="gray", linestyle="--", alpha=0.7)
+        plt.axvline(end_ps * scale, color="gray", linestyle="--", alpha=0.7)
+
+        title += f"\nRecommended τ: {start_ps * scale:.3g}–{end_ps * scale:.3g} {unit_label}"
+    # --- end resolved block ---
+
+    plt.xlabel(f"Lag Time ({unit_label})")
+    plt.ylabel(f"Implied Timescale ({unit_label})")
+    plt.title(title)
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+
+    if save_file:
+        plt.savefig(self.output_dir / f"{save_file}.png", dpi=300, bbox_inches="tight")
+
+    plt.show()
 
     def plot_implied_rates(self, save_file: Optional[str] = None) -> None:
         """Plot implied rates with confidence intervals."""
