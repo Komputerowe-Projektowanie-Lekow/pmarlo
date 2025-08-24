@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List
 
-from ..markov_state_model.markov_state_model import run_complete_msm_analysis
+from ..markov_state_model.enhanced_msm import run_complete_msm_analysis
 from .benchmark_utils import (
     build_msm_baseline_object,
     compute_threshold_comparison,
