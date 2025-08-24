@@ -2,7 +2,7 @@ from pathlib import Path
 
 import numpy as np
 
-from pmarlo.markov_state_model.markov_state_model import EnhancedMSM
+from pmarlo.markov_state_model.enhanced_msm import EnhancedMSM
 
 
 def _pattern_traj(repeats: int = 500) -> np.ndarray:

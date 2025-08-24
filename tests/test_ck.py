@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from pmarlo.markov_state_model.markov_state_model import EnhancedMSM
+from pmarlo.markov_state_model.enhanced_msm import EnhancedMSM
 
 
 def _simulate_cycle(n_repeats: int = 1000) -> np.ndarray:
