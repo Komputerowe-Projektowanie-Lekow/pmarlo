@@ -24,7 +24,7 @@ from ..results import REMDResult
 from ..utils.replica_utils import exponential_temperature_ladder
 from .config import RemdConfig
 from .diagnostics import compute_exchange_statistics, retune_temperature_ladder
-from .demux_metadata import DemuxMetadata
+from .demux_metadata import DemuxMetadata, DemuxIntegrityError
 from .platform_selector import select_platform_and_properties
 from .system_builder import (
     create_system,
@@ -1452,6 +1452,7 @@ class ReplicaExchange:
         # Load all trajectories and perform segment-wise demultiplexing
         demux_segments: List[Any] = []
         trajectory_frame_counts: Dict[str, int] = {}
+        repaired_segments: List[int] = []
 
         n_segments = len(self.exchange_history)
         logger.info(f"Processing {n_segments} exchange steps (segments)...")
@@ -1502,6 +1503,8 @@ class ReplicaExchange:
         }
 
         frames_per_segment: Optional[int] = None
+        expected_start_frame = 0
+        prev_stop_md = effective_equil_steps
 
         # Build per-segment slices
         for s, replica_states in enumerate(self.exchange_history):
@@ -1518,16 +1521,54 @@ class ReplicaExchange:
                     if temp_state == target_temp_idx:
                         replica_at_target = int(replica_idx)
                         break
-                if replica_at_target is None:
-                    continue
-
-                traj = loaded_trajs.get(replica_at_target)
-                if traj is None:
-                    continue
 
                 # Segment MD step range [start, stop)
                 start_md = effective_equil_steps + s * self.exchange_frequency
                 stop_md = effective_equil_steps + (s + 1) * self.exchange_frequency
+
+                if start_md < prev_stop_md:
+                    raise DemuxIntegrityError("Non-monotonic segment times detected")
+                prev_stop_md = stop_md
+
+                if replica_at_target is None:
+                    # Missing swap; fill using nearest neighbour if possible
+                    if demux_segments and frames_per_segment is not None:
+                        import mdtraj as md  # type: ignore
+
+                        fill = md.join([
+                            demux_segments[-1][-1:]
+                            for _ in range(int(frames_per_segment))
+                        ])
+                        demux_segments.append(fill)
+                        repaired_segments.append(s)
+                        expected_start_frame += int(frames_per_segment)
+                        logger.warning(
+                            f"Segment {s} missing target replica - filled with nearest neighbour frame"
+                        )
+                        continue
+                    raise DemuxIntegrityError(
+                        f"Segment {s} missing target replica and no data to fill"
+                    )
+
+                traj = loaded_trajs.get(replica_at_target)
+                if traj is None:
+                    if demux_segments and frames_per_segment is not None:
+                        import mdtraj as md  # type: ignore
+
+                        fill = md.join([
+                            demux_segments[-1][-1:]
+                            for _ in range(int(frames_per_segment))
+                        ])
+                        demux_segments.append(fill)
+                        repaired_segments.append(s)
+                        expected_start_frame += int(frames_per_segment)
+                        logger.warning(
+                            f"Segment {s} missing trajectory data - filled with nearest neighbour frame"
+                        )
+                        continue
+                    raise DemuxIntegrityError(
+                        f"Segment {s} missing trajectory data and no data to fill"
+                    )
 
                 # Map to saved frame indices using replica's recorded stride if available
                 stride = (
@@ -1539,11 +1580,56 @@ class ReplicaExchange:
                 # Inclusive of frames with step < stop_md
                 end_frame = min(traj.n_frames, (max(0, stop_md - 1) // stride) + 1)
 
+                if start_frame > expected_start_frame:
+                    if demux_segments:
+                        import mdtraj as md  # type: ignore
+
+                        gap = start_frame - expected_start_frame
+                        fill = md.join([
+                            demux_segments[-1][-1:]
+                            for _ in range(int(gap))
+                        ])
+                        demux_segments.append(fill)
+                        repaired_segments.append(s)
+                        expected_start_frame = start_frame
+                        logger.warning(
+                            f"Filled {gap} missing frame(s) before segment {s}"
+                        )
+                    else:
+                        raise DemuxIntegrityError(
+                            "Initial frames missing before first segment"
+                        )
+                elif start_frame < expected_start_frame:
+                    raise DemuxIntegrityError(
+                        "Non-monotonic frame indices detected"
+                    )
+
                 if end_frame > start_frame:
                     segment = traj[start_frame:end_frame]
                     demux_segments.append(segment)
                     if frames_per_segment is None:
                         frames_per_segment = int(end_frame - start_frame)
+                    expected_start_frame = end_frame
+                else:
+                    if demux_segments and frames_per_segment is not None:
+                        import mdtraj as md  # type: ignore
+
+                        fill = md.join([
+                            demux_segments[-1][-1:]
+                            for _ in range(int(frames_per_segment))
+                        ])
+                        demux_segments.append(fill)
+                        repaired_segments.append(s)
+                        expected_start_frame += int(frames_per_segment)
+                        logger.warning(
+                            f"Segment {s} has no frames - filled with nearest neighbour frame"
+                        )
+                    else:
+                        raise DemuxIntegrityError(
+                            f"No frames available for segment {s}"
+                        )
+            except DemuxIntegrityError:
+                raise
             except Exception:
                 continue
 
@@ -1573,6 +1659,9 @@ class ReplicaExchange:
                 meta_path = demux_file.with_suffix(".meta.json")
                 metadata.to_json(meta_path)
                 logger.info(f"Demultiplexed metadata saved: {meta_path}")
+
+                if repaired_segments:
+                    logger.warning(f"Repaired segments: {repaired_segments}")
 
                 return str(demux_file)
             except Exception as e:
