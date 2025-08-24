@@ -76,7 +76,7 @@ def test_demux_metadata_roundtrip(tmp_path):
         timescales_ci=np.array([[[0.8, 1.2]]]),
         rates=np.array([[1.0]]),
         rates_ci=np.array([[[0.8, 1.2]]]),
-        recommended_lag_window=(1, 1),
+        recommended_lag_window=(msm.time_per_frame_ps, msm.time_per_frame_ps),
     )
     msm.plot_implied_timescales()
     xlabel = matplotlib.pyplot.gca().get_xlabel()
