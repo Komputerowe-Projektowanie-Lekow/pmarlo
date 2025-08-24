@@ -1,6 +1,7 @@
 import sys
 
 import numpy as np
+import pytest
 
 from pmarlo.reduce.reducers import pca_reduce, tica_reduce
 
@@ -41,7 +42,11 @@ def test_tica_reduce_matches_deeptime():
     rng = np.random.default_rng(2)
     X = rng.normal(size=(300, 6))
     ours = tica_reduce(X, lag=2, n_components=2, scale=True)
-    from deeptime.decomposition import TICA
+    # Skip if deeptime's TICA is unavailable
+    try:
+        from deeptime.decomposition import TICA  # type: ignore
+    except Exception:
+        pytest.skip("deeptime TICA not available")
     from sklearn.preprocessing import StandardScaler
 
     scaler = StandardScaler().fit(X)

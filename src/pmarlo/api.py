@@ -99,6 +99,8 @@ def compute_universal_metric(
     atom_selection: str | Sequence[int] | None = "name CA",
     method: Literal["vamp", "tica", "pca"] = "vamp",
     lag: int = 10,
+    *,
+    cache_path: Optional[str] = None,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     """Compute a universal 1D metric from multiple CVs with alignment and reduction.
 
@@ -129,7 +131,9 @@ def compute_universal_metric(
         else ["phi_psi", "chi1", "Rg", "sasa", "hbonds_count", "ssfrac"]
     )
     logger.info("[universal] Computing features: %s", ", ".join(specs))
-    X, cols, periodic = compute_features(traj_in, feature_specs=specs)
+    X, cols, periodic = compute_features(
+        traj_in, feature_specs=specs, cache_path=cache_path
+    )
     logger.info(
         "[universal] Features computed: shape=%s, columns=%d", tuple(X.shape), len(cols)
     )
@@ -176,6 +180,8 @@ def compute_universal_embedding(
     method: Literal["vamp", "tica", "pca"] = "vamp",
     lag: int = 10,
     n_components: int = 2,
+    *,
+    cache_path: Optional[str] = None,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     """Compute a universal low-dimensional embedding (≥1D) from many CVs.
 
@@ -187,7 +193,9 @@ def compute_universal_embedding(
         else ["phi_psi", "chi1", "Rg", "sasa", "hbonds_count", "ssfrac"]
     )
     traj_in = _align_trajectory(traj, atom_selection=atom_selection) if align else traj
-    X, cols, periodic = compute_features(traj_in, feature_specs=specs)
+    X, cols, periodic = compute_features(
+        traj_in, feature_specs=specs, cache_path=cache_path
+    )
     Xe = _trig_expand_periodic(X, periodic)
     k = int(max(1, n_components))
     if method == "pca":
@@ -302,17 +310,93 @@ def _empty_feature_matrix(traj: md.Trajectory) -> tuple[np.ndarray, np.ndarray]:
     return np.zeros((traj.n_frames, 0), dtype=float), np.zeros((0,), dtype=bool)
 
 
-def compute_features(
-    traj: md.Trajectory, feature_specs: Sequence[str], cache_path: Optional[str] = None
-) -> Tuple[np.ndarray, List[str], np.ndarray]:
-    """Compute features for the given trajectory.
+def _resolve_cache_file(
+    traj: md.Trajectory, feature_specs: Sequence[str], cache_path: Optional[str]
+) -> Optional[Path]:
+    if not cache_path:
+        return None
+    try:
+        import hashlib as _hashlib
+        import json as _json
+        from pathlib import Path as _Path
 
-    Phase A: minimal implementation that supports ["phi_psi"].
-    Caching is a no-op for now to preserve behavior.
-    Returns (X, columns, periodic).
-    """
+        p = _Path(cache_path)
+        p.mkdir(parents=True, exist_ok=True)
+        meta: Dict[str, Any] = {
+            "n_frames": int(getattr(traj, "n_frames", 0) or 0),
+            "n_atoms": int(getattr(traj, "n_atoms", 0) or 0),
+            "specs": list(feature_specs),
+            "top_hash": None,
+            "pos_hash": None,
+        }
+        try:
+            top = getattr(traj, "topology", None)
+            if top is not None:
+                # Build a light-weight hash from atom/residue counts and names
+                atoms = [a.name for a in top.atoms]
+                residues = [r.name for r in top.residues]
+                chains = [c.index for c in top.chains]
+                meta["top_hash"] = _hashlib.sha1(
+                    _json.dumps(
+                        [
+                            len(atoms),
+                            len(residues),
+                            len(chains),
+                            atoms[:50],
+                            residues[:50],
+                        ],
+                        separators=(",", ":"),
+                    ).encode()
+                ).hexdigest()
+            # Include a small digest of coordinates to prevent stale cache
+            try:
+                xyz = getattr(traj, "xyz", None)
+                if xyz is not None and xyz.size:
+                    nf = int(min(getattr(traj, "n_frames", 0) or 0, 10)) or 1
+                    na = int(min(getattr(traj, "n_atoms", 0) or 0, 50)) or 1
+                    step = max(1, (getattr(traj, "n_frames", 1) or 1) // nf)
+                    sample = xyz[::step, :na, :].astype("float32")
+                    # Quantize for stability
+                    sample_q = (sample * 1000.0).round().astype("int32")
+                    meta["pos_hash"] = _hashlib.sha1(sample_q.tobytes()).hexdigest()
+            except Exception:
+                pass
+        except Exception:
+            pass
+        key = _hashlib.sha1(
+            _json.dumps(meta, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        return p / f"features_{key}.npz"
+    except Exception:
+        return None
+
+
+def _try_load_cached_features(
+    cache_file: Path,
+) -> Optional[tuple[np.ndarray, List[str], np.ndarray]]:
+    try:
+        data = np.load(cache_file)
+        X_cached = data["X"]
+        cols_cached = list(data["columns"].astype(str).tolist())
+        periodic_cached = data["periodic"]
+        try:
+            logger.info(
+                "[features] Loaded from cache %s: shape=%s, columns=%d",
+                str(cache_file),
+                tuple(X_cached.shape),
+                len(cols_cached),
+            )
+        except Exception:
+            pass
+        return X_cached, cols_cached, periodic_cached
+    except Exception:
+        return None
+
+
+def _compute_features_without_cache(
+    traj: md.Trajectory, feature_specs: Sequence[str]
+) -> tuple[np.ndarray, List[str], np.ndarray]:
     columns, feats, periodic_flags = _init_feature_accumulators()
-
     for spec in feature_specs:
         feat_name, kwargs = _parse_spec(spec)
         fc, X = _compute_feature_block(traj, feat_name, kwargs)
@@ -320,7 +404,6 @@ def compute_features(
         _append_feature_outputs(
             feats, periodic_flags, columns, fc, X, feat_name, kwargs
         )
-
     if feats:
         min_frames, mismatch, lengths = _frame_mismatch_info(feats)
         if mismatch:
@@ -333,7 +416,44 @@ def compute_features(
         X_all, periodic = _stack_and_build_periodic(feats, periodic_flags)
     else:
         X_all, periodic = _empty_feature_matrix(traj)
+    return X_all, columns, periodic
 
+
+def _maybe_save_cached_features(
+    cache_file: Optional[Path],
+    X_all: np.ndarray,
+    columns: List[str],
+    periodic: np.ndarray,
+) -> None:
+    if cache_file is None:
+        return
+    try:
+        np.savez_compressed(
+            cache_file,
+            X=X_all,
+            columns=np.array(columns, dtype=np.str_),
+            periodic=periodic,
+        )
+    except Exception:
+        pass
+
+
+def compute_features(
+    traj: md.Trajectory, feature_specs: Sequence[str], cache_path: Optional[str] = None
+) -> Tuple[np.ndarray, List[str], np.ndarray]:
+    """Compute features for the given trajectory.
+
+    Returns (X, columns, periodic). If cache_path is provided, features will
+    be loaded/saved using a hash of inputs to avoid redundant computation.
+    """
+    cache_file = _resolve_cache_file(traj, feature_specs, cache_path)
+    if cache_file is not None and cache_file.exists():
+        cached = _try_load_cached_features(cache_file)
+        if cached is not None:
+            return cached
+
+    X_all, columns, periodic = _compute_features_without_cache(traj, feature_specs)
+    _maybe_save_cached_features(cache_file, X_all, columns, periodic)
     return X_all, columns, periodic
 
 
@@ -851,6 +971,11 @@ def analyze_msm(  # noqa: C901
                     red_method = "tica"
                 else:
                     red_method = "pca"
+                # Reuse cached features for the concatenated trajectory as well
+                from pathlib import Path as _Path
+
+                cache_dir = _Path(str(msm.output_dir)) / "feature_cache"
+                cache_dir.mkdir(parents=True, exist_ok=True)
                 Y2, _ = compute_universal_embedding(
                     traj_all,
                     feature_specs=None,
@@ -858,6 +983,7 @@ def analyze_msm(  # noqa: C901
                     method=red_method,
                     lag=int(max(1, msm.lag_time or 10)),
                     n_components=2,
+                    cache_path=str(cache_dir),
                 )
                 # 1) PMF on IC1
                 from .fes.surfaces import generate_1d_pmf
@@ -978,7 +1104,14 @@ def find_conformations(  # noqa: C901
         raise ValueError("No frames loaded from trajectory")
 
     specs = feature_specs if feature_specs is not None else ["phi_psi"]
-    X, cols, periodic = compute_features(traj, feature_specs=specs)
+    # Use on-disk cache to avoid recomputing expensive CVs
+    from pathlib import Path as _Path
+
+    cache_dir = _Path(str(out)) / "feature_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    X, cols, periodic = compute_features(
+        traj, feature_specs=specs, cache_path=str(cache_dir)
+    )
     Y = reduce_features(X, method="vamp", lag=10, n_components=3)
     labels = cluster_microstates(Y, method="minibatchkmeans", n_states=8)
 
@@ -1084,3 +1217,30 @@ def find_conformations(  # noqa: C901
 
     write_conformations_csv_json(str(out), items)
     return out
+
+
+def find_conformations_with_msm(
+    topology_pdb: str | Path,
+    trajectory_file: str | Path,
+    output_dir: str | Path,
+    feature_specs: Optional[List[str]] = None,
+    requested_pair: Optional[Tuple[str, str]] = None,
+    traj_stride: int = 1,
+    atom_selection: str | Sequence[int] | None = None,
+    chunk_size: int = 1000,
+) -> Path:
+    """One-line convenience wrapper to find representative conformations.
+
+    This is a thin alias around :func:`find_conformations` to mirror the
+    example program name and make the public API more discoverable.
+    """
+    return find_conformations(
+        topology_pdb=topology_pdb,
+        trajectory_choice=trajectory_file,
+        output_dir=output_dir,
+        feature_specs=feature_specs,
+        requested_pair=requested_pair,
+        traj_stride=traj_stride,
+        atom_selection=atom_selection,
+        chunk_size=chunk_size,
+    )

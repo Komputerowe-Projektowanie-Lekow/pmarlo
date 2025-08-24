@@ -20,8 +20,7 @@ import openmm
 from openmm import Platform, unit
 from openmm.app import ForceField, PDBFile, Simulation
 
-from ..results import REMDResult
-from ..utils.replica_utils import exponential_temperature_ladder
+from pmarlo.utils.progress import ProgressPrinter
 from .config import RemdConfig
 from .demux_metadata import DemuxIntegrityError, DemuxMetadata
 from .diagnostics import compute_exchange_statistics, retune_temperature_ladder
@@ -33,6 +32,8 @@ from .system_builder import (
     setup_metadynamics,
 )
 from .trajectory import ClosableDCDReporter
+from ..results import REMDResult
+from ..utils.replica_utils import exponential_temperature_ladder
 
 logger = logging.getLogger("pmarlo")
 
@@ -1072,6 +1073,7 @@ class ReplicaExchange:
         logger.info(f"Equilibration with gradual heating: {equilibration_steps} steps")
         heating_steps = max(100, equilibration_steps * 40 // 100)
         logger.info(f"   Phase 1: Gradual heating over {heating_steps} steps")
+        heat_progress = ProgressPrinter(heating_steps)
         heating_chunk_size = max(10, heating_steps // 20)
         for heat_step in range(0, heating_steps, heating_chunk_size):
             current_steps = min(heating_chunk_size, heating_steps - heat_step)
@@ -1084,6 +1086,8 @@ class ReplicaExchange:
                     replica, current_steps, replica_idx, current_temp
                 )
             progress = min(40, (heat_step + current_steps) * 40 // heating_steps)
+            heat_progress.draw(heat_step + current_steps)
+            heat_progress.newline_if_active()
             temps_preview = [
                 50.0
                 + (self.temperatures[self.replica_states[i]] - 50.0) * progress_fraction
@@ -1092,6 +1096,7 @@ class ReplicaExchange:
             logger.info(
                 f"   Heating Progress: {progress}% - Current temps: {temps_preview}"
             )
+        heat_progress.close()
         if checkpoint_manager:
             checkpoint_manager.mark_step_completed(
                 "gradual_heating",
@@ -1150,6 +1155,7 @@ class ReplicaExchange:
             replica.integrator.setTemperature(target_temp * unit.kelvin)
             replica.context.setVelocitiesToTemperature(target_temp * unit.kelvin)
         equil_chunk_size = max(1, temp_equil_steps // 10)
+        temp_progress = ProgressPrinter(temp_equil_steps)
         for i in range(0, temp_equil_steps, equil_chunk_size):
             current_steps = min(equil_chunk_size, temp_equil_steps - i)
             for replica_idx, replica in enumerate(self.replicas):
@@ -1177,6 +1183,8 @@ class ReplicaExchange:
                     else:
                         raise
             progress = min(100, 40 + (i + current_steps) * 60 // temp_equil_steps)
+            temp_progress.draw(i + current_steps)
+            temp_progress.newline_if_active()
             logger.info(
                 (
                     f"   Equilibration Progress: {progress}% "
@@ -1184,6 +1192,7 @@ class ReplicaExchange:
                     f"{equilibration_steps} steps)"
                 )
             )
+        temp_progress.close()
         if checkpoint_manager:
             checkpoint_manager.mark_step_completed(
                 "equilibration",
@@ -1229,6 +1238,9 @@ class ReplicaExchange:
                 (self.n_replicas, self.n_replicas), dtype=int
             )
 
+        prod_progress = (
+            ProgressPrinter(max(1, exchange_steps)) if exchange_steps > 0 else None
+        )
         for step in range(exchange_steps):
             self._production_step_all_replicas(step, checkpoint_manager)
             energies = self._precompute_energies()
@@ -1241,8 +1253,14 @@ class ReplicaExchange:
             self._log_production_progress(
                 step, exchange_steps, total_steps, equilibration_steps
             )
+            if prod_progress is not None:
+                acc_rate = self.exchanges_accepted / max(1, self.exchange_attempts)
+                prod_progress.draw(step + 1, suffix=f"acc {acc_rate*100:.1f}%")
+                prod_progress.newline_if_active()
             if (step + 1) * self.exchange_frequency % save_state_frequency == 0:
                 self.save_checkpoint(step + 1)
+        if prod_progress is not None:
+            prod_progress.close()
 
     def _production_step_all_replicas(self, step: int, checkpoint_manager) -> None:
         for replica_idx, replica in enumerate(self.replicas):
