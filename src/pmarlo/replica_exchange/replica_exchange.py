@@ -8,10 +8,10 @@ This module provides functionality to run replica exchange simulations using Ope
 allowing for better exploration of conformational space across multiple temperatures.
 """
 
+import json
 import logging
 import os
 import pickle
-import json
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -23,8 +23,8 @@ from openmm.app import ForceField, PDBFile, Simulation
 from ..results import REMDResult
 from ..utils.replica_utils import exponential_temperature_ladder
 from .config import RemdConfig
+from .demux_metadata import DemuxIntegrityError, DemuxMetadata
 from .diagnostics import compute_exchange_statistics, retune_temperature_ladder
-from .demux_metadata import DemuxMetadata, DemuxIntegrityError
 from .platform_selector import select_platform_and_properties
 from .system_builder import (
     create_system,
@@ -239,9 +239,7 @@ class ReplicaExchange:
         )
         total_steps = int(max(1, walltime * steps_per_second))
         min_equil = 200
-        equilibration_steps = int(
-            max(min_equil, total_steps * equilibration_fraction)
-        )
+        equilibration_steps = int(max(min_equil, total_steps * equilibration_fraction))
         production_steps = max(0, total_steps - equilibration_steps)
         states = int(n_states or self.n_replicas)
         target_frames = max(1, transitions_per_state * states)
@@ -1453,9 +1451,7 @@ class ReplicaExchange:
             if target_acceptance is not None
             else float(self.target_accept)
         )
-        logger.info(
-            "Retuning temperature ladder toward target acceptance %.2f", target
-        )
+        logger.info("Retuning temperature ladder toward target acceptance %.2f", target)
         stats = retune_temperature_ladder(
             self.temperatures,
             self.pair_attempt_counts,
@@ -1605,10 +1601,12 @@ class ReplicaExchange:
                     if demux_segments and frames_per_segment is not None:
                         import mdtraj as md  # type: ignore
 
-                        fill = md.join([
-                            demux_segments[-1][-1:]
-                            for _ in range(int(frames_per_segment))
-                        ])
+                        fill = md.join(
+                            [
+                                demux_segments[-1][-1:]
+                                for _ in range(int(frames_per_segment))
+                            ]
+                        )
                         demux_segments.append(fill)
                         repaired_segments.append(s)
                         expected_start_frame += int(frames_per_segment)
@@ -1625,10 +1623,12 @@ class ReplicaExchange:
                     if demux_segments and frames_per_segment is not None:
                         import mdtraj as md  # type: ignore
 
-                        fill = md.join([
-                            demux_segments[-1][-1:]
-                            for _ in range(int(frames_per_segment))
-                        ])
+                        fill = md.join(
+                            [
+                                demux_segments[-1][-1:]
+                                for _ in range(int(frames_per_segment))
+                            ]
+                        )
                         demux_segments.append(fill)
                         repaired_segments.append(s)
                         expected_start_frame += int(frames_per_segment)
@@ -1655,10 +1655,9 @@ class ReplicaExchange:
                         import mdtraj as md  # type: ignore
 
                         gap = start_frame - expected_start_frame
-                        fill = md.join([
-                            demux_segments[-1][-1:]
-                            for _ in range(int(gap))
-                        ])
+                        fill = md.join(
+                            [demux_segments[-1][-1:] for _ in range(int(gap))]
+                        )
                         demux_segments.append(fill)
                         repaired_segments.append(s)
                         expected_start_frame = start_frame
@@ -1666,13 +1665,14 @@ class ReplicaExchange:
                             f"Filled {gap} missing frame(s) before segment {s}"
                         )
                     else:
-                        raise DemuxIntegrityError(
-                            "Initial frames missing before first segment"
+                        # Tolerate initial offset: start demux at the first available frame
+                        gap = start_frame - expected_start_frame
+                        expected_start_frame = start_frame
+                        logger.warning(
+                            f"Initial gap of {gap} frame(s) before first segment; starting at first available frame"
                         )
                 elif start_frame < expected_start_frame:
-                    raise DemuxIntegrityError(
-                        "Non-monotonic frame indices detected"
-                    )
+                    raise DemuxIntegrityError("Non-monotonic frame indices detected")
 
                 if end_frame > start_frame:
                     segment = traj[start_frame:end_frame]
@@ -1684,10 +1684,12 @@ class ReplicaExchange:
                     if demux_segments and frames_per_segment is not None:
                         import mdtraj as md  # type: ignore
 
-                        fill = md.join([
-                            demux_segments[-1][-1:]
-                            for _ in range(int(frames_per_segment))
-                        ])
+                        fill = md.join(
+                            [
+                                demux_segments[-1][-1:]
+                                for _ in range(int(frames_per_segment))
+                            ]
+                        )
                         demux_segments.append(fill)
                         repaired_segments.append(s)
                         expected_start_frame += int(frames_per_segment)

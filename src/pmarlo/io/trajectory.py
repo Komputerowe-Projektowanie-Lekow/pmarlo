@@ -105,6 +105,7 @@ def iterload(
         Number of frames to yield per iteration.
     """
 
+    logger = logging.getLogger("pmarlo")
     gen = md.iterload(
         filename,
         top=top,
@@ -123,7 +124,16 @@ def iterload(
 
     with _suppress_plugin_output():
         try:
+            total = 0
             for chunk_traj in gen:
+                total += int(getattr(chunk_traj, "n_frames", 0))
+                if total % max(1, chunk) == 0:
+                    logger.info(
+                        "[iterload] streamed %d frames (chunk=%d, stride=%d)",
+                        total,
+                        int(chunk),
+                        int(stride),
+                    )
                 yield chunk_traj
         finally:
             gen.close()

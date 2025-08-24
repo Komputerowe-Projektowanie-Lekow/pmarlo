@@ -1,5 +1,6 @@
-import numpy as np
 from pathlib import Path
+
+import numpy as np
 
 from pmarlo.markov_state_model.markov_state_model import EnhancedMSM
 

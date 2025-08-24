@@ -9,10 +9,10 @@ data sets.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Literal, cast
 
-import logging
 import numpy as np
 from sklearn.cluster import KMeans, MiniBatchKMeans
 from sklearn.metrics import silhouette_score

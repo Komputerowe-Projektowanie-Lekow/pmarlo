@@ -40,10 +40,11 @@ except ImportError:
     from .manager.checkpoint_manager import CheckpointManager, list_runs
 
 import argparse
+import random
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional, cast
-import random
+
 import numpy as np
 
 BASE_DIR = Path(__file__).resolve().parent.parent

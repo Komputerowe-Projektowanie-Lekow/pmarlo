@@ -38,4 +38,3 @@ def test_serialization_roundtrip() -> None:
     blob = serialize_macro_mapping(labels)
     restored = deserialize_macro_mapping(blob)
     assert np.array_equal(labels, restored)
-

@@ -17,10 +17,11 @@ import csv
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, Iterable, List, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
+from numpy.typing import NDArray
 
 from ..states.msm_bridge import pcca_like_macrostates as _pcca_like
 
@@ -34,16 +35,16 @@ class CKRunResult:
     insufficient_k: List[int] = field(default_factory=list)
 
 
-def _row_normalize(C: np.ndarray) -> np.ndarray:
-    rows = C.sum(axis=1)
+def _row_normalize(C: NDArray[np.float64]) -> NDArray[np.float64]:
+    rows: NDArray[np.float64] = C.sum(axis=1).astype(np.float64, copy=False)
     rows[rows == 0] = 1.0
-    return C / rows[:, None]
+    return (C / rows[:, None]).astype(np.float64, copy=False)
 
 
 def _count_transitions(
     dtrajs: Sequence[np.ndarray], n_states: int, lag: int
-) -> np.ndarray:
-    C = np.zeros((n_states, n_states), dtype=float)
+) -> NDArray[np.float64]:
+    C: NDArray[np.float64] = np.zeros((n_states, n_states), dtype=np.float64)
     for traj in dtrajs:
         if traj.size <= lag:
             continue
@@ -56,10 +57,10 @@ def _count_transitions(
     return C
 
 
-def _largest_connected_indices(C: np.ndarray) -> np.ndarray:
+def _largest_connected_indices(C: NDArray[np.float64]) -> NDArray[np.int_]:
     """Return indices of states with at least one observed transition."""
-    pops = C.sum(axis=1) + C.sum(axis=0)
-    return np.where(pops > 0)[0]
+    pops: NDArray[np.float64] = C.sum(axis=1) + C.sum(axis=0)
+    return np.where(pops > 0)[0].astype(np.int_)
 
 
 def _select_top_n_states(C: np.ndarray, n: int) -> np.ndarray:

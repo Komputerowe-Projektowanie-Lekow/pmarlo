@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from pmarlo.utils.msm_utils import check_transition_matrix
 from pmarlo.states.msm_bridge import _stationary_from_T
+from pmarlo.utils.msm_utils import check_transition_matrix
 
 
 def _random_stochastic_matrix(rng: np.random.Generator, n: int) -> np.ndarray:

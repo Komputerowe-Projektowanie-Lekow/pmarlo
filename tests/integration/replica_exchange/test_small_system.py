@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import mdtraj as md
+
 from pmarlo.replica_exchange.replica_exchange import ReplicaExchange
 
 
@@ -32,7 +33,9 @@ def test_acceptance_and_demux(tmp_path):
     stats = remd.get_exchange_statistics()
     assert stats["total_exchange_attempts"] > 0
     assert 0.0 <= stats["overall_acceptance_rate"] <= 1.0
-    demux_path = remd.demux_trajectories(target_temperature=300.0, equilibration_steps=0)
+    demux_path = remd.demux_trajectories(
+        target_temperature=300.0, equilibration_steps=0
+    )
     assert demux_path is not None
     demux_file = Path(demux_path)
     assert demux_file.exists()

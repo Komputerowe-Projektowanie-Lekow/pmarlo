@@ -74,3 +74,45 @@ def save_fes_contour(
     plt.savefig(filepath, dpi=200)
     plt.close()
     return str(filepath) if filepath.exists() else None
+
+
+def save_pmf_line(
+    F: np.ndarray,
+    edges: np.ndarray,
+    xlabel: str,
+    output_dir: str,
+    filename: str,
+) -> Optional[str]:
+    """Save a 1D PMF line plot to ``output_dir``.
+
+    Parameters
+    ----------
+    F:
+        1D free energy values per bin (kJ/mol).
+    edges:
+        Bin edges of shape (n_bins + 1,).
+    xlabel:
+        Label for the x-axis.
+    output_dir:
+        Directory to write the plot into.
+    filename:
+        Output filename (e.g., "pmf_universal_metric.png").
+    """
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError("matplotlib is required for plotting") from exc
+
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    x_centers = 0.5 * (edges[:-1] + edges[1:])
+    plt.figure(figsize=(7, 4))
+    plt.plot(x_centers, F, color="steelblue", lw=2)
+    plt.xlabel(xlabel)
+    plt.ylabel("Free Energy (kJ/mol)")
+    plt.title("1D PMF")
+    filepath = out_dir / filename
+    plt.tight_layout()
+    plt.savefig(filepath, dpi=200)
+    plt.close()
+    return str(filepath) if filepath.exists() else None

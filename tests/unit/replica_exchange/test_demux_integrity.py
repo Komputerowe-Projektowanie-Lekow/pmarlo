@@ -1,10 +1,11 @@
-import numpy as np
-import mdtraj as md
-import pytest
 from pathlib import Path
 
-from pmarlo.replica_exchange.replica_exchange import ReplicaExchange
+import mdtraj as md
+import numpy as np
+import pytest
+
 from pmarlo.replica_exchange.demux_metadata import DemuxIntegrityError
+from pmarlo.replica_exchange.replica_exchange import ReplicaExchange
 
 
 def _create_traj(tmp_path, n_frames):
@@ -60,4 +61,3 @@ def test_demux_broken_metadata_raises(tmp_path):
     remd._replica_reporter_stride = [4]
     with pytest.raises(DemuxIntegrityError):
         remd.demux_trajectories(target_temperature=300.0, equilibration_steps=0)
-

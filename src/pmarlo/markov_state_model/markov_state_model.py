@@ -193,69 +193,106 @@ class EnhancedMSM:
 
         logger.info("Loading trajectory data (streaming mode)...")
 
-        atom_indices: Sequence[int] | None = None
-        if atom_selection is not None:
-            topo = md.load_topology(self.topology_file)
-            if isinstance(atom_selection, str):
-                atom_indices = topo.select(atom_selection)
-            else:
-                atom_indices = list(atom_selection)
+        atom_indices = self._resolve_atom_indices(atom_selection)
 
         self.trajectories = []
         for i, traj_file in enumerate(self.trajectory_files):
-            path = Path(traj_file)
-            if not path.exists():
-                logger.warning(f"Trajectory file not found: {traj_file}")
-                continue
-
-            logger.info(
-                "Streaming trajectory %s with stride=%d, chunk=%d%s",
-                traj_file,
-                stride,
-                chunk_size,
-                f", selection={atom_selection}" if atom_selection else "",
-            )
-            joined: md.Trajectory | None = None
-            from pmarlo.io import trajectory as traj_io
-
-            for chunk in traj_io.iterload(
-                traj_file,
-                top=self.topology_file,
+            joined = self._stream_single_trajectory(
+                traj_file=traj_file,
                 stride=stride,
                 atom_indices=atom_indices,
-                chunk=chunk_size,
-            ):
-                joined = chunk if joined is None else joined.join(chunk)
+                chunk_size=chunk_size,
+                selection_str=(
+                    atom_selection if isinstance(atom_selection, str) else None
+                ),
+            )
             if joined is None:
-                logger.warning(f"No frames loaded from {traj_file}")
                 continue
             self.trajectories.append(joined)
             logger.info("Loaded trajectory %d: %d frames", i + 1, joined.n_frames)
-
-            meta_path = path.with_suffix(".meta.json")
-            if meta_path.exists() and self.demux_metadata is None:
-                try:
-                    meta = DemuxMetadata.from_json(meta_path)
-                    self.demux_metadata = meta
-                    stride_frames = (
-                        meta.exchange_frequency_steps // meta.frames_per_segment
-                    )
-                    self.frame_stride = stride_frames
-                    self.time_per_frame_ps = (
-                        meta.integration_timestep_ps * stride_frames
-                    )
-                    logger.info(
-                        "Loaded demux metadata: stride=%d, dt=%.4f ps",
-                        stride_frames,
-                        self.time_per_frame_ps,
-                    )
-                except Exception as exc:  # pragma: no cover - defensive
-                    logger.warning(f"Failed to parse metadata {meta_path}: {exc}")
+            self._maybe_load_demux_metadata(Path(traj_file))
 
         if not self.trajectories:
             raise ValueError("No trajectories loaded successfully")
 
         logger.info(f"Total trajectories loaded: {len(self.trajectories)}")
+        self._update_total_frames()
+
+    def _resolve_atom_indices(
+        self, atom_selection: str | Sequence[int] | None
+    ) -> Sequence[int] | None:
+        if atom_selection is None:
+            return None
+        topo = md.load_topology(self.topology_file)
+        if isinstance(atom_selection, str):
+            try:
+                sel = topo.select(atom_selection)
+                return [int(i) for i in sel]
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "Failed atom selection '%s': %s; using all atoms",
+                    atom_selection,
+                    exc,
+                )
+                return None
+        return list(atom_selection)
+
+    def _stream_single_trajectory(
+        self,
+        *,
+        traj_file: str,
+        stride: int,
+        atom_indices: Sequence[int] | None,
+        chunk_size: int,
+        selection_str: str | None,
+    ) -> md.Trajectory | None:
+        path = Path(traj_file)
+        if not path.exists():
+            logger.warning(f"Trajectory file not found: {traj_file}")
+            return None
+        logger.info(
+            "Streaming trajectory %s with stride=%d, chunk=%d%s",
+            traj_file,
+            stride,
+            chunk_size,
+            f", selection={selection_str}" if selection_str else "",
+        )
+        joined: md.Trajectory | None = None
+        from pmarlo.io import trajectory as traj_io
+
+        for chunk in traj_io.iterload(
+            traj_file,
+            top=self.topology_file,
+            stride=stride,
+            atom_indices=atom_indices,
+            chunk=chunk_size,
+        ):
+            joined = chunk if joined is None else joined.join(chunk)
+        if joined is None:
+            logger.warning(f"No frames loaded from {traj_file}")
+        return joined
+
+    def _maybe_load_demux_metadata(self, traj_path: Path) -> None:
+        if self.demux_metadata is not None:
+            return
+        meta_path = traj_path.with_suffix(".meta.json")
+        if not meta_path.exists():
+            return
+        try:
+            meta = DemuxMetadata.from_json(meta_path)
+            self.demux_metadata = meta
+            stride_frames = meta.exchange_frequency_steps // meta.frames_per_segment
+            self.frame_stride = stride_frames
+            self.time_per_frame_ps = meta.integration_timestep_ps * stride_frames
+            logger.info(
+                "Loaded demux metadata: stride=%d, dt=%.4f ps",
+                stride_frames,
+                self.time_per_frame_ps,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(f"Failed to parse metadata {meta_path}: {exc}")
+
+    def _update_total_frames(self) -> None:
         try:
             self.total_frames = int(sum(int(t.n_frames) for t in self.trajectories))
         except Exception:
@@ -511,6 +548,28 @@ class EnhancedMSM:
         self, traj: md.Trajectory, feature_type: str, n_features: Optional[int]
     ) -> np.ndarray:
         ft = feature_type.lower()
+        if ft.startswith("universal"):
+            # universal[ _{vamp|tica|pca} ]: reduce to 1D metric from many CVs
+            try:
+                from pmarlo import api as _api  # type: ignore
+
+                method = "vamp"
+                if ft.endswith("_tica"):
+                    method = "tica"
+                elif ft.endswith("_pca"):
+                    method = "pca"
+                metric, _meta = _api.compute_universal_metric(
+                    traj,
+                    feature_specs=None,
+                    align=True,
+                    atom_selection="name CA",
+                    method=method,  # default lag controlled by self.tica_lag
+                    lag=int(max(1, self.tica_lag or self.lag_time or 10)),
+                )
+                return metric.reshape(-1, 1)
+            except Exception:
+                # Fallback to phi_psi path for robustness
+                return self._compute_phi_psi_features(traj)
         if ft.startswith("phi_psi_distances"):
             return self._compute_phi_psi_plus_distance_features(traj, n_features)
         if ft.startswith("phi_psi"):
@@ -735,45 +794,74 @@ class EnhancedMSM:
             return
         n_components = int(max(2, min(5, n_components_hint)))
         try:
-            from deeptime.decomposition import TICA as _DT_TICA  # type: ignore
-
-            Xs: List[np.ndarray] = []
-            start = 0
-            for traj in self.trajectories:
-                end = start + traj.n_frames
-                Xs.append(self.features[start:end])
-                start = end
-
-            tica = _DT_TICA(lagtime=int(max(1, lag or 1)), dim=n_components)
-            tica_model = tica.fit(Xs).fetch_model()
-            Ys = [tica_model.transform(x) for x in Xs]
-            self.features = np.vstack(Ys)
+            Xs = self._split_features_by_trajectories()
+            tica_model, transformed = self._apply_deeptime_tica(
+                Xs=Xs, n_components=n_components, lag=lag
+            )
+            self.features = np.vstack(transformed)
             if lag > 0:
-                drop = int(max(0, lag))
-                self.features = self.features[drop:]
-                remaining = drop
-                while self.trajectories and remaining >= self.trajectories[0].n_frames:
-                    remaining -= self.trajectories[0].n_frames
-                    self.trajectories.pop(0)
-                if self.trajectories and remaining > 0:
-                    self.trajectories[0] = self.trajectories[0][remaining:]
-            if hasattr(tica_model, "eigenvectors_"):
-                self.tica_components_ = tica_model.eigenvectors_  # type: ignore[attr-defined]
-            if hasattr(tica_model, "eigenvalues_"):
-                self.tica_eigenvalues_ = tica_model.eigenvalues_  # type: ignore[attr-defined]
+                self._discard_initial_frames_after_tica(lag)
+            self._extract_tica_attributes(tica_model)
             self.tica_components = n_components
             logger.info("Applied deeptime TICA to %d components", n_components)
         except Exception as e:
             logger.warning("deeptime TICA failed (%s); proceeding without TICA", e)
             if lag > 0:
-                drop = int(max(0, lag))
-                self.features = self.features[drop:]
-                remaining = drop
-                while self.trajectories and remaining >= self.trajectories[0].n_frames:
-                    remaining -= self.trajectories[0].n_frames
-                    self.trajectories.pop(0)
-                if self.trajectories and remaining > 0:
-                    self.trajectories[0] = self.trajectories[0][remaining:]
+                self._fallback_discard(lag)
+
+    def _split_features_by_trajectories(self) -> List[np.ndarray]:
+        if self.features is None:
+            return []
+        features = self.features
+        Xs: List[np.ndarray] = []
+        start = 0
+        for traj in self.trajectories:
+            end = start + traj.n_frames
+            Xs.append(features[start:end])
+            start = end
+        return Xs
+
+    def _apply_deeptime_tica(
+        self, *, Xs: List[np.ndarray], n_components: int, lag: int
+    ) -> tuple[object, List[np.ndarray]]:
+        from deeptime.decomposition import TICA as _DT_TICA  # type: ignore
+
+        tica = _DT_TICA(lagtime=int(max(1, lag or 1)), dim=n_components)
+        tica_model = tica.fit(Xs).fetch_model()
+        Ys = [tica_model.transform(x) for x in Xs]
+        return tica_model, Ys
+
+    def _discard_initial_frames_after_tica(self, lag: int) -> None:
+        if self.features is None:
+            return
+        features = self.features
+        drop = int(max(0, lag))
+        self.features = features[drop:]
+        remaining = drop
+        while self.trajectories and remaining >= self.trajectories[0].n_frames:
+            remaining -= self.trajectories[0].n_frames
+            self.trajectories.pop(0)
+        if self.trajectories and remaining > 0:
+            self.trajectories[0] = self.trajectories[0][remaining:]
+
+    def _extract_tica_attributes(self, tica_model: object) -> None:
+        if hasattr(tica_model, "eigenvectors_"):
+            self.tica_components_ = tica_model.eigenvectors_  # type: ignore[attr-defined]
+        if hasattr(tica_model, "eigenvalues_"):
+            self.tica_eigenvalues_ = tica_model.eigenvalues_  # type: ignore[attr-defined]
+
+    def _fallback_discard(self, lag: int) -> None:
+        if self.features is None:
+            return
+        features = self.features
+        drop = int(max(0, lag))
+        self.features = features[drop:]
+        remaining = drop
+        while self.trajectories and remaining >= self.trajectories[0].n_frames:
+            remaining -= self.trajectories[0].n_frames
+            self.trajectories.pop(0)
+        if self.trajectories and remaining > 0:
+            self.trajectories[0] = self.trajectories[0][remaining:]
 
     def _build_standard_msm(self, lag_time: int, count_mode: str = "sliding") -> None:
         """Estimate transition counts and matrix for a discrete MSM.
@@ -787,21 +875,25 @@ class EnhancedMSM:
             separated by ``lag_time`` while ``"strided"`` advances the starting
             frame by ``lag_time`` after each counted transition.
         """
-
         if self.effective_frames and lag_time >= self.effective_frames:
             raise ValueError(
                 f"lag_time {lag_time} exceeds available effective frames {self.effective_frames}"
             )
 
-        use_deeptime = False
-        if self.estimator_backend == "deeptime":
-            try:  # pragma: no cover - exercised in environments with deeptime
-                from deeptime.markov import TransitionCountEstimator  # type: ignore
+        lag, max_valid_lag = self._validate_and_cap_lag(lag_time)
+        if max_valid_lag < 1:
+            self._initialize_empty_msm()
+            return
 
-                use_deeptime = True
-            except Exception:  # pragma: no cover - import failure
-                use_deeptime = False
+        use_deeptime = self._should_use_deeptime()
+        if use_deeptime:
+            counts = self._count_transitions_deeptime(lag=lag, count_mode=count_mode)
+        else:
+            counts = self._count_transitions_locally(lag=lag, count_mode=count_mode)
 
+        self._finalize_transition_and_stationary(counts)
+
+    def _validate_and_cap_lag(self, lag_time: int) -> tuple[int, int]:
         lag = int(max(1, lag_time))
         max_valid_lag = min(len(dt) for dt in self.dtrajs) - 1 if self.dtrajs else 0
         if lag > max_valid_lag and max_valid_lag > 0:
@@ -809,35 +901,52 @@ class EnhancedMSM:
                 "Lag %s exceeds max feasible %s; capping", lag, max_valid_lag
             )
             lag = max_valid_lag
-        if max_valid_lag < 1:
-            self.count_matrix = np.zeros((self.n_states, self.n_states), dtype=float)
-            self.transition_matrix = np.eye(self.n_states, dtype=float)
-            self.stationary_distribution = np.zeros((self.n_states,), dtype=float)
-            return
+        return lag, max_valid_lag
 
-        if use_deeptime:
-            tce = TransitionCountEstimator(
-                lagtime=lag,
-                count_mode="sliding" if count_mode == "strided" else str(count_mode),
-                sparse=False,
-            )
-            count_model = tce.fit(self.dtrajs).fetch_model()
-            counts = np.asarray(count_model.count_matrix, dtype=float)
-        else:
-            counts = np.zeros((self.n_states, self.n_states), dtype=float)
-            step = lag if count_mode == "strided" else 1
-            for dtraj in self.dtrajs:
-                if len(dtraj) <= lag:
+    def _initialize_empty_msm(self) -> None:
+        self.count_matrix = np.zeros((self.n_states, self.n_states), dtype=float)
+        self.transition_matrix = np.eye(self.n_states, dtype=float)
+        self.stationary_distribution = np.zeros((self.n_states,), dtype=float)
+
+    def _should_use_deeptime(self) -> bool:
+        if self.estimator_backend != "deeptime":
+            return False
+        try:  # pragma: no cover - exercised in environments with deeptime
+            from deeptime.markov import TransitionCountEstimator  # type: ignore
+
+            _ = TransitionCountEstimator
+            return True
+        except Exception:  # pragma: no cover - import failure
+            return False
+
+    def _count_transitions_deeptime(self, *, lag: int, count_mode: str) -> np.ndarray:
+        from deeptime.markov import TransitionCountEstimator  # type: ignore
+
+        tce = TransitionCountEstimator(
+            lagtime=lag,
+            count_mode="sliding" if count_mode == "strided" else str(count_mode),
+            sparse=False,
+        )
+        count_model = tce.fit(self.dtrajs).fetch_model()
+        return np.asarray(count_model.count_matrix, dtype=float)
+
+    def _count_transitions_locally(self, *, lag: int, count_mode: str) -> np.ndarray:
+        counts = np.zeros((self.n_states, self.n_states), dtype=float)
+        step = lag if count_mode == "strided" else 1
+        for dtraj in self.dtrajs:
+            if len(dtraj) <= lag:
+                continue
+            for i in range(0, len(dtraj) - lag, step):
+                state_i = int(dtraj[i])
+                state_j = int(dtraj[i + lag])
+                if state_i < 0 or state_j < 0:
                     continue
-                for i in range(0, len(dtraj) - lag, step):
-                    state_i = int(dtraj[i])
-                    state_j = int(dtraj[i + lag])
-                    if state_i < 0 or state_j < 0:
-                        continue
-                    if state_i >= self.n_states or state_j >= self.n_states:
-                        continue
-                    counts[state_i, state_j] += 1.0
+                if state_i >= self.n_states or state_j >= self.n_states:
+                    continue
+                counts[state_i, state_j] += 1.0
+        return counts
 
+    def _finalize_transition_and_stationary(self, counts: np.ndarray) -> None:
         res = ensure_connected_counts(counts)
         self.count_matrix = np.zeros((self.n_states, self.n_states), dtype=float)
         if res.counts.size:
@@ -851,7 +960,6 @@ class EnhancedMSM:
         else:
             T_full = np.eye(self.n_states, dtype=float)
             pi_full = np.zeros((self.n_states,), dtype=float)
-
         self.transition_matrix = T_full
         self.stationary_distribution = pi_full
 
@@ -977,6 +1085,86 @@ class EnhancedMSM:
 
         lag_times = self._its_default_lag_times(lag_times)
 
+        validated = self._validate_its_inputs(lag_times, n_timescales)
+        if validated is None:
+            return
+        lag_times, max_valid_lag = validated
+
+        self._seed_rngs_if_needed()
+
+        eval_means: list[list[float]] = []
+        eval_ci: list[list[list[float]]] = []
+        ts_means: list[list[float]] = []
+        ts_ci: list[list[list[float]]] = []
+        rate_means: list[list[float]] = []
+        rate_ci: list[list[list[float]]] = []
+
+        alpha_tail = 50.0 * (1.0 - ci)
+        q_low = alpha_tail
+        q_high = 100.0 - alpha_tail
+
+        for lag in lag_times:
+            res = self._counts_for_lag(lag, dirichlet_alpha)
+            if res is None:
+                eval_means.append([np.nan] * n_timescales)
+                eval_ci.append([[np.nan, np.nan]] * n_timescales)
+                ts_means.append([np.nan] * n_timescales)
+                ts_ci.append([[np.nan, np.nan]] * n_timescales)
+                rate_means.append([np.nan] * n_timescales)
+                rate_ci.append([[np.nan, np.nan]] * n_timescales)
+                continue
+
+            matrices_arr = self._bayesian_transition_samples(res.counts, n_samples)
+            if matrices_arr.size == 0:
+                eval_means.append([np.nan] * n_timescales)
+                eval_ci.append([[np.nan, np.nan]] * n_timescales)
+                ts_means.append([np.nan] * n_timescales)
+                ts_ci.append([[np.nan, np.nan]] * n_timescales)
+                rate_means.append([np.nan] * n_timescales)
+                rate_ci.append([[np.nan, np.nan]] * n_timescales)
+                continue
+
+            (
+                eval_med,
+                eval_lo,
+                eval_hi,
+                ts_med,
+                ts_lo,
+                ts_hi,
+                rate_med,
+                rate_lo,
+                rate_hi,
+            ) = self._summarize_its_stats(
+                lag, matrices_arr, n_timescales, q_low, q_high
+            )
+
+            if np.all(rate_med < 1e-12):
+                logger.warning(
+                    "Rates collapsed to near zero at lag %s; data may be insufficient",
+                    lag,
+                )
+
+            eval_means.append(eval_med.tolist())
+            eval_ci.append(np.stack([eval_lo, eval_hi], axis=1).tolist())
+            ts_means.append(ts_med.tolist())
+            ts_ci.append(np.stack([ts_lo, ts_hi], axis=1).tolist())
+            rate_means.append(rate_med.tolist())
+            rate_ci.append(np.stack([rate_lo, rate_hi], axis=1).tolist())
+
+        result = ITSResult(
+            lag_times=np.asarray(lag_times, dtype=int),
+            eigenvalues=np.asarray(eval_means, dtype=float),
+            eigenvalues_ci=np.asarray(eval_ci, dtype=float),
+            timescales=np.asarray(ts_means, dtype=float),
+            timescales_ci=np.asarray(ts_ci, dtype=float),
+            rates=np.asarray(rate_means, dtype=float),
+            rates_ci=np.asarray(rate_ci, dtype=float),
+        )
+        self.implied_timescales = result
+
+    def _validate_its_inputs(
+        self, lag_times: List[int], n_timescales: int
+    ) -> Optional[tuple[List[int], int]]:
         if not getattr(self, "dtrajs", None):
             logger.warning("No trajectories available for implied timescales")
             empty = ITSResult(
@@ -989,7 +1177,7 @@ class EnhancedMSM:
                 rates_ci=np.empty((0, n_timescales, 2)),
             )
             self.implied_timescales = empty
-            return
+            return None
 
         max_valid_lag = min(len(dt) for dt in self.dtrajs) - 1
         if max_valid_lag < 1:
@@ -1004,7 +1192,7 @@ class EnhancedMSM:
                 rates_ci=np.empty((0, n_timescales, 2)),
             )
             self.implied_timescales = empty
-            return
+            return None
 
         original_lag_times = list(lag_times)
         if any(lag_val > max_valid_lag for lag_val in original_lag_times):
@@ -1022,7 +1210,7 @@ class EnhancedMSM:
                 rates_ci=np.empty((0, n_timescales, 2)),
             )
             self.implied_timescales = empty
-            return
+            return None
 
         max_lag = max(lag_times)
         eff = getattr(self, "effective_frames", None)
@@ -1030,145 +1218,109 @@ class EnhancedMSM:
             raise ValueError(
                 f"Maximum lag {max_lag} exceeds available effective frames {eff}"
             )
+        return lag_times, max_valid_lag
 
-        if self.random_state is not None:
-            np.random.seed(self.random_state)
-            try:
-                import random as _random
+    def _seed_rngs_if_needed(self) -> None:
+        if self.random_state is None:
+            return
+        np.random.seed(self.random_state)
+        try:
+            import random as _random
 
-                _random.seed(self.random_state)
-            except Exception:
-                pass
+            _random.seed(self.random_state)
+        except Exception:
+            pass
 
-        eval_means: list[list[float]] = []
-        eval_ci: list[list[list[float]]] = []
-        ts_means: list[list[float]] = []
-        ts_ci: list[list[list[float]]] = []
-        rate_means: list[list[float]] = []
-        rate_ci: list[list[list[float]]] = []
+    def _counts_for_lag(self, lag: int, alpha: float):
+        from deeptime.markov import TransitionCountEstimator  # type: ignore
 
-        alpha_tail = 50.0 * (1.0 - ci)
-        q_low = alpha_tail
-        q_high = 100.0 - alpha_tail
+        tce = TransitionCountEstimator(
+            lagtime=int(max(1, lag)), count_mode=self.count_mode, sparse=False
+        )
+        C = np.asarray(tce.fit(self.dtrajs).fetch_model().count_matrix, dtype=float)
+        res = ensure_connected_counts(C, alpha=alpha)
+        if res.counts.size == 0:
+            return None
+        return res
 
-        for lag in lag_times:
-            try:
-                from deeptime.markov import TransitionCountEstimator  # type: ignore
-            except Exception as e:  # pragma: no cover
-                logger.error("deeptime import failed: %s", e)
-                raise
+    def _bayesian_transition_samples(
+        self, counts: np.ndarray, n_samples: int
+    ) -> np.ndarray:
+        C_rev = 0.5 * (counts + counts.T)
+        row_sums = C_rev.sum(axis=1, keepdims=True)
+        matrices: list[np.ndarray] = []
+        for _ in range(n_samples):
+            T_sample = np.zeros_like(C_rev)
+            for i in range(C_rev.shape[0]):
+                T_sample[i] = np.random.dirichlet(C_rev[i])
+            C_sample = T_sample * row_sums
+            C_sym = 0.5 * (C_sample + C_sample.T)
+            T = C_sym / C_sym.sum(axis=1, keepdims=True)
+            matrices.append(T)
+        return np.asarray(matrices, dtype=float)
 
-            tce = TransitionCountEstimator(
-                lagtime=int(max(1, lag)), count_mode=self.count_mode, sparse=False
+    def _summarize_its_stats(
+        self,
+        lag: int,
+        matrices_arr: np.ndarray,
+        n_timescales: int,
+        q_low: float,
+        q_high: float,
+    ) -> tuple[
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+    ]:
+        eig_samples: list[np.ndarray] = []
+        for T in matrices_arr:
+            pi = T.sum(axis=1)
+            pi /= np.sum(pi)
+            sym = np.diag(np.sqrt(pi)) @ T @ np.diag(1.0 / np.sqrt(pi))
+            sym = 0.5 * (sym + sym.T)
+            eigenvals = np.linalg.eigvalsh(sym)
+            eigenvals = np.sort(eigenvals)[::-1]
+            eig = eigenvals[1 : n_timescales + 1]
+            eig[eig <= 0] = np.nan
+            eig_samples.append(eig)
+        eig_arr = np.asarray(eig_samples, dtype=float)
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=RuntimeWarning)
+
+            eval_med = np.nanmedian(eig_arr, axis=0)
+            eval_lo = np.nanpercentile(eig_arr, q_low, axis=0)
+            eval_hi = np.nanpercentile(eig_arr, q_high, axis=0)
+
+            ts_arr = safe_timescales(lag, eig_arr)
+            rate_arr = np.reciprocal(
+                ts_arr, where=np.isfinite(ts_arr), out=np.full_like(ts_arr, np.nan)
             )
-            C = np.asarray(tce.fit(self.dtrajs).fetch_model().count_matrix, dtype=float)
-            res = ensure_connected_counts(C, alpha=dirichlet_alpha)
-            if res.counts.size == 0:
-                eval_means.append([np.nan] * n_timescales)
-                eval_ci.append([[np.nan, np.nan]] * n_timescales)
-                ts_means.append([np.nan] * n_timescales)
-                ts_ci.append([[np.nan, np.nan]] * n_timescales)
-                rate_means.append([np.nan] * n_timescales)
-                rate_ci.append([[np.nan, np.nan]] * n_timescales)
-                continue
 
-            C_rev = 0.5 * (res.counts + res.counts.T)
-            row_sums = C_rev.sum(axis=1, keepdims=True)
-            matrices: list[np.ndarray] = []
-            for _ in range(n_samples):
-                T_sample = np.zeros_like(C_rev)
-                for i in range(C_rev.shape[0]):
-                    T_sample[i] = np.random.dirichlet(C_rev[i])
-                C_sample = T_sample * row_sums
-                C_sym = 0.5 * (C_sample + C_sample.T)
-                T = C_sym / C_sym.sum(axis=1, keepdims=True)
-                matrices.append(T)
-            matrices_arr = np.asarray(matrices, dtype=float)
-            if matrices_arr.size == 0:
-                eval_means.append([np.nan] * n_timescales)
-                eval_ci.append([[np.nan, np.nan]] * n_timescales)
-                ts_means.append([np.nan] * n_timescales)
-                ts_ci.append([[np.nan, np.nan]] * n_timescales)
-                rate_means.append([np.nan] * n_timescales)
-                rate_ci.append([[np.nan, np.nan]] * n_timescales)
-                continue
+            ts_med = np.nanmedian(ts_arr, axis=0)
+            ts_lo = np.nanpercentile(ts_arr, q_low, axis=0)
+            ts_hi = np.nanpercentile(ts_arr, q_high, axis=0)
 
-            eig_samples: list[np.ndarray] = []
-            for T in matrices_arr:
-                pi = T.sum(axis=1)
-                pi /= np.sum(pi)
-                sym = np.diag(np.sqrt(pi)) @ T @ np.diag(1.0 / np.sqrt(pi))
-                sym = 0.5 * (sym + sym.T)
-                eigenvals = np.linalg.eigvalsh(sym)
-                eigenvals = np.sort(eigenvals)[::-1]
-                eig = eigenvals[1 : n_timescales + 1]
-                eig[eig <= 0] = np.nan
-                eig_samples.append(eig)
-            eig_arr = np.asarray(eig_samples, dtype=float)
+            rate_med = np.nanmedian(rate_arr, axis=0)
+            rate_lo = np.nanpercentile(rate_arr, q_low, axis=0)
+            rate_hi = np.nanpercentile(rate_arr, q_high, axis=0)
 
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=RuntimeWarning)
-
-                eval_med = np.nanmedian(eig_arr, axis=0)
-                eval_lo = np.nanpercentile(eig_arr, q_low, axis=0)
-                eval_hi = np.nanpercentile(eig_arr, q_high, axis=0)
-
-                ts_arr = safe_timescales(lag, eig_arr)
-                rate_arr = np.reciprocal(
-                    ts_arr, where=np.isfinite(ts_arr), out=np.full_like(ts_arr, np.nan)
-                )
-
-                ts_med = np.nanmedian(ts_arr, axis=0)
-                ts_lo = np.nanpercentile(ts_arr, q_low, axis=0)
-                ts_hi = np.nanpercentile(ts_arr, q_high, axis=0)
-
-                rate_med = np.nanmedian(rate_arr, axis=0)
-                rate_lo = np.nanpercentile(rate_arr, q_low, axis=0)
-                rate_hi = np.nanpercentile(rate_arr, q_high, axis=0)
-
-            if np.all(rate_med < 1e-12):
-                logger.warning(
-                    "Rates collapsed to near zero at lag %s; data may be insufficient",
-                    lag,
-                )
-
-            eval_means.append(eval_med.tolist())
-            eval_ci.append(np.stack([eval_lo, eval_hi], axis=1).tolist())
-            ts_means.append(ts_med.tolist())
-            ts_ci.append(np.stack([ts_lo, ts_hi], axis=1).tolist())
-            rate_means.append(rate_med.tolist())
-            rate_ci.append(np.stack([rate_lo, rate_hi], axis=1).tolist())
-
-        eigen_means_arr = np.asarray(eval_means)
-        eigen_ci_arr = np.asarray(eval_ci)
-        ts_means_arr = np.asarray(ts_means)
-        ts_ci_arr = np.asarray(ts_ci)
-        rate_means_arr = np.asarray(rate_means)
-        rate_ci_arr = np.asarray(rate_ci)
-
-        plateau_m = plateau_m or n_timescales
-        recommended = self._select_lag_window(
-            np.array(lag_times), eigen_means_arr, plateau_m, plateau_epsilon
+        return (
+            eval_med,
+            eval_lo,
+            eval_hi,
+            ts_med,
+            ts_lo,
+            ts_hi,
+            rate_med,
+            rate_lo,
+            rate_hi,
         )
-        dt_ps = self.time_per_frame_ps or 1.0
-        recommended_ps = (
-            (recommended[0] * dt_ps, recommended[1] * dt_ps)
-            if recommended is not None
-            else None
-        )
-
-        self.implied_timescales = ITSResult(
-            lag_times=np.array(lag_times, dtype=int),
-            eigenvalues=eigen_means_arr,
-            eigenvalues_ci=eigen_ci_arr,
-            timescales=ts_means_arr,
-            timescales_ci=ts_ci_arr,
-            rates=rate_means_arr,
-            rates_ci=rate_ci_arr,
-            recommended_lag_window=recommended_ps,
-        )
-
-        logger.info("Implied timescales computation completed")
 
     def _its_default_lag_times(self, lag_times: Optional[List[int]]) -> List[int]:
         if lag_times is None:
@@ -1375,23 +1527,10 @@ class EnhancedMSM:
         for tau in tau_candidates:
             tau = int(tau)
             T1, _ = self._count_micro_T(self.dtrajs, self.n_states, tau)
-            # slowest implied timescale
-            evals = np.sort(np.real(np.linalg.eigvals(T1)))[::-1]
-            if len(evals) > 1 and 0 < evals[1] < 1:
-                ts = -tau / np.log(evals[1])
-            else:
-                ts = float("inf")
+            ts = self._slowest_its_from_T(T1, tau)
             taus.append(tau)
 
-            T_emp, Ck = self._count_micro_T(
-                self.dtrajs, self.n_states, tau * int(factor)
-            )
-            if np.any(Ck.sum(axis=1) == 0):
-                mse = float("inf")
-            else:
-                T_theory = np.linalg.matrix_power(T1, int(factor))
-                diff = T_theory - T_emp
-                mse = float(np.mean(diff * diff))
+            mse = self._ck_mse_from_T(T1, tau, int(factor))
             mses.append(mse)
 
             if prev_its is not None and ts < prev_its:
@@ -1406,11 +1545,36 @@ class EnhancedMSM:
             prev_mse = mse
             prev_its = ts
         else:
-            # no early break; pick minimal MSE
             idx = int(np.nanargmin(mses))
             selected = taus[idx]
 
-        # persist CSV
+        self._write_ck_csv(out, taus, mses)
+        self._plot_ck_curve(out, taus, mses)
+
+        self.lag_time = int(selected)
+        tau_ps = (
+            float(selected) * float(self.time_per_frame_ps)
+            if self.time_per_frame_ps is not None
+            else float(selected)
+        )
+        print(f"Selected τ = {tau_ps} ps by CK")
+        return int(selected)
+
+    def _slowest_its_from_T(self, T: np.ndarray, tau: int) -> float:
+        evals = np.sort(np.real(np.linalg.eigvals(T)))[::-1]
+        if len(evals) > 1 and 0 < evals[1] < 1:
+            return float(-tau / np.log(evals[1]))
+        return float("inf")
+
+    def _ck_mse_from_T(self, T1: np.ndarray, tau: int, factor: int) -> float:
+        T_emp, Ck = self._count_micro_T(self.dtrajs, self.n_states, tau * int(factor))
+        if np.any(Ck.sum(axis=1) == 0):
+            return float("inf")
+        T_theory = np.linalg.matrix_power(T1, int(factor))
+        diff = T_theory - T_emp
+        return float(np.mean(diff * diff))
+
+    def _write_ck_csv(self, out: Path, taus: list[int], mses: list[float]) -> None:
         csv_path = out / "ck_mse.csv"
         with csv_path.open("w", newline="") as fh:
             writer = csv.writer(fh)
@@ -1418,7 +1582,7 @@ class EnhancedMSM:
             for t, m in zip(taus, mses):
                 writer.writerow([t, m])
 
-        # plot
+    def _plot_ck_curve(self, out: Path, taus: list[int], mses: list[float]) -> None:
         plt.figure()
         if mses:
             plt.plot(taus, mses, marker="o")
@@ -1429,15 +1593,6 @@ class EnhancedMSM:
             plt.savefig(out / "ck.png")
         finally:
             plt.close()
-
-        self.lag_time = int(selected)
-        tau_ps = (
-            float(selected) * float(self.time_per_frame_ps)
-            if self.time_per_frame_ps is not None
-            else float(selected)
-        )
-        print(f"Selected τ = {tau_ps} ps by CK")
-        return int(selected)
 
     # ---------------- Macrostate CK test with eigen-gap check ----------------
 
@@ -2006,12 +2161,7 @@ class EnhancedMSM:
         state_data["counts"] = frame_counts.astype(int)
         population = frame_counts / max(total_frames, 1)
         state_data["population"] = population
-        kT = (
-            constants.k
-            * float(self.temperatures[0])
-            * constants.Avogadro
-            / 1000.0
-        )
+        kT = constants.k * float(self.temperatures[0]) * constants.Avogadro / 1000.0
         free_from_pop = -kT * np.log(np.clip(population, 1e-12, None))
         state_data["free_energy_kJ_mol"] = free_from_pop
         if self.free_energies is not None:
@@ -2115,12 +2265,7 @@ class EnhancedMSM:
             return np.zeros(self.n_states)
         assignments = np.concatenate(self.dtrajs)
         samples = self._bootstrap_counts(assignments, n_boot)
-        kT = (
-            constants.k
-            * float(self.temperatures[0])
-            * constants.Avogadro
-            / 1000.0
-        )
+        kT = constants.k * float(self.temperatures[0]) * constants.Avogadro / 1000.0
         fe_samples = -kT * np.log(np.clip(samples / assignments.size, 1e-12, None))
         return np.nanstd(fe_samples, axis=0)
 
@@ -2566,8 +2711,9 @@ class EnhancedMSM:
         plt.plot([], [], " ", label="NaNs indicate unstable eigenvalues at this τ")
 
         title = "Implied Timescales Analysis"
-        if getattr(res, "recommended_lag_window", None) is not None:
-            start_val, end_val = res.recommended_lag_window
+        win = getattr(res, "recommended_lag_window", None)
+        if win is not None:
+            start_val, end_val = win
             max_lag_frames = np.max(lag_times) if lag_times.size > 0 else np.nan
             in_frames = np.isfinite(max_lag_frames) and (
                 end_val <= max_lag_frames + 1e-9
@@ -2581,9 +2727,7 @@ class EnhancedMSM:
             plt.axvspan(start_ps * scale, end_ps * scale, color="gray", alpha=0.1)
             plt.axvline(start_ps * scale, color="gray", linestyle="--", alpha=0.7)
             plt.axvline(end_ps * scale, color="gray", linestyle="--", alpha=0.7)
-            title += (
-                f"\nRecommended τ: {start_ps * scale:.3g}–{end_ps * scale:.3g} {unit_label}"
-            )
+            title += f"\nRecommended τ: {start_ps * scale:.3g}–{end_ps * scale:.3g} {unit_label}"
 
         plt.xlabel(f"Lag Time ({unit_label})")
         plt.ylabel(f"Implied Timescale ({unit_label})")
@@ -2993,11 +3137,7 @@ def _load_and_prepare(
     msm.load_trajectories(
         stride=stride, atom_selection=atom_selection, chunk_size=chunk_size
     )
-    # Save a quick φ/ψ sanity scatter before feature building (helps spot issues early)
-    try:
-        msm.save_phi_psi_scatter_diagnostics()
-    except Exception:
-        pass
+    # Phi/Psi diagnostic scatter disabled by default
     msm.compute_features(feature_type=feature_type)
     msm.cluster_features(n_states=n_states)
 
@@ -3013,10 +3153,8 @@ def _build_and_validate_msm(
 def _maybe_generate_fes(msm: EnhancedMSM, feature_type: str) -> bool:
     success = False
     try:
-        if feature_type == "phi_psi":
-            msm.generate_free_energy_surface(cv1_name="phi", cv2_name="psi")
-        else:
-            msm.generate_free_energy_surface(cv1_name="CV1", cv2_name="CV2")
+        # Disable phi/psi-specific FES; leave only generic CV1/CV2 when explicitly requested
+        msm.generate_free_energy_surface(cv1_name="CV1", cv2_name="CV2")
         success = True
         logger.info("\u2713 Free energy surface generation completed")
     except ValueError as e:
@@ -3026,9 +3164,19 @@ def _maybe_generate_fes(msm: EnhancedMSM, feature_type: str) -> bool:
 
 
 def _finalize_results_and_plots(msm: EnhancedMSM, fes_success: bool) -> None:
+    _core_exports(msm)
+    _plot_fes_if_success(msm, fes_success)
+    _plot_its_and_rates(msm)
+    _perform_and_persist_ck(msm)
+
+
+def _core_exports(msm: EnhancedMSM) -> None:
     msm.create_state_table()
     msm.extract_representative_structures()
     msm.save_analysis_results()
+
+
+def _plot_fes_if_success(msm: EnhancedMSM, fes_success: bool) -> None:
     if fes_success:
         try:
             msm.plot_free_energy_surface(save_file="free_energy_surface")
@@ -3039,6 +3187,9 @@ def _finalize_results_and_plots(msm: EnhancedMSM, fes_success: bool) -> None:
         logger.info(
             "\u26a0 Skipping free energy surface plots due to insufficient data"
         )
+
+
+def _plot_its_and_rates(msm: EnhancedMSM) -> None:
     try:
         msm.plot_implied_timescales(save_file="implied_timescales")
         logger.info("\u2713 Implied timescales plot saved")
@@ -3054,29 +3205,40 @@ def _finalize_results_and_plots(msm: EnhancedMSM, fes_success: bool) -> None:
         logger.info("\u2713 Free energy profile plot saved")
     except Exception as e:
         logger.warning(f"\u26a0 Free energy profile plotting failed: {e}")
-    # CK diagnostics: persist JSON and plot (best-effort)
+
+
+def _perform_and_persist_ck(msm: EnhancedMSM) -> None:
+    macro_ck = _safe_compute_macro_ck(msm)
+    micro_ck = _safe_compute_micro_ck(msm)
+    _safe_write_ck_json(msm, macro_ck, micro_ck)
+    _safe_plot_ck(msm)
+
+
+def _safe_compute_macro_ck(msm: EnhancedMSM):
     try:
-        macro_ck = None
-        micro_ck = None
-        try:
-            macro_ck = msm.compute_ck_test_macrostates(
-                n_macrostates=3, factors=[2, 3, 4]
-            )
-        except Exception:
-            macro_ck = None
-        try:
-            micro_ck = msm.compute_ck_test_micro(factors=[2, 3, 4])
-        except Exception:
-            micro_ck = None
-        try:
-            with open(msm.output_dir / "ck_tests.json", "w", encoding="utf-8") as f:
-                json.dump({"macro": macro_ck, "micro": micro_ck}, f, indent=2)
-        except Exception:
-            pass
-        try:
-            msm.plot_ck_test(save_file="ck_plot", n_macrostates=3, factors=[2, 3, 4])
-            logger.info("\u2713 CK test plot saved")
-        except Exception as e:
-            logger.warning(f"\u26a0 CK test plotting failed: {e}")
+        return msm.compute_ck_test_macrostates(n_macrostates=3, factors=[2, 3, 4])
+    except Exception:
+        return None
+
+
+def _safe_compute_micro_ck(msm: EnhancedMSM):
+    try:
+        return msm.compute_ck_test_micro(factors=[2, 3, 4])
+    except Exception:
+        return None
+
+
+def _safe_write_ck_json(msm: EnhancedMSM, macro_ck, micro_ck) -> None:
+    try:
+        with open(msm.output_dir / "ck_tests.json", "w", encoding="utf-8") as f:
+            json.dump({"macro": macro_ck, "micro": micro_ck}, f, indent=2)
     except Exception:
         pass
+
+
+def _safe_plot_ck(msm: EnhancedMSM) -> None:
+    try:
+        msm.plot_ck_test(save_file="ck_plot", n_macrostates=3, factors=[2, 3, 4])
+        logger.info("\u2713 CK test plot saved")
+    except Exception as e:
+        logger.warning(f"\u26a0 CK test plotting failed: {e}")

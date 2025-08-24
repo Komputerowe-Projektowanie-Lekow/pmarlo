@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional, Tuple
 
 import numpy as np
+from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter
 
 
@@ -13,9 +14,9 @@ from scipy.ndimage import gaussian_filter
 class PMFResult:
     """Result of a one-dimensional potential of mean force calculation."""
 
-    F: np.ndarray
-    edges: np.ndarray
-    counts: np.ndarray
+    F: NDArray[np.float64]
+    edges: NDArray[np.float64]
+    counts: NDArray[np.float64]
     periodic: bool
     temperature: float
 
@@ -38,10 +39,10 @@ class FESResult:
         serialisable.
     """
 
-    F: np.ndarray
-    xedges: np.ndarray
-    yedges: np.ndarray
-    levels_kJmol: np.ndarray | None = None
+    F: NDArray[np.float64]
+    xedges: NDArray[np.float64]
+    yedges: NDArray[np.float64]
+    levels_kJmol: NDArray[np.float64] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __getitem__(self, key: str) -> Any:  # pragma: no cover - compatibility shim
@@ -84,7 +85,7 @@ def periodic_kde_2d(
     theta_y: np.ndarray,
     bw: Tuple[float, float] = (0.35, 0.35),
     gridsize: Tuple[int, int] = (42, 42),
-) -> np.ndarray:
+) -> NDArray[np.float64]:
     """Kernel density estimate on a 2D torus.
 
     Parameters
@@ -97,8 +98,8 @@ def periodic_kde_2d(
         Number of grid points along x and y.
     """
 
-    x = np.asarray(theta_x, dtype=float).reshape(-1)
-    y = np.asarray(theta_y, dtype=float).reshape(-1)
+    x: NDArray[np.float64] = np.asarray(theta_x, dtype=np.float64).reshape(-1)
+    y: NDArray[np.float64] = np.asarray(theta_y, dtype=np.float64).reshape(-1)
     if x.size == 0 or y.size == 0:
         raise ValueError("theta_x and theta_y must not be empty")
     if x.shape != y.shape:
@@ -111,10 +112,16 @@ def periodic_kde_2d(
     if gx <= 0 or gy <= 0:
         raise ValueError("gridsize must be positive")
 
-    x_grid = np.linspace(-np.pi, np.pi, gx, endpoint=False)
-    y_grid = np.linspace(-np.pi, np.pi, gy, endpoint=False)
+    x_grid: NDArray[np.float64] = np.linspace(-np.pi, np.pi, gx, endpoint=False).astype(
+        np.float64, copy=False
+    )
+    y_grid: NDArray[np.float64] = np.linspace(-np.pi, np.pi, gy, endpoint=False).astype(
+        np.float64, copy=False
+    )
     X, Y = np.meshgrid(x_grid, y_grid, indexing="ij")
-    density = np.zeros_like(X)
+    X = X.astype(np.float64, copy=False)
+    Y = Y.astype(np.float64, copy=False)
+    density: NDArray[np.float64] = np.zeros_like(X, dtype=np.float64)
 
     shifts = (-2 * np.pi, 0.0, 2 * np.pi)
     for dx in shifts:
@@ -127,7 +134,7 @@ def periodic_kde_2d(
 
     norm = 2 * np.pi * sx * sy * x.size
     density /= norm
-    return density
+    return density.astype(np.float64, copy=False)
 
 
 def generate_1d_pmf(
@@ -204,8 +211,12 @@ def generate_2d_fes(  # noqa: C901
 ) -> FESResult:
     """Generate a two-dimensional free-energy surface (FES)."""
 
-    x = np.asarray(cv1, dtype=float).reshape(-1)
-    y = np.asarray(cv2, dtype=float).reshape(-1)
+    x: NDArray[np.float64] = (
+        np.asarray(cv1, dtype=np.float64).reshape(-1).astype(np.float64, copy=False)
+    )
+    y: NDArray[np.float64] = (
+        np.asarray(cv2, dtype=np.float64).reshape(-1).astype(np.float64, copy=False)
+    )
     if x.size == 0 or y.size == 0:
         raise ValueError("cv1 and cv2 must not be empty")
     if x.shape != y.shape:
@@ -232,14 +243,18 @@ def generate_2d_fes(  # noqa: C901
 
     # Wrap periodic coordinates into the specified range
     if periodic[0]:
-        x = ((x - xr[0]) % (xr[1] - xr[0])) + xr[0]
+        x = (((x - xr[0]) % (xr[1] - xr[0])) + xr[0]).astype(np.float64, copy=False)
     if periodic[1]:
-        y = ((y - yr[0]) % (yr[1] - yr[0])) + yr[0]
+        y = (((y - yr[0]) % (yr[1] - yr[0])) + yr[0]).astype(np.float64, copy=False)
 
     # Build edges with an extra bin to allow for periodic wrapping
     bx, by = bins
-    x_edges = np.linspace(xr[0], xr[1], bx + 1)
-    y_edges = np.linspace(yr[0], yr[1], by + 1)
+    x_edges: NDArray[np.float64] = np.linspace(xr[0], xr[1], bx + 1).astype(
+        np.float64, copy=False
+    )
+    y_edges: NDArray[np.float64] = np.linspace(yr[0], yr[1], by + 1).astype(
+        np.float64, copy=False
+    )
     if periodic[0]:
         dx = x_edges[1] - x_edges[0]
         x_hist_edges = np.concatenate([x_edges, [x_edges[-1] + dx]])
@@ -262,10 +277,12 @@ def generate_2d_fes(  # noqa: C901
     xedges = x_edges
     yedges = y_edges
     bin_area = np.diff(xedges)[0] * np.diff(yedges)[0]
-    H_density = H_counts / (H_counts.sum() * bin_area)
-    mask = H_counts < min_count
+    H_density: NDArray[np.float64] = (H_counts / (H_counts.sum() * bin_area)).astype(
+        np.float64, copy=False
+    )
+    mask: NDArray[np.bool_] = H_counts < min_count
 
-    kde_density = np.zeros_like(H_density)
+    kde_density: NDArray[np.float64] = np.zeros_like(H_density, dtype=np.float64)
     if smooth or inpaint:
         if all(periodic):
             bw_rad = (np.radians(kde_bw_deg[0]), np.radians(kde_bw_deg[1]))
@@ -274,10 +291,12 @@ def generate_2d_fes(  # noqa: C901
             )
         else:
             mode = tuple("wrap" if p else "reflect" for p in periodic)
-            kde_density = gaussian_filter(H_density, sigma=0.6, mode=mode)
+            kde_density = gaussian_filter(H_density, sigma=0.6, mode=mode).astype(
+                np.float64, copy=False
+            )
             kde_density /= kde_density.sum() * bin_area
 
-    density = H_density.copy()
+    density: NDArray[np.float64] = H_density.astype(np.float64, copy=False)
     if smooth:
         density = kde_density
     if inpaint:
@@ -291,10 +310,13 @@ def generate_2d_fes(  # noqa: C901
             "More than 30%% of bins are empty (%.1f%%)", masked_fraction * 100
         )
 
-    final_mask = mask if not inpaint else np.zeros_like(mask, dtype=bool)
+    if inpaint:
+        final_mask: NDArray[np.bool_] = np.zeros_like(mask, dtype=bool)
+    else:
+        final_mask = mask
     kT = _kT_kJ_per_mol(temperature)
     tiny = np.finfo(float).tiny
-    F = np.where(density > tiny, -kT * np.log(density), np.inf)
+    F: NDArray[np.float64] = np.where(density > tiny, -kT * np.log(density), np.inf)
     if not inpaint:
         F = np.where(final_mask, np.nan, F)
     if np.any(np.isfinite(F)):

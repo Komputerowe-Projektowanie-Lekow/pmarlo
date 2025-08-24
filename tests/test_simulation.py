@@ -134,9 +134,7 @@ class TestDeterministicSimulation:
         find_spec("openmm") is None,
         reason="Requires OpenMM",
     )
-    def test_deterministic_run_with_seed(
-        self, test_fixed_pdb_file, temp_output_dir
-    ):
+    def test_deterministic_run_with_seed(self, test_fixed_pdb_file, temp_output_dir):
         run1 = temp_output_dir / "run1"
         sim1 = Simulation(
             pdb_file=str(test_fixed_pdb_file),

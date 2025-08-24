@@ -1,4 +1,3 @@
-from pathlib import Path
 from unittest.mock import Mock, patch
 
 from pmarlo.replica_exchange.replica_exchange import ReplicaExchange
@@ -80,7 +79,7 @@ class TestReplicaExchangeCheckpointing:
         remd.contexts = [Mock(), Mock()]
         remd.replicas = [Mock(), Mock()]
         remd.integrators = [Mock(), Mock()]
-        first = remd.rng.random()
+        remd.rng.random()
         state = remd.save_checkpoint_state()
         expected_next = remd.rng.random()
 

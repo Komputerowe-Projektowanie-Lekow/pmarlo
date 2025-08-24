@@ -50,7 +50,7 @@ if __name__ == "__main__":
         trajectory_files=traj_files,
         topology_pdb=pdb_path,
         output_dir=out_dir,
-        feature_type="phi_psi",
+        feature_type="universal_vamp",
         analysis_temperatures=analysis_temps,
     )
 
@@ -58,7 +58,7 @@ if __name__ == "__main__":
         topology_pdb=pdb_path,
         trajectory_choice=traj_files[0],
         output_dir=out_dir,
-        feature_specs=["phi_psi"],
+        feature_specs=["phi_psi", "chi1", "Rg", "sasa", "hbonds_count", "ssfrac"],
         requested_pair=None,
     )
 

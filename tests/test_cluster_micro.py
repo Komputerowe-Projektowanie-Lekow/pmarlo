@@ -1,6 +1,7 @@
+from unittest.mock import patch
+
 import numpy as np
 import pytest
-from unittest.mock import patch
 
 from pmarlo.cluster.micro import cluster_microstates
 

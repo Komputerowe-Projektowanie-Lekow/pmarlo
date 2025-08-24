@@ -2,6 +2,7 @@ import logging
 from pathlib import Path
 
 import mdtraj as md
+
 from pmarlo.replica_exchange.replica_exchange import ReplicaExchange
 
 
