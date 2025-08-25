@@ -34,6 +34,7 @@ from .system_builder import (
 from .trajectory import ClosableDCDReporter
 from ..results import REMDResult
 from ..utils.replica_utils import exponential_temperature_ladder
+from ..utils.integrator import create_langevin_integrator
 
 logger = logging.getLogger("pmarlo")
 
@@ -382,17 +383,7 @@ class ReplicaExchange:
     def _create_integrator_for_temperature(
         self, temperature: float
     ) -> openmm.Integrator:
-        integrator = openmm.LangevinIntegrator(
-            temperature * unit.kelvin,
-            1.0 / unit.picosecond,
-            2.0 * unit.femtoseconds,
-        )
-        # Seed integrator RNG for reproducibility
-        try:
-            integrator.setRandomNumberSeed(int(self.random_seed))
-        except Exception:
-            pass
-        return integrator
+        return create_langevin_integrator(temperature, self.random_seed)
 
     def _create_simulation(
         self,

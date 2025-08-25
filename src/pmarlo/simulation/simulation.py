@@ -40,6 +40,9 @@ from typing import Optional, Tuple
 
 import matplotlib.pyplot as plt
 
+from pmarlo.replica_exchange.platform_selector import select_platform_and_properties
+from pmarlo.replica_exchange.system_builder import create_system
+from pmarlo.utils.integrator import create_langevin_integrator
 from pmarlo.utils.progress import ProgressPrinter
 from pmarlo.utils.seed import set_global_seed
 
@@ -177,13 +180,13 @@ def prepare_system(
     """
     pdb = _load_pdb(pdb_file_name)
     forcefield = _create_forcefield()
-    system = _create_system(pdb, forcefield)
+    system = create_system(pdb, forcefield)
     meta = _maybe_create_metadynamics(
         system, pdb_file_name, temperature, use_metadynamics, output_dir
     )
     seed = random_state if random_state is not None else random_seed
-    integrator = _create_integrator(temperature, seed)
-    platform, platform_properties = _select_platform()
+    integrator = create_langevin_integrator(temperature, seed)
+    platform, platform_properties = select_platform_and_properties(logger)
     simulation = _create_openmm_simulation(
         pdb, system, integrator, platform, platform_properties
     )
@@ -201,20 +204,6 @@ def _load_pdb(pdb_file_name: str) -> app.PDBFile:
 
 def _create_forcefield() -> app.ForceField:
     return app.ForceField("amber14-all.xml", "amber14/tip3pfb.xml")
-
-
-def _create_system(pdb: app.PDBFile, forcefield: app.ForceField) -> openmm.System:
-    return forcefield.createSystem(
-        pdb.topology,
-        nonbondedMethod=app.PME,
-        constraints=app.HBonds,
-        rigidWater=True,
-        nonbondedCutoff=unit.Quantity(0.9, unit.nanometer),
-        ewaldErrorTolerance=1e-4,
-        hydrogenMass=unit.Quantity(3.0, unit.amu),  # HMR
-        removeCMMotion=True,
-    )
-
 
 def _maybe_create_metadynamics(
     system: openmm.System,
@@ -276,52 +265,6 @@ def _clear_existing_bias_files(bias_dir: Path) -> None:
                 file.unlink()
             except Exception:
                 pass
-
-
-def _create_integrator(
-    temperature: float, random_seed: Optional[int] = None
-) -> openmm.Integrator:
-    integrator = openmm.LangevinIntegrator(
-        temperature * unit.kelvin, 1 / unit.picosecond, 2 * unit.femtoseconds
-    )
-    if random_seed is not None:
-        integrator.setRandomNumberSeed(int(random_seed))
-    return integrator
-
-
-def _select_platform() -> Tuple[openmm.Platform, dict]:
-    platform_properties: dict = {}
-    try:
-        platform = openmm.Platform.getPlatformByName("CUDA")
-        platform_properties = {
-            "Precision": "mixed",
-            "UseFastMath": "false",
-        }
-        logger.info("Using CUDA (mixed precision)")
-    except Exception:
-        try:
-            try:
-                platform = openmm.Platform.getPlatformByName("HIP")
-                platform_properties = {
-                    "Precision": "mixed",
-                }
-                logger.info("Using HIP")
-            except Exception:
-                platform = openmm.Platform.getPlatformByName("OpenCL")
-                platform_properties = {
-                    "Precision": "mixed",
-                }
-                logger.info("Using OpenCL")
-        except Exception:
-            platform = openmm.Platform.getPlatformByName("CPU")
-            try:
-                openmm.Platform.setPropertyDefaultValue(
-                    "CpuThreads", str(os.cpu_count() or 1)
-                )
-            except Exception:
-                pass
-            logger.info("Using CPU with all cores")
-    return platform, platform_properties
 
 
 def _create_openmm_simulation(
