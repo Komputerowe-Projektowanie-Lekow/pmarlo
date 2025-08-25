@@ -132,7 +132,9 @@ class Simulation:
 
     def extract_features(self, trajectory_file: str) -> np.ndarray:
         """Extract features from trajectory for MSM analysis."""
-        states = feature_extraction(trajectory_file, self.pdb_file)
+        states = feature_extraction(
+            trajectory_file, self.pdb_file, random_state=self.random_seed
+        )
         return np.array(states)
 
     def run_complete_simulation(self) -> Tuple[str, np.ndarray]:
@@ -499,8 +501,20 @@ def production_run(steps, simulation, meta, output_dir=None):
     return dcd_filename
 
 
-def feature_extraction(dcd_path, pdb_path):
-    """Extract features from trajectory for MSM analysis."""
+def feature_extraction(dcd_path, pdb_path, random_state: int | None = 0):
+    """Extract features from trajectory for MSM analysis.
+
+    Parameters
+    ----------
+    dcd_path:
+        Path to the trajectory file in DCD format.
+    pdb_path:
+        Path to the corresponding PDB topology file.
+    random_state:
+        Seed for deterministic clustering.  When ``None`` a random seed is
+        used, otherwise the provided seed ensures reproducible clustering.
+        Defaults to ``0`` for backward compatibility with earlier releases.
+    """
     print("Stage 4/5  –  featurisation + clustering ...")
 
     # Load the trajectory and compute φ dihedral angles
@@ -511,7 +525,7 @@ def feature_extraction(dcd_path, pdb_path):
     X = np.cos(phi_vals)
     X = X.reshape(-1, 1)
 
-    kmeans = MiniBatchKMeans(n_clusters=40, random_state=0).fit(X)
+    kmeans = MiniBatchKMeans(n_clusters=40, random_state=random_state).fit(X)
     states = kmeans.labels_
     print("✔ Clustering done\n")
     return states
