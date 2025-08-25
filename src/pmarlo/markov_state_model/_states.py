@@ -164,7 +164,8 @@ class StatesMixin:
                 comps = np.real(eigvecs[:, order[1 : 1 + k]])
                 from sklearn.cluster import MiniBatchKMeans
 
-                km = MiniBatchKMeans(n_clusters=n_macrostates, random_state=42)
+                rng = getattr(self, "random_state", 42)
+                km = MiniBatchKMeans(n_clusters=n_macrostates, random_state=rng)
                 labels = km.fit_predict(comps)
                 return labels.astype(int)
             except Exception:
