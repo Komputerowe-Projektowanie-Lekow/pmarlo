@@ -114,19 +114,24 @@ class EstimationMixin:
     def _count_transitions_locally(
         self: _HasEstimationAttrs, *, lag: int, count_mode: str
     ) -> np.ndarray:
+        """Count transitions using vectorized numpy operations."""
         counts = np.zeros((self.n_states, self.n_states), dtype=float)
         step = lag if count_mode == "strided" else 1
         for dtraj in self.dtrajs:
-            if len(dtraj) <= lag:
+            arr = np.asarray(dtraj, dtype=int)
+            if arr.size <= lag:
                 continue
-            for i in range(0, len(dtraj) - lag, step):
-                state_i = int(dtraj[i])
-                state_j = int(dtraj[i + lag])
-                if state_i < 0 or state_j < 0:
-                    continue
-                if state_i >= self.n_states or state_j >= self.n_states:
-                    continue
-                counts[state_i, state_j] += 1.0
+            i_states = arr[:-lag:step]
+            j_states = arr[lag::step]
+            valid = (
+                (i_states >= 0)
+                & (j_states >= 0)
+                & (i_states < self.n_states)
+                & (j_states < self.n_states)
+            )
+            if not np.any(valid):
+                continue
+            np.add.at(counts, (i_states[valid], j_states[valid]), 1.0)
         return counts
 
     def _finalize_transition_and_stationary(
