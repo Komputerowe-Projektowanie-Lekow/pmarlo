@@ -150,6 +150,23 @@ class TestProtein:
             system_info = protein.get_system_info()
             assert not system_info["system_created"]
 
+    @pytest.mark.pdbfixer
+    def test_solvation_option(self, test_fixed_pdb_file):
+        """Solvate proteins lacking water when requested."""
+        protein = Protein(str(test_fixed_pdb_file), auto_prepare=False)
+        protein.prepare()
+        water_residues = {
+            res for res in protein.topology.residues() if res.name in {"HOH", "H2O", "WAT"}
+        }
+        assert len(water_residues) == 0
+
+        protein = Protein(str(test_fixed_pdb_file), auto_prepare=False)
+        protein.prepare(solvate=True)
+        water_residues = {
+            res for res in protein.topology.residues() if res.name in {"HOH", "H2O", "WAT"}
+        }
+        assert len(water_residues) > 0
+
 
 class TestProteinIntegration:
     """Integration tests for Protein class."""
