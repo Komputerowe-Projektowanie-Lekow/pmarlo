@@ -227,11 +227,13 @@ class Protein:
         self,
         ph: float = 7.0,
         remove_heterogens: bool = True,
-        keep_water: bool = False,
+        keep_water: bool = True,
         add_missing_atoms: bool = True,
         add_missing_hydrogens: bool = True,
         replace_nonstandard_residues: bool = True,
         find_missing_residues: bool = True,
+        solvate: bool = False,
+        solvent_padding: float = 1.0,
         **kwargs,
     ) -> "Protein":
         """
@@ -240,13 +242,17 @@ class Protein:
         Args:
             ph (float): pH value for protonation state (default: 7.0)
             remove_heterogens (bool): Remove non-protein molecules (default: True)
-            keep_water (bool): Keep water molecules if True (default: False)
+            keep_water (bool): Keep water molecules if True (default: True)
             add_missing_atoms (bool): Add missing atoms to residues (default: True)
             add_missing_hydrogens (bool): Add missing hydrogens (default: True)
             replace_nonstandard_residues (bool): Replace non-standard residues
                 (default: True)
             find_missing_residues (bool): Find and handle missing residues
                 (default: True)
+            solvate (bool): Add an explicit water box if no waters are present
+                (default: False)
+            solvent_padding (float): Padding in nanometers for the solvent box
+                when solvation is requested (default: 1.0)
             **kwargs: Additional preparation options
 
         Returns:
@@ -286,6 +292,15 @@ class Protein:
         # Add missing hydrogens with specified pH
         if add_missing_hydrogens:
             self.fixer.addMissingHydrogens(ph)
+
+        # Optionally solvate the system if no waters are present
+        if solvate:
+            water_residues = {"HOH", "H2O", "WAT"}
+            has_water = any(
+                res.name in water_residues for res in self.fixer.topology.residues()
+            )
+            if not has_water:
+                self.fixer.addSolvent(padding=solvent_padding * unit.nanometer)
 
         self.prepared = True
 
