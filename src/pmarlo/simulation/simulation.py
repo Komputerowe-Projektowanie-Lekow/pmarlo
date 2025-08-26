@@ -16,7 +16,7 @@ import openmm
 import openmm.app as app
 import openmm.unit as unit
 from openmm.app.metadynamics import BiasVariable, Metadynamics
-from sklearn.cluster import MiniBatchKMeans
+from pmarlo import api
 
 # Compatibility shim for OpenMM XML deserialization API changes
 if not hasattr(openmm.XmlSerializer, "load"):
@@ -36,7 +36,7 @@ except ImportError:
 import logging
 import os
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Sequence, Tuple
 
 import matplotlib.pyplot as plt
 
@@ -133,10 +133,19 @@ class Simulation:
         )
         return str(trajectory_file)
 
-    def extract_features(self, trajectory_file: str) -> np.ndarray:
+    def extract_features(
+        self,
+        trajectory_file: str,
+        feature_specs: Sequence[str] | None = None,
+        n_states: int = 40,
+    ) -> np.ndarray:
         """Extract features from trajectory for MSM analysis."""
         states = feature_extraction(
-            trajectory_file, self.pdb_file, random_state=self.random_seed
+            trajectory_file,
+            self.pdb_file,
+            random_state=self.random_seed,
+            feature_specs=feature_specs,
+            n_states=n_states,
         )
         return np.array(states)
 
@@ -206,6 +215,7 @@ def _load_pdb(pdb_file_name: str) -> app.PDBFile:
 
 def _create_forcefield() -> app.ForceField:
     return app.ForceField("amber14-all.xml", "amber14/tip3pfb.xml")
+
 
 def _maybe_create_metadynamics(
     system: openmm.System,
@@ -444,7 +454,13 @@ def production_run(steps, simulation, meta, output_dir=None):
     return dcd_filename
 
 
-def feature_extraction(dcd_path, pdb_path, random_state: int | None = 0):
+def feature_extraction(
+    dcd_path,
+    pdb_path,
+    random_state: int | None = 0,
+    feature_specs: Sequence[str] | None = None,
+    n_states: int = 40,
+):
     """Extract features from trajectory for MSM analysis.
 
     Parameters
@@ -457,20 +473,27 @@ def feature_extraction(dcd_path, pdb_path, random_state: int | None = 0):
         Seed for deterministic clustering.  When ``None`` a random seed is
         used, otherwise the provided seed ensures reproducible clustering.
         Defaults to ``0`` for backward compatibility with earlier releases.
+    feature_specs:
+        Optional sequence of feature specifications passed to
+        :func:`pmarlo.api.compute_features`.  Defaults to ``["phi_psi"]``.
+    n_states:
+        Number of microstates to identify during clustering.
     """
     print("Stage 4/5  –  featurisation + clustering ...")
 
-    # Load the trajectory and compute φ dihedral angles
-    t = md.load(dcd_path, top=pdb_path)
-    print("Number of frames loaded:", t.n_frames)
-    phi_vals, _ = md.compute_phi(t)
-    phi_vals = phi_vals.squeeze()
-    X = np.cos(phi_vals)
-    X = X.reshape(-1, 1)
+    traj = md.load(dcd_path, top=pdb_path)
+    print("Number of frames loaded:", traj.n_frames)
 
-    kmeans = MiniBatchKMeans(n_clusters=40, random_state=random_state).fit(X)
-    states = kmeans.labels_
-    print("✔ Clustering done\n")
+    specs = feature_specs if feature_specs is not None else ["phi_psi"]
+    X, _cols, _periodic = api.compute_features(traj, feature_specs=specs)
+
+    states = api.cluster_microstates(
+        X,
+        method="minibatchkmeans",
+        n_states=n_states,
+        random_state=random_state,
+    )
+    print("✔ Featurisation + clustering done\n")
     return states
 
 
