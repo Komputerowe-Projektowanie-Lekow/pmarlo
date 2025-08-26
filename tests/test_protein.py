@@ -40,12 +40,22 @@ class TestProtein:
                     "num_chains",
                     "molecular_weight",
                     "charge",
-                    "logp",
+                    "isoelectric_point",
                 ]
             )
             # When PDBFixer is unavailable, defaults may not be zero; ensure keys exist and values are ints
             for key in properties:
                 assert isinstance(properties[key], (int, float))
+
+    def test_optional_rdkit_descriptors(self, test_pdb_file):
+        """RDKit descriptors are only added when detailed=True."""
+        with patch("pmarlo.protein.protein.HAS_PDBFIXER", False):
+            protein = Protein(str(test_pdb_file), auto_prepare=False)
+            props = protein.get_properties()
+            assert "logp" not in props
+
+            detailed = protein.get_properties(detailed=True)
+            assert "logp" in detailed
 
     def test_protein_save_without_pdbfixer(self, test_pdb_file, temp_output_dir):
         """Test that saving without PDBFixer raises appropriate error."""
