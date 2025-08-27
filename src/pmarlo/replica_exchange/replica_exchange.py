@@ -35,6 +35,7 @@ from .trajectory import ClosableDCDReporter
 from ..results import REMDResult
 from ..utils.replica_utils import exponential_temperature_ladder
 from ..utils.integrator import create_langevin_integrator
+from ..utils.naming import base_shape_str, permutation_name
 
 logger = logging.getLogger("pmarlo")
 
@@ -944,6 +945,13 @@ class ReplicaExchange:
 
         self.replica_states[replica_i] = old_state_j
         self.replica_states[replica_j] = old_state_i
+
+        # Cache a deterministic name for the new permutation of replicas.
+        shape_name = base_shape_str((len(self.replica_states),))
+        perm_name = permutation_name(tuple(self.replica_states))
+        logger.debug(
+            "Replica state permutation %s applied (shape %s)", perm_name, shape_name
+        )
 
         self.state_replicas[old_state_i] = replica_j
         self.state_replicas[old_state_j] = replica_i
