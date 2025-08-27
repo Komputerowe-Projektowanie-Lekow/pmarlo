@@ -21,6 +21,11 @@ from openmm import Platform, unit
 from openmm.app import ForceField, PDBFile, Simulation
 
 from pmarlo.utils.progress import ProgressPrinter
+
+from ..config import ALLOW_GAP_REPAIR
+from ..results import REMDResult
+from ..utils.integrator import create_langevin_integrator
+from ..utils.replica_utils import exponential_temperature_ladder
 from .config import RemdConfig
 from .demux_metadata import DemuxIntegrityError, DemuxMetadata
 from .diagnostics import compute_exchange_statistics, retune_temperature_ladder
@@ -32,9 +37,6 @@ from .system_builder import (
     setup_metadynamics,
 )
 from .trajectory import ClosableDCDReporter
-from ..results import REMDResult
-from ..utils.replica_utils import exponential_temperature_ladder
-from ..utils.integrator import create_langevin_integrator
 
 logger = logging.getLogger("pmarlo")
 
@@ -1606,8 +1608,12 @@ class ReplicaExchange:
                 prev_stop_md = stop_md
 
                 if replica_at_target is None:
-                    # Missing swap; fill using nearest neighbour if possible
-                    if demux_segments and frames_per_segment is not None:
+                    # Missing swap; fill using nearest neighbour if allowed
+                    if (
+                        ALLOW_GAP_REPAIR.get()
+                        and demux_segments
+                        and frames_per_segment is not None
+                    ):
                         import mdtraj as md  # type: ignore
 
                         fill = md.join(
@@ -1629,7 +1635,11 @@ class ReplicaExchange:
 
                 traj = loaded_trajs.get(replica_at_target)
                 if traj is None:
-                    if demux_segments and frames_per_segment is not None:
+                    if (
+                        ALLOW_GAP_REPAIR.get()
+                        and demux_segments
+                        and frames_per_segment is not None
+                    ):
                         import mdtraj as md  # type: ignore
 
                         fill = md.join(
@@ -1660,7 +1670,7 @@ class ReplicaExchange:
                 end_frame = min(traj.n_frames, (max(0, stop_md - 1) // stride) + 1)
 
                 if start_frame > expected_start_frame:
-                    if demux_segments:
+                    if ALLOW_GAP_REPAIR.get() and demux_segments:
                         import mdtraj as md  # type: ignore
 
                         gap = start_frame - expected_start_frame
@@ -1672,6 +1682,10 @@ class ReplicaExchange:
                         expected_start_frame = start_frame
                         logger.warning(
                             f"Filled {gap} missing frame(s) before segment {s}"
+                        )
+                    elif not ALLOW_GAP_REPAIR.get():
+                        raise DemuxIntegrityError(
+                            f"Gap of {start_frame - expected_start_frame} frame(s) before segment {s}"
                         )
                     else:
                         # Tolerate initial offset: start demux at the first available frame
@@ -1690,7 +1704,11 @@ class ReplicaExchange:
                         frames_per_segment = int(end_frame - start_frame)
                     expected_start_frame = end_frame
                 else:
-                    if demux_segments and frames_per_segment is not None:
+                    if (
+                        ALLOW_GAP_REPAIR.get()
+                        and demux_segments
+                        and frames_per_segment is not None
+                    ):
                         import mdtraj as md  # type: ignore
 
                         fill = md.join(

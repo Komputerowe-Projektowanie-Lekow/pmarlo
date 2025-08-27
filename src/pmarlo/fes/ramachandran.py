@@ -8,6 +8,7 @@ import mdtraj as md  # type: ignore
 import numpy as np
 from numpy.typing import NDArray
 
+from ..config import FES_SMOOTHING
 from .surfaces import _kT_kJ_per_mol, periodic_kde_2d
 
 logger = logging.getLogger("pmarlo")
@@ -150,7 +151,7 @@ def compute_ramachandran_fes(
     bins: tuple[int, int] = (42, 42),
     temperature: float = 300.0,
     min_count: int = 5,
-    smooth: bool = False,
+    smooth: bool | None = None,
     inpaint: bool = False,
     kde_bw_deg: tuple[float, float] = (20.0, 20.0),
     stride: int | None = None,
@@ -186,6 +187,9 @@ def compute_ramachandran_fes(
     stride = max(1, int(stride or 1))
     angles = compute_ramachandran(traj, selection)[::stride]
     H, xedges, yedges = periodic_hist2d(angles[:, 0], angles[:, 1], bins=bins)
+
+    if smooth is None:
+        smooth = FES_SMOOTHING.get()
 
     mask = H < float(min_count)
     total: float = float(np.sum(H))
