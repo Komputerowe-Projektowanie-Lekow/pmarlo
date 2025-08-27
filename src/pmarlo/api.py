@@ -61,35 +61,49 @@ def _align_trajectory(
         return traj
 
 
-def _trig_expand_periodic(X: np.ndarray, periodic: np.ndarray) -> np.ndarray:
-    """Expand periodic columns of X into cos/sin, keep non-periodic as-is.
+def _trig_expand_periodic(
+    X: np.ndarray, periodic: np.ndarray
+) -> tuple[np.ndarray, dict[int, tuple[int, ...]]]:
+    """Expand periodic columns of ``X`` into cos/sin pairs.
 
     Parameters
     ----------
     X:
-        Feature matrix of shape (n_frames, n_features).
+        Feature matrix of shape ``(n_frames, n_features)``.
     periodic:
-        Boolean array of shape (n_features,) indicating periodic columns.
+        Boolean array of shape ``(n_features,)`` indicating periodic columns.
 
     Returns
     -------
-    np.ndarray
-        Expanded feature matrix with shape (n_frames, n_nonperiodic + 2*n_periodic).
+    tuple[np.ndarray, dict[int, tuple[int, ...]]]
+        The expanded feature matrix with shape ``(n_frames, n_nonperiodic +
+        2*n_periodic)`` and a mapping from original column index to the new
+        column indices it produced.  Non-periodic columns map to a single index
+        while periodic columns map to the ``(cos, sin)`` pair.
     """
+
     if X.size == 0:
-        return X
+        return X, {}
     if periodic.size != X.shape[1]:
         # Best-effort: assume non-periodic if mismatch
         periodic = np.zeros((X.shape[1],), dtype=bool)
+
     cols: List[np.ndarray] = []
+    mapping: dict[int, tuple[int, ...]] = {}
+
     for j in range(X.shape[1]):
         col = X[:, j]
+        start = len(cols)
         if bool(periodic[j]):
             cols.append(np.cos(col))
             cols.append(np.sin(col))
+            mapping[j] = (start, start + 1)
         else:
             cols.append(col)
-    return np.vstack(cols).T if cols else X
+            mapping[j] = (start,)
+
+    Xe = np.vstack(cols).T if cols else X
+    return Xe, mapping
 
 
 def compute_universal_metric(
@@ -145,9 +159,10 @@ def compute_universal_metric(
             "lag": int(lag),
             "aligned": bool(align),
             "specs": specs,
+            "trig_mapping": {},
         }
     logger.info("[universal] Trig-expanding periodic columns")
-    Xe = _trig_expand_periodic(X, periodic)
+    Xe, trig_mapping = _trig_expand_periodic(X, periodic)
     logger.info("[universal] Expanded shape=%s", tuple(Xe.shape))
     if method == "pca":
         logger.info("[universal] Reducing with PCA → 1D")
@@ -168,6 +183,7 @@ def compute_universal_metric(
         "lag": int(lag),
         "aligned": bool(align),
         "specs": specs,
+        "trig_mapping": trig_mapping,
     }
     return metric, meta
 
@@ -196,7 +212,7 @@ def compute_universal_embedding(
     X, cols, periodic = compute_features(
         traj_in, feature_specs=specs, cache_path=cache_path
     )
-    Xe = _trig_expand_periodic(X, periodic)
+    Xe, trig_mapping = _trig_expand_periodic(X, periodic)
     k = int(max(1, n_components))
     if method == "pca":
         Y = pca_reduce(Xe, n_components=k)
@@ -212,6 +228,7 @@ def compute_universal_embedding(
         "aligned": bool(align),
         "specs": specs,
         "n_components": k,
+        "trig_mapping": trig_mapping,
     }
     return Y, meta
 
