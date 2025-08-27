@@ -201,6 +201,9 @@ class ReplicaExchange:
 
         Decide the DCD stride once, before reporters are added, and store it.
         """
+        assert (
+            self.reporter_stride is None
+        ), "reporter_stride already planned"
         production_steps = max(0, total_steps - equilibration_steps)
         stride = max(1, production_steps // max(1, target_frames))
         self.reporter_stride = stride
@@ -300,7 +303,7 @@ class ReplicaExchange:
         logger.info("Setting up replica simulations...")
         # Enforce stride planning before creating reporters
         assert (
-            self.reporter_stride is not None
+            self.reporter_stride is not None and self.reporter_stride > 0
         ), "reporter_stride is not planned. Call plan_reporter_stride(...) before setup_replicas()"
 
         pdb, forcefield = load_pdb_and_forcefield(self.pdb_file, self.forcefield_files)
