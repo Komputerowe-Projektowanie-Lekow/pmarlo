@@ -646,12 +646,23 @@ def _fes_pair_from_phi_psi_maps(
 
 
 def _fes_highest_variance_pair(X: np.ndarray) -> Tuple[int, int] | None:
+    """Return indices of the highest-variance CV columns.
+
+    Constant (zero-variance) columns are ignored. If fewer than two
+    non-constant columns remain, the lone surviving index is paired with
+    itself. ``None`` is returned when ``X`` has no columns.
+    """
+
     if X.shape[1] < 1:
         return None
     variances = np.var(X, axis=0)
-    order = np.argsort(variances)[::-1]
-    if order.shape[0] == 1:
-        return int(order[0]), int(order[0]) if X.shape[1] == 1 else 0
+    non_const = np.where(variances > 0)[0]
+    if non_const.size == 0:
+        return None
+    order = non_const[np.argsort(variances[non_const])[::-1]]
+    if order.size == 1:
+        idx = int(order[0])
+        return idx, idx
     return int(order[0]), int(order[1])
 
 
@@ -700,6 +711,10 @@ def select_fes_pair(
             i, j = hv
             pi, pj = _fes_periodic_pair_flags(periodic, i, j)
             return i, j, pi, pj
+        if X.shape[1] > 0:
+            # Fold: use first axis for both coordinates
+            pi, pj = _fes_periodic_pair_flags(periodic, 0, 0)
+            return 0, 0, pi, pj
 
     raise RuntimeError("No suitable FES pair could be selected.")
 
