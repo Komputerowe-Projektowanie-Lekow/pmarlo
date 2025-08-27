@@ -11,7 +11,7 @@ def test_fesresult_attribute_and_mapping_access():
         xedges=np.array([0.0, 1.0]),
         yedges=np.array([0.0, 1.0]),
     )
-    assert fes.F.shape == (1, 1)
+    assert fes.output_shape == (1, 1)
     with pytest.warns(DeprecationWarning):
         assert np.array_equal(fes["F"], fes.F)
 
@@ -35,4 +35,4 @@ def test_generate_fes_and_pick_minima_runs():
     )
     fes = res["fes"]
     assert isinstance(fes, FESResult)
-    assert fes.F.ndim == 2
+    assert len(fes.output_shape) == 2

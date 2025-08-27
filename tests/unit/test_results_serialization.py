@@ -29,7 +29,7 @@ def test_result_roundtrip(tmp_path: Path) -> None:
 
     loaded = pickle.load(pkl.open("rb"))
     assert isinstance(loaded["fes"], FESResult)
-    assert loaded["fes"].free_energy.shape == (2, 2)
+    assert loaded["fes"].output_shape == (2, 2)
     assert loaded["fes"].temperature == pytest.approx(300.0)
 
     meta = json.load(js.open())

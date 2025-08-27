@@ -25,6 +25,11 @@ class RamachandranResult:
     finite_fraction: float
     temperature: float
 
+    @property
+    def output_shape(self) -> tuple[int, int]:
+        """Grid shape of the Ramachandran surface."""
+        return self.F.shape
+
 
 def compute_ramachandran(  # noqa: C901
     traj: md.Trajectory,
@@ -224,19 +229,20 @@ def compute_ramachandran_fes(
         F = np.where(mask, np.nan, F)
     if np.any(np.isfinite(F)):
         F -= np.nanmin(F)
-    finite_fraction = float(np.isfinite(F).sum()) / F.size
-    logger.info(
-        "Ramachandran FES finite bins: %d/%d (%.1f%%)",
-        np.isfinite(F).sum(),
-        F.size,
-        finite_fraction * 100.0,
-    )
-    return RamachandranResult(
+    finite_bins = int(np.isfinite(F).sum())
+    result = RamachandranResult(
         F=F,
         phi_edges=xedges,
         psi_edges=yedges,
         counts=H,
         mask=mask,
-        finite_fraction=finite_fraction,
+        finite_fraction=float(finite_bins) / np.prod(F.shape),
         temperature=float(temperature),
     )
+    logger.info(
+        "Ramachandran FES finite bins: %d/%d (%.1f%%)",
+        finite_bins,
+        np.prod(result.output_shape),
+        result.finite_fraction * 100.0,
+    )
+    return result
