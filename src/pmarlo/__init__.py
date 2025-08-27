@@ -17,6 +17,7 @@ from .simulation.simulation import Simulation
 from .utils.msm_utils import candidate_lag_ladder
 from .utils.replica_utils import power_of_two_temperature_ladder
 from .utils.seed import quiet_external_loggers
+from .transform import pm_apply_plan, pm_get_plan
 
 if TYPE_CHECKING:  # Only for type annotations; avoids importing heavy deps at runtime
     from .pipeline import LegacyPipeline as LegacyPipelineType
@@ -58,6 +59,8 @@ __all__ = [
     "Simulation",
     "power_of_two_temperature_ladder",
     "candidate_lag_ladder",
+    "pm_get_plan",
+    "pm_apply_plan",
 ]
 
 if MarkovStateModel is not None:
