@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+import pytest
 
 import mdtraj as md
 
@@ -73,3 +74,32 @@ def test_runtime_plan_execution(tmp_path):
     assert abs(production_frames - plan["expected_frames"]) <= max(
         1, plan["expected_frames"] // 10
     )
+
+
+def test_plan_reporter_stride_single_application(tmp_path):
+    pdb = _write_water_pdb(tmp_path)
+    remd = ReplicaExchange(
+        pdb_file=str(pdb),
+        temperatures=[300.0, 310.0],
+        output_dir=tmp_path,
+        dcd_stride=1,
+        auto_setup=False,
+    )
+    remd.plan_reporter_stride(100, 10, target_frames=10)
+    with pytest.raises(AssertionError):
+        remd.plan_reporter_stride(100, 10, target_frames=10)
+
+
+def test_setup_requires_planned_stride(tmp_path):
+    pdb = _write_water_pdb(tmp_path)
+    remd = ReplicaExchange(
+        pdb_file=str(pdb),
+        temperatures=[300.0, 310.0],
+        output_dir=tmp_path,
+        dcd_stride=1,
+        auto_setup=False,
+    )
+    with pytest.raises(AssertionError):
+        remd.setup_replicas()
+    remd.plan_reporter_stride(100, 10, target_frames=10)
+    remd.setup_replicas()
