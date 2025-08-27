@@ -20,6 +20,11 @@ class PMFResult:
     periodic: bool
     temperature: float
 
+    @property
+    def output_shape(self) -> tuple[int, ...]:
+        """Shape of the PMF array."""
+        return self.F.shape
+
 
 @dataclass
 class FESResult:
@@ -44,6 +49,11 @@ class FESResult:
     yedges: NDArray[np.float64]
     levels_kJmol: NDArray[np.float64] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def output_shape(self) -> tuple[int, int]:
+        """Shape of the free-energy surface grid."""
+        return self.F.shape
 
     def __getitem__(self, key: str) -> Any:  # pragma: no cover - compatibility shim
         """Dictionary-style access with deprecation warning.
@@ -303,13 +313,6 @@ def generate_2d_fes(  # noqa: C901
         density[mask] = kde_density[mask]
     density /= density.sum() * bin_area
 
-    masked_fraction = float(mask.sum()) / mask.size
-    logger.info("FES masked fraction=%0.3f", masked_fraction)
-    if masked_fraction > 0.30:
-        logger.warning(
-            "More than 30%% of bins are empty (%.1f%%)", masked_fraction * 100
-        )
-
     if inpaint:
         final_mask: NDArray[np.bool_] = np.zeros_like(mask, dtype=bool)
     else:
@@ -327,4 +330,13 @@ def generate_2d_fes(  # noqa: C901
         "temperature": temperature,
         "mask": final_mask,
     }
-    return FESResult(F=F, xedges=xedges, yedges=yedges, metadata=metadata)
+    result = FESResult(F=F, xedges=xedges, yedges=yedges, metadata=metadata)
+
+    masked_fraction = float(final_mask.sum()) / np.prod(result.output_shape)
+    logger.info("FES masked fraction=%0.3f", masked_fraction)
+    if masked_fraction > 0.30:
+        logger.warning(
+            "More than 30%% of bins are empty (%.1f%%)", masked_fraction * 100
+        )
+
+    return result
