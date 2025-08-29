@@ -40,12 +40,25 @@ class TestProtein:
                     "num_chains",
                     "molecular_weight",
                     "charge",
-                    "logp",
+                    "isoelectric_point",
+                    "hydrophobic_fraction",
+                    "aromatic_residues",
+                    "heavy_atoms",
                 ]
             )
             # When PDBFixer is unavailable, defaults may not be zero; ensure keys exist and values are ints
             for key in properties:
                 assert isinstance(properties[key], (int, float))
+
+    def test_optional_rdkit_descriptors(self, test_pdb_file):
+        """RDKit descriptors are only added when detailed=True."""
+        with patch("pmarlo.protein.protein.HAS_PDBFIXER", False):
+            protein = Protein(str(test_pdb_file), auto_prepare=False)
+            props = protein.get_properties()
+            assert "logp" not in props
+
+            detailed = protein.get_properties(detailed=True)
+            assert "logp" in detailed
 
     def test_protein_save_without_pdbfixer(self, test_pdb_file, temp_output_dir):
         """Test that saving without PDBFixer raises appropriate error."""
@@ -150,6 +163,27 @@ class TestProtein:
             system_info = protein.get_system_info()
             assert not system_info["system_created"]
 
+    @pytest.mark.pdbfixer
+    def test_solvation_option(self, test_fixed_pdb_file):
+        """Solvate proteins lacking water when requested."""
+        protein = Protein(str(test_fixed_pdb_file), auto_prepare=False)
+        protein.prepare()
+        water_residues = {
+            res
+            for res in protein.topology.residues()
+            if res.name in {"HOH", "H2O", "WAT"}
+        }
+        assert len(water_residues) == 0
+
+        protein = Protein(str(test_fixed_pdb_file), auto_prepare=False)
+        protein.prepare(solvate=True)
+        water_residues = {
+            res
+            for res in protein.topology.residues()
+            if res.name in {"HOH", "H2O", "WAT"}
+        }
+        assert len(water_residues) > 0
+
 
 class TestProteinIntegration:
     """Integration tests for Protein class."""
@@ -234,3 +268,33 @@ class TestProteinAdditional:
             pytest.skip("OpenMM required")
         with pytest.raises(ValueError, match="non-finite"):
             Protein(str(nan_pdb_file), auto_prepare=False)
+
+
+class TestProteinMetrics:
+    """Tests for low-level protein metric helpers."""
+
+    def test_compute_protein_metrics_known_sequence(self):
+        """Verify metric calculation on a known sequence."""
+        protein = object.__new__(Protein)
+        protein.ph = 7.0
+        seq = "ACDEFGHIKLMNPQRSTVWY"  # 20 amino acids, 10 hydrophobic, 3 aromatic
+        metrics = Protein._compute_protein_metrics(protein, seq)
+
+        assert metrics["hydrophobic_fraction"] == pytest.approx(0.5)
+        assert metrics["aromatic_residues"] == 3
+        assert 0.0 <= metrics["isoelectric_point"] <= 14.0
+        assert isinstance(metrics["charge"], float)
+
+    def test_sequence_from_topology(self):
+        """Ensure sequence extraction from topology is correct."""
+        from openmm.app import Topology, element
+
+        protein = object.__new__(Protein)
+        top = Topology()
+        chain = top.addChain("A")
+        for res_name in ("ALA", "GLY", "PHE"):
+            res = top.addResidue(res_name, chain)
+            top.addAtom("N", element.get_by_symbol("N"), res)
+
+        seq = Protein._sequence_from_topology(protein, top)
+        assert seq == "AGF"

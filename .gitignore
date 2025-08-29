@@ -7,6 +7,9 @@ final.xml
 /example_programs/programs_outputs/free_energy_landscape_long/*
 /example_programs/programs_outputs/all_capabilities/*
 /example_programs/programs_outputs/free_energy_conformations_msm/*
+/example_programs/programs_outputs/sharded_build/*
+
+
 
 /utilities/
 
@@ -69,3 +72,8 @@ example_programs/programs_outputs/sharded_build/shards/shard_0002.npz
 example_programs/programs_outputs/sharded_build/shards/slice_000000_000033.dcd
 example_programs/programs_outputs/sharded_build/shards/slice_000033_000066.dcd
 example_programs/programs_outputs/sharded_build/shards/slice_000066_000100.dcd
+
+
+temperatures_suggested.json
+typelog.txt
+/example_programs/programs_outputs/sharded_build/
