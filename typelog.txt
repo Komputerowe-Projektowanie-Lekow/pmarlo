@@ -1,0 +1,116 @@
+﻿.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/2.3/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/2.5/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/2.6/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/2.7/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.0/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.1/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.10/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.12/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.13/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.2/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.3/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.4/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.5/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.6/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.7/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.8/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.9/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/2.3/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/2.5/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/2.6/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/2.7/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.0/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.1/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.10/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.12/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.13/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.2/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.3/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.4/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.5/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.6/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.7/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.8/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.9/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/2.3/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/2.5/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/2.6/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/2.7/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.0/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.1/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.10/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.12/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.13/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.2/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.3/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.4/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.5/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.6/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.7/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.8/InstallPath error: missing
+.pkg: PEP-514 violation in Windows Registry at HKEY_LOCAL_MACHINE/PythonCore/3.9/InstallPath error: missing
+type: commands[0]> mypy src/pmarlo
+src\pmarlo\simulation\simulation.py:415: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
+src\pmarlo\protein\protein.py:495: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
+src\pmarlo\markov_state_model\_its.py:218: error: Invalid self argument "ITSMixin" to attribute function "_its_compute_for_single_lag" with type "Callable[[_SupportsITS, NamedArg(int, 'lag'), NamedArg(int, 'n_timescales'), NamedArg(int, 'n_samples'), NamedArg(float, 'dirichlet_alpha'), NamedArg(float, 'q_low'), NamedArg(float, 'q_high'), NamedArg(Any, '_logging')], tuple[list[float], list[list[float]], list[float], list[list[float]], list[float], list[list[float]]]]"  [misc]
+src\pmarlo\markov_state_model\_its.py:272: error: Need more than 6 values to unpack (9 expected)  [misc]
+src\pmarlo\markov_state_model\_its.py:482: error: Too many arguments for "_counts_backend_matrix_or_fallback" of "_SupportsITS"  [call-arg]
+src\pmarlo\markov_state_model\_its.py:498: error: Too many arguments for "_counts_from_dtrajs_fallback" of "_SupportsITS"  [call-arg]
+src\pmarlo\markov_state_model\_fes.py:23: error: Missing return statement  [empty-body]
+src\pmarlo\markov_state_model\_fes.py:25: error: Missing return statement  [empty-body]
+src\pmarlo\markov_state_model\_fes.py:26: error: Missing return statement  [empty-body]
+src\pmarlo\markov_state_model\_fes.py:29: error: Missing return statement  [empty-body]
+src\pmarlo\markov_state_model\_fes.py:55: error: "_HasFESAttrs" has no attribute "_validate_fes_prerequisites"  [attr-defined]
+src\pmarlo\markov_state_model\_fes.py:56: error: "_HasFESAttrs" has no attribute "_extract_collective_variables"  [attr-defined]
+src\pmarlo\markov_state_model\_fes.py:57: error: "_HasFESAttrs" has no attribute "_map_stationary_to_frame_weights"  [attr-defined]
+src\pmarlo\markov_state_model\_fes.py:63: error: "_HasFESAttrs" has no attribute "_choose_bins"  [attr-defined]
+src\pmarlo\markov_state_model\_fes.py:64: error: "_HasFESAttrs" has no attribute "_align_data_lengths"  [attr-defined]
+src\pmarlo\markov_state_model\_fes.py:72: error: "_HasFESAttrs" has no attribute "_compute_weighted_histogram"  [attr-defined]
+src\pmarlo\markov_state_model\_fes.py:81: error: "_HasFESAttrs" has no attribute "_histogram_to_free_energy"  [attr-defined]
+src\pmarlo\markov_state_model\_fes.py:82: error: "_HasFESAttrs" has no attribute "_store_fes_result"  [attr-defined]
+src\pmarlo\markov_state_model\_fes.py:93: error: Name "_validate_fes_prerequisites" already defined on line 22  [no-redef]
+src\pmarlo\markov_state_model\_fes.py:97: error: Name "_map_stationary_to_frame_weights" already defined on line 24  [no-redef]
+src\pmarlo\markov_state_model\_fes.py:120: error: Name "_extract_collective_variables" already defined on line 23  [no-redef]
+src\pmarlo\markov_state_model\_fes.py:159: error: Name "_align_data_lengths" already defined on line 26  [no-redef]
+src\pmarlo\markov_state_model\_fes.py:180: error: Name "_compute_weighted_histogram" already defined on line 29  [no-redef]
+src\pmarlo\markov_state_model\_fes.py:208: error: Name "_histogram_to_free_energy" already defined on line 39  [no-redef]
+src\pmarlo\markov_state_model\_fes.py:230: error: Name "_store_fes_result" already defined on line 40  [no-redef]
+src\pmarlo\markov_state_model\_fes.py:248: error: Name "_choose_bins" already defined on line 25  [no-redef]
+src\pmarlo\markov_state_model\_features.py:202: error: Value of type "Any | None" is not indexable  [index]
+src\pmarlo\markov_state_model\_features.py:212: error: Value of type "Any | None" is not indexable  [index]
+src\pmarlo\markov_state_model\_features.py:221: error: Value of type "Any | None" is not indexable  [index]
+src\pmarlo\markov_state_model\_features.py:228: error: Value of type "Any | None" is not indexable  [index]
+src\pmarlo\markov_state_model\_export.py:146: error: Value of type "Any | None" is not indexable  [index]
+src\pmarlo\markov_state_model\_estimation.py:155: error: Unsupported target for indexed assignment ("Any | None")  [index]
+src\pmarlo\markov_state_model\enhanced_msm.py:26: error: Definition of "output_dir" in base class "FeaturesMixin" is incompatible with definition in base class "ExportMixin"  [misc]
+src\pmarlo\markov_state_model\enhanced_msm.py:26: error: Definition of "output_dir" in base class "FeaturesMixin" is incompatible with definition in base class "MSMBase"  [misc]
+src\pmarlo\markov_state_model\enhanced_msm.py:119: error: Invalid self argument "EnhancedMSM" to attribute function "build_msm" with type "Callable[[_HasEstimationAttrs, int, str], None]"  [misc]
+src\pmarlo\markov_state_model\enhanced_msm.py:120: error: Invalid self argument "EnhancedMSM" to attribute function "compute_implied_timescales" with type "Callable[[_SupportsITS, list[int] | None, int, DefaultNamedArg(int, 'n_samples'), DefaultNamedArg(float, 'ci'), DefaultNamedArg(float, 'dirichlet_alpha'), DefaultNamedArg(int | None, 'plateau_m'), DefaultNamedArg(float, 'plateau_epsilon')], None]"  [misc]
+src\pmarlo\markov_state_model\enhanced_msm.py:139: error: Invalid self argument "EnhancedMSM" to attribute function "create_state_table" with type "Callable[[_HasStateAttrs], Any]"  [misc]
+src\pmarlo\markov_state_model\enhanced_msm.py:140: error: Invalid self argument "EnhancedMSM" to attribute function "extract_representative_structures" with type "Callable[[_HasStateAttrs, bool], Any]"  [misc]
+src\pmarlo\markov_state_model\enhanced_msm.py:145: error: Invalid self argument "EnhancedMSM" to attribute function "plot_free_energy_surface" with type "Callable[[_HasMSMAttrs, str | None, bool], None]"  [misc]
+src\pmarlo\markov_state_model\enhanced_msm.py:146: error: Invalid self argument "EnhancedMSM" to attribute function "plot_implied_timescales" with type "Callable[[_HasMSMAttrs, str | None], None]"  [misc]
+src\pmarlo\markov_state_model\enhanced_msm.py:147: error: Invalid self argument "EnhancedMSM" to attribute function "plot_implied_rates" with type "Callable[[_HasMSMAttrs, str | None], None]"  [misc]
+src\pmarlo\markov_state_model\enhanced_msm.py:148: error: Invalid self argument "EnhancedMSM" to attribute function "plot_free_energy_profile" with type "Callable[[_HasMSMAttrs, str | None], None]"  [misc]
+src\pmarlo\markov_state_model\enhanced_msm.py:150: error: Invalid self argument "EnhancedMSM" to attribute function "plot_ck_test" with type "Callable[[_HasMSMAttrs, str, int, list[int] | None], Path | None]"  [misc]
+src\pmarlo\api.py:945: error: Invalid self argument "EnhancedMSM" to attribute function "build_msm" with type "Callable[[_HasEstimationAttrs, int, str], None]"  [misc]
+src\pmarlo\api.py:946: error: Invalid self argument "EnhancedMSM" to attribute function "compute_implied_timescales" with type "Callable[[_SupportsITS, list[int] | None, int, DefaultNamedArg(int, 'n_samples'), DefaultNamedArg(float, 'ci'), DefaultNamedArg(float, 'dirichlet_alpha'), DefaultNamedArg(int | None, 'plateau_m'), DefaultNamedArg(float, 'plateau_epsilon')], None]"  [misc]
+src\pmarlo\api.py:975: error: Invalid self argument "EnhancedMSM" to attribute function "build_msm" with type "Callable[[_HasEstimationAttrs, int, str], None]"  [misc]
+src\pmarlo\api.py:979: error: Argument 3 to "run_ck" has incompatible type "object"; expected "str | Path"  [arg-type]
+src\pmarlo\api.py:1055: error: Invalid self argument "EnhancedMSM" to attribute function "plot_implied_timescales" with type "Callable[[_HasMSMAttrs, str | None], None]"  [misc]
+src\pmarlo\api.py:1056: error: Invalid self argument "EnhancedMSM" to attribute function "plot_free_energy_profile" with type "Callable[[_HasMSMAttrs, str | None], None]"  [misc]
+src\pmarlo\api.py:1057: error: Invalid self argument "EnhancedMSM" to attribute function "create_state_table" with type "Callable[[_HasStateAttrs], Any]"  [misc]
+src\pmarlo\api.py:1058: error: Invalid self argument "EnhancedMSM" to attribute function "extract_representative_structures" with type "Callable[[_HasStateAttrs, bool], Any]"  [misc]
+src\pmarlo\markov_state_model\pipeline.py:62: error: Invalid self argument "EnhancedMSM" to attribute function "build_msm" with type "Callable[[_HasEstimationAttrs, int, str], None]"  [misc]
+src\pmarlo\markov_state_model\pipeline.py:63: error: Invalid self argument "EnhancedMSM" to attribute function "compute_implied_timescales" with type "Callable[[_SupportsITS, list[int] | None, int, DefaultNamedArg(int, 'n_samples'), DefaultNamedArg(float, 'ci'), DefaultNamedArg(float, 'dirichlet_alpha'), DefaultNamedArg(int | None, 'plateau_m'), DefaultNamedArg(float, 'plateau_epsilon')], None]"  [misc]
+src\pmarlo\markov_state_model\pipeline.py:68: error: Invalid self argument "EnhancedMSM" to attribute function "create_state_table" with type "Callable[[_HasStateAttrs], Any]"  [misc]
+src\pmarlo\markov_state_model\pipeline.py:69: error: Invalid self argument "EnhancedMSM" to attribute function "extract_representative_structures" with type "Callable[[_HasStateAttrs, bool], Any]"  [misc]
+src\pmarlo\markov_state_model\pipeline.py:75: error: Invalid self argument "EnhancedMSM" to attribute function "plot_free_energy_surface" with type "Callable[[_HasMSMAttrs, str | None, bool], None]"  [misc]
+src\pmarlo\markov_state_model\pipeline.py:76: error: Invalid self argument "EnhancedMSM" to attribute function "plot_implied_timescales" with type "Callable[[_HasMSMAttrs, str | None], None]"  [misc]
+src\pmarlo\markov_state_model\pipeline.py:77: error: Invalid self argument "EnhancedMSM" to attribute function "plot_implied_rates" with type "Callable[[_HasMSMAttrs, str | None], None]"  [misc]
+src\pmarlo\markov_state_model\pipeline.py:78: error: Invalid self argument "EnhancedMSM" to attribute function "plot_free_energy_profile" with type "Callable[[_HasMSMAttrs, str | None], None]"  [misc]
+src\pmarlo\markov_state_model\pipeline.py:79: error: Invalid self argument "EnhancedMSM" to attribute function "plot_ck_test" with type "Callable[[_HasMSMAttrs, str, int, list[int] | None], Path | None]"  [misc]
+Found 58 errors in 8 files (checked 87 source files)
+type: exit 1 (2.22 seconds) C:\Users\konrad_guest\Documents\GitHub\pmarlo> mypy src/pmarlo pid=24560
+  type: FAIL code 1 (2.23=setup[0.02]+cmd[2.22] seconds)
+  evaluation failed :( (2.72 seconds)

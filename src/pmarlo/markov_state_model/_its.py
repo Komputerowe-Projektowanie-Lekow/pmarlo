@@ -14,11 +14,166 @@ class _SupportsITS(Protocol):
     lag_time: int
     n_states: int
     time_per_frame_ps: Optional[float]
+    implied_timescales: Any
+
+    # Helper methods used within ITSMixin
+    def _its_log_start(self, _logging) -> None: ...
+
+    def _its_default_lag_times(self, lag_times: Optional[List[int]]) -> List[int]: ...
+
+    def _validate_its_inputs(
+        self, lag_times: List[int], n_timescales: int
+    ) -> Optional[Tuple[List[int], int]]: ...
+
+    def _its_seed_rng_if_available(self) -> None: ...
+
+    def _its_compute_for_all_lags(
+        self,
+        *,
+        lag_times: List[int],
+        n_timescales: int,
+        n_samples: int,
+        ci: float,
+        dirichlet_alpha: float,
+        _logging,
+    ) -> Tuple[
+        List[List[float]],
+        List[List[List[float]]],
+        List[List[float]],
+        List[List[List[float]]],
+        List[List[float]],
+        List[List[List[float]]],
+    ]: ...
+
+    def _its_build_result(
+        self,
+        lag_times: List[int],
+        eval_means: List[List[float]],
+        eval_ci: List[List[List[float]]],
+        ts_means: List[List[float]],
+        ts_ci: List[List[List[float]]],
+        rate_means: List[List[float]],
+        rate_ci: List[List[List[float]]],
+    ) -> Any: ...
+
+    def _its_optionally_attach_plateau(
+        self,
+        result: Any,
+        lag_times: List[int],
+        ts_means: List[List[float]],
+        *,
+        plateau_m: Optional[int],
+        plateau_epsilon: float,
+    ) -> None: ...
+
+    def _its_fill_missing_timescales(
+        self,
+        result: Any,
+        lag_times: List[int],
+        n_timescales: int,
+        dirichlet_alpha: float,
+    ) -> None: ...
+
+    def _its_compute_for_single_lag(
+        self,
+        *,
+        lag: int,
+        n_timescales: int,
+        n_samples: int,
+        dirichlet_alpha: float,
+        q_low: float,
+        q_high: float,
+        _logging,
+    ) -> Tuple[
+        List[float],
+        List[List[float]],
+        List[float],
+        List[List[float]],
+        List[float],
+        List[List[float]],
+    ]: ...
+
+    def _counts_for_lag(self, lag: int, dirichlet_alpha: float) -> Any: ...
+
+    def _its_empty_counts_fallback(self, n_timescales: int) -> Tuple[
+        List[float],
+        List[List[float]],
+        List[float],
+        List[List[float]],
+        List[float],
+        List[List[float]],
+    ]: ...
+
+    def _bayesian_transition_samples(
+        self, counts: np.ndarray, n_samples: int
+    ) -> np.ndarray: ...
+
+    def _its_sampling_failed_fallback(
+        self, lag: int, counts: np.ndarray, n_timescales: int
+    ) -> Tuple[
+        List[float],
+        List[List[float]],
+        List[float],
+        List[List[float]],
+        List[float],
+        List[List[float]],
+    ]: ...
+
+    def _summarize_its_stats(
+        self,
+        lag: int,
+        matrices_arr: np.ndarray,
+        n_timescales: int,
+        q_low: float,
+        q_high: float,
+    ) -> Tuple[
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+    ]: ...
+
+    def _deterministic_its_from_empty(
+        self, n_timescales: int
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]: ...
+
+    def _deterministic_its_from_counts(
+        self, lag: int, counts: np.ndarray, n_timescales: int
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]: ...
+
+    def _counts_backend_matrix_or_fallback(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    def _counts_from_deeptime_backend(
+        self, count_model: Any
+    ) -> Optional[np.ndarray]: ...
+
+    def _counts_from_dtrajs_fallback(
+        self, *args: Any, **kwargs: Any
+    ) -> Optional[np.ndarray]: ...
+
+    def _infer_number_of_states(self) -> int: ...
+
+    def _bmsm_build_counts(self, count_mode: str) -> Any: ...
+
+    def _bmsm_fit_samples(self, count_model: Any, n_samples: int) -> Any: ...
+
+    def _bmsm_collect_timescales(self, samples_model: Any) -> List[np.ndarray]: ...
+
+    def _bmsm_collect_populations(self, samples_model: Any) -> List[np.ndarray]: ...
+
+    def _bmsm_finalize_output(
+        self, ts_list: List[np.ndarray], pi_list: List[np.ndarray]
+    ) -> Dict[str, Any]: ...
 
 
 class ITSMixin:
     def compute_implied_timescales(
-        self: "_SupportsITS",
+        self,
         lag_times: Optional[List[int]] = None,
         n_timescales: int = 5,
         *,
@@ -80,7 +235,16 @@ class ITSMixin:
             "Computing implied timescales with Bayesian estimation"
         )
 
-    def _its_seed_rng_if_available(self: "_SupportsITS") -> None:
+    # Host attributes provided by the concrete class
+    random_state: Optional[int]
+    dtrajs: List[np.ndarray]
+    count_mode: str
+    lag_time: int
+    n_states: int
+    time_per_frame_ps: Optional[float]
+    implied_timescales: Any
+
+    def _its_seed_rng_if_available(self) -> None:
         if getattr(self, "random_state", None) is None:
             return
         np.random.seed(self.random_state)
@@ -148,7 +312,7 @@ class ITSMixin:
         return eval_means, eval_ci, ts_means, ts_ci, rate_means, rate_ci
 
     def _its_compute_for_single_lag(
-        self: "_SupportsITS",
+        self,
         *,
         lag: int,
         n_timescales: int,
@@ -290,7 +454,7 @@ class ITSMixin:
             pass
 
     def _its_fill_missing_timescales(
-        self: "_SupportsITS",
+        self,
         result,
         lag_times: List[int],
         n_timescales: int,
@@ -319,7 +483,7 @@ class ITSMixin:
         return [int(max(1, v)) for v in lag_times]
 
     def _validate_its_inputs(
-        self: "_SupportsITS", lag_times: List[int], n_timescales: int
+        self, lag_times: List[int], n_timescales: int
     ) -> Optional[tuple[List[int], int]]:
         import logging as _logging
 
@@ -390,7 +554,7 @@ class ITSMixin:
             )
         return lag_times, max_valid_lag
 
-    def _counts_for_lag(self: "_SupportsITS", lag: int, alpha: float):
+    def _counts_for_lag(self, lag: int, alpha: float):
         from pmarlo.utils.msm_utils import ensure_connected_counts
 
         C = self._counts_backend_matrix_or_fallback(lag)
@@ -403,17 +567,13 @@ class ITSMixin:
         return res
 
     # ---- helpers for _counts_for_lag ----
-    def _counts_backend_matrix_or_fallback(
-        self: "_SupportsITS", lag: int
-    ) -> Optional[np.ndarray]:
+    def _counts_backend_matrix_or_fallback(self, lag: int) -> Optional[np.ndarray]:
         C = self._counts_from_deeptime_backend(lag)
         if C is not None:
             return C
         return self._counts_from_dtrajs_fallback(lag)
 
-    def _counts_from_deeptime_backend(
-        self: "_SupportsITS", lag: int
-    ) -> Optional[np.ndarray]:
+    def _counts_from_deeptime_backend(self, lag: int) -> Optional[np.ndarray]:
         try:  # pragma: no cover
             from deeptime.markov import TransitionCountEstimator  # type: ignore
 
@@ -425,7 +585,7 @@ class ITSMixin:
         except Exception:
             return None
 
-    def _infer_number_of_states(self: "_SupportsITS") -> Optional[int]:
+    def _infer_number_of_states(self) -> Optional[int]:
         n_states = int(getattr(self, "n_states", 0) or 0)
         if n_states > 0:
             return n_states
@@ -434,9 +594,7 @@ class ITSMixin:
         except Exception:
             return None
 
-    def _counts_from_dtrajs_fallback(
-        self: "_SupportsITS", lag: int
-    ) -> Optional[np.ndarray]:
+    def _counts_from_dtrajs_fallback(self, lag: int) -> Optional[np.ndarray]:
         n_states_opt = self._infer_number_of_states()
         if n_states_opt is None or n_states_opt <= 0:
             return None
@@ -605,9 +763,7 @@ class ITSMixin:
         bmsm = BayesianMSM(reversible=True, n_samples=int(max(1, n_samples)))
         return bmsm.fit(count_model).fetch_model()
 
-    def _bmsm_collect_timescales(
-        self: "_SupportsITS", samples_model: Any
-    ) -> List[np.ndarray]:
+    def _bmsm_collect_timescales(self, samples_model: Any) -> List[np.ndarray]:
         ts_list: List[np.ndarray] = []
         for sm in getattr(samples_model, "samples", []):  # type: ignore[attr-defined]
             T = np.asarray(getattr(sm, "transition_matrix", None), dtype=float)

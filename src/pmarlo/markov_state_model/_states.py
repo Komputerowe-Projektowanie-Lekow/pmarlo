@@ -16,6 +16,14 @@ class _HasStateAttrs(Protocol):
     dtrajs: List[np.ndarray]
     features: Optional[np.ndarray]
     transition_matrix: Optional[np.ndarray]
+    state_table: Optional[pd.DataFrame]
+
+    # Methods used within StatesMixin
+    def _count_frames_per_state(self) -> tuple[np.ndarray, int]: ...
+    def _find_representatives(
+        self,
+    ) -> tuple[List[tuple[int, int]], List[Optional[np.ndarray]]]: ...
+    def create_state_table(self) -> pd.DataFrame: ...
 
 
 class StatesMixin:
@@ -164,7 +172,8 @@ class StatesMixin:
                 comps = np.real(eigvecs[:, order[1 : 1 + k]])
                 from sklearn.cluster import MiniBatchKMeans
 
-                km = MiniBatchKMeans(n_clusters=n_macrostates, random_state=42)
+                rng = getattr(self, "random_state", 42)
+                km = MiniBatchKMeans(n_clusters=n_macrostates, random_state=rng)
                 labels = km.fit_predict(comps)
                 return labels.astype(int)
             except Exception:

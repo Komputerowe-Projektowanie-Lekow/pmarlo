@@ -10,8 +10,10 @@ import mdtraj as md
 import numpy as np
 
 from pmarlo import Protein, api
+from pmarlo.engine import AppliedOpts, BuildOpts, build_result
 from pmarlo.reporting.export import write_conformations_csv_json
 from pmarlo.reporting.plots import save_fes_contour, save_transition_matrix_heatmap
+from pmarlo.transform.plan import TransformPlan, TransformStep
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 TESTS_DIR = BASE_DIR / "tests" / "data"
@@ -35,8 +37,43 @@ def run_conformation_finder(
     X, cols, periodic = api.compute_features(traj, feature_specs=specs)
     Y = api.reduce_features(X, method="vamp", lag=lag, n_components=3)
     labels = api.cluster_microstates(Y, method="minibatchkmeans", n_states=20)
-    T, pi = api.build_msm_from_labels(
-        [labels], n_states=int(np.max(labels) + 1), lag=lag
+    n_states = int(np.max(labels) + 1)
+    # Prepare dataset for provenance-first builder
+    # Map requested FES pair to named CVs if provided; else pick first two
+    if requested_pair is not None:
+        try:
+            i = cols.index(requested_pair[0])
+            j = cols.index(requested_pair[1])
+            cvs = {requested_pair[0]: X[:, i], requested_pair[1]: X[:, j]}
+            cv_periodic = {
+                requested_pair[0]: bool(periodic[i]),
+                requested_pair[1]: bool(periodic[j]),
+            }
+        except ValueError:
+            cvs = {cols[0]: X[:, 0], cols[1]: X[:, 1]}
+            cv_periodic = {cols[0]: bool(periodic[0]), cols[1]: bool(periodic[1])}
+    else:
+        cvs = {cols[0]: X[:, 0], cols[1]: X[:, 1]}
+        cv_periodic = {cols[0]: bool(periodic[0]), cols[1]: bool(periodic[1])}
+
+    dataset = {
+        "dtrajs": [labels.astype(int)],
+        "cvs": cvs,
+        "cv_periodic": cv_periodic,
+    }
+    plan = TransformPlan(steps=(TransformStep("SMOOTH_FES", {"sigma": 0.6}),))
+    opts = BuildOpts(seed=42, n_states=n_states, temperature=300.0)
+    applied = AppliedOpts(bins={k: 32 for k in cvs.keys()}, lag=int(lag), macrostates=4)
+    result = build_result(dataset, opts=opts, plan=plan, applied=applied)
+    T = (
+        result.transition_matrix
+        if result.transition_matrix is not None
+        else np.eye(n_states)
+    )
+    pi = (
+        result.stationary_distribution
+        if result.stationary_distribution is not None
+        else np.ones((n_states,), dtype=float) / max(1, n_states)
     )
     macrostates = api.compute_macrostates(T, n_macrostates=4)
 
@@ -67,22 +104,39 @@ def run_conformation_finder(
                 }
             )
 
-    fes_info = api.generate_fes_and_pick_minima(
-        X, cols, periodic, requested_pair=requested_pair
-    )
-    F = fes_info["fes"]
+    # Use builder-produced FES if available; fallback to API helper
+    if result.fes is not None:
+        F = result.fes
+        fes_names = tuple(result.metadata.fes.get("names", ("cv0", "cv1")))  # type: ignore[assignment]
+    else:
+        fes_info = api.generate_fes_and_pick_minima(
+            X, cols, periodic, requested_pair=requested_pair
+        )
+        F = fes_info["fes"]
+        fes_names = fes_info["names"]
     save_fes_contour(
         F.F,
         F.xedges,
         F.yedges,
-        fes_info["names"][0],
-        fes_info["names"][1],
+        fes_names[0],
+        fes_names[1],
         str(OUT_DIR),
-        f"fes_{fes_info['names'][0]}_vs_{fes_info['names'][1]}.png",
+        f"fes_{fes_names[0]}_vs_{fes_names[1]}.png",
     )
 
     save_transition_matrix_heatmap(T, str(OUT_DIR), name="transition_matrix.png")
     write_conformations_csv_json(str(OUT_DIR), items)
+
+    # Persist provenance bundle
+    bundle = OUT_DIR / "provenance_build.json"
+    try:
+        from pmarlo.engine.build import BuildResult as _BR
+
+        bundle.write_text(result.to_json())
+        print("Saved provenance:", bundle)
+        print("digest:", result.metadata.digest)
+    except Exception as _exc:  # pragma: no cover
+        print("Unable to save provenance bundle:", _exc)
 
 
 if __name__ == "__main__":
