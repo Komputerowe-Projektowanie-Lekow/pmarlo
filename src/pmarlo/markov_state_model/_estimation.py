@@ -21,10 +21,28 @@ class _HasEstimationAttrs(Protocol):
     stationary_distribution: Optional[np.ndarray]
     free_energies: Optional[np.ndarray]
     lag_time: int
+    count_matrix: Optional[np.ndarray]
+    transition_matrix: Optional[np.ndarray]
 
     def _maybe_apply_tica(self, n_components: int, lag: int) -> None: ...
 
     def _build_tram_msm(self, lag_time: int) -> None: ...
+
+    # Internal helpers used by EstimationMixin
+    def _build_standard_msm(
+        self, lag_time: int, count_mode: str = "sliding"
+    ) -> None: ...
+    def _validate_and_cap_lag(self, lag_time: int) -> tuple[int, int]: ...
+    def _initialize_empty_msm(self) -> None: ...
+    def _should_use_deeptime(self) -> bool: ...
+    def _count_transitions_deeptime(
+        self, *, lag: int, count_mode: str
+    ) -> np.ndarray: ...
+    def _count_transitions_locally(
+        self, *, lag: int, count_mode: str
+    ) -> np.ndarray: ...
+    def _finalize_transition_and_stationary(self, counts: np.ndarray) -> None: ...
+    def _compute_free_energies(self, temperature: float = 300.0) -> None: ...
 
 
 class EstimationMixin:
@@ -114,28 +132,33 @@ class EstimationMixin:
     def _count_transitions_locally(
         self: _HasEstimationAttrs, *, lag: int, count_mode: str
     ) -> np.ndarray:
+        """Count transitions using vectorized numpy operations."""
         counts = np.zeros((self.n_states, self.n_states), dtype=float)
         step = lag if count_mode == "strided" else 1
         for dtraj in self.dtrajs:
-            if len(dtraj) <= lag:
+            arr = np.asarray(dtraj, dtype=int)
+            if arr.size <= lag:
                 continue
-            for i in range(0, len(dtraj) - lag, step):
-                state_i = int(dtraj[i])
-                state_j = int(dtraj[i + lag])
-                if state_i < 0 or state_j < 0:
-                    continue
-                if state_i >= self.n_states or state_j >= self.n_states:
-                    continue
-                counts[state_i, state_j] += 1.0
+            i_states = arr[:-lag:step]
+            j_states = arr[lag::step]
+            valid = (
+                (i_states >= 0)
+                & (j_states >= 0)
+                & (i_states < self.n_states)
+                & (j_states < self.n_states)
+            )
+            if not np.any(valid):
+                continue
+            np.add.at(counts, (i_states[valid], j_states[valid]), 1.0)
         return counts
 
     def _finalize_transition_and_stationary(
         self: _HasEstimationAttrs, counts: np.ndarray
     ) -> None:
         res = ensure_connected_counts(counts)
-        self.count_matrix = np.zeros((self.n_states, self.n_states), dtype=float)
+        cm = np.zeros((self.n_states, self.n_states), dtype=float)
         if res.counts.size:
-            self.count_matrix[np.ix_(res.active, res.active)] = res.counts
+            cm[np.ix_(res.active, res.active)] = res.counts
             T_active = _row_normalize(res.counts)
             pi_active = _stationary_from_T(T_active)
             T_full = np.eye(self.n_states, dtype=float)
@@ -145,6 +168,7 @@ class EstimationMixin:
         else:
             T_full = np.eye(self.n_states, dtype=float)
             pi_full = np.zeros((self.n_states,), dtype=float)
+        self.count_matrix = cm
         self.transition_matrix = T_full
         self.stationary_distribution = pi_full
 

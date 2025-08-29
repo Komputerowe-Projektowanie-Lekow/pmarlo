@@ -144,6 +144,11 @@ class MSMResult(BaseResult):
     free_energies: Optional[np.ndarray] = None
     stationary_distribution: Optional[np.ndarray] = None
 
+    @property
+    def output_shape(self) -> tuple[int, ...]:
+        """Number of states represented by the MSM."""
+        return (self.transition_matrix.shape[0],)
+
 
 @dataclass
 class FESResult(BaseResult):
@@ -155,6 +160,11 @@ class FESResult(BaseResult):
     cv1_name: str
     cv2_name: str
     temperature: float
+
+    @property
+    def output_shape(self) -> tuple[int, int]:
+        """Grid shape of the free energy surface."""
+        return (int(self.free_energy.shape[0]), int(self.free_energy.shape[1]))
 
 
 @dataclass

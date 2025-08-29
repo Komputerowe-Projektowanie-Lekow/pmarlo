@@ -29,6 +29,11 @@ class ClusteringResult:
     rationale: str | None = None
     centers: np.ndarray | None = None
 
+    @property
+    def output_shape(self) -> tuple[int, ...]:
+        """Number of microstates identified."""
+        return (self.n_states,)
+
 
 def cluster_microstates(
     Y: np.ndarray,

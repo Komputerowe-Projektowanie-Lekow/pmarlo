@@ -61,35 +61,48 @@ def _align_trajectory(
         return traj
 
 
-def _trig_expand_periodic(X: np.ndarray, periodic: np.ndarray) -> np.ndarray:
-    """Expand periodic columns of X into cos/sin, keep non-periodic as-is.
+def _trig_expand_periodic(
+    X: np.ndarray, periodic: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Expand periodic columns of ``X`` into cos/sin pairs.
 
     Parameters
     ----------
     X:
-        Feature matrix of shape (n_frames, n_features).
+        Feature matrix of shape ``(n_frames, n_features)``.
     periodic:
-        Boolean array of shape (n_features,) indicating periodic columns.
+        Boolean array indicating which columns of ``X`` are periodic.
 
     Returns
     -------
-    np.ndarray
-        Expanded feature matrix with shape (n_frames, n_nonperiodic + 2*n_periodic).
+    tuple[np.ndarray, np.ndarray]
+        A pair ``(Xe, mapping)`` where ``Xe`` is the expanded feature matrix
+        and ``mapping`` is an integer array such that ``mapping[k]`` gives the
+        original column index of ``Xe[:, k]``.  Non-periodic columns map 1:1,
+        while periodic columns appear twice in ``Xe`` (cos and sin) and thus
+        duplicate their original index in ``mapping``.
     """
+
     if X.size == 0:
-        return X
+        return X, np.array([], dtype=int)
     if periodic.size != X.shape[1]:
         # Best-effort: assume non-periodic if mismatch
         periodic = np.zeros((X.shape[1],), dtype=bool)
+
     cols: List[np.ndarray] = []
+    mapping: List[int] = []
     for j in range(X.shape[1]):
         col = X[:, j]
         if bool(periodic[j]):
             cols.append(np.cos(col))
             cols.append(np.sin(col))
+            mapping.extend([j, j])
         else:
             cols.append(col)
-    return np.vstack(cols).T if cols else X
+            mapping.append(j)
+
+    Xe = np.vstack(cols).T if cols else X
+    return Xe, np.asarray(mapping, dtype=int)
 
 
 def compute_universal_metric(
@@ -147,7 +160,7 @@ def compute_universal_metric(
             "specs": specs,
         }
     logger.info("[universal] Trig-expanding periodic columns")
-    Xe = _trig_expand_periodic(X, periodic)
+    Xe, index_map = _trig_expand_periodic(X, periodic)
     logger.info("[universal] Expanded shape=%s", tuple(Xe.shape))
     if method == "pca":
         logger.info("[universal] Reducing with PCA → 1D")
@@ -168,6 +181,7 @@ def compute_universal_metric(
         "lag": int(lag),
         "aligned": bool(align),
         "specs": specs,
+        "index_map": index_map,
     }
     return metric, meta
 
@@ -196,7 +210,7 @@ def compute_universal_embedding(
     X, cols, periodic = compute_features(
         traj_in, feature_specs=specs, cache_path=cache_path
     )
-    Xe = _trig_expand_periodic(X, periodic)
+    Xe, index_map = _trig_expand_periodic(X, periodic)
     k = int(max(1, n_components))
     if method == "pca":
         Y = pca_reduce(Xe, n_components=k)
@@ -212,6 +226,7 @@ def compute_universal_embedding(
         "aligned": bool(align),
         "specs": specs,
         "n_components": k,
+        "index_map": index_map,
     }
     return Y, meta
 
@@ -646,12 +661,23 @@ def _fes_pair_from_phi_psi_maps(
 
 
 def _fes_highest_variance_pair(X: np.ndarray) -> Tuple[int, int] | None:
+    """Return indices of the highest-variance CV columns.
+
+    Constant (zero-variance) columns are ignored. If fewer than two
+    non-constant columns remain, the lone surviving index is paired with
+    itself. ``None`` is returned when ``X`` has no columns.
+    """
+
     if X.shape[1] < 1:
         return None
     variances = np.var(X, axis=0)
-    order = np.argsort(variances)[::-1]
-    if order.shape[0] == 1:
-        return int(order[0]), int(order[0]) if X.shape[1] == 1 else 0
+    non_const = np.where(variances > 0)[0]
+    if non_const.size == 0:
+        return None
+    order = non_const[np.argsort(variances[non_const])[::-1]]
+    if order.size == 1:
+        idx = int(order[0])
+        return idx, idx
     return int(order[0]), int(order[1])
 
 
@@ -700,6 +726,10 @@ def select_fes_pair(
             i, j = hv
             pi, pj = _fes_periodic_pair_flags(periodic, i, j)
             return i, j, pi, pj
+        if X.shape[1] > 0:
+            # Fold: use first axis for both coordinates
+            pi, pj = _fes_periodic_pair_flags(periodic, 0, 0)
+            return 0, 0, pi, pj
 
     raise RuntimeError("No suitable FES pair could be selected.")
 

@@ -21,6 +21,11 @@ from openmm import Platform, unit
 from openmm.app import ForceField, PDBFile, Simulation
 
 from pmarlo.utils.progress import ProgressPrinter
+
+from ..results import REMDResult
+from ..utils.integrator import create_langevin_integrator
+from ..utils.naming import base_shape_str, permutation_name
+from ..utils.replica_utils import exponential_temperature_ladder
 from .config import RemdConfig
 from .demux_metadata import DemuxIntegrityError, DemuxMetadata
 from .diagnostics import compute_exchange_statistics, retune_temperature_ladder
@@ -32,8 +37,6 @@ from .system_builder import (
     setup_metadynamics,
 )
 from .trajectory import ClosableDCDReporter
-from ..results import REMDResult
-from ..utils.replica_utils import exponential_temperature_ladder
 
 logger = logging.getLogger("pmarlo")
 
@@ -199,6 +202,7 @@ class ReplicaExchange:
 
         Decide the DCD stride once, before reporters are added, and store it.
         """
+        assert self.reporter_stride is None, "reporter_stride already planned"
         production_steps = max(0, total_steps - equilibration_steps)
         stride = max(1, production_steps // max(1, target_frames))
         self.reporter_stride = stride
@@ -298,7 +302,7 @@ class ReplicaExchange:
         logger.info("Setting up replica simulations...")
         # Enforce stride planning before creating reporters
         assert (
-            self.reporter_stride is not None
+            self.reporter_stride is not None and self.reporter_stride > 0
         ), "reporter_stride is not planned. Call plan_reporter_stride(...) before setup_replicas()"
 
         pdb, forcefield = load_pdb_and_forcefield(self.pdb_file, self.forcefield_files)
@@ -382,17 +386,7 @@ class ReplicaExchange:
     def _create_integrator_for_temperature(
         self, temperature: float
     ) -> openmm.Integrator:
-        integrator = openmm.LangevinIntegrator(
-            temperature * unit.kelvin,
-            1.0 / unit.picosecond,
-            2.0 * unit.femtoseconds,
-        )
-        # Seed integrator RNG for reproducibility
-        try:
-            integrator.setRandomNumberSeed(int(self.random_seed))
-        except Exception:
-            pass
-        return integrator
+        return create_langevin_integrator(temperature, self.random_seed)
 
     def _create_simulation(
         self,
@@ -954,6 +948,13 @@ class ReplicaExchange:
         self.replica_states[replica_i] = old_state_j
         self.replica_states[replica_j] = old_state_i
 
+        # Cache a deterministic name for the new permutation of replicas.
+        shape_name = base_shape_str((len(self.replica_states),))
+        perm_name = permutation_name(tuple(self.replica_states))
+        logger.debug(
+            "Replica state permutation %s applied (shape %s)", perm_name, shape_name
+        )
+
         self.state_replicas[old_state_i] = replica_j
         self.state_replicas[old_state_j] = replica_i
 
@@ -1475,6 +1476,7 @@ class ReplicaExchange:
             self.pair_attempt_counts,
             self.pair_accept_counts,
             target_acceptance=target,
+            output_json=str(self.output_dir / "temperatures_suggested.json"),
             dry_run=True,
         )
         self.temperatures = stats["suggested_temperatures"]

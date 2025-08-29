@@ -138,6 +138,8 @@ class Protein:
         self.system = None
         # RDKit molecule object for property calculations
         self.rdkit_mol = None
+        # Cache for RDKit-derived descriptors
+        self._rdkit_properties: Dict[str, Any] = {}
 
     def _initialize_properties_dict(self) -> None:
         # Protein properties
@@ -148,11 +150,9 @@ class Protein:
             "molecular_weight": 0.0,
             "exact_molecular_weight": 0.0,
             "charge": 0.0,
-            "logp": 0.0,
-            "hbd": 0,  # Hydrogen bond donors
-            "hba": 0,  # Hydrogen bond acceptors
-            "rotatable_bonds": 0,
-            "aromatic_rings": 0,
+            "isoelectric_point": 0.0,
+            "hydrophobic_fraction": 0.0,
+            "aromatic_residues": 0,
             "heavy_atoms": 0,
         }
 
@@ -210,28 +210,21 @@ class Protein:
         self.properties["exact_molecular_weight"] = total_mass
         self.properties["heavy_atoms"] = heavy_atoms
 
-        # Keep numeric defaults for descriptors when RDKit not used
-        # (tests expect ints/floats, not None)
-        self.properties["charge"] = float(self.properties.get("charge", 0.0))
-        self.properties["logp"] = float(self.properties.get("logp", 0.0))
-        self.properties["hbd"] = int(self.properties.get("hbd", 0))
-        self.properties["hba"] = int(self.properties.get("hba", 0))
-        self.properties["rotatable_bonds"] = int(
-            self.properties.get("rotatable_bonds", 0)
-        )
-        self.properties["aromatic_rings"] = int(
-            self.properties.get("aromatic_rings", 0)
-        )
+        sequence = self._sequence_from_topology(topo)
+        metrics = self._compute_protein_metrics(sequence)
+        self.properties.update(metrics)
 
     def prepare(
         self,
         ph: float = 7.0,
         remove_heterogens: bool = True,
-        keep_water: bool = False,
+        keep_water: bool = True,
         add_missing_atoms: bool = True,
         add_missing_hydrogens: bool = True,
         replace_nonstandard_residues: bool = True,
         find_missing_residues: bool = True,
+        solvate: bool = False,
+        solvent_padding: float = 1.0,
         **kwargs,
     ) -> "Protein":
         """
@@ -240,13 +233,17 @@ class Protein:
         Args:
             ph (float): pH value for protonation state (default: 7.0)
             remove_heterogens (bool): Remove non-protein molecules (default: True)
-            keep_water (bool): Keep water molecules if True (default: False)
+            keep_water (bool): Keep water molecules if True (default: True)
             add_missing_atoms (bool): Add missing atoms to residues (default: True)
             add_missing_hydrogens (bool): Add missing hydrogens (default: True)
             replace_nonstandard_residues (bool): Replace non-standard residues
                 (default: True)
             find_missing_residues (bool): Find and handle missing residues
                 (default: True)
+            solvate (bool): Add an explicit water box if no waters are present
+                (default: False)
+            solvent_padding (float): Padding in nanometers for the solvent box
+                when solvation is requested (default: 1.0)
             **kwargs: Additional preparation options
 
         Returns:
@@ -287,6 +284,15 @@ class Protein:
         if add_missing_hydrogens:
             self.fixer.addMissingHydrogens(ph)
 
+        # Optionally solvate the system if no waters are present
+        if solvate:
+            water_residues = {"HOH", "H2O", "WAT"}
+            has_water = any(
+                res.name in water_residues for res in self.fixer.topology.residues()
+            )
+            if not has_water:
+                self.fixer.addSolvent(padding=solvent_padding * unit.nanometer)
+
         self.prepared = True
 
         # Load protein data and calculate properties
@@ -309,44 +315,70 @@ class Protein:
         self._validate_coordinates(self.positions)
 
     def _calculate_properties(self):
-        """Calculate protein properties using RDKit."""
+        """Calculate basic protein properties."""
         if self.topology is None:
             return
 
-        # Basic topology properties
         self.properties["num_atoms"] = len(list(self.topology.atoms()))
         self.properties["num_residues"] = len(list(self.topology.residues()))
         self.properties["num_chains"] = len(list(self.topology.chains()))
 
-        self._calculate_rdkit_properties()
+        total_mass = 0.0
+        heavy_atoms = 0
+        for atom in self.topology.atoms():
+            mass = getattr(atom.element, "mass", None)
+            if mass is None:
+                mval = 0.0
+            else:
+                try:
+                    # OpenMM uses unit-bearing quantities for atomic masses
+                    mval = float(mass.value_in_unit(unit.dalton))  # type: ignore[attr-defined]
+                except Exception:
+                    mval = float(mass)
+            total_mass += mval
+            if getattr(atom.element, "number", 0) != 1:
+                heavy_atoms += 1
+        self.properties["molecular_weight"] = total_mass
+        self.properties["exact_molecular_weight"] = total_mass
+        self.properties["heavy_atoms"] = heavy_atoms
 
-    def _calculate_rdkit_properties(self):
+        sequence = self._sequence_from_topology(self.topology)
+        metrics = self._compute_protein_metrics(sequence)
+        self.properties.update(metrics)
+
+    def _calculate_rdkit_properties(self) -> Dict[str, Any]:
         """Calculate properties using RDKit for accurate molecular analysis."""
+        props: Dict[str, Any] = {}
         try:
-            # Use helper function for temporary file handling
             tmp_pdb = self._create_temp_pdb()
             self.rdkit_mol = Chem.MolFromPDBFile(tmp_pdb)
 
             if self.rdkit_mol is not None:
-                self._compute_rdkit_descriptors()
+                props = self._compute_rdkit_descriptors()
             else:
                 print("Warning: Could not load molecule into RDKit.")
 
         except Exception as e:
             print(f"Warning: RDKit calculation failed: {e}")
         finally:
-            # Clean up temporary file
             if "tmp_pdb" in locals():
                 self._cleanup_temp_file(tmp_pdb)
 
+        self._rdkit_properties = props
+        return props
+
     def _create_temp_pdb(self) -> str:
         """Create a temporary PDB file for RDKit processing."""
+        import shutil
         import tempfile
 
         with tempfile.NamedTemporaryFile(suffix=".pdb", delete=False) as tmp_file:
             tmp_pdb = tmp_file.name
 
-        self.save_prepared_pdb(tmp_pdb)
+        if self.prepared and HAS_PDBFIXER and self.fixer is not None:
+            self.save_prepared_pdb(tmp_pdb)
+        else:
+            shutil.copy2(self.pdb_file, tmp_pdb)
         return tmp_pdb
 
     def _cleanup_temp_file(self, tmp_file: str):
@@ -356,26 +388,121 @@ class Protein:
         except Exception:
             pass
 
+    # --- Protein-specific descriptor helpers ---
+
+    def _sequence_from_topology(self, topology) -> str:
+        """Extract amino acid sequence from a topology object."""
+        aa3_to1 = {
+            "ALA": "A",
+            "ARG": "R",
+            "ASN": "N",
+            "ASP": "D",
+            "CYS": "C",
+            "GLU": "E",
+            "GLN": "Q",
+            "GLY": "G",
+            "HIS": "H",
+            "ILE": "I",
+            "LEU": "L",
+            "LYS": "K",
+            "MET": "M",
+            "PHE": "F",
+            "PRO": "P",
+            "SER": "S",
+            "THR": "T",
+            "TRP": "W",
+            "TYR": "Y",
+            "VAL": "V",
+        }
+
+        residues_iter = getattr(topology, "residues", [])
+        if callable(residues_iter):
+            residues_iter = residues_iter()
+
+        sequence = []
+        for res in residues_iter:
+            code = aa3_to1.get(res.name.upper(), "")
+            if code:
+                sequence.append(code)
+        return "".join(sequence)
+
+    def _compute_protein_metrics(self, sequence: str) -> Dict[str, Any]:
+        """Compute protein-specific metrics from an amino acid sequence."""
+        if not sequence:
+            return {
+                "charge": 0.0,
+                "isoelectric_point": 0.0,
+                "hydrophobic_fraction": 0.0,
+                "aromatic_residues": 0,
+            }
+
+        counts = {aa: sequence.count(aa) for aa in set(sequence)}
+        n_res = len(sequence)
+
+        hydrophobic = set("AVILMFYWPG")
+        aromatic = set("FYW")
+
+        num_hydrophobic = sum(counts.get(aa, 0) for aa in hydrophobic)
+        num_aromatic = sum(counts.get(aa, 0) for aa in aromatic)
+
+        hydrophobic_fraction = num_hydrophobic / n_res if n_res else 0.0
+
+        # pKa values for side chains, N-terminus, C-terminus
+        pka_side = {
+            "C": 8.3,
+            "D": 3.9,
+            "E": 4.1,
+            "H": 6.0,
+            "K": 10.5,
+            "R": 12.5,
+            "Y": 10.1,
+        }
+        pka_n = 9.69
+        pka_c = 2.34
+
+        def charge_at_ph(ph: float) -> float:
+            pos = 10 ** (pka_n - ph) / (1 + 10 ** (pka_n - ph))
+            neg = 10 ** (ph - pka_c) / (1 + 10 ** (ph - pka_c))
+            for aa, count in counts.items():
+                if aa in ["K", "R", "H"]:
+                    pk = pka_side[aa]
+                    pos += count * (10 ** (pk - ph) / (1 + 10 ** (pk - ph)))
+                elif aa in ["D", "E", "C", "Y"]:
+                    pk = pka_side[aa]
+                    neg += count * (10 ** (ph - pk) / (1 + 10 ** (ph - pk)))
+            return pos - neg
+
+        # Estimate pI by scanning pH 0-14
+        pI = 0.0
+        min_charge = float("inf")
+        for pH in [x / 100 for x in range(0, 1401)]:
+            c = abs(charge_at_ph(pH))
+            if c < min_charge:
+                min_charge = c
+                pI = pH
+
+        charge = charge_at_ph(self.ph)
+
+        return {
+            "charge": charge,
+            "isoelectric_point": pI,
+            "hydrophobic_fraction": hydrophobic_fraction,
+            "aromatic_residues": num_aromatic,
+        }
+
     def _compute_rdkit_descriptors(self):
         """Compute RDKit molecular descriptors."""
-        # Calculate exact molecular weight
-        self.properties["exact_molecular_weight"] = CalcExactMolWt(self.rdkit_mol)
-
-        # Calculate various molecular descriptors
-        self.properties["logp"] = Descriptors.MolLogP(self.rdkit_mol)
-        self.properties["hbd"] = Descriptors.NumHDonors(self.rdkit_mol)
-        self.properties["hba"] = Descriptors.NumHAcceptors(self.rdkit_mol)
-        self.properties["rotatable_bonds"] = Descriptors.NumRotatableBonds(
-            self.rdkit_mol
-        )
-        self.properties["aromatic_rings"] = Descriptors.NumAromaticRings(self.rdkit_mol)
-        self.properties["heavy_atoms"] = Descriptors.HeavyAtomCount(self.rdkit_mol)
-
-        # Calculate formal charge
-        self.properties["charge"] = Chem.GetFormalCharge(self.rdkit_mol)
-
-        # Use exact molecular weight
-        self.properties["molecular_weight"] = self.properties["exact_molecular_weight"]
+        props: Dict[str, Any] = {}
+        props["exact_molecular_weight"] = CalcExactMolWt(self.rdkit_mol)
+        props["molecular_weight"] = props["exact_molecular_weight"]
+        props["logp"] = Descriptors.MolLogP(self.rdkit_mol)
+        props["hbd"] = Descriptors.NumHDonors(self.rdkit_mol)
+        props["hba"] = Descriptors.NumHAcceptors(self.rdkit_mol)
+        props["rotatable_bonds"] = Descriptors.NumRotatableBonds(self.rdkit_mol)
+        props["aromatic_rings"] = Descriptors.NumAromaticRings(self.rdkit_mol)
+        props["heavy_atoms"] = Descriptors.HeavyAtomCount(self.rdkit_mol)
+        props["charge"] = Chem.GetFormalCharge(self.rdkit_mol)
+        return props
 
     def get_rdkit_molecule(self):
         """
@@ -398,25 +525,28 @@ class Protein:
         """
         properties = self.properties.copy()
 
-        if detailed and self.rdkit_mol is not None:
-            try:
-                properties.update(
-                    {
-                        "tpsa": Descriptors.TPSA(
-                            self.rdkit_mol
-                        ),  # Topological polar surface area
-                        "molar_refractivity": Descriptors.MolMR(self.rdkit_mol),
-                        "fraction_csp3": Descriptors.FractionCsp3(self.rdkit_mol),
-                        "ring_count": Descriptors.RingCount(self.rdkit_mol),
-                        "spiro_atoms": Descriptors.NumSpiroAtoms(self.rdkit_mol),
-                        "bridgehead_atoms": Descriptors.NumBridgeheadAtoms(
-                            self.rdkit_mol
-                        ),
-                        "heteroatoms": Descriptors.NumHeteroatoms(self.rdkit_mol),
-                    }
-                )
-            except Exception as e:
-                print(f"Warning: Some RDKit descriptors failed: {e}")
+        if detailed:
+            if not self._rdkit_properties:
+                self._rdkit_properties = self._calculate_rdkit_properties()
+            properties.update(self._rdkit_properties)
+
+            if self.rdkit_mol is not None:
+                try:
+                    properties.update(
+                        {
+                            "tpsa": Descriptors.TPSA(self.rdkit_mol),
+                            "molar_refractivity": Descriptors.MolMR(self.rdkit_mol),
+                            "fraction_csp3": Descriptors.FractionCsp3(self.rdkit_mol),
+                            "ring_count": Descriptors.RingCount(self.rdkit_mol),
+                            "spiro_atoms": Descriptors.NumSpiroAtoms(self.rdkit_mol),
+                            "bridgehead_atoms": Descriptors.NumBridgeheadAtoms(
+                                self.rdkit_mol
+                            ),
+                            "heteroatoms": Descriptors.NumHeteroatoms(self.rdkit_mol),
+                        }
+                    )
+                except Exception as e:
+                    print(f"Warning: Some RDKit descriptors failed: {e}")
 
         return properties
 
