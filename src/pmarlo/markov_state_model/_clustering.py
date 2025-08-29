@@ -1,11 +1,20 @@
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Any, List, Literal, Optional
+
+import numpy as np
 
 from ..cluster.micro import ClusteringResult, cluster_microstates
 
 
 class ClusteringMixin:
+    # Attributes provided by the host class
+    features: Optional[np.ndarray]
+    random_state: Optional[int]
+    trajectories: List[Any]
+    dtrajs: List[np.ndarray]
+    cluster_centers: Optional[np.ndarray]
+
     def cluster_features(
         self,
         n_states: int | Literal["auto"] = "auto",

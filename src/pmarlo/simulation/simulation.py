@@ -16,7 +16,8 @@ import openmm
 import openmm.app as app
 import openmm.unit as unit
 from openmm.app.metadynamics import BiasVariable, Metadynamics
-from sklearn.cluster import MiniBatchKMeans
+
+from pmarlo import api
 
 # Compatibility shim for OpenMM XML deserialization API changes
 if not hasattr(openmm.XmlSerializer, "load"):
@@ -36,10 +37,13 @@ except ImportError:
 import logging
 import os
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Sequence, Tuple
 
 import matplotlib.pyplot as plt
 
+from pmarlo.replica_exchange.platform_selector import select_platform_and_properties
+from pmarlo.replica_exchange.system_builder import create_system
+from pmarlo.utils.integrator import create_langevin_integrator
 from pmarlo.utils.progress import ProgressPrinter
 from pmarlo.utils.seed import set_global_seed
 
@@ -130,9 +134,20 @@ class Simulation:
         )
         return str(trajectory_file)
 
-    def extract_features(self, trajectory_file: str) -> np.ndarray:
+    def extract_features(
+        self,
+        trajectory_file: str,
+        feature_specs: Sequence[str] | None = None,
+        n_states: int = 40,
+    ) -> np.ndarray:
         """Extract features from trajectory for MSM analysis."""
-        states = feature_extraction(trajectory_file, self.pdb_file)
+        states = feature_extraction(
+            trajectory_file,
+            self.pdb_file,
+            random_state=self.random_seed,
+            feature_specs=feature_specs,
+            n_states=n_states,
+        )
         return np.array(states)
 
     def run_complete_simulation(self) -> Tuple[str, np.ndarray]:
@@ -177,13 +192,13 @@ def prepare_system(
     """
     pdb = _load_pdb(pdb_file_name)
     forcefield = _create_forcefield()
-    system = _create_system(pdb, forcefield)
+    system = create_system(pdb, forcefield)
     meta = _maybe_create_metadynamics(
         system, pdb_file_name, temperature, use_metadynamics, output_dir
     )
     seed = random_state if random_state is not None else random_seed
-    integrator = _create_integrator(temperature, seed)
-    platform, platform_properties = _select_platform()
+    integrator = create_langevin_integrator(temperature, seed)
+    platform, platform_properties = select_platform_and_properties(logger)
     simulation = _create_openmm_simulation(
         pdb, system, integrator, platform, platform_properties
     )
@@ -201,19 +216,6 @@ def _load_pdb(pdb_file_name: str) -> app.PDBFile:
 
 def _create_forcefield() -> app.ForceField:
     return app.ForceField("amber14-all.xml", "amber14/tip3pfb.xml")
-
-
-def _create_system(pdb: app.PDBFile, forcefield: app.ForceField) -> openmm.System:
-    return forcefield.createSystem(
-        pdb.topology,
-        nonbondedMethod=app.PME,
-        constraints=app.HBonds,
-        rigidWater=True,
-        nonbondedCutoff=unit.Quantity(0.9, unit.nanometer),
-        ewaldErrorTolerance=1e-4,
-        hydrogenMass=unit.Quantity(3.0, unit.amu),  # HMR
-        removeCMMotion=True,
-    )
 
 
 def _maybe_create_metadynamics(
@@ -276,52 +278,6 @@ def _clear_existing_bias_files(bias_dir: Path) -> None:
                 file.unlink()
             except Exception:
                 pass
-
-
-def _create_integrator(
-    temperature: float, random_seed: Optional[int] = None
-) -> openmm.Integrator:
-    integrator = openmm.LangevinIntegrator(
-        temperature * unit.kelvin, 1 / unit.picosecond, 2 * unit.femtoseconds
-    )
-    if random_seed is not None:
-        integrator.setRandomNumberSeed(int(random_seed))
-    return integrator
-
-
-def _select_platform() -> Tuple[openmm.Platform, dict]:
-    platform_properties: dict = {}
-    try:
-        platform = openmm.Platform.getPlatformByName("CUDA")
-        platform_properties = {
-            "Precision": "mixed",
-            "UseFastMath": "false",
-        }
-        logger.info("Using CUDA (mixed precision)")
-    except Exception:
-        try:
-            try:
-                platform = openmm.Platform.getPlatformByName("HIP")
-                platform_properties = {
-                    "Precision": "mixed",
-                }
-                logger.info("Using HIP")
-            except Exception:
-                platform = openmm.Platform.getPlatformByName("OpenCL")
-                platform_properties = {
-                    "Precision": "mixed",
-                }
-                logger.info("Using OpenCL")
-        except Exception:
-            platform = openmm.Platform.getPlatformByName("CPU")
-            try:
-                openmm.Platform.setPropertyDefaultValue(
-                    "CpuThreads", str(os.cpu_count() or 1)
-                )
-            except Exception:
-                pass
-            logger.info("Using CPU with all cores")
-    return platform, platform_properties
 
 
 def _create_openmm_simulation(
@@ -499,21 +455,46 @@ def production_run(steps, simulation, meta, output_dir=None):
     return dcd_filename
 
 
-def feature_extraction(dcd_path, pdb_path):
-    """Extract features from trajectory for MSM analysis."""
+def feature_extraction(
+    dcd_path,
+    pdb_path,
+    random_state: int | None = 0,
+    feature_specs: Sequence[str] | None = None,
+    n_states: int = 40,
+):
+    """Extract features from trajectory for MSM analysis.
+
+    Parameters
+    ----------
+    dcd_path:
+        Path to the trajectory file in DCD format.
+    pdb_path:
+        Path to the corresponding PDB topology file.
+    random_state:
+        Seed for deterministic clustering.  When ``None`` a random seed is
+        used, otherwise the provided seed ensures reproducible clustering.
+        Defaults to ``0`` for backward compatibility with earlier releases.
+    feature_specs:
+        Optional sequence of feature specifications passed to
+        :func:`pmarlo.api.compute_features`.  Defaults to ``["phi_psi"]``.
+    n_states:
+        Number of microstates to identify during clustering.
+    """
     print("Stage 4/5  –  featurisation + clustering ...")
 
-    # Load the trajectory and compute φ dihedral angles
-    t = md.load(dcd_path, top=pdb_path)
-    print("Number of frames loaded:", t.n_frames)
-    phi_vals, _ = md.compute_phi(t)
-    phi_vals = phi_vals.squeeze()
-    X = np.cos(phi_vals)
-    X = X.reshape(-1, 1)
+    traj = md.load(dcd_path, top=pdb_path)
+    print("Number of frames loaded:", traj.n_frames)
 
-    kmeans = MiniBatchKMeans(n_clusters=40, random_state=0).fit(X)
-    states = kmeans.labels_
-    print("✔ Clustering done\n")
+    specs = feature_specs if feature_specs is not None else ["phi_psi"]
+    X, _cols, _periodic = api.compute_features(traj, feature_specs=specs)
+
+    states = api.cluster_microstates(
+        X,
+        method="minibatchkmeans",
+        n_states=n_states,
+        random_state=random_state,
+    )
+    print("✔ Featurisation + clustering done\n")
     return states
 
 

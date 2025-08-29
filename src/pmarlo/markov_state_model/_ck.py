@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 import numpy as np
 from scipy.sparse.csgraph import connected_components
@@ -9,6 +9,17 @@ from ._base import CKTestResult
 
 
 class CKMixin:
+    # Attributes provided by concrete classes mixing this in
+    dtrajs: List[np.ndarray]
+    n_states: int
+    lag_time: int
+    transition_matrix: Optional[np.ndarray]
+    output_dir: Any  # Path-like; used for diagnostics persistence
+    # Provided by StatesMixin
+    _build_macro_trajectories: Callable[
+        [List[np.ndarray], np.ndarray], List[np.ndarray]
+    ]
+
     def _bootstrap_counts(
         self, assignments: np.ndarray, n_boot: int = 1000
     ) -> np.ndarray:
@@ -190,6 +201,8 @@ class CKMixin:
                 prev_mse = float(m)
                 prev_its = float(s)
                 continue
+            # Help static type checkers: prev_mse/prev_its are set here
+            assert prev_mse is not None and prev_its is not None
             non_decreasing_its = s >= prev_its - 1e-12
             rel_improvement = (prev_mse - m) / max(prev_mse, 1e-12)
             if non_decreasing_its and rel_improvement > float(mse_epsilon):

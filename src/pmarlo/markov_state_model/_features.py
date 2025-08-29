@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import List, Optional
 
 import mdtraj as md
@@ -7,6 +8,16 @@ import numpy as np
 
 
 class FeaturesMixin:
+    # Attributes provided by the host class
+    trajectories: List[md.Trajectory]
+    features: Optional[np.ndarray]
+    output_dir: Path
+    feature_stride: int
+    tica_lag: int
+    tica_components: Optional[int]
+    raw_frames: int
+    effective_frames: int
+
     def compute_features(
         self,
         feature_type: str = "phi_psi",
@@ -186,14 +197,16 @@ class FeaturesMixin:
         try:
             from deeptime.decomposition import TICA as _DT_TICA  # type: ignore
         except Exception:
-            if lag > 0 and getattr(self, "features", None) is not None:
+            if lag > 0 and self.features is not None:
                 # Best-effort discard when no TICA available
-                feats = self.features
+                from typing import cast
+
+                feats = cast(np.ndarray, self.features)
                 drop = int(max(0, lag))
                 self.features = feats[drop:]
             return
 
-        if getattr(self, "features", None) is None or n_components_hint is None:
+        if self.features is None or n_components_hint is None:
             return
         n_components = int(max(2, min(5, n_components_hint)))
         Xs: List[np.ndarray] = []
@@ -214,7 +227,9 @@ class FeaturesMixin:
             self.tica_components_ = n_components  # type: ignore[attr-defined]
         except Exception:
             # Fallback: do not transform, just discard initial lag frames
-            feats = self.features
+            from typing import cast
+
+            feats = cast(np.ndarray, self.features)
             drop = int(max(0, lag))
             self.features = feats[drop:]
 

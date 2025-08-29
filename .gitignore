@@ -7,6 +7,9 @@ final.xml
 /example_programs/programs_outputs/free_energy_landscape_long/*
 /example_programs/programs_outputs/all_capabilities/*
 /example_programs/programs_outputs/free_energy_conformations_msm/*
+/example_programs/programs_outputs/sharded_build/*
+
+
 
 /utilities/
 
@@ -60,3 +63,8 @@ USAGE.md
 concept.md
 commands.md
 README.md
+
+
+temperatures_suggested.json
+typelog.txt
+/example_programs/programs_outputs/sharded_build/

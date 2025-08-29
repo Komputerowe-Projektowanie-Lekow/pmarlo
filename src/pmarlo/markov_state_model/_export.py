@@ -1,12 +1,26 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
 
 class ExportMixin:
+    # Attributes expected to be provided by the concrete MSM class
+    dtrajs: List[np.ndarray]
+    output_dir: Path
+    state_table: Optional[pd.DataFrame]
+    fes_data: Optional[Dict[str, Any]]
+    transition_matrix: Optional[np.ndarray]
+    count_matrix: Optional[np.ndarray]
+    free_energies: Optional[np.ndarray]
+    stationary_distribution: Optional[np.ndarray]
+    implied_timescales: Any
+    # helper provided by EstimationMixin
+    _save_matrix_intelligent: Any
+
     def save_analysis_results(self, prefix: str = "msm_analysis") -> None:
         import json as _json
         import logging as _logging
@@ -44,14 +58,15 @@ class ExportMixin:
                 free_energies=getattr(self, "free_energies", None),
                 stationary_distribution=getattr(self, "stationary_distribution", None),
             )
-        if getattr(self, "fes_data", None) is not None:
+        fes = self.fes_data
+        if fes is not None:
             analysis_results["fes"] = FESResult(
-                free_energy=self.fes_data["free_energy"],
-                xedges=self.fes_data["xedges"],
-                yedges=self.fes_data["yedges"],
-                cv1_name=self.fes_data["cv1_name"],
-                cv2_name=self.fes_data["cv2_name"],
-                temperature=self.fes_data["temperature"],
+                free_energy=fes["free_energy"],
+                xedges=fes["xedges"],
+                yedges=fes["yedges"],
+                cv1_name=fes["cv1_name"],
+                cv2_name=fes["cv2_name"],
+                temperature=fes["temperature"],
             )
         if getattr(self, "implied_timescales", None) is not None:
             analysis_results["its"] = self.implied_timescales
@@ -104,29 +119,30 @@ class ExportMixin:
                     continue
 
     def _save_state_table_file(self, prefix: str) -> None:
-        if getattr(self, "state_table", None) is not None:
-            self.state_table.to_csv(
-                self.output_dir / f"{prefix}_state_table.csv", index=False
-            )
+        st = self.state_table
+        if st is not None:
+            st.to_csv(self.output_dir / f"{prefix}_state_table.csv", index=False)
 
     def _save_fes_array(self, prefix: str) -> None:
-        if getattr(self, "fes_data", None) is None:
+        fes = self.fes_data
+        if fes is None:
             return
-        np.save(self.output_dir / f"{prefix}_fes.npy", self.fes_data["free_energy"])
+        np.save(self.output_dir / f"{prefix}_fes.npy", fes["free_energy"])
 
     def _save_free_energy_bar_plot(self, prefix: str) -> None:
-        if getattr(self, "state_table", None) is None:
+        st = self.state_table
+        if st is None:
             return
         try:
             import matplotlib.pyplot as _plt
         except Exception:
             return
-        fe = self.state_table.get("free_energy_kJ_mol")
+        fe = st.get("free_energy_kJ_mol")
         if fe is None:
             return
-        err = self.state_table.get("free_energy_error", pd.Series(np.zeros(len(fe))))
+        err = st.get("free_energy_error", pd.Series(np.zeros(len(fe))))
         fig, ax = _plt.subplots()
-        ax.bar(self.state_table["state_id"], fe, yerr=err, capsize=4)
+        ax.bar(st["state_id"], fe, yerr=err, capsize=4)
         ax.set_xlabel("State")
         ax.set_ylabel("Free energy (kJ/mol)")
         fig.tight_layout()
