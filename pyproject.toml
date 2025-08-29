@@ -56,6 +56,14 @@ dependencies = [
 # and only installable on Python versions that have compatible builds.
 fixer = ["pdbfixer>=1.9 ; python_version < '3.12'"]
 
+# Optional ML-based collective variables (Deep-TICA via mlcolvar + torch)
+# Note: deployment in PLUMED requires PLUMED >= 2.9 built with PYTORCH module.
+mlcv = [
+  "torch>=2.2",
+  "mlcolvar>=1.2",
+  "deeptime>=0.4",
+]
+
 # ───────────────────── URLs & entry-points / CLI ──────────────────────
 [project.urls]
 Homepage      = "https://github.com/Komputerowe-Projektowanie-Lekow/pmarlo"

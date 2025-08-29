@@ -21,10 +21,28 @@ class _HasEstimationAttrs(Protocol):
     stationary_distribution: Optional[np.ndarray]
     free_energies: Optional[np.ndarray]
     lag_time: int
+    count_matrix: Optional[np.ndarray]
+    transition_matrix: Optional[np.ndarray]
 
     def _maybe_apply_tica(self, n_components: int, lag: int) -> None: ...
 
     def _build_tram_msm(self, lag_time: int) -> None: ...
+
+    # Internal helpers used by EstimationMixin
+    def _build_standard_msm(
+        self, lag_time: int, count_mode: str = "sliding"
+    ) -> None: ...
+    def _validate_and_cap_lag(self, lag_time: int) -> tuple[int, int]: ...
+    def _initialize_empty_msm(self) -> None: ...
+    def _should_use_deeptime(self) -> bool: ...
+    def _count_transitions_deeptime(
+        self, *, lag: int, count_mode: str
+    ) -> np.ndarray: ...
+    def _count_transitions_locally(
+        self, *, lag: int, count_mode: str
+    ) -> np.ndarray: ...
+    def _finalize_transition_and_stationary(self, counts: np.ndarray) -> None: ...
+    def _compute_free_energies(self, temperature: float = 300.0) -> None: ...
 
 
 class EstimationMixin:
@@ -138,9 +156,9 @@ class EstimationMixin:
         self: _HasEstimationAttrs, counts: np.ndarray
     ) -> None:
         res = ensure_connected_counts(counts)
-        self.count_matrix = np.zeros((self.n_states, self.n_states), dtype=float)
+        cm = np.zeros((self.n_states, self.n_states), dtype=float)
         if res.counts.size:
-            self.count_matrix[np.ix_(res.active, res.active)] = res.counts
+            cm[np.ix_(res.active, res.active)] = res.counts
             T_active = _row_normalize(res.counts)
             pi_active = _stationary_from_T(T_active)
             T_full = np.eye(self.n_states, dtype=float)
@@ -150,6 +168,7 @@ class EstimationMixin:
         else:
             T_full = np.eye(self.n_states, dtype=float)
             pi_full = np.zeros((self.n_states,), dtype=float)
+        self.count_matrix = cm
         self.transition_matrix = T_full
         self.stationary_distribution = pi_full
 

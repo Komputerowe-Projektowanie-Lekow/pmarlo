@@ -1,0 +1,2 @@
+﻿src\pmarlo\engine\build.py: error: Source file found twice under different module names: "src.pmarlo.engine.build" and "pmarlo.engine.build"
+Found 1 error in 1 file (errors prevented further checking)

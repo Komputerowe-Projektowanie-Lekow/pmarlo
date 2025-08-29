@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 import mdtraj as md
 
 
 class LoadingMixin:
+    # Attributes provided by host class
+    trajectory_files: list[str]
+    trajectories: list[md.Trajectory]
+    topology_file: str | None
+    demux_metadata: object | None
+    frame_stride: int | None
+    time_per_frame_ps: float | None
+    _update_total_frames: Callable[[], None]
+
     def load_trajectories(
         self,
         *,

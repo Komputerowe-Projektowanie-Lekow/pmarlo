@@ -30,6 +30,9 @@ pip install -e .
 
 - Python: 3.11–3.12
 - Optional: `pip install pmarlo[fixer]` to include `pdbfixer` (only available on Python < 3.12)
+- ML CVs (Deep-TICA): `pip install pmarlo[mlcv]` to enable training with
+  `mlcolvar` + `torch`. For deployment in PLUMED, ensure PLUMED ≥ 2.9 is built
+  with the `pytorch` module so `PYTORCH_MODEL` can load TorchScript models.
 
 
 ## Documentation
@@ -97,6 +100,15 @@ Currently based on the pygount, the amount of lines of code is ~ 6000 lines, whi
 - pmarlo\tests - Files: 52 | Code: 2012 | Comment: 210
 - pmarlo\src - Files: 72 | Code: 10237 | Comment: 1936
 - pmarlo\example_programs - Files: 4 | Code: 188 | Comment: 27
+
+
+### v0.0.35
+
+- pmarlo\utilities - Files: 1 | Code: 105 | Comment: 15
+- pmarlo\tests - Files: 65 | Code: 2575 | Comment: 245
+- pmarlo\src - Files: 87 | Code: 11804 | Comment: 2229
+- pmarlo\example_programs - Files: 6 | Code: 361 | Comment: 50
+
 
 ## Package Structure
 

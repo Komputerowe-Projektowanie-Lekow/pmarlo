@@ -1,6 +1,6 @@
+from .apply import apply_transform_plan
 from .plan import TransformPlan, TransformStep
 from .planner import get_transform_plan
-from .apply import apply_transform_plan
 
 
 def pm_get_plan(dataset):
@@ -14,6 +14,7 @@ def pm_apply_plan(dataset):
     if plan is None:
         return dataset
     return apply_transform_plan(dataset, plan)
+
 
 __all__ = [
     "TransformPlan",

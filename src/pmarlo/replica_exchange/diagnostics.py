@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Dict, List
 
 import numpy as np
@@ -56,7 +57,7 @@ def retune_temperature_ladder(
     pair_attempt_counts: Dict[tuple[int, int], int],
     pair_accept_counts: Dict[tuple[int, int], int],
     target_acceptance: float = 0.30,
-    output_json: str = "temperatures_suggested.json",
+    output_json: str = "output/temperatures_suggested.json",
     dry_run: bool = False,
 ) -> Dict[str, Any]:
     """Suggest a new temperature ladder based on pairwise acceptance.
@@ -129,7 +130,15 @@ def retune_temperature_ladder(
     new_betas = np.linspace(beta_min, beta_max, n_new)
     suggested_temps = (1.0 / new_betas).tolist()
 
-    with open(output_json, "w", encoding="utf-8") as fh:
+    # Ensure parent directory exists, even if caller passed a custom path
+    try:
+        out_path = Path(output_json)
+        if out_path.parent and not out_path.parent.exists():
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+    with open(str(output_json), "w", encoding="utf-8") as fh:
         json.dump(suggested_temps, fh)
 
     if dry_run:
