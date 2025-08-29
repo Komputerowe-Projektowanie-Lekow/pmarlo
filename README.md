@@ -5,6 +5,9 @@
 [![Python Versions][versions-image]][versions-url]
 [![][stars-image]][stars-url]
 [![License][license-image]][license-url]
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Komputerowe-Projektowanie-Lekow/pmarlo)
+
+
 
 A Python package for protein simulation and Markov state model chain generation, providing an OpenMM-like interface for molecular dynamics simulations.
 

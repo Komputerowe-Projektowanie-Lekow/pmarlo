@@ -60,3 +60,12 @@ USAGE.md
 concept.md
 commands.md
 README.md
+example_programs/programs_outputs/sharded_build/build.json
+example_programs/programs_outputs/sharded_build/shards/shard_0000.json
+example_programs/programs_outputs/sharded_build/shards/shard_0000.npz
+example_programs/programs_outputs/sharded_build/shards/shard_0001.json
+example_programs/programs_outputs/sharded_build/shards/shard_0001.npz
+example_programs/programs_outputs/sharded_build/shards/shard_0002.npz
+example_programs/programs_outputs/sharded_build/shards/slice_000000_000033.dcd
+example_programs/programs_outputs/sharded_build/shards/slice_000033_000066.dcd
+example_programs/programs_outputs/sharded_build/shards/slice_000066_000100.dcd
