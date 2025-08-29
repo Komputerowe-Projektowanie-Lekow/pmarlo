@@ -328,8 +328,14 @@ class Protein:
         for atom in self.topology.atoms():
             mass = getattr(atom.element, "mass", None)
             if mass is None:
-                mass = 0.0
-            total_mass += float(mass)
+                mval = 0.0
+            else:
+                try:
+                    # OpenMM uses unit-bearing quantities for atomic masses
+                    mval = float(mass.value_in_unit(unit.dalton))  # type: ignore[attr-defined]
+                except Exception:
+                    mval = float(mass)
+            total_mass += mval
             if getattr(atom.element, "number", 0) != 1:
                 heavy_atoms += 1
         self.properties["molecular_weight"] = total_mass

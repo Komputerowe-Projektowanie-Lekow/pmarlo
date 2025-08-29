@@ -16,6 +16,7 @@ import openmm
 import openmm.app as app
 import openmm.unit as unit
 from openmm.app.metadynamics import BiasVariable, Metadynamics
+
 from pmarlo import api
 
 # Compatibility shim for OpenMM XML deserialization API changes

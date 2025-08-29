@@ -164,7 +164,7 @@ class FESResult(BaseResult):
     @property
     def output_shape(self) -> tuple[int, int]:
         """Grid shape of the free energy surface."""
-        return self.free_energy.shape
+        return (int(self.free_energy.shape[0]), int(self.free_energy.shape[1]))
 
 
 @dataclass

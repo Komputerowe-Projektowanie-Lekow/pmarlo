@@ -23,7 +23,7 @@ class PMFResult:
     @property
     def output_shape(self) -> tuple[int, ...]:
         """Shape of the PMF array."""
-        return self.F.shape
+        return tuple(int(n) for n in self.F.shape)
 
 
 @dataclass
@@ -53,7 +53,7 @@ class FESResult:
     @property
     def output_shape(self) -> tuple[int, int]:
         """Shape of the free-energy surface grid."""
-        return self.F.shape
+        return (int(self.F.shape[0]), int(self.F.shape[1]))
 
     def __getitem__(self, key: str) -> Any:  # pragma: no cover - compatibility shim
         """Dictionary-style access with deprecation warning.

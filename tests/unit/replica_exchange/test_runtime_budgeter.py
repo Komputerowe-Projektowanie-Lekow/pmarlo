@@ -1,8 +1,8 @@
 import logging
 from pathlib import Path
-import pytest
 
 import mdtraj as md
+import pytest
 
 from pmarlo.replica_exchange.replica_exchange import ReplicaExchange
 

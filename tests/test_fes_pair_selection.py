@@ -1,12 +1,11 @@
 import numpy as np
+
 from pmarlo.api import select_fes_pair
 
 
 def test_select_fes_pair_ignores_constant_axes():
     # First column constant, others varying
-    X = np.array([[1.0, 0.0, 1.0],
-                  [1.0, 1.0, 2.0],
-                  [1.0, 2.0, 3.0]])
+    X = np.array([[1.0, 0.0, 1.0], [1.0, 1.0, 2.0], [1.0, 2.0, 3.0]])
     cols = ["c0", "c1", "c2"]
     periodic = np.array([False, False, False])
     i, j, pi, pj = select_fes_pair(X, cols, periodic)

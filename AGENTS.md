@@ -13,3 +13,7 @@ If you see any unintelligent design flaws you are able to make some changes to m
 You can see all the information about the package and additional more devops things in the /mdfiles/ directory and the README.md file.
 
 Those are the commands that I used in the whole package creation, if you want you can inspire yourself in the /mdfiles/commands.md
+
+Remember that for the tests I run "C:\Users\konrad_guest\Documents\GitHub\pmarlo>poetry run pytest" in the CMD.
+
+For the tox I run "C:\Users\konrad_guest\Documents\GitHub\pmarlo>poetry run tox" in the CMD.

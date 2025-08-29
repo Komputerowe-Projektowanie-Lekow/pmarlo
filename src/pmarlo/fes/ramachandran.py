@@ -28,7 +28,7 @@ class RamachandranResult:
     @property
     def output_shape(self) -> tuple[int, int]:
         """Grid shape of the Ramachandran surface."""
-        return self.F.shape
+        return (int(self.F.shape[0]), int(self.F.shape[1]))
 
 
 def compute_ramachandran(  # noqa: C901

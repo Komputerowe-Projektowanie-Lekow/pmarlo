@@ -169,14 +169,18 @@ class TestProtein:
         protein = Protein(str(test_fixed_pdb_file), auto_prepare=False)
         protein.prepare()
         water_residues = {
-            res for res in protein.topology.residues() if res.name in {"HOH", "H2O", "WAT"}
+            res
+            for res in protein.topology.residues()
+            if res.name in {"HOH", "H2O", "WAT"}
         }
         assert len(water_residues) == 0
 
         protein = Protein(str(test_fixed_pdb_file), auto_prepare=False)
         protein.prepare(solvate=True)
         water_residues = {
-            res for res in protein.topology.residues() if res.name in {"HOH", "H2O", "WAT"}
+            res
+            for res in protein.topology.residues()
+            if res.name in {"HOH", "H2O", "WAT"}
         }
         assert len(water_residues) > 0
 

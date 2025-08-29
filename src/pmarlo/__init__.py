@@ -10,14 +10,18 @@ providing an OpenMM-like interface for molecular dynamics simulations.
 
 from typing import TYPE_CHECKING, Optional, Type
 
+from .data.aggregate import aggregate_and_build
+from .data.emit import emit_shards_from_trajectories
+from .data.shard import ShardMeta, read_shard, write_shard
+from .engine.build import AppliedOpts, BuildOpts, build_result
 from .protein.protein import Protein
 from .replica_exchange.config import RemdConfig
 from .replica_exchange.replica_exchange import ReplicaExchange
 from .simulation.simulation import Simulation
+from .transform import pm_apply_plan, pm_get_plan
 from .utils.msm_utils import candidate_lag_ladder
 from .utils.replica_utils import power_of_two_temperature_ladder
 from .utils.seed import quiet_external_loggers
-from .transform import pm_apply_plan, pm_get_plan
 
 if TYPE_CHECKING:  # Only for type annotations; avoids importing heavy deps at runtime
     from .pipeline import LegacyPipeline as LegacyPipelineType
@@ -57,6 +61,14 @@ __all__ = [
     "ReplicaExchange",
     "RemdConfig",
     "Simulation",
+    "BuildOpts",
+    "AppliedOpts",
+    "build_result",
+    "ShardMeta",
+    "write_shard",
+    "read_shard",
+    "emit_shards_from_trajectories",
+    "aggregate_and_build",
     "power_of_two_temperature_ladder",
     "candidate_lag_ladder",
     "pm_get_plan",

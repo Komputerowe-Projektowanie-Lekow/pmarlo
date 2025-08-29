@@ -14,8 +14,52 @@ class _HasFESAttrs(Protocol):
     trajectories: List[Any]
     fes_data: Optional[Dict[str, Any]]
 
+    # Helper methods used by FESMixin
+    def _validate_fes_prerequisites(self) -> None: ...
+    def _extract_collective_variables(
+        self, cv1_name: str, cv2_name: str
+    ) -> Tuple[np.ndarray, np.ndarray]: ...
+    def _map_stationary_to_frame_weights(self) -> np.ndarray: ...
+
+    def _choose_bins(self, total_frames: int, user_bins: int) -> int: ...
+
+    def _align_data_lengths(
+        self,
+        cv1_data: np.ndarray,
+        cv2_data: np.ndarray,
+        frame_weights_array: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]: ...
+
+    def _compute_weighted_histogram(
+        self,
+        cv1_data: np.ndarray,
+        cv2_data: np.ndarray,
+        frame_weights_array: np.ndarray,
+        bins: int,
+        ranges: Optional[List[Tuple[float, float]]] = None,
+        smooth_sigma: Optional[float] = None,
+        periodic: bool = False,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]: ...
+
+    def _histogram_to_free_energy(
+        self, H: np.ndarray, temperature: float
+    ) -> np.ndarray: ...
+
+    def _store_fes_result(
+        self,
+        F: np.ndarray,
+        xedges: np.ndarray,
+        yedges: np.ndarray,
+        cv1_name: str,
+        cv2_name: str,
+        temperature: float,
+    ) -> None: ...
+
 
 class FESMixin:
+    # Ensure attribute type compatibility with MSMBase
+    fes_data: Optional[Dict[str, Any]]
+
     def generate_free_energy_surface(
         self: _HasFESAttrs,
         cv1_name: str = "phi",
