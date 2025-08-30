@@ -198,7 +198,10 @@ def prepare_system(
     )
     seed = random_state if random_state is not None else random_seed
     integrator = create_langevin_integrator(temperature, seed)
-    platform, platform_properties = select_platform_and_properties(logger)
+    # Prefer deterministic platform settings when a seed is provided
+    platform, platform_properties = select_platform_and_properties(
+        logger, prefer_deterministic=seed is not None
+    )
     simulation = _create_openmm_simulation(
         pdb, system, integrator, platform, platform_properties
     )
