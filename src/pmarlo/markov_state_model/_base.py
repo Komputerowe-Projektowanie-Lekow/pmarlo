@@ -50,7 +50,8 @@ class MSMBase:
         self.topology_file: Optional[str] = topology_file
         self.temperatures: List[float] = temperatures or [300.0]
         self.output_dir: Path = Path(output_dir)
-        self.output_dir.mkdir(exist_ok=True)
+        # Ensure parent directories exist to avoid FileNotFoundError on CI
+        self.output_dir.mkdir(parents=True, exist_ok=True)
 
         # Trajectory and feature data
         self.trajectories: List[md.Trajectory] = []

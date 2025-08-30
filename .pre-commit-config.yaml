@@ -16,7 +16,7 @@ repos:
   - repo: local
     hooks:
       - id: tox-lint
-        name: tox lint (black/isort/flake8)
+        name: tox lint (flake8/isort/black checks)
         entry: poetry
         language: system
         pass_filenames: false
@@ -24,8 +24,6 @@ repos:
           - run
           - tox
           - -q
-          - -e
-          - format
           - -e
           - lint
 

@@ -26,7 +26,7 @@ from .kpi import (
     default_kpi_metrics,
     write_benchmark_json,
 )
-from .utils import set_seed, timestamp_dir
+from .utils import default_output_root, set_seed, timestamp_dir
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 class MSMConfig:
     trajectory_files: List[str]
     topology_file: str
-    output_dir: str = "experiments_output/msm"
+    output_dir: str = f"{default_output_root()}/msm"
     n_clusters: int = 60
     lag_time: int = 20
     feature_type: str = "phi_psi"

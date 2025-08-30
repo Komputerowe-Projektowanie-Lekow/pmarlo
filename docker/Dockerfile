@@ -28,6 +28,9 @@ COPY tests /app/tests
 # Make src importable without installing the package (live code via bind mount)
 ENV PYTHONPATH=/app/src
 
+# Default output root inside container; can be overridden at runtime
+ENV PMARLO_OUTPUT_ROOT=output
+
 # Entry point for containerized runs (Docker/K8s)
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

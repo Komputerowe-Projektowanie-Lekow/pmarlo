@@ -52,6 +52,16 @@ def tests_data_dir() -> Path:
     return here.parent.parent.parent / "tests" / "data"
 
 
+def default_output_root() -> str:
+    """Return the default output root, honoring env override.
+
+    If ``PMARLO_OUTPUT_ROOT`` is set, use it; otherwise default to
+    ``experiments_output`` for backward compatibility.
+    """
+    env = os.getenv("PMARLO_OUTPUT_ROOT")
+    return env if env and len(env) > 0 else "experiments_output"
+
+
 def set_seed(seed: int | None) -> None:
     """Seed Python and NumPy RNGs for experiment reproducibility."""
 

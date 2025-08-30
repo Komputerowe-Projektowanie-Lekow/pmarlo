@@ -22,7 +22,7 @@ from .kpi import (
     default_kpi_metrics,
     write_benchmark_json,
 )
-from .utils import set_seed, timestamp_dir
+from .utils import default_output_root, set_seed, timestamp_dir
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ReplicaExchangeConfig:
     pdb_file: str
-    output_dir: str = "experiments_output/replica_exchange"
+    output_dir: str = f"{default_output_root()}/replica_exchange"
     temperatures: Optional[List[float]] = None  # defaults handled by class
     total_steps: int = 800
     equilibration_steps: int = 200
