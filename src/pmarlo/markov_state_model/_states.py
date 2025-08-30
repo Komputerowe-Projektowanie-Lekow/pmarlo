@@ -20,9 +20,11 @@ class _HasStateAttrs(Protocol):
 
     # Methods used within StatesMixin
     def _count_frames_per_state(self) -> tuple[np.ndarray, int]: ...
+
     def _find_representatives(
         self,
     ) -> tuple[List[tuple[int, int]], List[Optional[np.ndarray]]]: ...
+
     def create_state_table(self) -> pd.DataFrame: ...
 
 
