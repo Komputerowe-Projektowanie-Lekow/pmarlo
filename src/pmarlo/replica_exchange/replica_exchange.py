@@ -313,7 +313,9 @@ class ReplicaExchange:
         self.metadynamics = setup_metadynamics(
             system, bias_variables, self.temperatures[0], self.output_dir
         )
-        platform, platform_properties = select_platform_and_properties(logger)
+        platform, platform_properties = select_platform_and_properties(
+            logger, prefer_deterministic=True if self.random_seed is not None else False
+        )
 
         shared_minimized_positions = None
 
