@@ -44,6 +44,17 @@ class Protein:
             ValueError: If the PDB file does not exist, is empty, or has an invalid
                 extension
         """
+        # If automatic preparation is requested but PDBFixer isn't available,
+        # fail fast with a clear ImportError (test expectation when fixer missing).
+        if auto_prepare and not HAS_PDBFIXER:
+            raise ImportError(
+                (
+                    "PDBFixer is required for protein preparation but is not "
+                    "installed. Install it with: pip install 'pmarlo[fixer]' or "
+                    "set auto_prepare=False to skip preparation."
+                )
+            )
+
         pdb_path = self._resolve_pdb_path(pdb_file)
         self.random_state = random_state
         self._validate_file_exists(pdb_path)

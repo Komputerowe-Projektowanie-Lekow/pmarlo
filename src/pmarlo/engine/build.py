@@ -9,9 +9,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from ..progress import ProgressCB
 from ..states import msm_bridge
 from ..transform.apply import apply_transform_plan
 from ..transform.plan import TransformPlan, TransformStep
+from ..transform.runner import apply_plan as _apply_plan
 
 
 @dataclass(frozen=True)
@@ -840,6 +842,7 @@ def build_result(
     tram_builder: Callable[
         [Any, BuildOpts, AppliedOpts], Any | None
     ] = default_tram_builder,
+    progress_callback: Optional[ProgressCB] = None,
 ) -> BuildResult:
     """
     Standardized builder entry point.
@@ -875,7 +878,11 @@ def build_result(
         pass
 
     # 1) Apply remaining transform plan to data (no-ops by default, but explicit).
-    transformed = apply_transform_plan(transformed, plan)
+    #    Emit aggregate_* events if a progress callback is provided.
+    if progress_callback is None:
+        transformed = apply_transform_plan(transformed, plan)
+    else:
+        transformed = _apply_plan(plan, transformed, progress_callback)
 
     # 2) Build MSM if discrete trajectories are provided
     dtrajs = _extract_dtrajs(transformed)

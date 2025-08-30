@@ -14,6 +14,7 @@ from .features.base import parse_feature_spec
 from .fes.surfaces import FESResult
 from .fes.surfaces import generate_2d_fes as _generate_2d_fes
 from .markov_state_model.enhanced_msm import EnhancedMSM as MarkovStateModel
+from .progress import coerce_progress_callback
 from .reduce.reducers import pca_reduce, tica_reduce, vamp_reduce
 from .replica_exchange.config import RemdConfig
 from .replica_exchange.replica_exchange import ReplicaExchange
@@ -801,6 +802,7 @@ def run_replica_exchange(
     output_dir: str | Path,
     temperatures: List[float],
     total_steps: int,
+    **kwargs: Any,
 ) -> Tuple[List[str], List[float]]:
     """Run REMD and return (trajectory_files, analysis_temperatures).
 
@@ -811,6 +813,11 @@ def run_replica_exchange(
     equil = min(total_steps // 10, 200 if total_steps <= 2000 else 2000)
     dcd_stride = max(1, int(total_steps // 5000))
     exchange_frequency = max(100, total_steps // 20)
+    # Optional quick-run preset for interactive demos
+    if bool(kwargs.get("quick", False)):
+        equil = min(total_steps // 20, 100)
+        exchange_frequency = max(50, total_steps // 40)
+        dcd_stride = max(1, int(total_steps // 1000))
 
     remd = ReplicaExchange.from_config(
         RemdConfig(
@@ -826,7 +833,14 @@ def run_replica_exchange(
         total_steps=int(total_steps), equilibration_steps=int(equil), target_frames=5000
     )
     remd.setup_replicas()
-    remd.run_simulation(total_steps=int(total_steps), equilibration_steps=int(equil))
+    # Optional unified progress callback (many alias names accepted)
+    cb = coerce_progress_callback(kwargs)
+    remd.run_simulation(
+        total_steps=int(total_steps),
+        equilibration_steps=int(equil),
+        progress_callback=cb,
+        cancel_token=kwargs.get("cancel_token"),
+    )
 
     # Demultiplex best-effort
     demuxed = remd.demux_trajectories(

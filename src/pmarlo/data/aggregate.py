@@ -18,9 +18,9 @@ from typing import List, Sequence
 
 import numpy as np
 
-from pmarlo import AppliedOpts, BuildOpts, build_result
 from pmarlo.data.shard import read_shard
-from pmarlo.engine.build import BuildResult
+from pmarlo.engine.build import AppliedOpts, BuildOpts, BuildResult, build_result
+from pmarlo.progress import coerce_progress_callback
 from pmarlo.transform.plan import TransformPlan
 
 
@@ -77,6 +77,7 @@ def aggregate_and_build(
     plan: TransformPlan,
     applied: AppliedOpts,
     out_bundle: Path,
+    **kwargs,
 ) -> tuple[BuildResult, str]:
     """Load shards, aggregate a dataset, build with engine, and archive.
 
@@ -132,7 +133,11 @@ def aggregate_and_build(
         "__shards__": shards_info,
     }
 
-    res = build_result(dataset, opts=opts, plan=plan, applied=applied)
+    # Optional unified progress callback forwarding (aliases accepted)
+    cb = coerce_progress_callback(kwargs)
+    res = build_result(
+        dataset, opts=opts, plan=plan, applied=applied, progress_callback=cb
+    )
 
     ds_hash = _dataset_hash(dtrajs, X_all, cv_names)
     try:

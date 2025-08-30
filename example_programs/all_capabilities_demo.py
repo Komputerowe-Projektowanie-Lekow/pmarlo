@@ -39,11 +39,23 @@ if __name__ == "__main__":
     steps = 2000
     temperatures = power_of_two_temperature_ladder(300.0, 390.0, 8)
 
+    def _print_progress(event: str, info):
+        cur = info.get("current_step")
+        tot = info.get("total_steps")
+        eta = info.get("eta_s")
+        msg = f"[{event}] elapsed={info.get('elapsed_s', 0):.1f}s"
+        if cur is not None and tot is not None:
+            msg += f" {int(cur)}/{int(tot)}"
+        if eta is not None:
+            msg += f" ETA={eta:.1f}s"
+        print(msg)
+
     traj_files, analysis_temps = api.run_replica_exchange(
         pdb_file=pdb_path,
         output_dir=out_dir,
         temperatures=temperatures,
         total_steps=steps,
+        progress_callback=_print_progress,
     )
 
     msm_dir = api.analyze_msm(

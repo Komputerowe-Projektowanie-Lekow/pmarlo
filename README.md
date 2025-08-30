@@ -173,6 +173,25 @@ PY
 Optional on Python < 3.12:
 - pdbfixer (install via extra: `pmarlo[fixer]`)
 
+## Progress Events
+
+PMARLO can emit unified progress events via a callback argument to selected APIs. The callback signature is `callback(event: str, info: Mapping[str, Any]) -> None`.
+
+Accepted kwarg aliases: `progress_callback`, `callback`, `on_event`, `progress`, `reporter`.
+
+Events overview:
+
+- setup: elapsed_s; message
+- equilibrate: elapsed_s, current_step, total_steps; eta_s
+- simulate: elapsed_s, current_step, total_steps; eta_s
+- exchange: elapsed_s; sweep_index, n_replicas, acceptance_mean, acceptance_per_pair, temperatures
+- write_output: elapsed_s; artifacts
+- finished: elapsed_s, status
+- aggregate_begin: elapsed_s, total_steps, plan_text
+- aggregate_step_start: elapsed_s, index, total_steps, step_name
+- aggregate_step_end: elapsed_s, index, total_steps, step_name, duration_s, current_step, total_steps
+- aggregate_end: elapsed_s, status
+
 <!-- Badges: -->
 
 [pypi-image]: https://img.shields.io/pypi/v/pmarlo
