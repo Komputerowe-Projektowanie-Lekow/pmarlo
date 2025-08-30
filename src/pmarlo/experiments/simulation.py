@@ -28,7 +28,7 @@ from .kpi import (
     default_kpi_metrics,
     write_benchmark_json,
 )
-from .utils import set_seed, timestamp_dir
+from .utils import default_output_root, set_seed, timestamp_dir
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class SimulationConfig:
     pdb_file: str
-    output_dir: str = "experiments_output/simulation"
+    output_dir: str = f"{default_output_root()}/simulation"
     steps: int = 500
     temperature: float = 300.0
     n_states: int = 40

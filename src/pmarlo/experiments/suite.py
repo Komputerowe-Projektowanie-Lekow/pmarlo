@@ -29,7 +29,7 @@ from typing import Literal, TypedDict
 from .msm import MSMConfig, run_msm_experiment
 from .replica_exchange import ReplicaExchangeConfig, run_replica_exchange_experiment
 from .simulation import SimulationConfig, run_simulation_experiment
-from .utils import tests_data_dir
+from .utils import default_output_root, tests_data_dir
 
 AlgorithmName = Literal["simulation", "remd", "msm"]
 
@@ -186,7 +186,7 @@ def main() -> None:
             run_dir = result.get("run_dir") or result.get("trajectories_dir")
         idx_env = os.getenv("JOB_INDEX") or os.getenv("JOB_COMPLETION_INDEX")
         pod_name = os.getenv("HOSTNAME")
-        registry_root = Path("experiments_output") / "_registry"
+        registry_root = Path(default_output_root()) / "_registry"
         registry_root.mkdir(parents=True, exist_ok=True)
         fname_parts = [str(idx_env or args.index)]
         if case_id:

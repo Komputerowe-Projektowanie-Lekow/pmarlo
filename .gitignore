@@ -8,7 +8,7 @@ final.xml
 /example_programs/programs_outputs/all_capabilities/*
 /example_programs/programs_outputs/free_energy_conformations_msm/*
 /example_programs/programs_outputs/sharded_build/*
-
+/example_programs/app_usecase/
 
 
 /utilities/

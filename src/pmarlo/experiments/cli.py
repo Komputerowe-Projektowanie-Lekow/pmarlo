@@ -6,7 +6,7 @@ from pathlib import Path
 from .msm import MSMConfig, run_msm_experiment
 from .replica_exchange import ReplicaExchangeConfig, run_replica_exchange_experiment
 from .simulation import SimulationConfig, run_simulation_experiment
-from .utils import tests_data_dir
+from .utils import default_output_root, tests_data_dir
 
 # CLI sets logging level; modules themselves do not configure basicConfig
 
@@ -35,7 +35,7 @@ def main():
     sim = sub.add_parser("simulation", help="Run single-T simulation experiment")
     sim.add_argument("--pdb", default=str(_tests_data_dir() / "3gd8-fixed.pdb"))
     sim.add_argument("--steps", type=int, default=500)
-    sim.add_argument("--out", default="experiments_output/simulation")
+    sim.add_argument("--out", default=f"{default_output_root()}/simulation")
     sim.add_argument("--no-meta", action="store_true", help="Disable metadynamics")
 
     # 2) Replica exchange experiment
@@ -44,7 +44,7 @@ def main():
     remd.add_argument("--steps", type=int, default=800)
     remd.add_argument("--equil", type=int, default=200)
     remd.add_argument("--freq", type=int, default=50, help="Exchange frequency")
-    remd.add_argument("--out", default="experiments_output/replica_exchange")
+    remd.add_argument("--out", default=f"{default_output_root()}/replica_exchange")
     remd.add_argument("--no-meta", action="store_true", help="Disable metadynamics")
     remd.add_argument(
         "--tmin",
@@ -76,7 +76,7 @@ def main():
     msm.add_argument("--top", default=str(_tests_data_dir() / "3gd8-fixed.pdb"))
     msm.add_argument("--clusters", type=int, default=60)
     msm.add_argument("--lag", type=int, default=20)
-    msm.add_argument("--out", default="experiments_output/msm")
+    msm.add_argument("--out", default=f"{default_output_root()}/msm")
     msm.add_argument("--stride", type=int, default=1, help="Trajectory frame stride")
     msm.add_argument(
         "--atom-selection",

@@ -26,10 +26,12 @@ def select_platform_and_properties(logger) -> Tuple[Platform, Dict[str, str]]:
                 logger.info("Using OpenCL")
         except Exception:
             platform = Platform.getPlatformByName("CPU")
-            logger.info("Using CPU with all cores")
+            # Default to a single thread for deterministic tests; allow override via env
+            threads = os.getenv("PMARLO_CPU_THREADS") or "1"
+            logger.info(f"Using CPU with {threads} thread(s)")
             platform_properties = {
-                "Threads": str(os.cpu_count() or 1),
-                "CpuThreads": str(os.cpu_count() or 1),
+                "Threads": threads,
+                "CpuThreads": threads,
             }
     try:
         supported = set(platform.getPropertyNames())

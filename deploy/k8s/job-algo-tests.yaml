@@ -21,9 +21,11 @@ spec:
         imagePullPolicy: IfNotPresent
         volumeMounts:
         - name: experiments-output
-          mountPath: /app/experiments_output
+          mountPath: /app/output
           subPathExpr: $(JOB_COMPLETION_INDEX)
         env:
+        - name: PMARLO_OUTPUT_ROOT
+          value: /app/output
         - name: JOB_INDEX
           valueFrom:
             fieldRef:
