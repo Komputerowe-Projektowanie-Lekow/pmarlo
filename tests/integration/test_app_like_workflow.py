@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import numpy as np
 
+from pmarlo.data.aggregate import aggregate_and_build
 from pmarlo.data.emit import emit_shards_from_trajectories
 from pmarlo.data.shard import read_shard
-from pmarlo.data.aggregate import aggregate_and_build
-from pmarlo.engine.build import BuildOpts, AppliedOpts, BuildResult
+from pmarlo.engine.build import AppliedOpts, BuildOpts, BuildResult
 from pmarlo.transform.plan import TransformPlan, TransformStep
 
 
@@ -22,8 +21,16 @@ def _simple_extractor_factory(n_frames: int = 60):
     def _extract(path: Path):
         rng = np.random.default_rng(abs(hash(path.name)) % (2**32))
         t = np.linspace(0.0, 1.0, int(n_frames), endpoint=False)
-        rg = 1.0 + 0.1 * np.sin(2 * np.pi * t) + 0.01 * rng.standard_normal(int(n_frames))
-        rmsd = 0.5 + 0.2 * np.cos(2 * np.pi * t) + 0.01 * rng.standard_normal(int(n_frames))
+        rg = (
+            1.0
+            + 0.1 * np.sin(2 * np.pi * t)
+            + 0.01 * rng.standard_normal(int(n_frames))
+        )
+        rmsd = (
+            0.5
+            + 0.2 * np.cos(2 * np.pi * t)
+            + 0.01 * rng.standard_normal(int(n_frames))
+        )
         cvs = {"rg": rg.astype(np.float64), "rmsd": rmsd.astype(np.float64)}
         return cvs, None, {"source": str(path.name)}
 
@@ -36,8 +43,16 @@ def _alt_extractor_factory(n_frames: int = 60):
     def _extract(path: Path):
         rng = np.random.default_rng(abs(hash(path.name)) % (2**32))
         t = np.linspace(0.0, 1.0, int(n_frames), endpoint=False)
-        rg = 1.0 + 0.1 * np.sin(2 * np.pi * t) + 0.01 * rng.standard_normal(int(n_frames))
-        rmsd2 = 0.6 + 0.1 * np.cos(2 * np.pi * t) + 0.01 * rng.standard_normal(int(n_frames))
+        rg = (
+            1.0
+            + 0.1 * np.sin(2 * np.pi * t)
+            + 0.01 * rng.standard_normal(int(n_frames))
+        )
+        rmsd2 = (
+            0.6
+            + 0.1 * np.cos(2 * np.pi * t)
+            + 0.01 * rng.standard_normal(int(n_frames))
+        )
         cvs = {"rg": rg.astype(np.float64), "rmsd2": rmsd2.astype(np.float64)}
         return cvs, None, {"source": str(path.name)}
 
@@ -84,7 +99,9 @@ def test_sharded_app_happy_path_emit_aggregate_build(tmp_path: Path):
     out_bundle = bundles_dir / "build.json"
     plan = TransformPlan(steps=(TransformStep("SMOOTH_FES", {"sigma": 0.6}),))
     opts = BuildOpts(seed=123, temperature=300.0, lag_candidates=[5, 10, 15])
-    applied = AppliedOpts(bins={"rg": 24, "rmsd": 24}, lag=5, macrostates=5, notes={"app": "test"})
+    applied = AppliedOpts(
+        bins={"rg": 24, "rmsd": 24}, lag=5, macrostates=5, notes={"app": "test"}
+    )
     result, dataset_hash = aggregate_and_build(
         shard_jsons=shard_jsons,
         out_bundle=out_bundle,

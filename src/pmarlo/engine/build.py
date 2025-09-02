@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import tempfile
 from dataclasses import asdict, dataclass, field, replace
 from hashlib import sha256
 from pathlib import Path
@@ -586,9 +588,42 @@ def _deeptica_cache_key(pre_hash: str, cfg, scaled_time_used: bool) -> str:
     ).hexdigest()
 
 
+def _mlcv_persist_enabled() -> bool:
+    try:
+        v = os.getenv("PMARLO_PERSIST_MLCV")
+        if v is None:
+            return True
+        return str(v).strip().lower() in {"1", "true", "yes", "on"}
+    except Exception:
+        return True
+
+
+def _default_mlcv_dir() -> Path:
+    # Prefer explicit env override
+    env_dir = os.getenv("PMARLO_MLCV_DIR")
+    if env_dir:
+        return Path(env_dir)
+    # OS-appropriate cache location
+    try:
+        if os.name == "nt":
+            base = (
+                os.getenv("LOCALAPPDATA") or os.getenv("TEMP") or tempfile.gettempdir()
+            )
+        else:
+            base = os.getenv("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    except Exception:
+        base = tempfile.gettempdir()
+    return Path(base) / "pmarlo" / "mlcv"
+
+
 def _deeptica_model_paths(notes: Dict[str, Any], cache_key: str) -> tuple[Path, Path]:
-    model_root = Path(notes.get("model_dir", "models")) / "deeptica" / cache_key
-    model_root.mkdir(parents=True, exist_ok=True)
+    # Allow callers to direct artifacts; otherwise keep out of the repo by default
+    md = notes.get("model_dir") if isinstance(notes, dict) else None
+    base_dir = Path(md) if isinstance(md, (str, Path)) else _default_mlcv_dir()
+    model_root = base_dir / "deeptica" / cache_key
+    # Only create directories if we intend to persist artifacts
+    if _mlcv_persist_enabled():
+        model_root.mkdir(parents=True, exist_ok=True)
     return model_root, model_root / "deeptica"
 
 
@@ -683,6 +718,8 @@ def _compute_edges_for_Z(
 def _write_plumed_and_ts_hash(
     model, model_root: Path, model_base: Path
 ) -> Optional[str]:
+    if not _mlcv_persist_enabled():
+        return None
     try:
         snippet = model.plumed_snippet(model_base)
         (model_root / "plumed_deeptica.dat").write_text(snippet, encoding="utf-8")
@@ -759,12 +796,13 @@ def _record_mlcv_artifacts(
             "files": files,
             "torchscript_sha256": ts_hash,
             "cache_key": cache_key,
+            "applied": True,
         }
     except Exception:
         pass
 
 
-def _perform_learn_cv(
+def _perform_learn_cv(  # noqa: C901 - orchestration function with guarded branches
     transformed: Any,
     plan: TransformPlan,
     opts: BuildOpts,
@@ -791,6 +829,15 @@ def _perform_learn_cv(
         )
         records = _build_records_for_pairs(transformed, shards_info, default_temp)
         if not records:
+            # record skip reason
+            try:
+                br_artifacts["mlcv_deeptica"] = {
+                    "applied": False,
+                    "skipped": True,
+                    "reason": "no_records",
+                }
+            except Exception:
+                pass
             return transformed, applied, br_artifacts
 
         from pmarlo.cv.pairs import (
@@ -799,13 +846,22 @@ def _perform_learn_cv(
 
         X_list, pairs = make_training_pairs_from_shards(records, tau_scaled=cfg.lag)
         if len(X_list) == 0 or pairs[0].size == 0:
+            try:
+                br_artifacts["mlcv_deeptica"] = {
+                    "applied": False,
+                    "skipped": True,
+                    "reason": "no_pairs",
+                }
+            except Exception:
+                pass
             return transformed, applied, br_artifacts
 
         scaled_used = _deeptica_scaled_time_used(cfg, records)
         cache_key = _deeptica_cache_key(pre_hash, cfg, scaled_used)
         model_root, model_base = _deeptica_model_paths(dict(applied.notes), cache_key)
         model = _load_or_train_model(X_list, pairs, cfg, model_base)
-        _ensure_ts_export(model, model_base)
+        if _mlcv_persist_enabled():
+            _ensure_ts_export(model, model_base)
         X_concat, Z = _apply_deeptica_model(model, X_list)
         new, new_names = _new_dataset_with_learned_cvs(transformed, Z)
         bins_cfg = _bins_cfg_from_applied_or_opts(applied, opts, new_names, Z)
@@ -826,7 +882,10 @@ def _perform_learn_cv(
             edges,
         )
         transformed = new
-        _record_mlcv_artifacts(br_artifacts, model_base, rel_model, ts_hash, cache_key)
+        if _mlcv_persist_enabled():
+            _record_mlcv_artifacts(
+                br_artifacts, model_base, rel_model, ts_hash, cache_key
+            )
     return transformed, applied, br_artifacts
 
 

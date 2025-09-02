@@ -13,9 +13,11 @@ canonical JSON and integrity hashes suitable for reproducible map→reduce.
 """
 
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 import numpy as np
+
+from pmarlo.progress import ProgressCB
 
 from .shard import write_shard
 
@@ -47,6 +49,7 @@ def emit_shards_from_trajectories(
     seed_start: int = 0,
     temperature: float = 300.0,
     periodic_by_cv: Dict[str, bool] | None = None,
+    progress_callback: Optional[ProgressCB] = None,
 ) -> List[Path]:
     """Emit deterministic shards from a list of trajectory files.
 
@@ -77,7 +80,26 @@ def emit_shards_from_trajectories(
     paths.sort()
 
     json_paths: List[Path] = []
+
+    def _emit(event: str, data: Mapping[str, Any]) -> None:
+        cb = progress_callback
+        if cb is None:
+            return
+        try:
+            cb(event, data)
+        except Exception:
+            pass
+
+    _emit(
+        "emit_begin",
+        {
+            "n_inputs": len(paths),
+            "out_dir": str(out_dir),
+            "temperature": float(temperature),
+        },
+    )
     for i, traj in enumerate(paths):
+        _emit("emit_one_begin", {"index": i, "traj": str(traj)})
         cvs, dtraj, source_info = extract_cvs(traj)
         names, _ = _validate_cvs(cvs)
         periodic = {
@@ -95,5 +117,7 @@ def emit_shards_from_trajectories(
             source=dict(source_info),
         )
         json_paths.append(json_path.resolve())
+        _emit("emit_one_end", {"index": i, "traj": str(traj), "shard": shard_id})
 
+    _emit("emit_end", {"n_shards": len(json_paths)})
     return json_paths
