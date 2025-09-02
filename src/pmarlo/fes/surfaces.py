@@ -319,7 +319,12 @@ def generate_2d_fes(  # noqa: C901
         final_mask = mask
     kT = _kT_kJ_per_mol(temperature)
     tiny = np.finfo(float).tiny
-    F: NDArray[np.float64] = np.where(density > tiny, -kT * np.log(density), np.inf)
+    # Avoid RuntimeWarning: divide by zero encountered in log by clipping first
+    # and only assigning +inf where true zeros occurred. Using errstate keeps
+    # logs clean without changing semantics.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        F_safe = -kT * np.log(np.clip(density, tiny, None))
+    F: NDArray[np.float64] = np.where(density > tiny, F_safe, np.inf)
     if not inpaint:
         F = np.where(final_mask, np.nan, F)
     if np.any(np.isfinite(F)):

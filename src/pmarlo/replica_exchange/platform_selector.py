@@ -10,6 +10,16 @@ def select_platform_and_properties(
     logger, prefer_deterministic: bool = False
 ) -> Tuple[Platform, Dict[str, str]]:
     platform_properties: Dict[str, str] = {}
+    # Allow environment override to force a specific platform for troubleshooting
+    # or CI determinism. Recognizes OPENMM_PLATFORM or PMARLO_FORCE_PLATFORM.
+    forced = os.getenv("OPENMM_PLATFORM") or os.getenv("PMARLO_FORCE_PLATFORM")
+    if forced:
+        try:
+            platform = Platform.getPlatformByName(str(forced))
+            logger.info(f"Using forced platform: {forced}")
+            return platform, platform_properties
+        except Exception:
+            logger.info(f"Requested platform '{forced}' not available; falling back to auto-detect")
     try:
         platform = Platform.getPlatformByName("CUDA")
         platform_properties = {
