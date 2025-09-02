@@ -6,12 +6,11 @@ from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
 import numpy as np
+import torch  # type: ignore
 
-# Import heavy deps only when this module is used.
 try:  # pragma: no cover - optional extra
-    import torch
-    from mlcolvar.cvs import DeepTICA
-    from mlcolvar.features import StandardScaler
+    from mlcolvar.cvs import DeepTICA  # type: ignore
+    from mlcolvar.features import StandardScaler  # type: ignore
 except Exception as e:  # pragma: no cover - optional extra
     raise ImportError("Install optional extra pmarlo[mlcv] to use Deep-TICA") from e
 

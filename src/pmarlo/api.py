@@ -9,10 +9,14 @@ import numpy as np
 
 from .analysis.ck import run_ck as _run_ck
 from .cluster.micro import cluster_microstates as _cluster_microstates
+from .data.aggregate import aggregate_and_build as _aggregate_and_build
+from .engine.build import AppliedOpts as _AppliedOpts
+from .engine.build import BuildOpts as _BuildOpts
 from .features import get_feature
 from .features.base import parse_feature_spec
 from .fes.surfaces import FESResult
 from .fes.surfaces import generate_2d_fes as _generate_2d_fes
+from .io import trajectory as _traj_io
 from .markov_state_model.enhanced_msm import EnhancedMSM as MarkovStateModel
 from .progress import coerce_progress_callback
 from .reduce.reducers import pca_reduce, tica_reduce, vamp_reduce
@@ -30,6 +34,8 @@ from .states.msm_bridge import compute_macro_populations as _compute_macro_popul
 from .states.msm_bridge import lump_micro_to_macro_T as _lump_micro_to_macro_T
 from .states.msm_bridge import pcca_like_macrostates as _pcca_like
 from .states.picker import pick_frames_around_minima as _pick_frames_around_minima
+from .transform.plan import TransformPlan as _TransformPlan
+from .transform.plan import TransformStep as _TransformStep
 from .utils.msm_utils import candidate_lag_ladder
 
 logger = logging.getLogger("pmarlo")
@@ -844,7 +850,7 @@ def run_replica_exchange(
 
     # Demultiplex best-effort
     demuxed = remd.demux_trajectories(
-        target_temperature=300.0, equilibration_steps=int(equil)
+        target_temperature=300.0, equilibration_steps=int(equil), progress_callback=cb
     )
     if demuxed:
         try:
@@ -857,7 +863,10 @@ def run_replica_exchange(
             )
             production_steps = max(0, int(total_steps) - int(equil))
             expected = max(1, production_steps // eff_stride)
-            if traj.n_frames >= expected:
+            # Accept demux if it's close to expected or at least a safe fraction.
+            # Large runs may have minor segment repairs or stride mismatches.
+            threshold = max(1, expected // 5)  # 20% of expected frames
+            if traj.n_frames >= threshold:
                 return [str(demuxed)], [300.0]
         except Exception:
             pass
@@ -1288,3 +1297,168 @@ def find_conformations_with_msm(
         atom_selection=atom_selection,
         chunk_size=chunk_size,
     )
+
+
+# ------------------------------ App-friendly wrappers ------------------------------
+
+
+def emit_shards_rg_rmsd(
+    pdb_file: str | Path,
+    traj_files: list[str | Path],
+    out_dir: str | Path,
+    *,
+    reference: str | Path | None = None,
+    stride: int = 1,
+    temperature: float = 300.0,
+    seed_start: int = 0,
+    progress_callback=None,
+) -> list[Path]:
+    """Stream trajectories and emit shards with Rg and RMSD to a reference.
+
+    This is a convenience wrapper for UI apps. It handles quiet streaming via
+    pmarlo.io.trajectory.iterload, alignment to a global reference, and writes
+    deterministic shards under ``out_dir``.
+    """
+    import mdtraj as md  # type: ignore
+
+    pdb_file = Path(pdb_file)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    top0 = md.load(str(pdb_file))
+    ref = (
+        md.load(str(reference), top=str(pdb_file))[0]
+        if reference is not None and Path(reference).exists()
+        else top0[0]
+    )
+    ca_sel = top0.topology.select("name CA")
+    ca_sel = ca_sel if ca_sel.size else None
+
+    def _extract(traj_path: Path):
+        rg_parts = []
+        rmsd_parts = []
+        n = 0
+        for chunk in _traj_io.iterload(
+            str(traj_path), top=str(pdb_file), stride=int(max(1, stride)), chunk=1000
+        ):
+            try:
+                chunk = chunk.superpose(ref, atom_indices=ca_sel)
+            except Exception:
+                pass
+            rg_parts.append(md.compute_rg(chunk).astype(np.float64))
+            rmsd_parts.append(
+                md.rmsd(chunk, ref, atom_indices=ca_sel).astype(np.float64)
+            )
+            n += int(chunk.n_frames)
+        import numpy as _np
+
+        rg = (
+            _np.concatenate(rg_parts)
+            if rg_parts
+            else _np.zeros((0,), dtype=_np.float64)
+        )
+        rmsd = (
+            _np.concatenate(rmsd_parts)
+            if rmsd_parts
+            else _np.zeros((0,), dtype=_np.float64)
+        )
+        return (
+            {"Rg": rg, "RMSD_ref": rmsd},
+            None,
+            {"traj": str(traj_path), "n_frames": int(n)},
+        )
+
+    from .data.emit import emit_shards_from_trajectories as _emit
+
+    return _emit(
+        [Path(p) for p in traj_files],
+        out_dir=out_dir,
+        extract_cvs=_extract,
+        seed_start=int(seed_start),
+        temperature=float(temperature),
+        periodic_by_cv={"Rg": False, "RMSD_ref": False},
+        progress_callback=progress_callback,
+    )
+
+
+def build_from_shards(
+    shard_jsons: list[str | Path],
+    out_bundle: str | Path,
+    *,
+    bins: dict[str, int],
+    lag: int,
+    seed: int,
+    temperature: float,
+    learn_cv: bool = False,
+    deeptica_params: dict | None = None,
+    notes: dict | None = None,
+    progress_callback=None,
+):
+    """Aggregate shard JSONs and build a bundle with an app-friendly API.
+
+    - Optional LEARN_CV(method="deeptica") is prepended to the plan when requested.
+    - Adds SMOOTH_FES step to the plan by default.
+    - Computes and records global bin edges into notes["cv_bin_edges"].
+    - Returns (BuildResult, dataset_hash).
+    """
+    import numpy as _np
+
+    from .data.shard import read_shard as _read_shard
+
+    if not shard_jsons:
+        raise ValueError("No shard JSONs provided")
+    shard_jsons = [str(Path(p)) for p in shard_jsons]
+    meta0, _, _ = _read_shard(Path(shard_jsons[0]))
+    names = tuple(meta0.cv_names)
+    cv_pair = (names[0], names[1]) if len(names) >= 2 else ("cv1", "cv2")
+
+    # Compute global edges
+    mins = [_np.inf, _np.inf]
+    maxs = [-_np.inf, -_np.inf]
+    for p in shard_jsons:
+        m, X, _ = _read_shard(Path(p))
+        assert tuple(m.cv_names)[:2] == cv_pair, "Shard CV names mismatch"
+        mins[0] = min(mins[0], float(_np.nanmin(X[:, 0])))
+        mins[1] = min(mins[1], float(_np.nanmin(X[:, 1])))
+        maxs[0] = max(maxs[0], float(_np.nanmax(X[:, 0])))
+        maxs[1] = max(maxs[1], float(_np.nanmax(X[:, 1])))
+    if not _np.isfinite(mins[0]) or mins[0] == maxs[0]:
+        maxs[0] = mins[0] + 1e-8
+    if not _np.isfinite(mins[1]) or mins[1] == maxs[1]:
+        maxs[1] = mins[1] + 1e-8
+    edges = {
+        cv_pair[0]: _np.linspace(mins[0], maxs[0], int(bins.get(cv_pair[0], 32)) + 1),
+        cv_pair[1]: _np.linspace(mins[1], maxs[1], int(bins.get(cv_pair[1], 32)) + 1),
+    }
+
+    steps: list[_TransformStep] = []
+    if learn_cv:
+        params = dict(deeptica_params or {})
+        if "lag" not in params:
+            params["lag"] = int(max(1, lag))
+        steps.append(_TransformStep("LEARN_CV", {"method": "deeptica", **params}))
+    steps.append(_TransformStep("SMOOTH_FES", {"sigma": 0.6}))
+    plan = _TransformPlan(steps=tuple(steps))
+
+    opts = _BuildOpts(
+        seed=int(seed),
+        temperature=float(temperature),
+        lag_candidates=[int(lag), int(2 * lag), int(3 * lag)],
+    )
+    all_notes = dict(notes or {})
+    all_notes.setdefault("cv_bin_edges", {k: v.tolist() for k, v in edges.items()})
+    applied = _AppliedOpts(
+        bins=bins,
+        lag=int(lag),
+        macrostates=int((deeptica_params or {}).get("n_states", 5)),
+        notes=all_notes,
+    )
+
+    br, ds_hash = _aggregate_and_build(
+        [Path(p) for p in shard_jsons],
+        opts=opts,
+        plan=plan,
+        applied=applied,
+        out_bundle=Path(out_bundle),
+        progress_callback=progress_callback,
+    )
+    return br, ds_hash

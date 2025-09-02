@@ -6,7 +6,7 @@ from typing import Dict, Tuple
 from openmm import Platform
 
 
-def select_platform_and_properties(
+def select_platform_and_properties(  # noqa: C901 - small decision tree by platform
     logger, prefer_deterministic: bool = False
 ) -> Tuple[Platform, Dict[str, str]]:
     platform_properties: Dict[str, str] = {}
@@ -19,7 +19,9 @@ def select_platform_and_properties(
             logger.info(f"Using forced platform: {forced}")
             return platform, platform_properties
         except Exception:
-            logger.info(f"Requested platform '{forced}' not available; falling back to auto-detect")
+            logger.info(
+                f"Requested platform '{forced}' not available; falling back to auto-detect"
+            )
     try:
         platform = Platform.getPlatformByName("CUDA")
         platform_properties = {

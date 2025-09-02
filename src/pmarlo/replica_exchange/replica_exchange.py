@@ -1630,7 +1630,10 @@ class ReplicaExchange:
         return frames
 
     def demux_trajectories(
-        self, target_temperature: float = 300.0, equilibration_steps: int = 100
+        self,
+        target_temperature: float = 300.0,
+        equilibration_steps: int = 100,
+        progress_callback: ProgressCB | None = None,
     ) -> Optional[
         str
     ]:  # Fixed: Changed return type to Optional[str] to allow None returns
@@ -1644,6 +1647,7 @@ class ReplicaExchange:
         Returns:
             Path to the demultiplexed trajectory file, or None if failed
         """
+        reporter = ProgressReporter(progress_callback)
         logger.info(f"Demultiplexing trajectories for T = {target_temperature} K")
 
         # Find the target temperature index
@@ -1673,6 +1677,7 @@ class ReplicaExchange:
 
         n_segments = len(self.exchange_history)
         logger.info(f"Processing {n_segments} exchange steps (segments)...")
+        reporter.emit("demux_begin", {"segments": int(n_segments)})
         logger.info(
             (
                 f"Exchange frequency: {self.exchange_frequency} MD steps, "
@@ -1680,7 +1685,7 @@ class ReplicaExchange:
             )
         )
 
-        # Diagnostics for DCD files
+        # Diagnostics for DCD files (silence plugin chatter while loading)
         logger.info("DCD File Diagnostics:")
         loaded_trajs: Dict[int, Any] = {}
         for i, traj_file in enumerate(self.trajectory_files):
@@ -1692,7 +1697,12 @@ class ReplicaExchange:
                 try:
                     import mdtraj as md  # type: ignore
 
-                    t = md.load(str(traj_file), top=self.pdb_file)
+                    from pmarlo.io.trajectory import (
+                        _suppress_plugin_output,  # type: ignore
+                    )
+
+                    with _suppress_plugin_output():
+                        t = md.load(str(traj_file), top=self.pdb_file)
                     loaded_trajs[i] = t
                     trajectory_frame_counts[str(traj_file)] = int(t.n_frames)
                     logger.info(f"    -> Loaded: {t.n_frames} frames")
@@ -1725,6 +1735,7 @@ class ReplicaExchange:
 
         # Build per-segment slices
         for s, replica_states in enumerate(self.exchange_history):
+            reporter.emit("demux_segment", {"index": int(s)})
             try:
                 # Record temperature assignment for provenance
                 for replica_idx, temp_state in enumerate(replica_states):
@@ -1805,16 +1816,22 @@ class ReplicaExchange:
                     if demux_segments:
                         import mdtraj as md  # type: ignore
 
-                        gap = start_frame - expected_start_frame
-                        fill = md.join(
-                            [demux_segments[-1][-1:] for _ in range(int(gap))]
+                        from pmarlo.io.trajectory import (
+                            _suppress_plugin_output,  # type: ignore
                         )
+
+                        gap = start_frame - expected_start_frame
+                        with _suppress_plugin_output():
+                            fill = md.join(
+                                [demux_segments[-1][-1:] for _ in range(int(gap))]
+                            )
                         demux_segments.append(fill)
                         repaired_segments.append(s)
                         expected_start_frame = start_frame
                         logger.warning(
                             f"Filled {gap} missing frame(s) before segment {s}"
                         )
+                        reporter.emit("demux_gap_fill", {"frames": int(gap)})
                     else:
                         # Tolerate initial offset: start demux at the first available frame
                         gap = start_frame - expected_start_frame
@@ -1835,12 +1852,17 @@ class ReplicaExchange:
                     if demux_segments and frames_per_segment is not None:
                         import mdtraj as md  # type: ignore
 
-                        fill = md.join(
-                            [
-                                demux_segments[-1][-1:]
-                                for _ in range(int(frames_per_segment))
-                            ]
+                        from pmarlo.io.trajectory import (
+                            _suppress_plugin_output,  # type: ignore
                         )
+
+                        with _suppress_plugin_output():
+                            fill = md.join(
+                                [
+                                    demux_segments[-1][-1:]
+                                    for _ in range(int(frames_per_segment))
+                                ]
+                            )
                         demux_segments.append(fill)
                         repaired_segments.append(s)
                         expected_start_frame += int(frames_per_segment)
@@ -1860,12 +1882,20 @@ class ReplicaExchange:
             try:
                 import mdtraj as md  # type: ignore
 
-                demux_traj = md.join(demux_segments)
+                from pmarlo.io.trajectory import _suppress_plugin_output  # type: ignore
+
+                with _suppress_plugin_output():
+                    demux_traj = md.join(demux_segments)
                 demux_file = self.output_dir / f"demux_T{actual_temp:.0f}K.dcd"
-                demux_traj.save_dcd(str(demux_file))
+                with _suppress_plugin_output():
+                    demux_traj.save_dcd(str(demux_file))
                 logger.info(f"Demultiplexed trajectory saved: {demux_file}")
                 logger.info(
                     f"Total frames at target temperature: {int(demux_traj.n_frames)}"
+                )
+                reporter.emit(
+                    "demux_end",
+                    {"frames": int(demux_traj.n_frames), "file": str(demux_file)},
                 )
 
                 timestep_ps = float(

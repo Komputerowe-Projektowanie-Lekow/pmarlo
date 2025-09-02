@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 mlc = pytest.importorskip("mlcolvar")
+mlc_features = pytest.importorskip("mlcolvar.features")
 torch = pytest.importorskip("torch")
 
 
