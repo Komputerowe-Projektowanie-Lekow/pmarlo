@@ -29,7 +29,6 @@ from ..utils.integrator import create_langevin_integrator
 from ..utils.naming import base_shape_str, permutation_name
 from ..utils.replica_utils import exponential_temperature_ladder
 from .config import RemdConfig
-from .demux_metadata import DemuxIntegrityError, DemuxMetadata
 from .diagnostics import compute_exchange_statistics, retune_temperature_ladder
 from .platform_selector import select_platform_and_properties
 from .system_builder import (
@@ -39,6 +38,7 @@ from .system_builder import (
     setup_metadynamics,
 )
 from .trajectory import ClosableDCDReporter
+from .demux import demux_trajectories as _demux_trajectories
 
 logger = logging.getLogger("pmarlo")
 
@@ -363,29 +363,6 @@ class ReplicaExchange:
         self._is_setup = True
 
     # --- Helper methods for setup_replicas ---
-
-    def _load_pdb_and_forcefield(self) -> Tuple[PDBFile, ForceField]:  # Deprecated
-        return load_pdb_and_forcefield(self.pdb_file, self.forcefield_files)
-
-    def _create_system(
-        self, pdb: PDBFile, forcefield: ForceField
-    ) -> openmm.System:  # Deprecated
-        return create_system(pdb, forcefield)
-
-    def _log_system_info(self, system: openmm.System) -> None:  # Deprecated
-        return log_system_info(system, logger)
-
-    def _setup_metadynamics(
-        self, system: openmm.System, bias_variables: Optional[List]
-    ) -> None:  # Deprecated
-        self.metadynamics = setup_metadynamics(
-            system, bias_variables, self.temperatures[0], self.output_dir
-        )
-
-    def _select_platform_and_properties(
-        self,
-    ) -> Tuple[Platform, Dict[str, str]]:  # Deprecated
-        return select_platform_and_properties(logger)
 
     def _create_integrator_for_temperature(
         self, temperature: float
@@ -1634,307 +1611,14 @@ class ReplicaExchange:
         target_temperature: float = 300.0,
         equilibration_steps: int = 100,
         progress_callback: ProgressCB | None = None,
-    ) -> Optional[
-        str
-    ]:  # Fixed: Changed return type to Optional[str] to allow None returns
-        """
-        Demultiplex trajectories to extract frames at target temperature.
-
-        Args:
-            target_temperature: Target temperature to extract frames for
-            equilibration_steps: Number of equilibration steps (needed for frame calculation)
-
-        Returns:
-            Path to the demultiplexed trajectory file, or None if failed
-        """
-        reporter = ProgressReporter(progress_callback)
-        logger.info(f"Demultiplexing trajectories for T = {target_temperature} K")
-
-        # Find the target temperature index
-        target_temp_idx = np.argmin(
-            np.abs(np.array(self.temperatures) - target_temperature)
+    ) -> Optional[str]:
+        """Delegate to the dedicated demux module for better visibility."""
+        return _demux_trajectories(
+            self,
+            target_temperature=target_temperature,
+            equilibration_steps=equilibration_steps,
+            progress_callback=progress_callback,
         )
-        actual_temp = self.temperatures[target_temp_idx]
-
-        logger.info(f"Using closest temperature: {actual_temp:.1f} K")
-
-        # Check if we have exchange history
-        if not self.exchange_history:
-            logger.warning("No exchange history available for demultiplexing")
-            return None
-
-        # Reporter stride: prefer per-replica recorded stride, otherwise use planned stride
-        default_stride = int(
-            self.reporter_stride
-            if self.reporter_stride is not None
-            else max(1, self.dcd_stride)
-        )
-
-        # Load all trajectories and perform segment-wise demultiplexing
-        demux_segments: List[Any] = []
-        trajectory_frame_counts: Dict[str, int] = {}
-        repaired_segments: List[int] = []
-
-        n_segments = len(self.exchange_history)
-        logger.info(f"Processing {n_segments} exchange steps (segments)...")
-        reporter.emit("demux_begin", {"segments": int(n_segments)})
-        logger.info(
-            (
-                f"Exchange frequency: {self.exchange_frequency} MD steps, "
-                f"default DCD stride: {default_stride} MD steps"
-            )
-        )
-
-        # Diagnostics for DCD files (silence plugin chatter while loading)
-        logger.info("DCD File Diagnostics:")
-        loaded_trajs: Dict[int, Any] = {}
-        for i, traj_file in enumerate(self.trajectory_files):
-            if traj_file.exists():
-                file_size = traj_file.stat().st_size
-                logger.info(
-                    f"  Replica {i}: {traj_file.name} exists, size: {file_size:,} bytes"
-                )
-                try:
-                    import mdtraj as md  # type: ignore
-
-                    from pmarlo.io.trajectory import (
-                        _suppress_plugin_output,  # type: ignore
-                    )
-
-                    with _suppress_plugin_output():
-                        t = md.load(str(traj_file), top=self.pdb_file)
-                    loaded_trajs[i] = t
-                    trajectory_frame_counts[str(traj_file)] = int(t.n_frames)
-                    logger.info(f"    -> Loaded: {t.n_frames} frames")
-                except Exception as e:
-                    logger.warning(f"    -> Failed to load: {e}")
-                    trajectory_frame_counts[str(traj_file)] = 0
-            else:
-                logger.warning(f"  Replica {i}: {traj_file.name} does not exist")
-
-        if not loaded_trajs:
-            logger.warning("No trajectories could be loaded for demultiplexing")
-            return None
-
-        # Effective equilibration steps actually integrated (heating + temp equil)
-        if equilibration_steps > 0:
-            effective_equil_steps = max(100, equilibration_steps * 40 // 100) + max(
-                100, equilibration_steps * 60 // 100
-            )
-        else:
-            effective_equil_steps = 0
-
-        # Prepare temperature schedule mapping
-        temp_schedule: Dict[str, Dict[str, float]] = {
-            str(rid): {} for rid in range(self.n_replicas)
-        }
-
-        frames_per_segment: Optional[int] = None
-        expected_start_frame = 0
-        prev_stop_md = effective_equil_steps
-
-        # Build per-segment slices
-        for s, replica_states in enumerate(self.exchange_history):
-            reporter.emit("demux_segment", {"index": int(s)})
-            try:
-                # Record temperature assignment for provenance
-                for replica_idx, temp_state in enumerate(replica_states):
-                    temp_schedule[str(replica_idx)][str(s)] = float(
-                        self.temperatures[int(temp_state)]
-                    )
-
-                # Which replica was at the target temperature during this segment
-                replica_at_target = None
-                for replica_idx, temp_state in enumerate(replica_states):
-                    if temp_state == target_temp_idx:
-                        replica_at_target = int(replica_idx)
-                        break
-
-                # Segment MD step range [start, stop)
-                start_md = effective_equil_steps + s * self.exchange_frequency
-                stop_md = effective_equil_steps + (s + 1) * self.exchange_frequency
-
-                if start_md < prev_stop_md:
-                    raise DemuxIntegrityError("Non-monotonic segment times detected")
-                prev_stop_md = stop_md
-
-                if replica_at_target is None:
-                    # Missing swap; fill using nearest neighbour if possible
-                    if demux_segments and frames_per_segment is not None:
-                        import mdtraj as md  # type: ignore
-
-                        fill = md.join(
-                            [
-                                demux_segments[-1][-1:]
-                                for _ in range(int(frames_per_segment))
-                            ]
-                        )
-                        demux_segments.append(fill)
-                        repaired_segments.append(s)
-                        expected_start_frame += int(frames_per_segment)
-                        logger.warning(
-                            f"Segment {s} missing target replica - filled with nearest neighbour frame"
-                        )
-                        continue
-                    raise DemuxIntegrityError(
-                        f"Segment {s} missing target replica and no data to fill"
-                    )
-
-                traj = loaded_trajs.get(replica_at_target)
-                if traj is None:
-                    if demux_segments and frames_per_segment is not None:
-                        import mdtraj as md  # type: ignore
-
-                        fill = md.join(
-                            [
-                                demux_segments[-1][-1:]
-                                for _ in range(int(frames_per_segment))
-                            ]
-                        )
-                        demux_segments.append(fill)
-                        repaired_segments.append(s)
-                        expected_start_frame += int(frames_per_segment)
-                        logger.warning(
-                            f"Segment {s} missing trajectory data - filled with nearest neighbour frame"
-                        )
-                        continue
-                    raise DemuxIntegrityError(
-                        f"Segment {s} missing trajectory data and no data to fill"
-                    )
-
-                # Map to saved frame indices using replica's recorded stride if available
-                stride = (
-                    self._replica_reporter_stride[replica_at_target]
-                    if replica_at_target < len(self._replica_reporter_stride)
-                    else default_stride
-                )
-                start_frame = max(0, start_md // stride)
-                # Inclusive of frames with step < stop_md
-                end_frame = min(traj.n_frames, (max(0, stop_md - 1) // stride) + 1)
-
-                if start_frame > expected_start_frame:
-                    if demux_segments:
-                        import mdtraj as md  # type: ignore
-
-                        from pmarlo.io.trajectory import (
-                            _suppress_plugin_output,  # type: ignore
-                        )
-
-                        gap = start_frame - expected_start_frame
-                        with _suppress_plugin_output():
-                            fill = md.join(
-                                [demux_segments[-1][-1:] for _ in range(int(gap))]
-                            )
-                        demux_segments.append(fill)
-                        repaired_segments.append(s)
-                        expected_start_frame = start_frame
-                        logger.warning(
-                            f"Filled {gap} missing frame(s) before segment {s}"
-                        )
-                        reporter.emit("demux_gap_fill", {"frames": int(gap)})
-                    else:
-                        # Tolerate initial offset: start demux at the first available frame
-                        gap = start_frame - expected_start_frame
-                        expected_start_frame = start_frame
-                        logger.warning(
-                            f"Initial gap of {gap} frame(s) before first segment; starting at first available frame"
-                        )
-                elif start_frame < expected_start_frame:
-                    raise DemuxIntegrityError("Non-monotonic frame indices detected")
-
-                if end_frame > start_frame:
-                    segment = traj[start_frame:end_frame]
-                    demux_segments.append(segment)
-                    if frames_per_segment is None:
-                        frames_per_segment = int(end_frame - start_frame)
-                    expected_start_frame = end_frame
-                else:
-                    if demux_segments and frames_per_segment is not None:
-                        import mdtraj as md  # type: ignore
-
-                        from pmarlo.io.trajectory import (
-                            _suppress_plugin_output,  # type: ignore
-                        )
-
-                        with _suppress_plugin_output():
-                            fill = md.join(
-                                [
-                                    demux_segments[-1][-1:]
-                                    for _ in range(int(frames_per_segment))
-                                ]
-                            )
-                        demux_segments.append(fill)
-                        repaired_segments.append(s)
-                        expected_start_frame += int(frames_per_segment)
-                        logger.warning(
-                            f"Segment {s} has no frames - filled with nearest neighbour frame"
-                        )
-                    else:
-                        raise DemuxIntegrityError(
-                            f"No frames available for segment {s}"
-                        )
-            except DemuxIntegrityError:
-                raise
-            except Exception:
-                continue
-
-        if demux_segments:
-            try:
-                import mdtraj as md  # type: ignore
-
-                from pmarlo.io.trajectory import _suppress_plugin_output  # type: ignore
-
-                with _suppress_plugin_output():
-                    demux_traj = md.join(demux_segments)
-                demux_file = self.output_dir / f"demux_T{actual_temp:.0f}K.dcd"
-                with _suppress_plugin_output():
-                    demux_traj.save_dcd(str(demux_file))
-                logger.info(f"Demultiplexed trajectory saved: {demux_file}")
-                logger.info(
-                    f"Total frames at target temperature: {int(demux_traj.n_frames)}"
-                )
-                reporter.emit(
-                    "demux_end",
-                    {"frames": int(demux_traj.n_frames), "file": str(demux_file)},
-                )
-
-                timestep_ps = float(
-                    self.integrators[0].getStepSize().value_in_unit(unit.picoseconds)
-                    if self.integrators
-                    else 0.0
-                )
-                metadata = DemuxMetadata(
-                    exchange_frequency_steps=int(self.exchange_frequency),
-                    integration_timestep_ps=timestep_ps,
-                    frames_per_segment=int(frames_per_segment or 0),
-                    temperature_schedule=temp_schedule,
-                )
-                meta_path = demux_file.with_suffix(".meta.json")
-                metadata.to_json(meta_path)
-                logger.info(f"Demultiplexed metadata saved: {meta_path}")
-
-                if repaired_segments:
-                    logger.warning(f"Repaired segments: {repaired_segments}")
-
-                return str(demux_file)
-            except Exception as e:
-                logger.error(f"Error saving demultiplexed trajectory: {e}")
-                return None
-        else:
-            logger.warning(
-                (
-                    "No segments found for demultiplexing - check exchange history, "
-                    "frame indexing, or stride settings"
-                )
-            )
-            logger.debug(f"  Exchange steps: {len(self.exchange_history)}")
-            logger.debug(f"  Exchange frequency: {self.exchange_frequency}")
-            logger.debug(f"  Effective equilibration steps: {effective_equil_steps}")
-            logger.debug(f"  Default DCD stride: {default_stride}")
-            for i, traj_file in enumerate(self.trajectory_files):
-                n_frames = trajectory_frame_counts.get(str(traj_file), 0)
-                logger.debug(f"  Replica {i}: {n_frames} frames in {traj_file.name}")
-            return None
 
     def get_exchange_statistics(self) -> Dict[str, Any]:
         """Get exchange statistics and diagnostics."""

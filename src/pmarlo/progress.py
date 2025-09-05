@@ -99,23 +99,42 @@ def console_progress_cb(  # noqa: C901
             acc = round(float(d.get("acceptance_mean", 0)) * 100, 1)
             msg = f"exchange: sweep {d.get('sweep_index', '?')} acc {acc}%"
         elif ev.startswith("demux_"):
+            cur = int(d.get("current", d.get("current_step", d.get("current", 0))))
+            tot = int(d.get("total", d.get("total_steps", d.get("total", 0))))
+            eta = d.get("eta_s", "?")
             if ev == "demux_begin":
-                msg = f"demux: begin segments={d.get('segments', '?')}"
+                segments = d.get("segments", tot if tot else "?")
+                msg = f"demux: begin segments={segments}"
             elif ev == "demux_segment":
-                msg = f"demux: segment {d.get('index', '?')}"
+                msg = f"demux: {cur:>6d}/{tot:<6d} ETA {eta}s (segment {d.get('index','?')})"
             elif ev == "demux_gap_fill":
-                msg = f"demux: gap+{d.get('frames', '?')}"
+                msg = f"demux: gap+{d.get('frames', '?')} {cur:>6d}/{tot:<6d} ETA {eta}s"
+            elif ev == "demux_error":
+                msg = (
+                    f"demux: error at segment {d.get('index','?')} - {d.get('error','?')} "
+                    f"{cur:>6d}/{tot:<6d} ETA {eta}s"
+                )
             elif ev == "demux_end":
                 msg = f"demux: end frames={d.get('frames', '?')} file={d.get('file', '?')}"
         elif ev.startswith("emit_"):
+            cur = int(d.get("current", d.get("current_step", d.get("current", 0))))
+            tot = int(d.get("total", d.get("total_steps", d.get("total", 0))))
+            eta = d.get("eta_s", "?")
             if ev == "emit_begin":
                 msg = (
                     f"emit: inputs={d.get('n_inputs', '?')} out={d.get('out_dir', '?')}"
                 )
             elif ev == "emit_one_begin":
-                msg = f"emit: start {d.get('traj', '?')}"
+                msg = f"emit: {cur:>6d}/{tot:<6d} ETA {eta}s start {d.get('traj', '?')}"
             elif ev == "emit_one_end":
-                msg = f"emit: done {d.get('traj', '?')} -> {d.get('shard', '?')}"
+                maybe_frames = d.get('frames')
+                if maybe_frames is not None:
+                    msg = (
+                        f"emit: {cur:>6d}/{tot:<6d} ETA {eta}s done {d.get('traj','?')}"
+                        f" -> {d.get('shard','?')} frames={maybe_frames}"
+                    )
+                else:
+                    msg = f"emit: {cur:>6d}/{tot:<6d} ETA {eta}s done {d.get('traj','?')} -> {d.get('shard','?')}"
             elif ev == "emit_end":
                 msg = f"emit: n_shards={d.get('n_shards', '?')}"
         elif ev.startswith("aggregate_"):
@@ -198,6 +217,16 @@ def _is_boundary_event(event: str, info: Optional[Mapping[str, Any]]) -> bool:
         "exchange",
         "write_output",
         "finished",
+        # Demux stages: show every segment to avoid confusing sparse logs
+        "demux_begin",
+        "demux_segment",
+        "demux_gap_fill",
+        "demux_end",
+        # Emit stages: show each input start/end for clarity
+        "emit_begin",
+        "emit_one_begin",
+        "emit_one_end",
+        "emit_end",
         "aggregate_begin",
         "aggregate_step_start",
         "aggregate_step_end",

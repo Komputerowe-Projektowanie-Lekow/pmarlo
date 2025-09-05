@@ -47,6 +47,14 @@ def select_platform_and_properties(  # noqa: C901 - small decision tree by platf
                 platform = Platform.getPlatformByName("OpenCL")
                 logger.info("Using OpenCL")
         except Exception:
+            # Prefer Reference platform for determinism when available (slow but stable)
+            if prefer_deterministic:
+                try:
+                    platform = Platform.getPlatformByName("Reference")
+                    logger.info("Using Reference platform for deterministic run")
+                    return platform, {}
+                except Exception:
+                    pass
             platform = Platform.getPlatformByName("CPU")
             # Default to a single thread for deterministic tests; allow override via env
             threads = os.getenv("PMARLO_CPU_THREADS") or (
@@ -57,6 +65,10 @@ def select_platform_and_properties(  # noqa: C901 - small decision tree by platf
             platform_properties = {
                 "Threads": threads,
                 "CpuThreads": threads,
+                # Ask for deterministic forces where available
+                "DeterministicForces": "true" if prefer_deterministic else "false",
+                # Be conservative on math optimizations where supported
+                "UseFastMath": "false" if prefer_deterministic else "true",
             }
     try:
         supported = set(platform.getPropertyNames())

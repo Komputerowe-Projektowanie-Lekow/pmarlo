@@ -17,7 +17,7 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 import numpy as np
 
-from pmarlo.progress import ProgressCB
+from pmarlo.progress import ProgressCB, ProgressReporter
 
 from .shard import write_shard
 
@@ -81,12 +81,12 @@ def emit_shards_from_trajectories(
 
     json_paths: List[Path] = []
 
+    # Wrap callback with ProgressReporter to enrich with elapsed and ETA
+    reporter = ProgressReporter(progress_callback)
+
     def _emit(event: str, data: Mapping[str, Any]) -> None:
-        cb = progress_callback
-        if cb is None:
-            return
         try:
-            cb(event, data)
+            reporter.emit(event, data)
         except Exception:
             pass
 
@@ -96,10 +96,22 @@ def emit_shards_from_trajectories(
             "n_inputs": len(paths),
             "out_dir": str(out_dir),
             "temperature": float(temperature),
+            # Provide normalized progress fields for ETA computation
+            "current": 0,
+            "total": int(len(paths)),
         },
     )
     for i, traj in enumerate(paths):
-        _emit("emit_one_begin", {"index": i, "traj": str(traj)})
+        _emit(
+            "emit_one_begin",
+            {
+                "index": int(i),
+                "traj": str(traj),
+                # Normalized progress for console ETA
+                "current": int(i + 1),
+                "total": int(len(paths)),
+            },
+        )
         cvs, dtraj, source_info = extract_cvs(traj)
         names, _ = _validate_cvs(cvs)
         periodic = {
@@ -117,7 +129,19 @@ def emit_shards_from_trajectories(
             source=dict(source_info),
         )
         json_paths.append(json_path.resolve())
-        _emit("emit_one_end", {"index": i, "traj": str(traj), "shard": shard_id})
+        _emit(
+            "emit_one_end",
+            {
+                "index": int(i),
+                "traj": str(traj),
+                "shard": shard_id,
+                # Frames processed in this input if extractor provided it
+                "frames": int(source_info.get("n_frames", 0) if isinstance(source_info, dict) else 0),
+                # Keep progress fields consistent for ETA
+                "current": int(i + 1),
+                "total": int(len(paths)),
+            },
+        )
 
-    _emit("emit_end", {"n_shards": len(json_paths)})
+    _emit("emit_end", {"n_shards": len(json_paths), "current": int(len(paths)), "total": int(len(paths))})
     return json_paths
