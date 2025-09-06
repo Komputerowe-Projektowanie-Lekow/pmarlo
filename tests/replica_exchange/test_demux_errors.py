@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
 import mdtraj as md
+import numpy as np
 import pytest
 
-from pmarlo.replica_exchange.demux_plan import DemuxPlan, DemuxSegmentPlan
-from pmarlo.replica_exchange.demux_engine import demux_streaming
 from pmarlo.io.trajectory_reader import MDTrajReader, TrajectoryIOError
 from pmarlo.io.trajectory_writer import MDTrajDCDWriter, TrajectoryWriteError
+from pmarlo.demultiplexing.demux_engine import demux_streaming
+from pmarlo.demultiplexing.demux_plan import DemuxPlan, DemuxSegmentPlan
 from pmarlo.utils.errors import DemuxWriterError
 
 
@@ -47,7 +47,9 @@ def test_demux_engine_writer_error_raises(tmp_path: Path):
         frames_per_segment=2,
         total_expected_frames=2,
     )
-    writer = FailingWriter(rewrite_threshold=1).open(str(tmp_path / "out.dcd"), top, overwrite=True)
+    writer = FailingWriter(rewrite_threshold=1).open(
+        str(tmp_path / "out.dcd"), top, overwrite=True
+    )
     reader = MDTrajReader(topology_path=top)
     with pytest.raises(DemuxWriterError):
         demux_streaming(plan, top, reader, writer, fill_policy="repeat")
@@ -62,7 +64,9 @@ def test_demux_engine_reader_error_is_handled(tmp_path: Path):
         frames_per_segment=1,
         total_expected_frames=1,
     )
-    writer = MDTrajDCDWriter(rewrite_threshold=1).open(str(tmp_path / "out.dcd"), top, overwrite=True)
+    writer = MDTrajDCDWriter(rewrite_threshold=1).open(
+        str(tmp_path / "out.dcd"), top, overwrite=True
+    )
     reader = FailingReader(topology_path=top)
     res = demux_streaming(plan, top, reader, writer, fill_policy="repeat")
     writer.close()

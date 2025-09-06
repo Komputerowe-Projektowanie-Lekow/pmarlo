@@ -6,18 +6,18 @@ to construct a demultiplexed trajectory with minimal memory usage.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import logging
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Literal, Optional, Tuple
 
 import numpy as np
 
-from .demux_plan import DemuxPlan, DemuxSegmentPlan
-from ..io.trajectory_reader import TrajectoryReader, TrajectoryIOError
-from ..io.trajectory_writer import TrajectoryWriter, TrajectoryWriteError
-from ..utils.errors import DemuxWriterError
+from ..io.trajectory_reader import TrajectoryIOError, TrajectoryReader
+from ..io.trajectory_writer import TrajectoryWriteError, TrajectoryWriter
 from ..progress import ProgressCB, ProgressReporter
-
+from ..utils.errors import DemuxWriterError
+from .demux_plan import DemuxPlan, DemuxSegmentPlan
 
 logger = logging.getLogger("pmarlo")
 
@@ -59,7 +59,9 @@ def _interpolate_frames(last: np.ndarray, nxt: np.ndarray, count: int) -> np.nda
         return np.zeros((0,) + last.shape, dtype=last.dtype)
     # create linear interpolation excluding endpoints
     # t in (1/(count+1), ..., count/(count+1))
-    t_vals = (np.arange(1, count + 1, dtype=np.float32) / float(count + 1)).reshape((-1, 1, 1))
+    t_vals = (np.arange(1, count + 1, dtype=np.float32) / float(count + 1)).reshape(
+        (-1, 1, 1)
+    )
     return (1.0 - t_vals) * last[np.newaxis, ...] + t_vals * nxt[np.newaxis, ...]
 
 
@@ -70,10 +72,19 @@ def _peek_next_first_frame(
     if idx + 1 >= len(plan.segments):
         return None
     nxt = plan.segments[idx + 1]
-    if nxt.replica_index < 0 or nxt.stop_frame <= nxt.start_frame or not nxt.source_path:
+    if (
+        nxt.replica_index < 0
+        or nxt.stop_frame <= nxt.start_frame
+        or not nxt.source_path
+    ):
         return None
     try:
-        it = reader.iter_frames(nxt.source_path, start=int(nxt.start_frame), stop=int(nxt.start_frame + 1), stride=1)
+        it = reader.iter_frames(
+            nxt.source_path,
+            start=int(nxt.start_frame),
+            stop=int(nxt.start_frame + 1),
+            stride=1,
+        )
         for f in it:
             return f
     except Exception:
@@ -90,11 +101,14 @@ def _read_segment_frames_worker(
     array with shape (0, 0, 3) when no frames are available.
     """
     import numpy as _np
+
     from pmarlo.io.trajectory_reader import MDTrajReader as _MDTR
 
     rdr = _MDTR(topology_path=topology_path)
     acc: list[_np.ndarray] = []
-    for xyz in rdr.iter_frames(path, start=int(start), stop=int(stop), stride=int(stride)):
+    for xyz in rdr.iter_frames(
+        path, start=int(start), stop=int(stop), stride=int(stride)
+    ):
         acc.append(_np.asarray(xyz))
     if acc:
         return _np.concatenate(acc, axis=0)
@@ -216,10 +230,16 @@ def demux_streaming(
         finally:
             acc.clear()
 
-    def _consume_segment(i: int, seg: DemuxSegmentPlan, arr: Optional[np.ndarray]) -> None:
+    def _consume_segment(
+        i: int, seg: DemuxSegmentPlan, arr: Optional[np.ndarray]
+    ) -> None:
         nonlocal total_written, last_written_frame
         planned = int(max(0, seg.expected_frames))
-        got = int(arr.shape[0]) if (arr is not None and arr.size > 0 and arr.ndim == 3) else 0
+        got = (
+            int(arr.shape[0])
+            if (arr is not None and arr.size > 0 and arr.ndim == 3)
+            else 0
+        )
         # Write available frames in chunks
         if got > 0 and arr is not None:
             chunk = 1024
@@ -300,12 +320,17 @@ def demux_streaming(
                         writer.flush()
                     except Exception:
                         pass
-                if checkpoint_interval_segments and (expected_idx + 1) % int(checkpoint_interval_segments) == 0:
+                if (
+                    checkpoint_interval_segments
+                    and (expected_idx + 1) % int(checkpoint_interval_segments) == 0
+                ):
                     try:
                         writer.flush()
                     except Exception:
                         pass
-                frames_written = int((arr.shape[0] if isinstance(arr, np.ndarray) else 0))
+                frames_written = int(
+                    (arr.shape[0] if isinstance(arr, np.ndarray) else 0)
+                )
                 # Include fills when policy is not skip
                 exp = int(plan.segments[expected_idx].expected_frames)
                 if frames_written < exp and fill_policy != "skip":
@@ -422,9 +447,7 @@ def demux_streaming(
                 skipped_segments.append(i)
                 continue
             if last_written_frame is None:
-                msg = (
-                    f"Segment {i} lacks source and no previous frame to repeat; skipping {planned} frame(s)"
-                )
+                msg = f"Segment {i} lacks source and no previous frame to repeat; skipping {planned} frame(s)"
                 logger.warning(msg)
                 warnings.append(msg)
                 skipped_segments.append(i)
@@ -448,7 +471,12 @@ def demux_streaming(
             # Emit per-segment progress (skipped or filled from previous)
             reporter.emit(
                 "demux_segment",
-                {"index": int(i), "frames": int(0 if fill_policy == "skip" else planned), "current": int(i + 1), "total": int(max(1, n_segments))},
+                {
+                    "index": int(i),
+                    "frames": int(0 if fill_policy == "skip" else planned),
+                    "current": int(i + 1),
+                    "total": int(max(1, n_segments)),
+                },
             )
             continue
 
@@ -489,7 +517,12 @@ def demux_streaming(
                 skipped_segments.append(i)
                 reporter.emit(
                     "demux_segment",
-                    {"index": int(i), "frames": int(got), "current": int(i + 1), "total": int(max(1, n_segments))},
+                    {
+                        "index": int(i),
+                        "frames": int(got),
+                        "current": int(i + 1),
+                        "total": int(max(1, n_segments)),
+                    },
                 )
                 continue
             if last_written_frame is None:
@@ -522,7 +555,12 @@ def demux_streaming(
         written_now = int(planned if fill_policy != "skip" else got)
         reporter.emit(
             "demux_segment",
-            {"index": int(i), "frames": int(written_now), "current": int(i + 1), "total": int(max(1, n_segments))},
+            {
+                "index": int(i),
+                "frames": int(written_now),
+                "current": int(i + 1),
+                "total": int(max(1, n_segments)),
+            },
         )
         # Optional flush controls
         if flush_between_segments:
@@ -530,7 +568,10 @@ def demux_streaming(
                 writer.flush()
             except Exception:
                 pass
-        if checkpoint_interval_segments and (i + 1) % int(checkpoint_interval_segments) == 0:
+        if (
+            checkpoint_interval_segments
+            and (i + 1) % int(checkpoint_interval_segments) == 0
+        ):
             try:
                 writer.flush()
             except Exception:
@@ -558,3 +599,5 @@ def demux_streaming(
         warnings=warnings,
         segment_real_frames=seg_real_counts,
     )
+
+

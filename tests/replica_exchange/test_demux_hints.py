@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
 import json
+from pathlib import Path
 
-from pmarlo.replica_exchange.demux_plan import DemuxPlan, DemuxSegmentPlan
-from pmarlo.replica_exchange.demux_engine import DemuxResult
-from pmarlo.replica_exchange.demux_metadata import serialize_metadata
-from pmarlo.replica_exchange.demux_hints import load_demux_hints
+from pmarlo.demultiplexing.demux_engine import DemuxResult
+from pmarlo.demultiplexing.demux_hints import load_demux_hints
+from pmarlo.demultiplexing.demux_metadata import serialize_metadata
+from pmarlo.demultiplexing.demux_plan import DemuxPlan, DemuxSegmentPlan
 
 
 def test_contiguous_blocks_with_repairs(tmp_path: Path) -> None:

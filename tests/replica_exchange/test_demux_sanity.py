@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import inspect
+import typing as t
 from pathlib import Path
 
-import typing as t
-
-from pmarlo.replica_exchange.demux import demux_trajectories
-from pmarlo.replica_exchange.demux_metadata import DemuxIntegrityError, DemuxMetadata
+from pmarlo.demultiplexing.demux import demux_trajectories
+from pmarlo.demultiplexing.demux_metadata import DemuxIntegrityError, DemuxMetadata
 from pmarlo.replica_exchange.replica_exchange import ReplicaExchange
 
 
@@ -23,7 +22,9 @@ def test_demux_function_signature_stable() -> None:
     assert f_params[0].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
     # Keyword-only parameters after the * sentinel
     expected_kwonly = ["target_temperature", "equilibration_steps", "progress_callback"]
-    actual_kwonly = [p.name for p in f_params[1:] if p.kind is inspect.Parameter.KEYWORD_ONLY]
+    actual_kwonly = [
+        p.name for p in f_params[1:] if p.kind is inspect.Parameter.KEYWORD_ONLY
+    ]
     assert actual_kwonly == expected_kwonly
 
     # Return type: Optional[str]
@@ -44,8 +45,14 @@ def test_demux_function_signature_stable() -> None:
     m_params = list(m_sig.parameters.values())
     assert m_params[0].name == "self"
     assert m_params[0].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
-    expected_kwonly_m = ["target_temperature", "equilibration_steps", "progress_callback"]
-    actual_kwonly_m = [p.name for p in m_params[1:] if p.kind is inspect.Parameter.KEYWORD_ONLY]
+    expected_kwonly_m = [
+        "target_temperature",
+        "equilibration_steps",
+        "progress_callback",
+    ]
+    actual_kwonly_m = [
+        p.name for p in m_params[1:] if p.kind is inspect.Parameter.KEYWORD_ONLY
+    ]
     assert actual_kwonly_m == expected_kwonly_m
 
 

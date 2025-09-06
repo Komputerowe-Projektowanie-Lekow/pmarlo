@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
 import mdtraj as md
+import numpy as np
 
-from pmarlo.replica_exchange.demux_plan import DemuxPlan, DemuxSegmentPlan
-from pmarlo.replica_exchange.demux_engine import demux_streaming
 from pmarlo.io.trajectory_reader import MDTrajReader
 from pmarlo.io.trajectory_writer import MDTrajDCDWriter
+from pmarlo.demultiplexing.demux_engine import demux_streaming
+from pmarlo.demultiplexing.demux_plan import DemuxPlan, DemuxSegmentPlan
 
 
 def _make_replica(tmp: Path, label: int, n_frames: int = 6, n_atoms: int = 2):
@@ -73,8 +73,12 @@ def test_parallel_equals_sequential(tmp_path: Path):
     mem_seq = _MemWriter().open("", None, True)
     out_seq = tmp_path / "out_seq.dcd"
     reader = MDTrajReader(topology_path=top)
-    demux_streaming(plan, top, reader, mem_seq, fill_policy="repeat", parallel_read_workers=None)
-    writer_seq = MDTrajDCDWriter(rewrite_threshold=8).open(str(out_seq), top, overwrite=True)
+    demux_streaming(
+        plan, top, reader, mem_seq, fill_policy="repeat", parallel_read_workers=None
+    )
+    writer_seq = MDTrajDCDWriter(rewrite_threshold=8).open(
+        str(out_seq), top, overwrite=True
+    )
     # Also persist to disk to ensure saving works
     for batch in mem_seq.frames:
         writer_seq.write_frames(batch)
@@ -82,7 +86,15 @@ def test_parallel_equals_sequential(tmp_path: Path):
 
     # Parallel (2 workers) into memory, then compare
     mem_par = _MemWriter().open("", None, True)
-    demux_streaming(plan, top, reader, mem_par, fill_policy="repeat", parallel_read_workers=2, checkpoint_interval_segments=1)
+    demux_streaming(
+        plan,
+        top,
+        reader,
+        mem_par,
+        fill_policy="repeat",
+        parallel_read_workers=2,
+        checkpoint_interval_segments=1,
+    )
     xyz_seq = np.concatenate(mem_seq.frames, axis=0)
     if not mem_par.frames:
         # In certain CI environments parallel read may be disabled; ensure sequential path produced frames

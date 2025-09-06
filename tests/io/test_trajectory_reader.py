@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import mdtraj as md
 import numpy as np
 import pytest
-
-import mdtraj as md
 
 from pmarlo.io.trajectory_reader import (
     MDTrajReader,

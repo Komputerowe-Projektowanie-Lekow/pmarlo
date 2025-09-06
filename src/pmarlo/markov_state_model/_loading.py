@@ -158,7 +158,7 @@ class LoadingMixin:
         if not meta_path.exists():
             return
         try:
-            from pmarlo.replica_exchange.demux_metadata import DemuxMetadata
+            from pmarlo.demultiplexing.demux_metadata import DemuxMetadata
 
             meta = DemuxMetadata.from_json(meta_path)
             self.demux_metadata = meta

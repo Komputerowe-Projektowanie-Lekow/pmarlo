@@ -11,10 +11,10 @@ Current data flow
 -----------------
 - Entry points:
   - `ReplicaExchange.demux_trajectories(...)` is a thin delegator to
-    `pmarlo.replica_exchange.demux.demux_trajectories(remd, ...)`.
+    `pmarlo.demultiplexing.demux.demux_trajectories(remd, ...)`.
   - Downstream analysis code (e.g., MSM loaders) may consume JSON metadata
     written alongside the demultiplexed trajectory via
-    `pmarlo.replica_exchange.demux_metadata.DemuxMetadata`.
+    `pmarlo.demultiplexing.demux_metadata.DemuxMetadata`.
 
 - Inputs:
   - REMD simulation state object (`ReplicaExchange`) providing:
@@ -102,3 +102,4 @@ Notes for future refactor
 - Tighten invariants and metadata validation (e.g., cross‑checking strides and
   frame counts) and centralize error types.
 """
+

@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from pathlib import Path
 import json
+from pathlib import Path
 
-from pmarlo.replica_exchange.demux_metadata import (
+from pmarlo.demultiplexing.demux_engine import DemuxResult
+from pmarlo.demultiplexing.demux_metadata import (
     DemuxMetadata,
     serialize_metadata,
 )
-from pmarlo.replica_exchange.demux_plan import DemuxPlan, DemuxSegmentPlan
-from pmarlo.replica_exchange.demux_engine import DemuxResult
+from pmarlo.demultiplexing.demux_plan import DemuxPlan, DemuxSegmentPlan
 
 
 def test_serialize_metadata_contains_required_keys(tmp_path: Path) -> None:
@@ -21,7 +21,12 @@ def test_serialize_metadata_contains_required_keys(tmp_path: Path) -> None:
         frames_per_segment=2,
         total_expected_frames=4,
     )
-    result = DemuxResult(total_frames_written=4, repaired_segments=[1], skipped_segments=[], warnings=["ok"])
+    result = DemuxResult(
+        total_frames_written=4,
+        repaired_segments=[1],
+        skipped_segments=[],
+        warnings=["ok"],
+    )
     runtime_info = {
         "exchange_frequency_steps": 10,
         "integration_timestep_ps": 0.002,

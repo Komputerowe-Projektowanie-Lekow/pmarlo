@@ -4,8 +4,12 @@ import importlib
 
 import pytest
 
-from pmarlo.io.trajectory_reader import get_reader, MDTrajReader, TrajectoryIOError
-from pmarlo.io.trajectory_writer import get_writer, MDTrajDCDWriter, TrajectoryWriteError
+from pmarlo.io.trajectory_reader import MDTrajReader, TrajectoryIOError, get_reader
+from pmarlo.io.trajectory_writer import (
+    MDTrajDCDWriter,
+    TrajectoryWriteError,
+    get_writer,
+)
 
 
 def _has_mdanalysis() -> bool:
