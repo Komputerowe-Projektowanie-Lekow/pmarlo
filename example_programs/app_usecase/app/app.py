@@ -201,6 +201,10 @@ def main() -> None:
             maxT = st.number_input("Max T (K)", value=350.0, step=1.0)
             nrep = st.number_input("Num replicas", value=4, step=1)
             steps = st.number_input("Total MD steps", value=5000, step=100)
+            exch = st.number_input(
+                "Exchange frequency (steps)", value=250, step=10,
+                help="Recommended 250–1000 for longer runs"
+            )
             lag = st.number_input("Lag (frames)", value=5, step=1)
             bins_cv1 = st.number_input("Bins for cv1 (Rg)", value=24, step=1)
             bins_cv2 = st.number_input("Bins for cv2 (RMSD)", value=24, step=1)
@@ -217,14 +221,74 @@ def main() -> None:
                 "Build/emit seed", value=123, step=1, help="Seed for emission and build reproducibility"
             )
             emit_stride = st.number_input("Emit stride (downsample)", value=1, step=1, min_value=1)
-            # Resume controls
+            # Temperature schedule selector
+            schedule_mode = st.radio(
+                "Temperature schedule",
+                options=["auto-linear", "auto-geometric", "custom"],
+                index=0,
+                help="Choose how to construct the replica temperature ladder",
+            )
+            apply_ladder = st.checkbox("Apply ladder to run", value=True)
+            temps_list: list[float] | None = None
+            preview_msg = ""
+            if schedule_mode == "auto-geometric":
+                try:
+                    from pmarlo.utils.replica_utils import geometric_ladder as _geom
+                    arr = _geom(float(minT), float(maxT), int(max(2, nrep)))
+                    temps_list = [float(x) for x in list(arr)]
+                    preview_msg = ", ".join(f"{t:.1f}" for t in temps_list)
+                except Exception as e:
+                    st.warning(f"Geometric ladder error: {e}")
+            elif schedule_mode == "custom":
+                raw = st.text_area("Custom temperatures (comma/space-separated)", value="")
+                if raw.strip():
+                    try:
+                        import re as _re
+                        vals = [float(x) for x in _re.split(r"[\s,]+", raw.strip()) if x]
+                        if len(vals) < 2 or any(v <= 0 for v in vals):
+                            raise ValueError("Provide at least two positive values")
+                        if any(vals[i] >= vals[i+1] for i in range(len(vals)-1)):
+                            raise ValueError("Values must be strictly increasing")
+                        temps_list = vals
+                        preview_msg = f"{len(vals)} temps: {vals[0]:.1f}..{vals[-1]:.1f}"
+                    except Exception as e:
+                        st.error(f"Invalid custom list: {e}")
+            else:
+                # auto-linear preview
+                import numpy as _np
+                arr = _np.linspace(float(minT), float(maxT), int(max(2, nrep)))
+                temps_list = [float(x) for x in arr]
+                preview_msg = ", ".join(f"{t:.1f}" for t in temps_list)
+            st.caption("Resolved ladder: " + preview_msg)
+
+            # Starting structure controls
             sims_root = _workspace_root() / "sims"
             prev_runs = [""]
             if sims_root.exists():
                 prev_runs += [str(p) for p in sorted(sims_root.glob("run-*"))]
-            cont_from = st.selectbox("Continue from (optional run dir)", options=prev_runs, index=0)
+            start_choice = st.radio(
+                "Starting structure",
+                options=["Initial PDB", "Last frame of run", "Random high‑T frame of run"],
+                index=0,
+            )
+            start_run = ""
+            if start_choice != "Initial PDB":
+                start_run = st.selectbox("Run directory", options=prev_runs, index=0)
+            # Ladder suggestion
+            if st.button("Suggest ladder"):
+                try:
+                    from pmarlo.utils.replica_utils import geometric_temperature_ladder as _geom_ladder
+
+                    ladder = _geom_ladder(float(minT), float(maxT), int(max(2, nrep)))
+                    st.info(
+                        "Geometric ladder: "
+                        + ", ".join(f"{t:.1f}" for t in ladder)
+                    )
+                except Exception as e:
+                    st.warning(f"Could not suggest ladder: {e}")
             jitter_start = st.checkbox("Jitter start positions", value=False, help="Apply small Gaussian noise to restart positions")
             jitter_sigma = st.number_input("Jitter sigma (Å)", value=0.05, step=0.01, min_value=0.0, format="%.2f")
+            velocity_reseed = st.checkbox("Velocity reseed", value=True, help="Randomize initial velocities even when reusing coordinates")
 
             learn_cv = st.checkbox("Learn CVs (Deep-TICA)", value=False)
             deeptica_params: Dict[str, Any] = {}
@@ -256,14 +320,23 @@ def main() -> None:
                     float(maxT),
                     int(nrep),
                     int(steps),
+                    int(exch),
                     {"Rg": int(bins_cv1), "RMSD_ref": int(bins_cv2)},
                     str(seed_mode),
                     int(fixed_seed_val) if (seed_mode == "fixed" and fixed_seed_val is not None) else None,
                     int(build_seed),
                     int(emit_stride),
-                    _resolve_input_path(cont_from) if cont_from else None,
+                    schedule_mode,
+                    temps_list if apply_ladder else None,
+                    (
+                        "none"
+                        if start_choice == "Initial PDB"
+                        else ("last_frame" if start_choice.startswith("Last frame") else "random_highT")
+                    ),
+                    _resolve_input_path(start_run) if start_run else None,
                     bool(jitter_start),
                     float(jitter_sigma),
+                    bool(velocity_reseed),
                 )
                 try:
                     st.experimental_rerun()
@@ -427,6 +500,42 @@ def main() -> None:
                 elif mlcv.get("skipped"):
                     st.info(f"Learned CVs skipped: {mlcv.get('reason','unknown')}")
 
+        # Diagnostics panel for last simulation
+        st.subheader("REMD Diagnostics")
+        sims = sorted((ws / "sims").glob("run-*"))
+        last_run = sims[-1] if sims else None
+        if last_run and last_run.exists():
+            diag = last_run / "replica_exchange" / "exchange_diagnostics.json"
+            if diag.exists():
+                try:
+                    import json as _json
+                    d = _json.loads(diag.read_text(encoding="utf-8"))
+                    st.write("Acceptance:", f"{d.get('acceptance_mean', float('nan')):.3f}")
+                    st.write("Diffusion (per 10k steps):", f"{d.get('mean_abs_disp_per_10k_steps', float('nan')):.3f}")
+                    # Small table of per-pair acceptance with temperatures
+                    temps = [float(x) for x in d.get("temperatures", [])]
+                    rates = d.get("acceptance_per_pair", [])
+                    if temps and rates and len(temps) >= 2:
+                        rows = [
+                            {
+                                "pair": f"{i}-{i+1}",
+                                "T_i": f"{temps[i]:.1f}",
+                                "T_j": f"{temps[i+1]:.1f}",
+                                "acc": f"{float(rates[i]):.3f}" if i < len(rates) else "NA",
+                            }
+                            for i in range(min(len(temps) - 1, len(rates)))
+                        ]
+                        st.table(rows)
+                    spark = d.get("sparkline", [])
+                    if spark:
+                        st.caption("Per-sweep mean |Δstate| (sparkline)")
+                        try:
+                            st.line_chart(spark, height=100)
+                        except Exception:
+                            st.write(spark[:10], "...")
+                except Exception as e:
+                    st.info(f"No diagnostics available: {e}")
+
     # Poll background jobs
     sim_fut = st.session_state.get("sim_future")
     if sim_fut is not None and sim_fut.done():
@@ -473,14 +582,17 @@ def _run_sim_and_emit_job(
     maxT: float,
     nrep: int,
     steps: int,
+    exchange_frequency: int,
     bins: Dict[str, int],
     seed_mode: str,
     seed_fixed: int | None,
     build_seed: int,
     emit_stride: int,
-    continue_from: Path | None,
+    start_mode: str,
+    start_run: Path | None,
     jitter_start: bool,
     jitter_sigma: float,
+    velocity_reseed: bool,
 ) -> None:
     try:
         # 1) run sim
@@ -493,9 +605,13 @@ def _run_sim_and_emit_job(
             int(steps),
             quick=True,
             random_seed=run_seed,
-            start_from=continue_from,
+            start_mode=str(start_mode),
+            start_run=start_run,
             jitter_start=bool(jitter_start),
             jitter_sigma_A=float(jitter_sigma),
+            velocity_reseed=bool(velocity_reseed),
+            exchange_frequency_steps=int(exchange_frequency),
+            temperature_schedule_mode=str(schedule_mode),
         )
 
         # 2) emit shards under unique subdir per run to avoid overwriting (simple API)
@@ -519,10 +635,26 @@ def _run_sim_and_emit_job(
             "seed_mode": str(seed_mode),
             "sim_seed": (int(run_seed) if run_seed is not None else None),
             "build_seed": int(build_seed),
-            "continue_from": str(continue_from) if continue_from else None,
+            "exchange_frequency_steps": int(exchange_frequency),
+            "temperature_schedule": {"mode": str(schedule_mode), "applied": bool(temps_list is not None)},
+            "start_mode": str(start_mode),
+            "start_run": str(start_run) if start_run else None,
             "jitter_start": bool(jitter_start),
             "jitter_sigma_A": float(jitter_sigma),
+            "velocity_reseed": bool(velocity_reseed),
         }
+        # Copy ladder and provenance into shard directory for convenience
+        try:
+            import shutil as _shutil
+
+            lad = Path(sim.run_dir) / "replica_exchange" / "temps.txt"
+            prov = Path(sim.run_dir) / "replica_exchange" / "provenance.json"
+            if lad.exists():
+                _shutil.copyfile(str(lad), str(shards_dir / "temps.txt"))
+            if prov.exists():
+                _shutil.copyfile(str(prov), str(shards_dir / "provenance.json"))
+        except Exception:
+            pass
         _update_manifest_after_sim(ws, [Path(p).stem for p in shard_jsons], params)
         # Explicit console cue for users following logs
         try:
