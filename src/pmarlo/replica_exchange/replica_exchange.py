@@ -64,6 +64,9 @@ class ReplicaExchange:
         config: Optional[RemdConfig] = None,
         random_seed: Optional[int] = None,
         random_state: int | None = None,
+        start_from_checkpoint: Optional[str | Path] = None,
+        start_from_pdb: Optional[str | Path] = None,
+        jitter_sigma_A: float = 0.0,
     ):  # Explicit opt-in for auto-setup
         """
         Initialize the replica exchange simulation.
@@ -120,6 +123,17 @@ class ReplicaExchange:
 
         self.random_seed = seed
         self.rng = np.random.default_rng(seed)
+
+        # Resume / restart options
+        self.resume_checkpoint: Optional[Path] = (
+            Path(start_from_checkpoint) if start_from_checkpoint else None
+        )
+        self.resume_pdb: Optional[Path] = Path(start_from_pdb) if start_from_pdb else None
+        # Jitter sigma in nanometers (A * 0.1)
+        try:
+            self.resume_jitter_sigma_nm: float = float(jitter_sigma_A) * 0.1
+        except Exception:
+            self.resume_jitter_sigma_nm = 0.0
 
         # Initialize replicas - Fixed: Added proper type annotations
         self.n_replicas = len(self.temperatures)
@@ -192,6 +206,9 @@ class ReplicaExchange:
             target_accept=config.target_accept,
             config=config,
             random_seed=getattr(config, "random_seed", None),
+            start_from_checkpoint=getattr(config, "start_from_checkpoint", None),
+            start_from_pdb=getattr(config, "start_from_pdb", None),
+            jitter_sigma_A=float(getattr(config, "jitter_sigma_A", 0.0) or 0.0),
         )
 
     def plan_reporter_stride(
@@ -308,6 +325,38 @@ class ReplicaExchange:
         ), "reporter_stride is not planned. Call plan_reporter_stride(...) before setup_replicas()"
 
         pdb, forcefield = load_pdb_and_forcefield(self.pdb_file, self.forcefield_files)
+        resume_positions = None
+        if self.resume_pdb is not None and Path(self.resume_pdb).exists():
+            try:
+                pdb_resume = PDBFile(str(self.resume_pdb))
+                # Optional small Gaussian jitter in nm
+                if self.resume_jitter_sigma_nm > 0.0:
+                    import numpy as _np
+                    arr = _np.array(
+                        [[v.x, v.y, v.z] for v in pdb_resume.positions], dtype=float
+                    )
+                    noise = _np.random.normal(
+                        loc=0.0,
+                        scale=float(self.resume_jitter_sigma_nm),
+                        size=arr.shape,
+                    )
+                    arr = arr + noise
+                    from openmm import Vec3
+
+                    resume_positions = [
+                        Vec3(float(x), float(y), float(z)) * unit.nanometer
+                        for x, y, z in arr
+                    ]
+                else:
+                    resume_positions = pdb_resume.positions
+                logger.info(
+                    "Resuming replicas from PDB positions: %s (jitter_nm=%.4f)",
+                    str(self.resume_pdb),
+                    float(self.resume_jitter_sigma_nm),
+                )
+            except Exception as exc:
+                logger.warning("Failed to load resume PDB %s: %s", str(self.resume_pdb), exc)
+                resume_positions = None
         system = create_system(pdb, forcefield)
         log_system_info(system, logger)
         self.metadynamics = setup_metadynamics(
@@ -331,7 +380,13 @@ class ReplicaExchange:
             simulation = self._create_simulation(
                 pdb, system, integrator, platform, platform_properties
             )
-            simulation.context.setPositions(pdb.positions)
+            try:
+                if resume_positions is not None:
+                    simulation.context.setPositions(resume_positions)
+                else:
+                    simulation.context.setPositions(pdb.positions)
+            except Exception:
+                simulation.context.setPositions(pdb.positions)
 
             if (
                 shared_minimized_positions is not None

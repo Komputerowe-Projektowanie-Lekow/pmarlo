@@ -808,11 +808,23 @@ def run_replica_exchange(
     output_dir: str | Path,
     temperatures: List[float],
     total_steps: int,
+    *,
+    random_seed: int | None = None,
+    random_state: int | None = None,
+    start_from_checkpoint: str | Path | None = None,
+    start_from_pdb: str | Path | None = None,
+    jitter_start: bool = False,
+    jitter_sigma_A: float = 0.05,
+    save_state_frequency: int | None = None,
     **kwargs: Any,
 ) -> Tuple[List[str], List[float]]:
     """Run REMD and return (trajectory_files, analysis_temperatures).
 
     Attempts demultiplexing to ~300 K; falls back to per-replica trajectories.
+    When ``random_state`` or ``random_seed`` is provided, the seed is forwarded
+    to the underlying :class:`ReplicaExchange` for deterministic behavior. If
+    both are provided, ``random_state`` takes precedence for backward
+    compatibility.
     """
     remd_out = Path(output_dir) / "replica_exchange"
 
@@ -825,6 +837,10 @@ def run_replica_exchange(
         exchange_frequency = max(50, total_steps // 40)
         dcd_stride = max(1, int(total_steps // 1000))
 
+    # Prefer random_state when both provided for back-compat
+    _seed = int(random_state) if random_state is not None else (
+        int(random_seed) if random_seed is not None else None
+    )
     remd = ReplicaExchange.from_config(
         RemdConfig(
             pdb_file=str(pdb_file),
@@ -833,17 +849,33 @@ def run_replica_exchange(
             exchange_frequency=exchange_frequency,
             auto_setup=False,
             dcd_stride=dcd_stride,
+            random_seed=_seed,
+            start_from_checkpoint=str(start_from_checkpoint) if start_from_checkpoint else None,
+            start_from_pdb=str(start_from_pdb) if start_from_pdb else None,
+            jitter_sigma_A=float(jitter_sigma_A) if jitter_start else 0.0,
         )
     )
     remd.plan_reporter_stride(
         total_steps=int(total_steps), equilibration_steps=int(equil), target_frames=5000
     )
     remd.setup_replicas()
+    # Optional resume from checkpoint state
+    if start_from_checkpoint:
+        try:
+            import pickle as _pkl
+            with open(start_from_checkpoint, "rb") as fh:
+                ckpt = _pkl.load(fh)
+            remd.restore_from_checkpoint(ckpt)
+            # Skip equilibration if resuming from a checkpoint
+            equil = 0
+        except Exception as exc:
+            logger.warning("Failed to restore from checkpoint %s: %s", str(start_from_checkpoint), exc)
     # Optional unified progress callback (many alias names accepted)
     cb = coerce_progress_callback(kwargs)
     remd.run_simulation(
         total_steps=int(total_steps),
         equilibration_steps=int(equil),
+        save_state_frequency=int(save_state_frequency or 10_000),
         progress_callback=cb,
         cancel_token=kwargs.get("cancel_token"),
     )
@@ -1316,6 +1348,7 @@ def emit_shards_rg_rmsd(
     temperature: float = 300.0,
     seed_start: int = 0,
     progress_callback=None,
+    provenance: dict | None = None,
 ) -> list[Path]:
     """Stream trajectories and emit shards with Rg and RMSD to a reference.
 
@@ -1367,10 +1400,18 @@ def emit_shards_rg_rmsd(
             if rmsd_parts
             else _np.zeros((0,), dtype=_np.float64)
         )
+        base_src = {"traj": str(traj_path), "n_frames": int(n)}
+        if provenance:
+            try:
+                merged = dict(provenance)
+                merged.update(base_src)
+                base_src = merged
+            except Exception:
+                pass
         return (
             {"Rg": rg, "RMSD_ref": rmsd},
             None,
-            {"traj": str(traj_path), "n_frames": int(n)},
+            base_src,
         )
 
     from .data.emit import emit_shards_from_trajectories as _emit
@@ -1468,3 +1509,43 @@ def build_from_shards(
         progress_callback=progress_callback,
     )
     return br, ds_hash
+def extract_last_frame_to_pdb(
+    *,
+    trajectory_file: str | Path,
+    topology_pdb: str | Path,
+    out_pdb: str | Path,
+    jitter_sigma_A: float = 0.0,
+) -> Path:
+    """Extract the last frame from a trajectory and write as a PDB.
+
+    Parameters
+    ----------
+    trajectory_file:
+        Path to the input trajectory (e.g., DCD).
+    topology_pdb:
+        PDB topology defining atom order.
+    out_pdb:
+        Destination PDB path to write.
+    jitter_sigma_A:
+        Optional Gaussian noise sigma in Angstroms applied to positions.
+
+    Returns
+    -------
+    Path
+        The output PDB path.
+    """
+    import numpy as _np
+    import mdtraj as _md  # type: ignore
+
+    traj = _md.load(str(trajectory_file), top=str(topology_pdb))
+    if traj.n_frames <= 0:
+        raise ValueError("Trajectory has no frames to extract")
+    last = traj[traj.n_frames - 1]
+    if jitter_sigma_A and float(jitter_sigma_A) > 0.0:
+        noise = _np.random.normal(0.0, float(jitter_sigma_A), size=last.xyz.shape)
+        # MDTraj units are nm; 1 Å = 0.1 nm
+        last.xyz = last.xyz + (noise * 0.1)
+    out_p = Path(out_pdb)
+    out_p.parent.mkdir(parents=True, exist_ok=True)
+    last.save_pdb(str(out_p))
+    return out_p

@@ -11,6 +11,7 @@ Functions:
 """
 
 from dataclasses import dataclass
+import secrets
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -80,13 +81,18 @@ def run_short_sim(
     steps: int,
     *,
     quick: bool = True,
+    random_seed: int | None = None,
+    start_from: Path | None = None,
+    jitter_start: bool = False,
+    jitter_sigma_A: float = 0.05,
 ) -> SimResult:
     """Run a short REMD and return trajectory info.
 
     Uses pmarlo.api.run_replica_exchange to perform the simulation.
     """
     base_out = Path(base_out)
-    run_dir = base_out / "sims" / f"run-{_now_stamp()}"
+    seed_tag = f"-seed{int(random_seed)}" if random_seed is not None else ""
+    run_dir = base_out / "sims" / f"run-{_now_stamp()}{seed_tag}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
     # progress log for simulation
@@ -113,12 +119,50 @@ def run_short_sim(
     except Exception:
         cm = None
 
+    # Detect resume inputs
+    start_from_checkpoint = None
+    start_from_pdb = None
+    if start_from:
+        # Prefer checkpoint if found under provided directory
+        cand_ckpts = sorted(Path(start_from).rglob("checkpoint_step_*.pkl"))
+        if cand_ckpts:
+            start_from_checkpoint = str(cand_ckpts[-1])
+        else:
+            # Try to pick a demuxed trajectory or first replica DCD
+            cands = []
+            try:
+                cands = sorted(Path(start_from).rglob("demux_*.dcd"))
+                if not cands:
+                    cands = sorted(Path(start_from).rglob("replica_*.dcd"))
+            except Exception:
+                cands = []
+            if cands:
+                # Extract last frame to a temp PDB inside run_dir
+                last = cands[-1]
+                start_from_pdb = run_dir / "resume_from.pdb"
+                try:
+                    from pmarlo.api import extract_last_frame_to_pdb as _extract_last
+
+                    _extract_last(
+                        trajectory_file=str(last),
+                        topology_pdb=str(pdb),
+                        out_pdb=str(start_from_pdb),
+                        jitter_sigma_A=float(jitter_sigma_A) if jitter_start else 0.0,
+                    )
+                except Exception:
+                    start_from_pdb = None
+
     traj_files, analysis_temps = run_replica_exchange(
         pdb_file=str(pdb),
         output_dir=str(run_dir),
         temperatures=[float(t) for t in temperatures],
         total_steps=int(steps),
         quick=bool(quick),
+        random_seed=int(random_seed) if random_seed is not None else None,
+        start_from_checkpoint=start_from_checkpoint,
+        start_from_pdb=str(start_from_pdb) if start_from_pdb else None,
+        jitter_start=bool(jitter_start),
+        jitter_sigma_A=float(jitter_sigma_A),
         progress_callback=sim_cb_tee,
         checkpoint_manager=cm,
     )
@@ -129,6 +173,7 @@ def run_short_sim(
         "run_dir": str(run_dir),
         "temperatures": [float(x) for x in temperatures],
         "steps": int(steps),
+        "sim_seed": (int(random_seed) if random_seed is not None else None),
         "traj_files": [str(Path(t)) for t in traj_files],
         "analysis_temperatures": [float(x) for x in analysis_temps],
     }
@@ -255,6 +300,7 @@ def emit_from_trajs_simple(
     temperature: float,
     seed_start: int = 0,
     stride: int = 1,
+    provenance: Dict[str, Any] | None = None,
 ) -> List[Path]:
     out_dir = Path(shards_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -273,7 +319,27 @@ def emit_from_trajs_simple(
         temperature=float(temperature),
         seed_start=int(seed_start),
         progress_callback=emit_cb,
+        provenance=dict(provenance or {}),
     )
+
+
+def choose_sim_seed(mode: str, fixed: int | None = None) -> int | None:
+    """Choose a simulation seed based on mode.
+
+    - "fixed": returns the provided value (normalized to 32-bit int)
+    - "auto": generates a new 32-bit random seed
+    - "none": returns None
+    """
+    mode = str(mode).strip().lower()
+    if mode == "fixed":
+        if fixed is None:
+            raise ValueError("Fixed seed mode requires a seed value")
+        return int(fixed) & 0xFFFFFFFF
+    if mode == "auto":
+        return secrets.randbits(32)
+    if mode == "none":
+        return None
+    raise ValueError(f"Unknown seed mode: {mode}")
 
 
 def _compute_global_edges(
