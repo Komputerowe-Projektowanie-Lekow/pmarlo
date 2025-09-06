@@ -69,4 +69,3 @@ def test_missing_topology_raises(tmp_path: Path):
         _ = reader.probe_length(str(dcd_path))
     with pytest.raises(TrajectoryMissingTopologyError):
         list(reader.iter_frames(str(dcd_path), start=0, stop=2, stride=1))
-

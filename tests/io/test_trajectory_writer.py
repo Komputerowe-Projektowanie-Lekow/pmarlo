@@ -75,4 +75,3 @@ def test_writer_overwrite_flag(tmp_path: Path):
     # Now length should be 2
     reader = MDTrajReader(topology_path=top_path)
     assert reader.probe_length(str(out_path)) == 2
-

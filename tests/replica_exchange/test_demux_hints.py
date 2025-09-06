@@ -47,4 +47,3 @@ def test_contiguous_blocks_with_repairs(tmp_path: Path) -> None:
     assert hints.fill_policy == "repeat"
     assert hints.repaired_segments == [1]
     assert hints.total_expected_frames == 6
-

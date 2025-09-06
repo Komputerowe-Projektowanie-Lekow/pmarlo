@@ -155,4 +155,3 @@ def test_demux_engine_interpolate_between_segments(tmp_path: Path):
     assert np.isclose(xs[2], 200)
     assert np.isclose(xs[3], 201)
     assert 0 in res.repaired_segments
-

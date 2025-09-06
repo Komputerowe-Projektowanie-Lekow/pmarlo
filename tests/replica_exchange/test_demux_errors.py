@@ -68,4 +68,3 @@ def test_demux_engine_reader_error_is_handled(tmp_path: Path):
     writer.close()
     assert res.total_frames_written == 0
     assert 0 in res.skipped_segments
-
