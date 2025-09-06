@@ -8,7 +8,13 @@ final.xml
 /example_programs/programs_outputs/all_capabilities/*
 /example_programs/programs_outputs/free_energy_conformations_msm/*
 /example_programs/programs_outputs/sharded_build/*
-/example_programs/app_usecase/
+/example_programs/app_usecase/app_output/bundles/*
+/example_programs/app_usecase/app_output/models/*
+/example_programs/app_usecase/app_output/shards/*
+/example_programs/app_usecase/app_output/logs/*
+/example_programs/app_usecase/app_output/sims/*
+/example_programs/app_usecase/app_output/state.json
+
 
 
 /utilities/

@@ -14,6 +14,7 @@ import logging
 from pathlib import Path
 
 from pmarlo import api, power_of_two_temperature_ladder
+from pmarlo.replica_exchange import config as demux_config
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 TESTS_DIR = BASE_DIR / "tests" / "data"
@@ -35,6 +36,13 @@ if __name__ == "__main__":
     )
     pdb_path = DEFAULT_PDB.resolve()
     out_dir = ensure_output_dir(OUT_DIR)
+
+    # Enable streaming demux with sensible defaults for examples
+    demux_config.DEMUX_STREAMING_ENABLED = True
+    demux_config.DEMUX_BACKEND = "mdtraj"
+    demux_config.DEMUX_FILL_POLICY = "repeat"
+    demux_config.DEMUX_PARALLEL_WORKERS = None  # change to 2+ to test parallel
+    demux_config.DEMUX_CHUNK_SIZE = 2048
 
     steps = 2000
     temperatures = power_of_two_temperature_ladder(300.0, 390.0, 8)
