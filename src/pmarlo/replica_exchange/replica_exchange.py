@@ -1593,15 +1593,26 @@ class ReplicaExchange:
 
     def _compute_frames_per_replica(self) -> List[int]:
         frames: List[int] = []
+        # Use streaming probe to avoid loading files and to keep plugins quiet
+        try:
+            from pmarlo.io.trajectory_reader import MDTrajReader as _MDTReader
+            reader = _MDTReader(topology_path=str(self.pdb_file))
+        except Exception:
+            reader = None  # type: ignore[assignment]
+
         for traj_file in self.trajectory_files:
             try:
-                if traj_file.exists():
+                if not traj_file.exists():
+                    frames.append(0)
+                    continue
+                if reader is not None:
+                    frames.append(int(reader.probe_length(str(traj_file))))
+                else:
+                    # Fallback: import mdtraj only if necessary
                     import mdtraj as md  # type: ignore
 
-                    t = md.load(str(traj_file), top=self.pdb_file)
+                    t = md.load(str(traj_file), top=str(self.pdb_file))
                     frames.append(int(t.n_frames))
-                else:
-                    frames.append(0)
             except Exception:
                 frames.append(0)
         return frames

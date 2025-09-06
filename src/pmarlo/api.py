@@ -854,7 +854,11 @@ def run_replica_exchange(
     )
     if demuxed:
         try:
-            traj = md.load(str(demuxed), top=str(pdb_file))
+            from pmarlo.io.trajectory_reader import MDTrajReader as _MDTReader
+
+            nframes = _MDTReader(topology_path=str(pdb_file)).probe_length(
+                str(demuxed)
+            )
             reporter_stride = getattr(remd, "reporter_stride", None)
             eff_stride = int(
                 reporter_stride
@@ -866,7 +870,7 @@ def run_replica_exchange(
             # Accept demux if it's close to expected or at least a safe fraction.
             # Large runs may have minor segment repairs or stride mismatches.
             threshold = max(1, expected // 5)  # 20% of expected frames
-            if traj.n_frames >= threshold:
+            if int(nframes) >= threshold:
                 return [str(demuxed)], [300.0]
         except Exception:
             pass
@@ -1320,6 +1324,8 @@ def emit_shards_rg_rmsd(
     deterministic shards under ``out_dir``.
     """
     import mdtraj as md  # type: ignore
+    # Quiet streaming iterator for reading DCDs without plugin chatter
+    from pmarlo.io import trajectory as _traj_io
 
     pdb_file = Path(pdb_file)
     out_dir = Path(out_dir)
