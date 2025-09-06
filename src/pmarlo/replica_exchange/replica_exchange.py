@@ -31,6 +31,7 @@ from ..utils.replica_utils import exponential_temperature_ladder
 from .config import RemdConfig
 from ..demultiplexing.demux import demux_trajectories as _demux_trajectories
 from .diagnostics import compute_exchange_statistics, retune_temperature_ladder
+from .diagnostics import compute_diffusion_metrics
 from .platform_selector import select_platform_and_properties
 from .system_builder import (
     create_system,
@@ -67,6 +68,8 @@ class ReplicaExchange:
         start_from_checkpoint: Optional[str | Path] = None,
         start_from_pdb: Optional[str | Path] = None,
         jitter_sigma_A: float = 0.0,
+        reseed_velocities: bool = False,
+        temperature_schedule_mode: str | None = None,
     ):  # Explicit opt-in for auto-setup
         """
         Initialize the replica exchange simulation.
@@ -89,6 +92,9 @@ class ReplicaExchange:
             "amber14/tip3pfb.xml",
         ]
         self.temperatures = temperatures or self._generate_temperature_ladder()
+        # Validate temperature ladder when explicitly provided or generated
+        self._validate_temperature_ladder(self.temperatures)
+
         self.output_dir = Path(output_dir)
         self.exchange_frequency = exchange_frequency
         self.dcd_stride = dcd_stride
@@ -134,6 +140,10 @@ class ReplicaExchange:
             self.resume_jitter_sigma_nm: float = float(jitter_sigma_A) * 0.1
         except Exception:
             self.resume_jitter_sigma_nm = 0.0
+        self.reseed_velocities: bool = bool(reseed_velocities)
+        self.temperature_schedule_mode: str | None = (
+            str(temperature_schedule_mode) if temperature_schedule_mode else None
+        )
 
         # Initialize replicas - Fixed: Added proper type annotations
         self.n_replicas = len(self.temperatures)
@@ -209,6 +219,8 @@ class ReplicaExchange:
             start_from_checkpoint=getattr(config, "start_from_checkpoint", None),
             start_from_pdb=getattr(config, "start_from_pdb", None),
             jitter_sigma_A=float(getattr(config, "jitter_sigma_A", 0.0) or 0.0),
+            reseed_velocities=bool(getattr(config, "reseed_velocities", False)),
+            temperature_schedule_mode=getattr(config, "temperature_schedule_mode", None),
         )
 
     def plan_reporter_stride(
@@ -387,6 +399,12 @@ class ReplicaExchange:
                     simulation.context.setPositions(pdb.positions)
             except Exception:
                 simulation.context.setPositions(pdb.positions)
+            # Optional velocity reseed on start
+            if self.reseed_velocities:
+                try:
+                    simulation.context.setVelocitiesToTemperature(temperature * unit.kelvin)
+                except Exception:
+                    pass
 
             if (
                 shared_minimized_positions is not None
@@ -631,6 +649,20 @@ class ReplicaExchange:
         simulation.reporters.append(dcd_reporter)
         self._replica_reporter_stride.append(stride)
         return traj_file
+
+    @staticmethod
+    def _validate_temperature_ladder(temps: List[float]) -> None:
+        if temps is None:
+            raise ValueError("Temperature ladder is None")
+        if len(temps) < 2:
+            raise ValueError("Temperature ladder must have at least 2 values")
+        last = None
+        for t in temps:
+            if float(t) <= 0.0:
+                raise ValueError("Temperatures must be > 0 K")
+            if last is not None and float(t) <= float(last):
+                raise ValueError("Temperature ladder must be strictly increasing")
+            last = t
 
     def _store_replica_data(
         self,
@@ -1542,6 +1574,31 @@ class ReplicaExchange:
         logger.info(f"Total exchanges attempted: {self.exchange_attempts}")
         logger.info(f"Total exchanges accepted: {self.exchanges_accepted}")
         logger.info("=" * 60)
+        # Warn on poor acceptance
+        if final_acceptance < 0.15 or final_acceptance > 0.6:
+            logger.warning(
+                (
+                    "Exchange acceptance %.2f out of recommended [0.15, 0.60]. "
+                    "Consider increasing number of replicas or widening temperature range."
+                ),
+                final_acceptance,
+            )
+
+        # Diffusion diagnostics
+        try:
+            diff = compute_diffusion_metrics(
+                self.exchange_history, self.exchange_frequency
+            )
+            if diff.get("mean_abs_disp_per_10k_steps", 0.0) < 0.5:
+                logger.warning(
+                    (
+                        "Replica index diffusion is low (%.2f per 10k steps). "
+                        "Consider wider T-range or more replicas."
+                    ),
+                    diff.get("mean_abs_disp_per_10k_steps", 0.0),
+                )
+        except Exception:
+            pass
 
     def _close_dcd_files(self):
         """Close and flush all DCD files to ensure data is written."""
@@ -1605,6 +1662,59 @@ class ReplicaExchange:
         with open(json_file, "w") as json_f:
             json.dump({"remd": result.to_dict(metadata_only=True)}, json_f)
         logger.info(f"Results saved to {results_file}")
+        # Write exchange diagnostics JSON for app visibility
+        try:
+            diag = {
+                "acceptance_mean": float(
+                    self.exchanges_accepted / max(1, self.exchange_attempts)
+                ),
+                "exchange_frequency": int(self.exchange_frequency),
+                "temperatures": [float(t) for t in self.temperatures],
+            }
+            diag.update(
+                compute_diffusion_metrics(self.exchange_history, self.exchange_frequency)
+            )
+            extra = compute_exchange_statistics(
+                self.exchange_history, self.n_replicas, self.pair_attempt_counts, self.pair_accept_counts
+            )
+            # Extract per-pair acceptance as a compact list ordered by neighbor index
+            pair_rates = []
+            for i in range(max(0, self.n_replicas - 1)):
+                pair = (i, i + 1)
+                att = self.pair_attempt_counts.get(pair, 0)
+                acc = self.pair_accept_counts.get(pair, 0)
+                pair_rates.append(float(acc / max(1, att)))
+            diag["acceptance_per_pair"] = pair_rates
+            diag["average_round_trip_time"] = extra.get("average_round_trip_time", 0.0)
+            dfile = self.output_dir / "exchange_diagnostics.json"
+            with open(dfile, "w", encoding="utf-8") as fh:
+                json.dump(diag, fh, sort_keys=True, separators=(",", ":"))
+            logger.info("Exchange diagnostics saved to %s", str(dfile))
+            # Also save under a canonical name for future tooling
+            with open(self.output_dir / "remd_diagnostics.json", "w", encoding="utf-8") as fh2:
+                json.dump(diag, fh2, sort_keys=True, separators=(",", ":"))
+        except Exception as exc:
+            logger.debug("Failed to save exchange diagnostics: %s", exc)
+
+        # Write provenance.json and temps.txt
+        try:
+            prov = {
+                "temperature_schedule": {
+                    "mode": self.temperature_schedule_mode or "auto-linear",
+                    "temperatures": [float(t) for t in self.temperatures],
+                },
+                "exchange_frequency_steps": int(self.exchange_frequency),
+                "random_seed": int(self.random_seed),
+            }
+            prov_file = self.output_dir / "provenance.json"
+            with open(prov_file, "w", encoding="utf-8") as fh:
+                json.dump(prov, fh, sort_keys=True, separators=(",", ":"))
+            # temps.txt, one per line
+            with open(self.output_dir / "temps.txt", "w", encoding="utf-8") as tf:
+                for t in self.temperatures:
+                    tf.write(f"{float(t):.6f}\n")
+        except Exception as exc:
+            logger.debug("Failed to write provenance/temps: %s", exc)
 
     def tune_temperature_ladder(
         self, target_acceptance: Optional[float] = None

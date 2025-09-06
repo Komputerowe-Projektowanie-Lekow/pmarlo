@@ -815,7 +815,10 @@ def run_replica_exchange(
     start_from_pdb: str | Path | None = None,
     jitter_start: bool = False,
     jitter_sigma_A: float = 0.05,
+    velocity_reseed: bool = False,
+    exchange_frequency_steps: int | None = None,
     save_state_frequency: int | None = None,
+    temperature_schedule_mode: str | None = None,
     **kwargs: Any,
 ) -> Tuple[List[str], List[float]]:
     """Run REMD and return (trajectory_files, analysis_temperatures).
@@ -836,6 +839,9 @@ def run_replica_exchange(
         equil = min(total_steps // 20, 100)
         exchange_frequency = max(50, total_steps // 40)
         dcd_stride = max(1, int(total_steps // 1000))
+    # Allow explicit override from caller
+    if exchange_frequency_steps is not None and int(exchange_frequency_steps) > 0:
+        exchange_frequency = int(exchange_frequency_steps)
 
     # Prefer random_state when both provided for back-compat
     _seed = int(random_state) if random_state is not None else (
@@ -853,6 +859,8 @@ def run_replica_exchange(
             start_from_checkpoint=str(start_from_checkpoint) if start_from_checkpoint else None,
             start_from_pdb=str(start_from_pdb) if start_from_pdb else None,
             jitter_sigma_A=float(jitter_sigma_A) if jitter_start else 0.0,
+            reseed_velocities=bool(velocity_reseed),
+            temperature_schedule_mode=temperature_schedule_mode,
         )
     )
     remd.plan_reporter_stride(
@@ -1548,4 +1556,60 @@ def extract_last_frame_to_pdb(
     out_p = Path(out_pdb)
     out_p.parent.mkdir(parents=True, exist_ok=True)
     last.save_pdb(str(out_p))
+    return out_p
+
+
+def extract_random_highT_frame_to_pdb(
+    *,
+    run_dir: str | Path,
+    topology_pdb: str | Path,
+    out_pdb: str | Path,
+    jitter_sigma_A: float = 0.0,
+    rng_seed: int | None = None,
+) -> Path:
+    """Extract a random frame from the highest-temperature replica of a run.
+
+    Falls back to the last `replica_*.dcd` when metadata is missing.
+    """
+    import json as _json
+    import numpy as _np
+    import mdtraj as _md  # type: ignore
+
+    rd = Path(run_dir)
+    analysis_json = rd / "replica_exchange" / "analysis_results.json"
+    traj_path: Path | None = None
+    if analysis_json.exists():
+        try:
+            data = _json.loads(analysis_json.read_text())
+            remd = data.get("remd", {})
+            temps = remd.get("temperatures", [])
+            tfiles = remd.get("trajectory_files", [])
+            if temps and tfiles and len(temps) == len(tfiles):
+                # Choose highest temperature index
+                # temps may be nested list from metadata-only; coerce
+                temps_f = [float(x) for x in temps]
+                i_max = int(_np.argmax(temps_f))
+                cand = Path(tfiles[i_max])
+                traj_path = cand if cand.is_absolute() else (rd / cand)
+        except Exception:
+            traj_path = None
+    if traj_path is None:
+        # Fallback: pick highest replica index .dcd
+        dcds = sorted((rd / "replica_exchange").glob("replica_*.dcd"))
+        if not dcds:
+            raise FileNotFoundError(f"No replica_*.dcd found under {rd / 'replica_exchange'}")
+        traj_path = dcds[-1]
+
+    traj = _md.load(str(traj_path), top=str(topology_pdb))
+    if traj.n_frames <= 0:
+        raise ValueError("Trajectory has no frames to extract")
+    rng = _np.random.default_rng(rng_seed)
+    idx = int(rng.integers(0, traj.n_frames))
+    frame = traj[idx]
+    if jitter_sigma_A and float(jitter_sigma_A) > 0.0:
+        noise = _np.random.normal(0.0, float(jitter_sigma_A), size=frame.xyz.shape)
+        frame.xyz = frame.xyz + (noise * 0.1)
+    out_p = Path(out_pdb)
+    out_p.parent.mkdir(parents=True, exist_ok=True)
+    frame.save_pdb(str(out_p))
     return out_p

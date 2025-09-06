@@ -48,3 +48,5 @@ class RemdConfig:
     start_from_checkpoint: Optional[Path | str] = None
     start_from_pdb: Optional[Path | str] = None
     jitter_sigma_A: float = 0.0
+    reseed_velocities: bool = False
+    temperature_schedule_mode: str | None = None

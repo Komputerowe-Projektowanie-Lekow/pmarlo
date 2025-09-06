@@ -82,9 +82,13 @@ def run_short_sim(
     *,
     quick: bool = True,
     random_seed: int | None = None,
-    start_from: Path | None = None,
+    start_mode: str = "none",  # "none" | "resume" | "last_frame" | "random_highT"
+    start_run: Path | None = None,
     jitter_start: bool = False,
     jitter_sigma_A: float = 0.05,
+    velocity_reseed: bool = False,
+    exchange_frequency_steps: int | None = None,
+    temperature_schedule_mode: str | None = None,
 ) -> SimResult:
     """Run a short REMD and return trajectory info.
 
@@ -119,38 +123,42 @@ def run_short_sim(
     except Exception:
         cm = None
 
-    # Detect resume inputs
+    # Select starting conditions
     start_from_checkpoint = None
     start_from_pdb = None
-    if start_from:
-        # Prefer checkpoint if found under provided directory
-        cand_ckpts = sorted(Path(start_from).rglob("checkpoint_step_*.pkl"))
+    if start_mode == "resume" and start_run is not None:
+        cand_ckpts = sorted(Path(start_run).rglob("checkpoint_step_*.pkl"))
         if cand_ckpts:
             start_from_checkpoint = str(cand_ckpts[-1])
-        else:
-            # Try to pick a demuxed trajectory or first replica DCD
-            cands = []
-            try:
-                cands = sorted(Path(start_from).rglob("demux_*.dcd"))
-                if not cands:
-                    cands = sorted(Path(start_from).rglob("replica_*.dcd"))
-            except Exception:
-                cands = []
-            if cands:
-                # Extract last frame to a temp PDB inside run_dir
-                last = cands[-1]
-                start_from_pdb = run_dir / "resume_from.pdb"
-                try:
-                    from pmarlo.api import extract_last_frame_to_pdb as _extract_last
+    elif start_mode == "last_frame" and start_run is not None:
+        try:
+            from pmarlo.api import extract_last_frame_to_pdb as _extract_last
 
-                    _extract_last(
-                        trajectory_file=str(last),
-                        topology_pdb=str(pdb),
-                        out_pdb=str(start_from_pdb),
-                        jitter_sigma_A=float(jitter_sigma_A) if jitter_start else 0.0,
-                    )
-                except Exception:
-                    start_from_pdb = None
+            start_from_pdb = run_dir / "start_from_last.pdb"
+            # Prefer demux; else fall back to highest replica DCD
+            demux = sorted(Path(start_run).rglob("demux_*.dcd"))
+            traj = demux[-1] if demux else sorted((Path(start_run) / "replica_exchange").glob("replica_*.dcd"))[-1]
+            _extract_last(
+                trajectory_file=str(traj),
+                topology_pdb=str(pdb),
+                out_pdb=str(start_from_pdb),
+                jitter_sigma_A=float(jitter_sigma_A) if jitter_start else 0.0,
+            )
+        except Exception:
+            start_from_pdb = None
+    elif start_mode == "random_highT" and start_run is not None:
+        try:
+            from pmarlo.api import extract_random_highT_frame_to_pdb as _extract_rand
+
+            start_from_pdb = run_dir / "start_from_random_highT.pdb"
+            _extract_rand(
+                run_dir=str(start_run),
+                topology_pdb=str(pdb),
+                out_pdb=str(start_from_pdb),
+                jitter_sigma_A=float(jitter_sigma_A) if jitter_start else 0.0,
+            )
+        except Exception:
+            start_from_pdb = None
 
     traj_files, analysis_temps = run_replica_exchange(
         pdb_file=str(pdb),
@@ -163,6 +171,9 @@ def run_short_sim(
         start_from_pdb=str(start_from_pdb) if start_from_pdb else None,
         jitter_start=bool(jitter_start),
         jitter_sigma_A=float(jitter_sigma_A),
+        velocity_reseed=bool(velocity_reseed),
+        exchange_frequency_steps=int(exchange_frequency_steps) if exchange_frequency_steps is not None else None,
+        temperature_schedule_mode=temperature_schedule_mode,
         progress_callback=sim_cb_tee,
         checkpoint_manager=cm,
     )
