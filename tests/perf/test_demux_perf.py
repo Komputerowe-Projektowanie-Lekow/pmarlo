@@ -140,4 +140,3 @@ def test_perf_streaming_demux(benchmark, tmp_path: Path):
     result = benchmark(_bench)
     total, cur, peak = result
     print(f"streaming demux: frames={total} peak_mem_bytes={peak}")
-

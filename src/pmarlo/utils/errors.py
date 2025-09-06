@@ -21,4 +21,3 @@ class DemuxPlanError(DemuxError):
 
 class DemuxWriterError(DemuxError):
     """Failure to write output trajectory frames or finalize writing."""
-

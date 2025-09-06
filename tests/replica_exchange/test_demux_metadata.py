@@ -76,4 +76,3 @@ def test_demuxmetadata_roundtrip_and_json_schema_key(tmp_path: Path) -> None:
     # v1 fields still parsed
     assert loaded.exchange_frequency_steps == 5
     assert loaded.frames_per_segment == 5
-

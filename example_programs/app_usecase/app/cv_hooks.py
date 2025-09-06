@@ -18,4 +18,3 @@ def default_deeptica_params(lag: int = 5) -> Dict[str, Any]:
         "early_stopping": 20,
         "reweight_mode": "scaled_time",
     }
-

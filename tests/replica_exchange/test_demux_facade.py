@@ -86,4 +86,3 @@ def test_demux_facade_streaming_disabled(tmp_path: Path):
     assert data.get("schema_version") == 2
     traj = md.load(str(path), top=pdb)
     assert traj.n_frames == 2
-

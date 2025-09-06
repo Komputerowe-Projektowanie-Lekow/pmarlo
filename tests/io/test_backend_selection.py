@@ -54,4 +54,3 @@ def test_get_reader_unknown_backend_raises():
 def test_get_writer_unknown_backend_raises():
     with pytest.raises(TrajectoryWriteError):
         get_writer("unknown_backend", topology_path=None)
-

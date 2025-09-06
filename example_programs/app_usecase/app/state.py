@@ -49,4 +49,3 @@ def write_manifest(workspace: Path, data: Dict[str, Any]) -> None:
     p = _state_path(workspace)
     text = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     p.write_text(text, encoding="utf-8")
-

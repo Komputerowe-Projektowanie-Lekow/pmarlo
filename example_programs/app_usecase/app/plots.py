@@ -86,4 +86,3 @@ def plot_fes(fes: Any | None) -> plt.Figure:
         ax.set_ylabel("cv2")
     ax.set_title("Free Energy Surface")
     return fig
-

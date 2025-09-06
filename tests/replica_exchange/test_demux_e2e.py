@@ -100,4 +100,3 @@ def test_demux_e2e_streaming_small(tmp_path: Path):
         demux_config.DEMUX_STREAMING_ENABLED = prev_flag
         demux_config.DEMUX_IO_BACKEND = prev_backend
         demux_config.DEMUX_FILL_POLICY = prev_policy
-

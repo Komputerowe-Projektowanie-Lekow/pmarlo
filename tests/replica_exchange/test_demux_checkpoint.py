@@ -83,4 +83,3 @@ def test_checkpoint_every_segment_triggers_flush(tmp_path: Path):
     # Validate final output has all frames
     traj = md.load(str(out), top=top)
     assert traj.n_frames == 3
-
