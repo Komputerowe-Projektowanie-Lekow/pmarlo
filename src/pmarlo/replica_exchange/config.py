@@ -44,3 +44,7 @@ class RemdConfig:
     target_frames_per_replica: int = 5000
     target_accept: float = 0.30
     random_seed: Optional[int] = None
+    # Resume options
+    start_from_checkpoint: Optional[Path | str] = None
+    start_from_pdb: Optional[Path | str] = None
+    jitter_sigma_A: float = 0.0

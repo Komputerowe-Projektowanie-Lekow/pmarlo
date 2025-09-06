@@ -19,6 +19,7 @@ try:  # first try relative imports when executed as a package module
         extractor_factory,
         recompute_msm_from_shards,
         run_short_sim,
+        choose_sim_seed,
     )
     from .plots import plot_fes, plot_msm
     from .state import read_manifest, write_manifest
@@ -36,6 +37,7 @@ except Exception:  # pragma: no cover - UI convenience fallback
         extractor_factory,
         recompute_msm_from_shards,
         run_short_sim,
+        choose_sim_seed,
     )
     from plots import plot_fes, plot_msm  # type: ignore
     from state import read_manifest, write_manifest  # type: ignore
@@ -202,8 +204,27 @@ def main() -> None:
             lag = st.number_input("Lag (frames)", value=5, step=1)
             bins_cv1 = st.number_input("Bins for cv1 (Rg)", value=24, step=1)
             bins_cv2 = st.number_input("Bins for cv2 (RMSD)", value=24, step=1)
-            seed = st.number_input("Seed", value=123, step=1)
+            seed_mode = st.radio(
+                "Simulation seed",
+                options=["fixed", "auto", "none"],
+                index=2,
+                help="fixed: use the provided seed; auto: new 32-bit seed per run; none: engine default",
+            )
+            fixed_seed_val = None
+            if seed_mode == "fixed":
+                fixed_seed_val = st.number_input("Fixed seed", value=123, step=1)
+            build_seed = st.number_input(
+                "Build/emit seed", value=123, step=1, help="Seed for emission and build reproducibility"
+            )
             emit_stride = st.number_input("Emit stride (downsample)", value=1, step=1, min_value=1)
+            # Resume controls
+            sims_root = _workspace_root() / "sims"
+            prev_runs = [""]
+            if sims_root.exists():
+                prev_runs += [str(p) for p in sorted(sims_root.glob("run-*"))]
+            cont_from = st.selectbox("Continue from (optional run dir)", options=prev_runs, index=0)
+            jitter_start = st.checkbox("Jitter start positions", value=False, help="Apply small Gaussian noise to restart positions")
+            jitter_sigma = st.number_input("Jitter sigma (Å)", value=0.05, step=0.01, min_value=0.0, format="%.2f")
 
             learn_cv = st.checkbox("Learn CVs (Deep-TICA)", value=False)
             deeptica_params: Dict[str, Any] = {}
@@ -236,8 +257,13 @@ def main() -> None:
                     int(nrep),
                     int(steps),
                     {"Rg": int(bins_cv1), "RMSD_ref": int(bins_cv2)},
-                    int(seed),
+                    str(seed_mode),
+                    int(fixed_seed_val) if (seed_mode == "fixed" and fixed_seed_val is not None) else None,
+                    int(build_seed),
                     int(emit_stride),
+                    _resolve_input_path(cont_from) if cont_from else None,
+                    bool(jitter_start),
+                    float(jitter_sigma),
                 )
                 try:
                     st.experimental_rerun()
@@ -252,7 +278,7 @@ def main() -> None:
                     ws,
                     int(lag),
                     {"Rg": int(bins_cv1), "RMSD_ref": int(bins_cv2)},
-                    int(seed),
+                    int(build_seed),
                     float((minT + maxT) / 2.0),
                     bool(learn_cv),
                     dict(deeptica_params or {}),
@@ -271,7 +297,7 @@ def main() -> None:
                     ws,
                     int(lag),
                     {"Rg": int(bins_cv1), "RMSD_ref": int(bins_cv2)},
-                    int(seed),
+                    int(build_seed),
                     float((minT + maxT) / 2.0),
                     True,
                     dparams,
@@ -448,13 +474,29 @@ def _run_sim_and_emit_job(
     nrep: int,
     steps: int,
     bins: Dict[str, int],
-    seed: int,
+    seed_mode: str,
+    seed_fixed: int | None,
+    build_seed: int,
     emit_stride: int,
+    continue_from: Path | None,
+    jitter_start: bool,
+    jitter_sigma: float,
 ) -> None:
     try:
         # 1) run sim
         temps = list(np.linspace(float(minT), float(maxT), int(max(2, nrep))))
-        sim = run_short_sim(Path(pdb), ws, temps, int(steps), quick=True)
+        run_seed = choose_sim_seed(str(seed_mode), fixed=(int(seed_fixed) if seed_fixed is not None else None))
+        sim = run_short_sim(
+            Path(pdb),
+            ws,
+            temps,
+            int(steps),
+            quick=True,
+            random_seed=run_seed,
+            start_from=continue_from,
+            jitter_start=bool(jitter_start),
+            jitter_sigma_A=float(jitter_sigma),
+        )
 
         # 2) emit shards under unique subdir per run to avoid overwriting (simple API)
         shards_dir = ws / "shards" / Path(sim.run_dir).name
@@ -464,8 +506,9 @@ def _run_sim_and_emit_job(
             pdb=Path(pdb),
             ref_dcd=Path(ref_dcd) if ref_dcd else None,
             temperature=float(np.median(temps)),
-            seed_start=int(seed),
+            seed_start=int(build_seed),
             stride=int(max(1, emit_stride)),
+            provenance={"sim_seed": (int(run_seed) if run_seed is not None else None), "seed_mode": str(seed_mode)},
         )
 
         # 3) update manifest (no build here)
@@ -473,7 +516,12 @@ def _run_sim_and_emit_job(
             "temperatures": temps,
             "steps": int(steps),
             "bins": bins,
-            "seed": int(seed),
+            "seed_mode": str(seed_mode),
+            "sim_seed": (int(run_seed) if run_seed is not None else None),
+            "build_seed": int(build_seed),
+            "continue_from": str(continue_from) if continue_from else None,
+            "jitter_start": bool(jitter_start),
+            "jitter_sigma_A": float(jitter_sigma),
         }
         _update_manifest_after_sim(ws, [Path(p).stem for p in shard_jsons], params)
         # Explicit console cue for users following logs
