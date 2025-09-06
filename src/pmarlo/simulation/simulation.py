@@ -485,7 +485,17 @@ def feature_extraction(
     """
     print("Stage 4/5  –  featurisation + clustering ...")
 
-    traj = md.load(dcd_path, top=pdb_path)
+    # Load via quiet streaming to avoid dcdplugin console spam
+    from pmarlo.io import trajectory as _traj_io
+    import mdtraj as md
+
+    traj = None
+    loaded = 0
+    for chunk in _traj_io.iterload(str(dcd_path), top=str(pdb_path), stride=1, chunk=1000):
+        traj = chunk if traj is None else traj.join(chunk)
+        loaded += int(chunk.n_frames)
+    if traj is None:
+        raise ValueError("No frames loaded from trajectory for feature extraction")
     print("Number of frames loaded:", traj.n_frames)
 
     specs = feature_specs if feature_specs is not None else ["phi_psi"]

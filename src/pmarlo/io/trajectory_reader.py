@@ -187,11 +187,11 @@ class MDTrajReader:
         return ext in {".dcd", ".xtc", ".trr", ".nc"}
 
     def _iterload(self, path: str, *, stride: int = 1):  # type: ignore[override]
-        try:
-            import mdtraj as md  # type: ignore
-        except Exception as exc:  # pragma: no cover - import errors are environmental
-            raise TrajectoryIOError("mdtraj is required for MDTrajReader") from exc
+        """Open an iterator over trajectory chunks with plugin chatter silenced.
 
+        Uses pmarlo.io.trajectory.iterload which redirects the VMD/MDTraj DCD
+        plugin output away from stdout/stderr, preventing noisy console spam.
+        """
         top = self.topology_path
         if self._requires_topology(path) and not top:
             raise TrajectoryMissingTopologyError(
@@ -199,7 +199,13 @@ class MDTrajReader:
             )
 
         try:
-            return md.iterload(path, top=top, chunk=self.chunk_size, stride=1)
+            from pmarlo.io import trajectory as _traj_io
+
+            return _traj_io.iterload(
+                path, top=top, chunk=int(self.chunk_size), stride=1
+            )
+        except TrajectoryIOError:
+            raise
         except Exception as exc:
             raise TrajectoryFormatError(
                 f"Failed to open trajectory '{path}': {exc}"
