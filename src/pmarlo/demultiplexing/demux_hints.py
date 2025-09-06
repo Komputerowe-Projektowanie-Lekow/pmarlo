@@ -1,10 +1,9 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
-
-import json
 
 
 @dataclass(frozen=True)
@@ -71,3 +70,5 @@ def load_demux_hints(meta_path: str | Path | Dict[str, object]) -> DemuxHints:
         skipped_segments=[int(x) for x in (d.get("skipped_segments", []) or [])],
         total_expected_frames=total,
     )
+
+

@@ -41,6 +41,7 @@ except Exception:  # pragma: no cover - UI convenience fallback
     from state import read_manifest, write_manifest  # type: ignore
     from cv_hooks import default_deeptica_params  # type: ignore
 from pmarlo.engine.build import BuildResult
+from pmarlo.utils.cleanup import prune_workspace
 
 
 # Global single-worker executor to serialize runs
@@ -281,6 +282,24 @@ def main() -> None:
                     pass
         st.caption("Tip: Learn CVs is a build‑time option; no new simulation needed.")
 
+        # Workspace cleanup controls
+        st.subheader("Disk Cleanup")
+        st.caption(
+            "Prune large intermediates (DCDs, checkpoints, logs) after shards/bundles exist."
+        )
+        mode = st.selectbox("Prune mode", ["conservative", "aggressive"], index=0)
+        dry_run = st.checkbox("Dry run (list only)", value=True)
+        if st.button("Prune workspace", disabled=any_running):
+            try:
+                rep = prune_workspace(ws, mode=mode, dry_run=bool(dry_run))
+                st.success(
+                    f"Cleanup completed: removed={len(rep.removed)} kept={len(rep.kept)} errors={len(rep.errors)}"
+                )
+                with st.expander("Details", expanded=False):
+                    st.json(rep.to_dict())
+            except Exception as e:
+                st.error(f"Cleanup failed: {e}")
+
         if st.button("Clear all data (outputs)", disabled=any_running):
             _clear_workspace(ws)
             try:
@@ -390,6 +409,10 @@ def main() -> None:
             st.session_state["last_sim_message"] = "Simulation and emission finished successfully. You can now Build MSM/FES."
         except Exception as e:
             st.error(f"Simulation failed: {e}")
+            try:
+                print(f"[pmarlo] workflow: simulation failed: {e}", flush=True)
+            except Exception:
+                pass
         finally:
             st.session_state["sim_future"] = None
             try:
@@ -404,6 +427,10 @@ def main() -> None:
             st.session_state["last_build_message"] = "Build finished successfully. Plots updated."
         except Exception as e:
             st.error(f"Build failed: {e}")
+            try:
+                print(f"[pmarlo] workflow: build failed: {e}", flush=True)
+            except Exception:
+                pass
         finally:
             st.session_state["build_future"] = None
             try:
@@ -424,38 +451,45 @@ def _run_sim_and_emit_job(
     seed: int,
     emit_stride: int,
 ) -> None:
-    # 1) run sim
-    temps = list(np.linspace(float(minT), float(maxT), int(max(2, nrep))))
-    sim = run_short_sim(Path(pdb), ws, temps, int(steps), quick=True)
-
-    # 2) emit shards under unique subdir per run to avoid overwriting (simple API)
-    shards_dir = ws / "shards" / Path(sim.run_dir).name
-    shard_jsons = emit_from_trajs_simple(
-        sim.traj_files,
-        shards_dir,
-        pdb=Path(pdb),
-        ref_dcd=Path(ref_dcd) if ref_dcd else None,
-        temperature=float(np.median(temps)),
-        seed_start=int(seed),
-        stride=int(max(1, emit_stride)),
-    )
-
-    # 3) update manifest (no build here)
-    params = {
-        "temperatures": temps,
-        "steps": int(steps),
-        "bins": bins,
-        "seed": int(seed),
-    }
-    _update_manifest_after_sim(ws, [Path(p).stem for p in shard_jsons], params)
-    # Explicit console cue for users following logs
     try:
-        print(
-            "[pmarlo] workflow: simulation + emission finished successfully; next → Build MSM/FES",
-            flush=True,
+        # 1) run sim
+        temps = list(np.linspace(float(minT), float(maxT), int(max(2, nrep))))
+        sim = run_short_sim(Path(pdb), ws, temps, int(steps), quick=True)
+
+        # 2) emit shards under unique subdir per run to avoid overwriting (simple API)
+        shards_dir = ws / "shards" / Path(sim.run_dir).name
+        shard_jsons = emit_from_trajs_simple(
+            sim.traj_files,
+            shards_dir,
+            pdb=Path(pdb),
+            ref_dcd=Path(ref_dcd) if ref_dcd else None,
+            temperature=float(np.median(temps)),
+            seed_start=int(seed),
+            stride=int(max(1, emit_stride)),
         )
-    except Exception:
-        pass
+
+        # 3) update manifest (no build here)
+        params = {
+            "temperatures": temps,
+            "steps": int(steps),
+            "bins": bins,
+            "seed": int(seed),
+        }
+        _update_manifest_after_sim(ws, [Path(p).stem for p in shard_jsons], params)
+        # Explicit console cue for users following logs
+        try:
+            print(
+                "[pmarlo] workflow: simulation + emission finished successfully; next → Build MSM/FES",
+                flush=True,
+            )
+        except Exception:
+            pass
+    except Exception as e:
+        try:
+            print(f"[pmarlo] workflow: simulation job error: {e}", flush=True)
+        except Exception:
+            pass
+        raise
 
 
 def _build_from_existing(
@@ -467,39 +501,46 @@ def _build_from_existing(
     learn_cv: bool,
     deeptica_params: Dict[str, Any],
 ) -> None:
-    shards = _scan_shards(ws)
-    if not shards:
-        st.warning("No shards found to rebuild.")
-        return
-    out_bundle = ws / "bundles" / f"build-rebuild-{len(shards)}-{np.random.randint(0, 1e6):06d}.json"
-    res, ds_hash, edges = aggregate_and_build_bundle(
-        shards,
-        out_bundle,
-        bins=bins,
-        lag=int(lag),
-        seed=int(seed),
-        temperature=float(temperature),
-        learn_cv=bool(learn_cv),
-        deeptica_params=dict(deeptica_params or {}),
-        workspace=ws,
-    )
-    params = {
-        "lag": int(lag),
-        "bins": bins,
-        "seed": int(seed),
-        "learn_cv": bool(learn_cv),
-        "deeptica_params": dict(deeptica_params or {}),
-        "cv_bin_edges": {k: v.tolist() for k, v in edges.items()},
-    }
-    _update_manifest_after_build(ws, res, out_bundle, [p.stem for p in shards], params)
-    # Explicit console cue for users following logs
     try:
-        print(
-            "[pmarlo] workflow: build finished successfully; plots updated",
-            flush=True,
+        shards = _scan_shards(ws)
+        if not shards:
+            # Raise to surface an error in the main UI thread instead of silently warning in a worker
+            raise RuntimeError("No shards found to rebuild. Run a simulation or place shard JSONs under workspace/shards.")
+        out_bundle = ws / "bundles" / f"build-rebuild-{len(shards)}-{np.random.randint(0, 1e6):06d}.json"
+        res, ds_hash, edges = aggregate_and_build_bundle(
+            shards,
+            out_bundle,
+            bins=bins,
+            lag=int(lag),
+            seed=int(seed),
+            temperature=float(temperature),
+            learn_cv=bool(learn_cv),
+            deeptica_params=dict(deeptica_params or {}),
+            workspace=ws,
         )
-    except Exception:
-        pass
+        params = {
+            "lag": int(lag),
+            "bins": bins,
+            "seed": int(seed),
+            "learn_cv": bool(learn_cv),
+            "deeptica_params": dict(deeptica_params or {}),
+            "cv_bin_edges": {k: v.tolist() for k, v in edges.items()},
+        }
+        _update_manifest_after_build(ws, res, out_bundle, [p.stem for p in shards], params)
+        # Explicit console cue for users following logs
+        try:
+            print(
+                "[pmarlo] workflow: build finished successfully; plots updated",
+                flush=True,
+            )
+        except Exception:
+            pass
+    except Exception as e:
+        try:
+            print(f"[pmarlo] workflow: build job error: {e}", flush=True)
+        except Exception:
+            pass
+        raise
 
 
 def _clear_workspace(ws: Path) -> None:

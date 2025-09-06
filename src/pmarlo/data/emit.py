@@ -136,12 +136,23 @@ def emit_shards_from_trajectories(
                 "traj": str(traj),
                 "shard": shard_id,
                 # Frames processed in this input if extractor provided it
-                "frames": int(source_info.get("n_frames", 0) if isinstance(source_info, dict) else 0),
+                "frames": int(
+                    source_info.get("n_frames", 0)
+                    if isinstance(source_info, dict)
+                    else 0
+                ),
                 # Keep progress fields consistent for ETA
                 "current": int(i + 1),
                 "total": int(len(paths)),
             },
         )
 
-    _emit("emit_end", {"n_shards": len(json_paths), "current": int(len(paths)), "total": int(len(paths))})
+    _emit(
+        "emit_end",
+        {
+            "n_shards": len(json_paths),
+            "current": int(len(paths)),
+            "total": int(len(paths)),
+        },
+    )
     return json_paths

@@ -23,7 +23,9 @@ from pmarlo.api import (
     build_from_shards as api_build_from_shards,
 )
 from pmarlo.data.shard import read_shard
-from pmarlo.engine.build import BuildResult
+from pmarlo.engine.build import BuildResult, BuildOpts, AppliedOpts
+from pmarlo.transform.plan import TransformPlan, TransformStep
+from pmarlo.data.aggregate import aggregate_and_build
 from pmarlo.states.msm_bridge import build_simple_msm
 from pmarlo.progress import console_progress_cb, tee_progress
 

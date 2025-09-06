@@ -108,7 +108,9 @@ def console_progress_cb(  # noqa: C901
             elif ev == "demux_segment":
                 msg = f"demux: {cur:>6d}/{tot:<6d} ETA {eta}s (segment {d.get('index','?')})"
             elif ev == "demux_gap_fill":
-                msg = f"demux: gap+{d.get('frames', '?')} {cur:>6d}/{tot:<6d} ETA {eta}s"
+                msg = (
+                    f"demux: gap+{d.get('frames', '?')} {cur:>6d}/{tot:<6d} ETA {eta}s"
+                )
             elif ev == "demux_error":
                 msg = (
                     f"demux: error at segment {d.get('index','?')} - {d.get('error','?')} "
@@ -127,7 +129,7 @@ def console_progress_cb(  # noqa: C901
             elif ev == "emit_one_begin":
                 msg = f"emit: {cur:>6d}/{tot:<6d} ETA {eta}s start {d.get('traj', '?')}"
             elif ev == "emit_one_end":
-                maybe_frames = d.get('frames')
+                maybe_frames = d.get("frames")
                 if maybe_frames is not None:
                     msg = (
                         f"emit: {cur:>6d}/{tot:<6d} ETA {eta}s done {d.get('traj','?')}"

@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import logging
 
-from pmarlo.replica_exchange.demux_plan import DemuxPlan, DemuxSegmentPlan, build_demux_plan
+from pmarlo.demultiplexing.demux_plan import (
+    DemuxPlan,
+    DemuxSegmentPlan,
+    build_demux_plan,
+)
 
 
 def test_build_demux_plan_basic_constant_stride(caplog) -> None:
@@ -154,7 +158,9 @@ def test_build_demux_plan_missing_target_replica(caplog) -> None:
     assert (s1.start_frame, s1.stop_frame) == (4, 8)
     assert not s1.needs_fill
     # Warnings logged
-    assert any("No replica at target temperature" in r.getMessage() for r in caplog.records)
+    assert any(
+        "No replica at target temperature" in r.getMessage() for r in caplog.records
+    )
 
 
 def test_build_demux_plan_backward_adjustment_variable_stride(caplog) -> None:

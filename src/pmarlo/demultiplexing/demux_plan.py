@@ -22,10 +22,9 @@ Usage
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import logging
+from dataclasses import dataclass
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
-
 
 logger = logging.getLogger("pmarlo")
 
@@ -92,7 +91,9 @@ class DemuxPlan:
     total_expected_frames: int
 
 
-def _to_indexed_mapping(values: Union[Sequence[int], Mapping[int, int]], default: int = 0) -> Dict[int, int]:
+def _to_indexed_mapping(
+    values: Union[Sequence[int], Mapping[int, int]], default: int = 0
+) -> Dict[int, int]:
     if isinstance(values, Mapping):
         return {int(k): int(v) for k, v in values.items()}
     return {i: int(v) for i, v in enumerate(values)}
@@ -104,7 +105,9 @@ def _to_path_mapping(values: Union[Sequence[str], Mapping[int, str]]) -> Dict[in
     return {i: str(v) for i, v in enumerate(values)}
 
 
-def _closest_temperature_index(temperatures: Sequence[float], target_temperature: float) -> int:
+def _closest_temperature_index(
+    temperatures: Sequence[float], target_temperature: float
+) -> int:
     import math
 
     diffs = [abs(float(t) - float(target_temperature)) for t in temperatures]
@@ -212,11 +215,12 @@ def build_demux_plan(
     n_segments = len(exchange_history)
 
     segments: List[DemuxSegmentPlan] = []
-    expected_global_start = 0  # position in the output timeline
+    expected_global_start = 0  # position in the output timeline (planned frames)
     common_fps: Optional[int] = None
     varied_fps: bool = False
 
     prev_stop_md = int(equilibration_offset)
+    prev_stop_frame: int = 0
 
     for s, states in enumerate(exchange_history):
         # Find which replica is at the target temperature during this segment
@@ -238,7 +242,11 @@ def build_demux_plan(
         prev_stop_md = stop_md
 
         # Determine stride for the selected replica (or default when missing)
-        stride = int(strides.get(replica_idx, default_stride)) if replica_idx >= 0 else int(default_stride)
+        stride = (
+            int(strides.get(replica_idx, default_stride))
+            if replica_idx >= 0
+            else int(default_stride)
+        )
         if stride <= 0:
             logger.warning(
                 "Stride <= 0 for replica %d; using default_stride=%d",
@@ -247,9 +255,23 @@ def build_demux_plan(
             )
             stride = int(default_stride if default_stride > 0 else 1)
 
-        # Planned frames from MD steps mapped by stride (matches demux logic)
-        start_frame = max(0, start_md // stride)
-        stop_frame = max(0, (max(0, stop_md - 1) // stride) + 1)
+        # Planned frames from MD steps mapped by stride (half-open, ceil mapping)
+        # Use ceil for both boundaries to avoid boundary duplication and backtracks
+        start_frame = max(0, (start_md + stride - 1) // stride)
+        stop_frame = max(0, (stop_md + stride - 1) // stride)
+        needs_fill = False
+        # Enforce monotonicity across segments even with variable per-replica stride
+        if start_frame < prev_stop_frame:
+            logger.warning(
+                "Backward frame index at segment %d (start=%d < expected=%d); adjusting",
+                s,
+                start_frame,
+                prev_stop_frame,
+            )
+            start_frame = prev_stop_frame
+            if stop_frame < start_frame:
+                stop_frame = start_frame
+            needs_fill = True
         expected_frames = max(0, stop_frame - start_frame)
 
         if common_fps is None:
@@ -263,33 +285,6 @@ def build_demux_plan(
                 common_fps,
             )
             varied_fps = True
-
-        needs_fill = False
-
-        # Validate global monotonicity of output timeline
-        if start_frame > expected_global_start:
-            # A gap occurred; the demuxer would fill it using previous frame(s)
-            gap = start_frame - expected_global_start
-            logger.warning(
-                "Gap of %d frame(s) before segment %d (start=%d, expected=%d)",
-                gap,
-                s,
-                start_frame,
-                expected_global_start,
-            )
-            needs_fill = True
-        elif start_frame < expected_global_start:
-            # Backward jump: adjust start to maintain non-decreasing frame index
-            logger.warning(
-                "Backward frame index at segment %d (start=%d < expected=%d); adjusting",
-                s,
-                start_frame,
-                expected_global_start,
-            )
-            start_frame = expected_global_start
-            if stop_frame < start_frame:
-                stop_frame = start_frame
-            needs_fill = True
 
         # If there is no replica at target temperature for this segment,
         # mark fill and leave indices as planned; source_path becomes empty.
@@ -332,13 +327,18 @@ def build_demux_plan(
 
         # Advance the global expected output timeline by the planned frames
         expected_global_start += int(expected_frames)
+        prev_stop_frame = int(stop_frame)
 
     total_expected = int(sum(seg.expected_frames for seg in segments))
-    frames_per_segment = int(common_fps) if (common_fps is not None and not varied_fps) else 0
+    frames_per_segment = (
+        int(common_fps) if (common_fps is not None and not varied_fps) else 0
+    )
 
     # If frames-per-segment varied, return 0 as sentinel and log once
     if frames_per_segment == 0 and n_segments > 0:
-        logger.warning("frames_per_segment is variable across segments; returning 0 in plan")
+        logger.warning(
+            "frames_per_segment is variable across segments; returning 0 in plan"
+        )
 
     return DemuxPlan(
         segments=segments,
@@ -346,3 +346,86 @@ def build_demux_plan(
         frames_per_segment=frames_per_segment,
         total_expected_frames=total_expected,
     )
+
+
+def build_demux_frame_windows(
+    *,
+    total_md_steps: int,
+    equilibration_steps_pre: int,
+    equilibration_steps_post: int,
+    stride_steps: int,
+    exchange_frequency_steps: int,
+    n_segments: int | None = None,
+) -> list[tuple[int, int]]:
+    """Plan half-open frame windows per segment using only integers.
+
+    Parameters
+    ----------
+    total_md_steps : int
+        Total MD steps in the run (including equilibration).
+    equilibration_steps_pre : int
+        MD steps for the first equilibration phase before production.
+    equilibration_steps_post : int
+        MD steps for the second equilibration phase before production.
+    stride_steps : int
+        MD steps per saved frame (reporter stride).
+    exchange_frequency_steps : int
+        MD steps between exchange attempts; each segment spans this length in MD steps.
+    n_segments : int or None, optional
+        Optional segment count override. When None, infer from totals by iterating
+        segments until the start MD step reaches ``total_md_steps``.
+
+    Returns
+    -------
+    list[tuple[int, int]]
+        List of (start_frame, stop_frame) pairs per segment, half-open, with a
+        consistent ceil mapping for both boundaries and trimmed to ``total_md_steps``.
+
+    Notes
+    -----
+    - Uses a single rounding convention: ``ceil(x / stride)`` for both start and stop.
+    - Enforces strict monotonicity: if a computed start would be less than the
+      previous stop, it is clamped up to the previous stop.
+    - Drops empty segments (where stop_frame <= start_frame).
+    """
+    import math
+
+    tot = int(max(0, total_md_steps))
+    eq_pre = int(max(0, equilibration_steps_pre))
+    eq_post = int(max(0, equilibration_steps_post))
+    stride = int(stride_steps) if int(stride_steps) > 0 else 1
+    exch = int(exchange_frequency_steps) if int(exchange_frequency_steps) > 0 else 1
+
+    eq_total = int(eq_pre + eq_post)
+    windows: list[tuple[int, int]] = []
+
+    # Determine number of segments if requested; otherwise iterate until exhausted
+    if n_segments is None:
+        seg_count = 0
+        start_md = eq_total
+        while start_md < tot:
+            seg_count += 1
+            start_md += exch
+    else:
+        seg_count = int(max(0, n_segments))
+
+    prev_stop: int | None = None
+    for s in range(seg_count):
+        seg_start_md = eq_total + s * exch
+        seg_stop_md = min(eq_total + (s + 1) * exch, tot)
+        if seg_start_md >= seg_stop_md:
+            continue
+        # ceil mapping for both boundaries
+        start_frame = (seg_start_md + stride - 1) // stride
+        stop_frame = (seg_stop_md + stride - 1) // stride
+        if prev_stop is not None and start_frame < prev_stop:
+            start_frame = prev_stop
+        if stop_frame <= start_frame:
+            # Drop empty/degenerate segment
+            continue
+        windows.append((int(start_frame), int(stop_frame)))
+        prev_stop = int(stop_frame)
+
+    return windows
+
+

@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
 import mdtraj as md
+import numpy as np
 
-from pmarlo.replica_exchange.demux_plan import DemuxPlan, DemuxSegmentPlan
-from pmarlo.replica_exchange.demux_engine import demux_streaming
 from pmarlo.io.trajectory_reader import MDTrajReader
 from pmarlo.io.trajectory_writer import MDTrajDCDWriter
+from pmarlo.demultiplexing.demux_engine import demux_streaming
+from pmarlo.demultiplexing.demux_plan import DemuxPlan, DemuxSegmentPlan
 
 
 class CountingWriter:

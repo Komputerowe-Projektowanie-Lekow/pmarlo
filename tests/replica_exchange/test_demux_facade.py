@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
-import json
-import numpy as np
 import mdtraj as md
+import numpy as np
 
 from pmarlo.replica_exchange import config as demux_config
 from pmarlo.replica_exchange.replica_exchange import ReplicaExchange
@@ -28,7 +28,9 @@ def _make_minimal_traj(tmp_path: Path, n_frames: int = 2):
     return str(pdb), str(dcd), str(dcd2)
 
 
-def _build_minimal_remd(pdb: str, dcd0: str, dcd1: str, tmp_path: Path) -> ReplicaExchange:
+def _build_minimal_remd(
+    pdb: str, dcd0: str, dcd1: str, tmp_path: Path
+) -> ReplicaExchange:
     remd = ReplicaExchange.__new__(ReplicaExchange)
     remd.pdb_file = pdb
     remd.trajectory_files = [Path(dcd0), Path(dcd1)]

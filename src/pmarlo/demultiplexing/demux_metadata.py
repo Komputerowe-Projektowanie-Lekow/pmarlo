@@ -5,14 +5,21 @@ Backward-compatible schema enriched with additional provenance in v2.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, TypedDict, NotRequired, TYPE_CHECKING
-
-import hashlib
-from dataclasses import asdict
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Mapping,
+    NotRequired,
+    Optional,
+    TypedDict,
+)
 
 logger = logging.getLogger("pmarlo")
 
@@ -20,8 +27,8 @@ logger = logging.getLogger("pmarlo")
 from pmarlo.utils.errors import DemuxIntegrityError  # noqa: E402
 
 if TYPE_CHECKING:  # pragma: no cover - typing-only imports
-    from .demux_plan import DemuxPlan
     from .demux_engine import DemuxResult
+    from .demux_plan import DemuxPlan
 
 
 class DemuxMetadataDict(TypedDict, total=False):
@@ -40,6 +47,8 @@ class DemuxMetadataDict(TypedDict, total=False):
     total_expected_frames: Optional[int]
     contiguous_blocks: List[List[int]]
     warnings: NotRequired[List[str]]
+    equilibration_steps_total: int
+    overlap_corrections: List[int]
 
 
 @dataclass
@@ -72,6 +81,8 @@ class DemuxMetadata:
     schema_version: int = 2
     total_expected_frames: Optional[int] = None
     contiguous_blocks: List[List[int]] = field(default_factory=list)
+    equilibration_steps_total: int = 0
+    overlap_corrections: List[int] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert metadata to a JSON-serialisable dictionary (schema v2)."""
@@ -81,6 +92,7 @@ class DemuxMetadata:
         d["integration_timestep_ps"] = float(self.integration_timestep_ps)
         d["frames_per_segment"] = int(self.frames_per_segment)
         d["schema_version"] = int(getattr(self, "schema_version", 2))
+        d["equilibration_steps_total"] = int(getattr(self, "equilibration_steps_total", 0))
         # temperature_schedule keys are already strings; make sure mapping types are basic
         d["temperature_schedule"] = {
             str(rep): {str(seg): float(temp) for seg, temp in segs.items()}
@@ -110,7 +122,9 @@ class DemuxMetadata:
             temperature_schedule=schedule,
         )
         # Optional v2 fields
-        obj.segment_count = int(data.get("segment_count", getattr(obj, "segment_count", 0)))
+        obj.segment_count = int(
+            data.get("segment_count", getattr(obj, "segment_count", 0))
+        )
         obj.repaired_segments = [int(x) for x in data.get("repaired_segments", [])]
         obj.skipped_segments = [int(x) for x in data.get("skipped_segments", [])]
         obj.fill_policy = data.get("fill_policy", None)
@@ -124,6 +138,14 @@ class DemuxMetadata:
         }
         obj.plan_checksum = data.get("plan_checksum")
         obj.schema_version = int(data.get("schema_version", 2))
+        try:
+            obj.equilibration_steps_total = int(data.get("equilibration_steps_total", 0))
+        except Exception:
+            obj.equilibration_steps_total = 0
+        try:
+            obj.overlap_corrections = [int(x) for x in data.get("overlap_corrections", [])]
+        except Exception:
+            obj.overlap_corrections = []
         return obj
 
     @classmethod
@@ -267,7 +289,11 @@ def serialize_metadata(
 
     exchange_freq = int(runtime_info.get("exchange_frequency_steps", 0))
     timestep_ps = float(runtime_info.get("integration_timestep_ps", 0.0))
-    frames_per_seg = int(runtime_info.get("frames_per_segment", getattr(plan, "frames_per_segment", 0) or 0))
+    frames_per_seg = int(
+        runtime_info.get(
+            "frames_per_segment", getattr(plan, "frames_per_segment", 0) or 0
+        )
+    )
     time_per_frame_ps = None
     if frames_per_seg > 0 and exchange_freq > 0 and timestep_ps > 0.0:
         time_per_frame_ps = timestep_ps * (exchange_freq / float(frames_per_seg))
@@ -287,6 +313,8 @@ def serialize_metadata(
         schema_version=2,
         total_expected_frames=int(getattr(plan, "total_expected_frames", 0) or 0),
         contiguous_blocks=_compute_contiguous_blocks(result, plan),
+        equilibration_steps_total=int(runtime_info.get("equilibration_steps_total", 0) or 0),
+        overlap_corrections=[int(x) for x in (runtime_info.get("overlap_corrections", []) or [])],
     )
     d = meta.to_dict()
     # Provide a readable summary of warnings if present (non-breaking extra key)
@@ -297,3 +325,5 @@ def serialize_metadata(
     if d.get("time_per_frame_ps", None) is None:
         d.pop("time_per_frame_ps", None)
     return d
+
+

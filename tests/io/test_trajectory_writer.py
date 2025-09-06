@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
-
 import mdtraj as md
+import numpy as np
 
 from pmarlo.io.trajectory_reader import MDTrajReader
 from pmarlo.io.trajectory_writer import MDTrajDCDWriter
@@ -39,7 +38,9 @@ def test_writer_append_like_and_reader_roundtrip(tmp_path: Path):
         chunk2[i, :, 0] = v
         chunk2[i, :, 1] = v + 10
 
-    writer = MDTrajDCDWriter(rewrite_threshold=2).open(str(out_path), top_path, overwrite=True)
+    writer = MDTrajDCDWriter(rewrite_threshold=2).open(
+        str(out_path), top_path, overwrite=True
+    )
     writer.write_frames(chunk1)
     writer.write_frames(chunk2)
     writer.close()
@@ -63,12 +64,16 @@ def test_writer_overwrite_flag(tmp_path: Path):
     out_path = tmp_path / "out.dcd"
 
     # Initial write
-    w = MDTrajDCDWriter(rewrite_threshold=10).open(str(out_path), top_path, overwrite=True)
+    w = MDTrajDCDWriter(rewrite_threshold=10).open(
+        str(out_path), top_path, overwrite=True
+    )
     w.write_frames(np.zeros((1, 1, 3), dtype=np.float32))
     w.close()
 
     # Overwrite allowed
-    w = MDTrajDCDWriter(rewrite_threshold=10).open(str(out_path), top_path, overwrite=True)
+    w = MDTrajDCDWriter(rewrite_threshold=10).open(
+        str(out_path), top_path, overwrite=True
+    )
     w.write_frames(np.zeros((2, 1, 3), dtype=np.float32))
     w.close()
 

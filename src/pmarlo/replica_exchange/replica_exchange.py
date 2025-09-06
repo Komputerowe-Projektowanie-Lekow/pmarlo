@@ -29,6 +29,7 @@ from ..utils.integrator import create_langevin_integrator
 from ..utils.naming import base_shape_str, permutation_name
 from ..utils.replica_utils import exponential_temperature_ladder
 from .config import RemdConfig
+from ..demultiplexing.demux import demux_trajectories as _demux_trajectories
 from .diagnostics import compute_exchange_statistics, retune_temperature_ladder
 from .platform_selector import select_platform_and_properties
 from .system_builder import (
@@ -38,7 +39,6 @@ from .system_builder import (
     setup_metadynamics,
 )
 from .trajectory import ClosableDCDReporter
-from .demux import demux_trajectories as _demux_trajectories
 
 logger = logging.getLogger("pmarlo")
 
@@ -1608,6 +1608,7 @@ class ReplicaExchange:
 
     def demux_trajectories(
         self,
+        *,
         target_temperature: float = 300.0,
         equilibration_steps: int = 100,
         progress_callback: ProgressCB | None = None,
