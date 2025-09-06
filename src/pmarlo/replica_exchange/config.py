@@ -5,6 +5,23 @@ from pathlib import Path
 from typing import List, Optional
 
 
+# Feature flags and tuning parameters
+DEMUX_STREAMING_ENABLED: bool = True
+# Preferred key for selecting backend
+DEMUX_BACKEND: str = "mdtraj"  # or "mdanalysis" if installed
+# Backward-compat alias
+DEMUX_IO_BACKEND: str = DEMUX_BACKEND
+DEMUX_FILL_POLICY: str = "repeat"  # "repeat" | "skip" | "interpolate"
+# Optional parallel segment readers; None disables parallelism
+DEMUX_PARALLEL_WORKERS: int | None = None
+# Chunk sizing: for mdtraj reader (chunk_size) and writer rewrite threshold
+DEMUX_CHUNK_SIZE: int = 2048
+# Force a writer flush after each segment when True
+DEMUX_FLUSH_BETWEEN_SEGMENTS: bool = False
+# Force a checkpoint flush every N segments (None disables)
+DEMUX_CHECKPOINT_INTERVAL: int | None = None
+
+
 @dataclass(frozen=True)
 class RemdConfig:
     """Immutable configuration for REMD runs.

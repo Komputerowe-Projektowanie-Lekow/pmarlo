@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from pmarlo import Protein, power_of_two_temperature_ladder
+from pmarlo.replica_exchange import config as demux_config
 from pmarlo.api import analyze_msm, run_replica_exchange
 
 
@@ -22,6 +23,13 @@ def main() -> None:
     pdb = base / "tests" / "data" / "3gd8-fixed.pdb"
     out = Path(__file__).parent / "programs_outputs" / "free_energy_landscape"
     out.mkdir(parents=True, exist_ok=True)
+
+    # Prefer the streaming demux with stable defaults; examples remain fast
+    demux_config.DEMUX_STREAMING_ENABLED = True
+    demux_config.DEMUX_BACKEND = "mdtraj"
+    demux_config.DEMUX_FILL_POLICY = "repeat"
+    demux_config.DEMUX_PARALLEL_WORKERS = None  # set to 2+ to test parallel reads
+    demux_config.DEMUX_CHUNK_SIZE = 2048
 
     temps = power_of_two_temperature_ladder(300.0, 375.0, 16)
     Protein(str(pdb), ph=7.0, auto_prepare=False)
