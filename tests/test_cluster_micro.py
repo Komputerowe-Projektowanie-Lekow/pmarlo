@@ -3,7 +3,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from pmarlo.cluster.micro import cluster_microstates
+from pmarlo.markov_state_model.clustering import cluster_microstates
 
 
 def test_returns_empty_for_no_samples():
@@ -21,7 +21,7 @@ def test_raises_for_no_features():
 
 def test_kmeans_uses_int_n_init():
     Y = np.random.rand(10, 2)
-    with patch("pmarlo.cluster.micro.KMeans") as mock_kmeans:
+    with patch("pmarlo.markov_state_model.clustering.KMeans") as mock_kmeans:
         instance = mock_kmeans.return_value
         instance.fit_predict.return_value = np.zeros(10, dtype=int)
         cluster_microstates(Y, method="kmeans", n_states=2)
@@ -42,7 +42,7 @@ def test_auto_and_fixed_states():
 
 def test_auto_switches_to_minibatch():
     Y = np.random.rand(10, 10)
-    with patch("pmarlo.cluster.micro.MiniBatchKMeans") as mock_mb:
+    with patch("pmarlo.markov_state_model.clustering.MiniBatchKMeans") as mock_mb:
         mock_mb.return_value.fit_predict.return_value = np.zeros(10, dtype=int)
         cluster_microstates(Y, method="auto", n_states=2, minibatch_threshold=50)
         assert mock_mb.called

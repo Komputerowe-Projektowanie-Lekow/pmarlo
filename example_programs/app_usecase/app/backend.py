@@ -24,11 +24,16 @@ from pmarlo.api import (
     build_from_shards as api_build_from_shards,
 )
 from pmarlo.data.shard import read_shard
-from pmarlo.engine.build import BuildResult, BuildOpts, AppliedOpts
+from pmarlo.markov_state_model.free_energy import generate_2d_fes, FESResult
+from pmarlo.transform.build import BuildResult, BuildOpts, AppliedOpts
 from pmarlo.transform.plan import TransformPlan, TransformStep
 from pmarlo.data.aggregate import aggregate_and_build
-from pmarlo.states.msm_bridge import build_simple_msm
+from pmarlo.io.catalog import build_catalog_from_paths
+from pmarlo.io.shards import rescan_shards, prune_missing_shards
+from pmarlo.workflow.validation import validate_build_result, format_validation_report
+from pmarlo.markov_state_model.bridge import build_simple_msm
 from pmarlo.progress import console_progress_cb, tee_progress
+from pmarlo.utils.seed import set_global_seed
 
 
 # Module-level hook to allow chunk-level extract logging from emit calls
@@ -43,6 +48,14 @@ class SimResult:
 
 def _now_stamp() -> str:
     return datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def set_all_seeds(seed: int) -> None:
+    """Compatibility wrapper for older callers.
+
+    Delegates to `pmarlo.utils.seed.set_global_seed`.
+    """
+    set_global_seed(seed)
 
 
 def _write_log(workspace: Path, name: str, payload: Dict[str, Any]) -> Path:
@@ -84,6 +97,7 @@ def run_short_sim(
     random_seed: int | None = None,
     start_mode: str = "none",  # "none" | "resume" | "last_frame" | "random_highT"
     start_run: Path | None = None,
+    start_from: Path | None = None,
     jitter_start: bool = False,
     jitter_sigma_A: float = 0.05,
     velocity_reseed: bool = False,
@@ -98,6 +112,11 @@ def run_short_sim(
     seed_tag = f"-seed{int(random_seed)}" if random_seed is not None else ""
     run_dir = base_out / "sims" / f"run-{_now_stamp()}{seed_tag}"
     run_dir.mkdir(parents=True, exist_ok=True)
+
+    # If a fixed seed is provided, seed all RNGs early for determinism.
+    # Note: core REMD also receives the seed below via RemdConfig.
+    if random_seed is not None:
+        set_global_seed(int(random_seed))
 
     # progress log for simulation
     sim_cb, sim_log = _progress_logger(base_out, f"sim-{_now_stamp()}")
@@ -126,6 +145,10 @@ def run_short_sim(
     # Select starting conditions
     start_from_checkpoint = None
     start_from_pdb = None
+    # Backward/compat convenience: if explicit start_from path provided, treat as resume-from-run
+    if start_from is not None:
+        start_mode = "resume"
+        start_run = Path(start_from)
     if start_mode == "resume" and start_run is not None:
         cand_ckpts = sorted(Path(start_run).rglob("checkpoint_step_*.pkl"))
         if cand_ckpts:
@@ -390,6 +413,7 @@ def aggregate_and_build_bundle(
     learn_cv: bool = False,
     deeptica_params: Optional[Dict[str, Any]] = None,
     workspace: Optional[Path] = None,
+    build_type: Optional[str] = None,
 ) -> Tuple[BuildResult, str, Dict[str, np.ndarray]]:
     """Aggregate shards, build bundle, and return BuildResult + dataset hash.
 
@@ -401,6 +425,16 @@ def aggregate_and_build_bundle(
     """
     if not shard_jsons:
         raise ValueError("No shards to aggregate")
+
+    # Enforce demux-only for Deep‑TICA path to ensure stationarity
+    if learn_cv:
+        try:
+            from pmarlo.transform.build import select_shards as _select
+            filtered = _select(shard_jsons, mode="demux")
+            if filtered:
+                shard_jsons = filtered
+        except Exception:
+            pass
 
     # Determine CV names order from first shard
     meta0, _, _ = read_shard(shard_jsons[0])
@@ -449,6 +483,7 @@ def aggregate_and_build_bundle(
         progress_cb = _tee(progress_cb, build_console)
     else:
         progress_cb = build_console
+    extra_artifacts = {"build_type": str(build_type)} if build_type else None
     br, ds_hash = aggregate_and_build(
         shard_jsons,
         opts=opts,
@@ -456,6 +491,7 @@ def aggregate_and_build_bundle(
         applied=applied,
         out_bundle=Path(out_bundle),
         progress_callback=progress_cb,  # forwarded via coerce in data.aggregate
+        extra_artifacts=extra_artifacts,
     )
 
     if workspace is not None:
@@ -517,3 +553,359 @@ def recompute_msm_from_shards(
     n_states = (len(E[0]) - 1) * (len(E[1]) - 1)
     T, pi = build_simple_msm(dtrajs, n_states=n_states, lag=int(lag), count_mode=count_mode)
     return T, pi
+
+
+def recompute_fes_from_shards(
+    shard_jsons: List[Path],
+    *,
+    edges_by_name: Dict[str, np.ndarray],
+    temperature: float,
+) -> FESResult:
+    """Recompute baseline FES from shards using provided global edges.
+
+    Parameters
+    ----------
+    shard_jsons
+        Paths to shard JSON files.
+    edges_by_name
+        Mapping from CV name to bin edges (1D arrays) for the first two CVs.
+    temperature
+        Temperature in Kelvin for kT conversion.
+    """
+    if not shard_jsons:
+        raise ValueError("No shards to recompute FES")
+    # Determine order and periodicity from first shard
+    meta0, _, _ = read_shard(shard_jsons[0])
+    names = tuple(meta0.cv_names)
+    periodic = tuple(bool(x) for x in meta0.periodic)
+    cv_pair = (names[0], names[1]) if len(names) >= 2 else ("cv1", "cv2")
+    ex = np.asarray(edges_by_name[cv_pair[0]], dtype=float)
+    ey = np.asarray(edges_by_name[cv_pair[1]], dtype=float)
+    bins = (int(len(ex) - 1), int(len(ey) - 1))
+    xs: List[np.ndarray] = []
+    ys: List[np.ndarray] = []
+    for p in shard_jsons:
+        _, X, _ = read_shard(p)
+        A = np.asarray(X, dtype=float)
+        if A.shape[1] < 2 or A.shape[0] == 0:
+            continue
+        xs.append(A[:, 0].reshape(-1))
+        ys.append(A[:, 1].reshape(-1))
+    if not xs or not ys:
+        # Produce an empty FESResult-like object with minimal grids to avoid crashes
+        arrx = ex
+        arry = ey
+        empty = np.full((bins[0], bins[1]), np.nan, dtype=float)
+        return FESResult(F=empty, xedges=arrx, yedges=arry, metadata={"names": list(cv_pair), "periodic": periodic, "temperature": float(temperature)})
+    X_all = np.concatenate(xs)
+    Y_all = np.concatenate(ys)
+    # Use explicit ranges from edges to match bins exactly
+    ranges = ((float(ex[0]), float(ex[-1])), (float(ey[0]), float(ey[-1])))
+    return generate_2d_fes(
+        X_all,
+        Y_all,
+        bins=bins,
+        temperature=float(temperature),
+        periodic=(bool(periodic[0]), bool(periodic[1])),
+        ranges=ranges,
+        smooth=False,
+        inpaint=False,
+        min_count=1,
+    )
+
+
+@dataclass
+class BuildValidationResult:
+    """Comprehensive validation results for a build."""
+    is_valid: bool
+    messages: List[str]
+    warnings: List[str]
+    shard_stats: Dict[str, Any]
+    weight_stats: Dict[str, Any]
+    data_quality: Dict[str, Any]
+
+
+def validate_build_quality(
+    build_result: BuildResult,
+    all_available_shards: List[Path],
+    workspace: Path
+) -> BuildValidationResult:
+    """Perform intelligent validation of build quality and data usage.
+
+    Checks:
+    - All available shards were used
+    - Weights/bias information is present and reasonable
+    - Data quality metrics
+    - Build completeness
+    """
+    messages = []
+    warnings = []
+    shard_stats = {}
+    weight_stats = {}
+    data_quality = {}
+
+    # Extract shard information from build result
+    build_artifacts = build_result.artifacts or {}
+    shards_used = build_artifacts.get("shards_used", [])
+    build_type = build_artifacts.get("build_type", "unknown")
+
+    # Basic shard validation
+    total_available = len(all_available_shards)
+    total_used = len(shards_used)
+
+    shard_stats.update({
+        "total_available": total_available,
+        "total_used": total_used,
+        "usage_ratio": total_used / max(1, total_available),
+        "build_type": build_type
+    })
+
+    if total_used < total_available:
+        warnings.append(
+            f"Build used {total_used}/{total_available} available shards "
+            f"({shard_stats['usage_ratio']:.1%})"
+        )
+    else:
+        messages.append(f"Build used all {total_used} available shards")
+
+    # Analyze individual shard usage using canonical IDs
+    try:
+        # Build catalog from available shard paths for canonical ID validation
+        catalog = build_catalog_from_paths(all_available_shards)
+        used_ids = set(shards_used) if shards_used else set()
+
+        # Use comprehensive validation with canonical IDs
+        validation_results = validate_build_result(
+            {"artifacts": {"shards_used": list(used_ids)}},
+            all_available_shards
+        )
+
+        # Extract warnings and messages from comprehensive validation
+        warnings.extend(validation_results["warnings"])
+        messages.extend(validation_results["messages"])
+
+        # Add detailed shard information if available
+        if validation_results["shard_table"]:
+            shard_table_info = []
+            for shard in validation_results["shard_table"][:5]:  # Show first 5
+                shard_table_info.append(
+                    f"{shard['canonical_id']} ({shard['run_id']}, {shard['source_kind']})"
+                )
+            if shard_table_info:
+                messages.append(f"Sample shards: {', '.join(shard_table_info)}")
+
+    except Exception as e:
+        # Fallback to legacy validation if canonical validation fails
+        available_ids = {p.stem for p in all_available_shards}
+        used_ids = set(shards_used) if shards_used else set()
+
+        missing_shards = available_ids - used_ids
+        extra_shards = used_ids - available_ids
+
+        if missing_shards:
+            warnings.append(f"Missing shards in build: {sorted(missing_shards)}")
+        if extra_shards:
+            warnings.append(f"Extra shards in build (shouldn't happen): {sorted(extra_shards)}")
+
+        warnings.append(f"Canonical validation failed ({e}), using legacy validation")
+
+    # Auto-rescan if we detect extra shards used but not found
+    try:
+        needs_rescan = any(
+            (isinstance(w, str) and w.lower().startswith("extra shards in build"))
+            for w in warnings
+        ) or any(
+            (isinstance(m, str) and m.lower().startswith("extra shards in build"))
+            for m in messages
+        )
+        # Some validators record this as an error
+        needs_rescan = needs_rescan or any(
+            (isinstance(e, str) and "references shards not present" in e.lower())
+            for e in []  # no errors collected here yet
+        )
+        if needs_rescan:
+            idx = Path(workspace) / "shards_index.json"
+            try:
+                rescan_shards([Path(workspace) / "shards"], idx)
+                prune_missing_shards(idx)
+            except Exception:
+                pass
+            # Rebuild catalog with fresh listing and re-run validation to clear ghosts
+            try:
+                refreshed = sorted((Path(workspace) / "shards").rglob("*.json"))
+                catalog2 = build_catalog_from_paths(refreshed)
+                used_ids2 = set(shards_used) if shards_used else set()
+                validation_results2 = validate_build_result(
+                    {"artifacts": {"shards_used": list(used_ids2)}},
+                    refreshed
+                )
+                # Replace messages/warnings with refreshed set (keep older informative lines)
+                warnings = [w for w in warnings if not (isinstance(w, str) and w.lower().startswith("extra shards in build"))]
+                warnings.extend(validation_results2["warnings"])
+                messages.extend([m for m in validation_results2["messages"] if m not in messages])
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Weight and bias validation
+    weight_info = _analyze_weights_and_bias(all_available_shards, workspace)
+    weight_stats.update(weight_info)
+
+    if weight_info.get("shards_with_bias", 0) > 0:
+        bias_ratio = weight_info["shards_with_bias"] / max(1, weight_info["total_shards"])
+        messages.append(
+            f"Bias information found in {weight_info['shards_with_bias']}/{weight_info['total_shards']} "
+            f"shards ({bias_ratio:.1%})"
+        )
+
+        # Check for temperature distribution
+        temps = weight_info.get("temperatures", [])
+        if len(set(temps)) > 1:
+            temp_range = f"{min(temps):.1f}K - {max(temps):.1f}K"
+            messages.append(f"Temperature range: {temp_range} with {len(set(temps))} distinct temperatures")
+        else:
+            messages.append(f"Single temperature: {temps[0]:.1f}K" if temps else "No temperature info")
+
+    # Data quality analysis
+    quality_info = _analyze_data_quality(all_available_shards, build_result)
+    data_quality.update(quality_info)
+
+    if quality_info.get("total_frames", 0) > 0:
+        messages.append(f"Total frames in dataset: {quality_info['total_frames']:,}")
+        messages.append(f"Average frames per shard: {quality_info['avg_frames_per_shard']:.0f}")
+
+    # Check for potential issues
+    if quality_info.get("zero_variance_cvs"):
+        warnings.append(f"Zero variance CVs detected: {quality_info['zero_variance_cvs']}")
+
+    if quality_info.get("nan_values", 0) > 0:
+        warnings.append(f"NaN values found in {quality_info['nan_values']} positions")
+
+    # FES quality check
+    if hasattr(build_result, 'fes') and build_result.fes is not None:
+        fes_meta = getattr(build_result.fes, 'metadata', {})
+        empty_bins = fes_meta.get('empty_bins_fraction', 0)
+        if empty_bins > 0.3:
+            warnings.append(f"High fraction of empty FES bins: {empty_bins:.1%}")
+        else:
+            messages.append(f"FES quality: {empty_bins:.1%} empty bins")
+
+    # Overall validation
+    is_valid = len(warnings) == 0 or all("Missing shards" not in w for w in warnings)
+
+    return BuildValidationResult(
+        is_valid=is_valid,
+        messages=messages,
+        warnings=warnings,
+        shard_stats=shard_stats,
+        weight_stats=weight_stats,
+        data_quality=data_quality
+    )
+
+
+def _analyze_weights_and_bias(shard_paths: List[Path], workspace: Path) -> Dict[str, Any]:
+    """Analyze weights and bias information across shards."""
+    from pmarlo.data.shard import read_shard
+
+    total_shards = len(shard_paths)
+    shards_with_bias = 0
+    temperatures = []
+    weight_ranges = []
+
+    for path in shard_paths:
+        try:
+            meta, X, dtraj = read_shard(path)
+
+            # Check for bias information
+            bias_path = path.with_name(f"{meta.shard_id}.npz")
+            if bias_path.exists():
+                shards_with_bias += 1
+
+            # Collect temperature information
+            if hasattr(meta, 'temperature') and meta.temperature is not None:
+                temperatures.append(float(meta.temperature))
+
+        except Exception:
+            continue
+
+    return {
+        "total_shards": total_shards,
+        "shards_with_bias": shards_with_bias,
+        "bias_coverage": shards_with_bias / max(1, total_shards),
+        "temperatures": sorted(temperatures) if temperatures else [],
+        "unique_temperatures": len(set(temperatures)) if temperatures else 0
+    }
+
+
+def _analyze_data_quality(shard_paths: List[Path], build_result: BuildResult) -> Dict[str, Any]:
+    """Analyze data quality metrics."""
+    from pmarlo.data.shard import read_shard
+
+    total_frames = 0
+    zero_variance_cvs = []
+    nan_positions = 0
+    shard_sizes = []
+
+    for path in shard_paths:
+        try:
+            meta, X, dtraj = read_shard(path)
+
+            # Frame count
+            frames = X.shape[0] if X is not None else 0
+            total_frames += frames
+            shard_sizes.append(frames)
+
+            # Check for NaN values
+            if X is not None and np.isnan(X).any():
+                nan_positions += np.isnan(X).sum()
+
+            # Check for zero variance (constant) CVs
+            if X is not None:
+                for i, cv_name in enumerate(meta.cv_names):
+                    if np.std(X[:, i]) == 0:
+                        zero_variance_cvs.append(cv_name)
+
+        except Exception:
+            continue
+
+    return {
+        "total_frames": total_frames,
+        "avg_frames_per_shard": np.mean(shard_sizes) if shard_sizes else 0,
+        "shard_sizes": shard_sizes,
+        "zero_variance_cvs": list(set(zero_variance_cvs)),
+        "nan_values": nan_positions,
+        "cv_names": list(set(meta.cv_names)) if 'meta' in locals() else []
+    }
+
+
+def select_latest_baseline_and_deeptica(bundle_paths: List[Path]) -> Tuple[BuildResult | None, BuildResult | None]:
+    """Select the latest baseline and Deep‑TICA bundles from a list of paths.
+
+    Baseline:
+      - artifacts.build_type == "baseline" OR no mlcv_deeptica applied
+    Deep‑TICA:
+      - artifacts.build_type == "deeptica" AND mlcv_deeptica.applied == True
+    """
+    baseline: BuildResult | None = None
+    deeptica: BuildResult | None = None
+    for p in sorted(bundle_paths, key=lambda q: str(q))[:]:
+        pass
+    for p in reversed(sorted(bundle_paths, key=lambda q: str(q))):
+        try:
+            obj = BuildResult.from_json(Path(p).read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        art = (obj.artifacts or {}) if hasattr(obj, "artifacts") else {}
+        build_type = art.get("build_type") if isinstance(art, dict) else None
+        mlcv = art.get("mlcv_deeptica") if isinstance(art, dict) else None
+        applied = bool(isinstance(mlcv, dict) and mlcv.get("applied"))
+        if deeptica is None and build_type == "deeptica" and applied:
+            deeptica = obj
+        if baseline is None and (
+            build_type == "baseline" or (not isinstance(mlcv, dict) or not mlcv.get("applied", False))
+        ):
+            baseline = obj
+        if baseline is not None and deeptica is not None:
+            break
+    return baseline, deeptica

@@ -6,13 +6,12 @@ import numpy as np
 import pytest
 
 mlc = pytest.importorskip("mlcolvar")
-mlc_features = pytest.importorskip("mlcolvar.features")
 torch = pytest.importorskip("torch")
 
 
 def test_deeptica_train_transform_export_and_snippet(tmp_path: Path):
-    from pmarlo.cv.deeptica import DeepTICAConfig, train_deeptica
-    from pmarlo.cv.pairs import scaled_time_pairs
+    from pmarlo.features.deeptica import DeepTICAConfig, train_deeptica
+    from pmarlo.features.pairs import scaled_time_pairs
 
     rng = np.random.default_rng(0)
     # Tiny synthetic dataset: two shards emulated by two arrays

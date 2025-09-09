@@ -9,7 +9,7 @@ from importlib.util import find_spec
 
 import pytest
 
-from pmarlo.pipeline import LegacyPipeline, Pipeline, run_pmarlo
+from pmarlo.pipeline import Pipeline, run_pmarlo
 
 # Evaluated by pytest.mark.skipif when using string condition
 skip_if_no_openmm = find_spec("openmm") is None
@@ -94,20 +94,13 @@ class TestPipeline:
         pass
 
 
-class TestLegacyPipeline:
-    """Test cases for LegacyPipeline class."""
+class TestRemovedLegacyPipeline:
+    def test_legacy_pipeline_removed(self):
+        import importlib
 
-    def test_legacy_pipeline_initialization(self, test_pdb_file, temp_output_dir):
-        """Test legacy pipeline initialization."""
-        legacy = LegacyPipeline(
-            pdb_file=str(test_pdb_file),
-            output_dir=str(temp_output_dir),
-            run_id="test123",
-        )
-
-        assert legacy.pdb_file == str(test_pdb_file)
-        assert legacy.run_id == "test123"
-        assert legacy.checkpoint_manager is None  # Not initialized until run
+        with pytest.raises((ImportError, AttributeError)):
+            mod = importlib.import_module("pmarlo")
+            getattr(mod, "LegacyPipeline")
 
 
 class TestConvenienceFunctions:

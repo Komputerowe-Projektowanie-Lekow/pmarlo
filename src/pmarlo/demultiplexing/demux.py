@@ -148,8 +148,12 @@ def demux_trajectories(
                     effective_equil_steps + (s + 1) * remd.exchange_frequency
                 )
                 # ceil mapping for both boundaries
-                start_frame_chk = max(0, (start_md_chk + int(stride_chk) - 1) // int(stride_chk))
-                end_frame_chk = max(0, (stop_md_chk + int(stride_chk) - 1) // int(stride_chk))
+                start_frame_chk = max(
+                    0, (start_md_chk + int(stride_chk) - 1) // int(stride_chk)
+                )
+                end_frame_chk = max(
+                    0, (stop_md_chk + int(stride_chk) - 1) // int(stride_chk)
+                )
                 if start_frame_chk < expected_prev_stop:
                     # Should not happen with ceil mapping unless metadata is inconsistent
                     raise DemuxIntegrityError("Non-monotonic frame indices detected")
@@ -374,9 +378,7 @@ def demux_trajectories(
         }
         for s, states in enumerate(remd.exchange_history):
             for ridx, tidx in enumerate(states):
-                temp_schedule[str(ridx)][str(s)] = float(
-                    remd.temperatures[int(tidx)]
-                )
+                temp_schedule[str(ridx)][str(s)] = float(remd.temperatures[int(tidx)])
 
         effective_equil_steps = int(equilibration_steps) if equilibration_steps else 0
 
@@ -384,7 +386,9 @@ def demux_trajectories(
         backend = (
             getattr(remd, "demux_backend", None)
             or getattr(remd, "demux_io_backend", None)
-            or getattr(_cfg, "DEMUX_BACKEND", getattr(_cfg, "DEMUX_IO_BACKEND", "mdtraj"))
+            or getattr(
+                _cfg, "DEMUX_BACKEND", getattr(_cfg, "DEMUX_IO_BACKEND", "mdtraj")
+            )
         )
         reader = get_reader(str(backend), topology_path=str(remd.pdb_file))
         try:
@@ -446,7 +450,8 @@ def demux_trajectories(
             pass
         writer = writer.open(str(demux_file), str(remd.pdb_file), overwrite=True)
         fill_policy = (
-            getattr(remd, "demux_fill_policy", None) or getattr(_cfg, "DEMUX_FILL_POLICY", "repeat")
+            getattr(remd, "demux_fill_policy", None)
+            or getattr(_cfg, "DEMUX_FILL_POLICY", "repeat")
         ).lower()
 
         # Resolve parallel workers even for legacy path for parity; often unused
@@ -472,7 +477,9 @@ def demux_trajectories(
             getattr(_cfg, "DEMUX_CHECKPOINT_INTERVAL", None),
         )
         try:
-            checkpoint_every = int(checkpoint_every) if checkpoint_every is not None else None
+            checkpoint_every = (
+                int(checkpoint_every) if checkpoint_every is not None else None
+            )
             if checkpoint_every is not None and checkpoint_every <= 0:
                 checkpoint_every = None
         except Exception:
@@ -484,7 +491,9 @@ def demux_trajectories(
             reader,
             writer,
             fill_policy=(
-                fill_policy if fill_policy in {"repeat", "skip", "interpolate"} else "repeat"
+                fill_policy
+                if fill_policy in {"repeat", "skip", "interpolate"}
+                else "repeat"
             ),
             parallel_read_workers=parallel_workers,
             progress_callback=progress_callback,

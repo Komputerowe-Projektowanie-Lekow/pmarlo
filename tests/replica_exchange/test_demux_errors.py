@@ -6,10 +6,10 @@ import mdtraj as md
 import numpy as np
 import pytest
 
-from pmarlo.io.trajectory_reader import MDTrajReader, TrajectoryIOError
-from pmarlo.io.trajectory_writer import MDTrajDCDWriter, TrajectoryWriteError
 from pmarlo.demultiplexing.demux_engine import demux_streaming
 from pmarlo.demultiplexing.demux_plan import DemuxPlan, DemuxSegmentPlan
+from pmarlo.io.trajectory_reader import MDTrajReader, TrajectoryIOError
+from pmarlo.io.trajectory_writer import MDTrajDCDWriter, TrajectoryWriteError
 from pmarlo.utils.errors import DemuxWriterError
 
 

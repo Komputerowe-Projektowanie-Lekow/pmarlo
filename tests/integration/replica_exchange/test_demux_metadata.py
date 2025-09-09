@@ -4,8 +4,8 @@ import matplotlib
 import mdtraj as md
 import numpy as np
 
-from pmarlo.markov_state_model.enhanced_msm import EnhancedMSM
 from pmarlo.demultiplexing.demux_metadata import DemuxMetadata
+from pmarlo.markov_state_model.enhanced_msm import EnhancedMSM
 from pmarlo.replica_exchange.replica_exchange import ReplicaExchange
 from pmarlo.results import ITSResult
 

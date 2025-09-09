@@ -427,5 +427,3 @@ def build_demux_frame_windows(
         prev_stop = int(stop_frame)
 
     return windows
-
-

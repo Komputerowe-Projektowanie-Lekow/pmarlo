@@ -555,7 +555,7 @@ class ITSMixin:
         return lag_times, max_valid_lag
 
     def _counts_for_lag(self, lag: int, alpha: float):
-        from pmarlo.utils.msm_utils import ensure_connected_counts
+        from ._msm_utils import ensure_connected_counts
 
         C = self._counts_backend_matrix_or_fallback(lag)
         if C is None:

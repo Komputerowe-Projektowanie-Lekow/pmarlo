@@ -4,7 +4,7 @@ from typing import Any, List, Literal, Optional
 
 import numpy as np
 
-from ..cluster.micro import ClusteringResult, cluster_microstates
+from .clustering import ClusteringResult, cluster_microstates
 
 
 class ClusteringMixin:

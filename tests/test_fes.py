@@ -1,7 +1,12 @@
 import numpy as np
 import pytest
 
-from pmarlo.fes import FESResult, PMFResult, generate_1d_pmf, generate_2d_fes
+from pmarlo.markov_state_model.free_energy import (
+    FESResult,
+    PMFResult,
+    generate_1d_pmf,
+    generate_2d_fes,
+)
 
 
 def _kT_kJ_per_mol(temperature_kelvin: float) -> float:

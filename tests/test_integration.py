@@ -19,7 +19,6 @@ class TestPackageImports:
     def test_main_imports(self):
         """Test importing main classes from package."""
         from pmarlo import (
-            LegacyPipeline,
             MarkovStateModel,
             Pipeline,
             Protein,
@@ -33,7 +32,7 @@ class TestPackageImports:
         assert callable(Simulation)
         assert callable(MarkovStateModel)
         assert callable(Pipeline)
-        assert callable(LegacyPipeline)
+        # LegacyPipeline removed
 
     def test_convenience_function_import(self):
         """Test importing convenience functions."""
@@ -43,7 +42,7 @@ class TestPackageImports:
 
     def test_legacy_function_imports(self):
         """Test importing legacy functions."""
-        from pmarlo.simulation.simulation import (
+        from pmarlo.replica_exchange.simulation import (
             build_transition_model,
             feature_extraction,
             plot_DG,
@@ -72,7 +71,7 @@ class TestWorkflowIntegration:
             protein.save(str(prepared_pdb))
 
             # Step 2: Create simulation
-            from pmarlo.simulation.simulation import Simulation
+            from pmarlo.replica_exchange.simulation import Simulation
 
             simulation = Simulation(
                 pdb_file=str(prepared_pdb),
@@ -146,7 +145,7 @@ class TestErrorHandling:
         # This is more of a documentation test since we can't easily mock
         # missing imports
         # But we can verify that our code structure handles ImportError gracefully
-        from pmarlo.simulation.simulation import Simulation
+        from pmarlo.replica_exchange.simulation import Simulation
 
         # The class should be importable even if OpenMM is not available
         # (errors should occur during execution, not import)

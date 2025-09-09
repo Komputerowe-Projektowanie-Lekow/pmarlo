@@ -10,7 +10,7 @@ import mdtraj as md
 import numpy as np
 
 from pmarlo import Protein, api
-from pmarlo.engine import AppliedOpts, BuildOpts, build_result
+from pmarlo.transform.build import AppliedOpts, BuildOpts, build_result
 from pmarlo.reporting.export import write_conformations_csv_json
 from pmarlo.reporting.plots import save_fes_contour, save_transition_matrix_heatmap
 from pmarlo.transform.plan import TransformPlan, TransformStep
@@ -130,7 +130,7 @@ def run_conformation_finder(
     # Persist provenance bundle
     bundle = OUT_DIR / "provenance_build.json"
     try:
-        from pmarlo.engine.build import BuildResult as _BR
+        from pmarlo.transform.build import BuildResult as _BR
 
         bundle.write_text(result.to_json())
         print("Saved provenance:", bundle)

@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from pmarlo.analysis.ck import run_ck
+from pmarlo.markov_state_model import run_ck
 
 
 def _simulate_cycle(n_repeats: int = 1000) -> np.ndarray:

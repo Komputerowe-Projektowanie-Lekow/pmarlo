@@ -1,7 +1,6 @@
 import numpy as np
 
-from pmarlo.fes import generate_2d_fes
-from pmarlo.fes.surfaces import periodic_kde_2d
+from pmarlo.markov_state_model.free_energy import generate_2d_fes, periodic_kde_2d
 
 
 def test_periodic_kde_mass_conservation():

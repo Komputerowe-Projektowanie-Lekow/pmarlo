@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-from pmarlo.engine import AppliedOpts, BuildOpts, build_result
+from pmarlo.transform.build import AppliedOpts, BuildOpts, build_result
 from pmarlo.transform.plan import TransformPlan, TransformStep
 
 
@@ -52,7 +52,7 @@ def main() -> None:
     outpath.write_text(result.to_json())
     print("Saved:", outpath)
 
-    from pmarlo.engine.build import BuildResult
+    from pmarlo.transform.build import BuildResult
 
     loaded = BuildResult.from_json(outpath.read_text())
 

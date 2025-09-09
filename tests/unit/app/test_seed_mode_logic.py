@@ -10,4 +10,3 @@ def test_choose_sim_seed_modes():
     b = choose_sim_seed("auto")
     assert isinstance(a, int) and isinstance(b, int)
     assert a != b
-

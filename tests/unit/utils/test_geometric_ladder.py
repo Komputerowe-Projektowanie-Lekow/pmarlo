@@ -15,6 +15,7 @@ def test_geometric_ladder_monotone_and_endpoints():
     ratios = arr[1:] / arr[:-1]
     assert np.allclose(ratios, np.full_like(ratios, ratios[0]))
 
+
 def test_geometric_ladder_invalid():
     import pytest
 
@@ -24,4 +25,3 @@ def test_geometric_ladder_invalid():
         geometric_ladder(0.0, 300.0, 5)
     with pytest.raises(ValueError):
         geometric_ladder(300.0, 600.0, 1)
-

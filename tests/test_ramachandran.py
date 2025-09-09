@@ -2,7 +2,7 @@ import mdtraj as md
 import numpy as np
 from mdtraj.core.element import carbon
 
-from pmarlo.fes import compute_ramachandran, periodic_hist2d
+from pmarlo.features.ramachandran import compute_ramachandran, periodic_hist2d
 
 
 def _ramachandran_traj() -> md.Trajectory:

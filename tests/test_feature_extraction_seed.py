@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from pmarlo.simulation.simulation import feature_extraction
+from pmarlo.replica_exchange.simulation import feature_extraction
 
 
 def test_feature_extraction_passes_random_state(

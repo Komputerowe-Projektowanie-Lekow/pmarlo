@@ -5,10 +5,10 @@ from pathlib import Path
 import mdtraj as md
 import numpy as np
 
-from pmarlo.io.trajectory_reader import MDTrajReader
-from pmarlo.io.trajectory_writer import MDTrajDCDWriter
 from pmarlo.demultiplexing.demux_engine import demux_streaming
 from pmarlo.demultiplexing.demux_plan import DemuxPlan, DemuxSegmentPlan
+from pmarlo.io.trajectory_reader import MDTrajReader
+from pmarlo.io.trajectory_writer import MDTrajDCDWriter
 
 
 class CountingWriter:

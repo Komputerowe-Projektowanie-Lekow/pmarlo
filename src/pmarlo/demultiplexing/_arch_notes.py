@@ -102,4 +102,3 @@ Notes for future refactor
 - Tighten invariants and metadata validation (e.g., cross‑checking strides and
   frame counts) and centralize error types.
 """
-

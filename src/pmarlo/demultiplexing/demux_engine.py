@@ -599,5 +599,3 @@ def demux_streaming(
         warnings=warnings,
         segment_real_frames=seg_real_counts,
     )
-
-
