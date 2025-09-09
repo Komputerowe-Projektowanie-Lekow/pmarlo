@@ -19,4 +19,3 @@ def test_acceptance_global_aggregation(tmp_path: Path):
         dry_run=True,
     )
     assert abs(res["global_acceptance"] - (50 / 200)) < 1e-9
-

@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
+from pmarlo.markov_state_model.free_energy import FESResult
 from pmarlo.api import generate_fes_and_pick_minima
-from pmarlo.fes import FESResult
 
 
 def test_fesresult_attribute_and_mapping_access():

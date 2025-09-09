@@ -5,7 +5,10 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.skipif(__import__("importlib.util").util.find_spec("openmm") is None, reason="Requires OpenMM")
+@pytest.mark.skipif(
+    __import__("importlib.util").util.find_spec("openmm") is None,
+    reason="Requires OpenMM",
+)
 def test_diagnostics_json_created(test_fixed_pdb_file: Path, tmp_path: Path):
     from example_programs.app_usecase.app.backend import run_short_sim
 
@@ -16,4 +19,3 @@ def test_diagnostics_json_created(test_fixed_pdb_file: Path, tmp_path: Path):
     assert diag.exists()
     txt = diag.read_text(encoding="utf-8")
     assert "acceptance_mean" in txt and "mean_abs_disp_per_10k_steps" in txt
-

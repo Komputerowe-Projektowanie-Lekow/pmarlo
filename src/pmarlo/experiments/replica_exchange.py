@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from ..manager.checkpoint_manager import CheckpointManager
+# CheckpointManager moved to transform system
 from ..replica_exchange.config import RemdConfig
 from ..replica_exchange.replica_exchange import ReplicaExchange, setup_bias_variables
 from .benchmark_utils import (
@@ -51,7 +51,7 @@ def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
     run_dir = timestamp_dir(config.output_dir)
 
     # Minimal checkpointing confined to this experiment run dir
-    cm = CheckpointManager(output_base_dir=str(run_dir), auto_continue=False)
+    # cm = CheckpointManager(output_base_dir=str(run_dir), auto_continue=False)  # Now handled by Pipeline
     cm.setup_run_directory()
 
     # Build temperatures if not provided:

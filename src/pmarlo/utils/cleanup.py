@@ -33,7 +33,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Literal, Tuple
 
-
 PruneMode = Literal["conservative", "aggressive"]
 
 
@@ -89,7 +88,11 @@ def _collect_candidates(run_dir: Path, keep_demux_meta: bool = True) -> List[Pat
             if ck.exists():
                 cand.append(ck)
     # Progress logs
-    logs = run_dir.parent.parent / "logs" if run_dir.parent.name == "sims" else run_dir / "logs"
+    logs = (
+        run_dir.parent.parent / "logs"
+        if run_dir.parent.name == "sims"
+        else run_dir / "logs"
+    )
     if logs.exists():
         cand.extend(sorted(logs.glob("*.log")))
     # Feature caches under this run (if any)
@@ -112,7 +115,9 @@ def _safe_remove(path: Path, report: PruneReport) -> None:
         report.errors.append((path, str(exc)))
 
 
-def prune_workspace(root: Path, *, mode: PruneMode = "conservative", dry_run: bool = True) -> PruneReport:
+def prune_workspace(
+    root: Path, *, mode: PruneMode = "conservative", dry_run: bool = True
+) -> PruneReport:
     """Prune large intermediates from a PMARLO workspace.
 
     Parameters
@@ -152,7 +157,11 @@ def prune_workspace(root: Path, *, mode: PruneMode = "conservative", dry_run: bo
 
     if mode == "aggressive":
         # 2) Keep only newest 3 bundles; remove older ones
-        bundles = sorted((root / "bundles").glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        bundles = sorted(
+            (root / "bundles").glob("*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
         for old in bundles[3:]:
             if dry_run:
                 rep.kept.append(old)
@@ -175,4 +184,3 @@ def prune_workspace(root: Path, *, mode: PruneMode = "conservative", dry_run: bo
                     continue
 
     return rep
-

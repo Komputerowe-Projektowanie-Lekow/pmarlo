@@ -6,11 +6,18 @@ import numpy as np
 import pytest
 
 
-@pytest.mark.skipif(__import__("importlib.util").util.find_spec("mdtraj") is None, reason="Requires mdtraj")
-def test_random_highT_frame_differs_from_base(test_trajectory_file: Path, test_fixed_pdb_file: Path, tmp_path: Path):
-    from pmarlo.api import extract_random_highT_frame_to_pdb
+@pytest.mark.skipif(
+    __import__("importlib.util").util.find_spec("mdtraj") is None,
+    reason="Requires mdtraj",
+)
+def test_random_highT_frame_differs_from_base(
+    test_trajectory_file: Path, test_fixed_pdb_file: Path, tmp_path: Path
+):
     import json
+
     import mdtraj as md  # type: ignore
+
+    from pmarlo.api import extract_random_highT_frame_to_pdb
 
     # Create a fake run directory structure with analysis_results.json
     rd = tmp_path / "run"
@@ -53,4 +60,3 @@ def test_random_highT_frame_differs_from_base(test_trajectory_file: Path, test_f
     else:
         rmsd = md.rmsd(frame, base)[0] * 10.0
     assert rmsd > 0.1
-

@@ -107,10 +107,10 @@ def test_perf_legacy_demux(benchmark, tmp_path: Path):
 
 
 def test_perf_streaming_demux(benchmark, tmp_path: Path):
-    from pmarlo.io.trajectory_reader import MDTrajReader
-    from pmarlo.io.trajectory_writer import MDTrajDCDWriter
     from pmarlo.demultiplexing.demux_engine import demux_streaming
     from pmarlo.demultiplexing.demux_plan import build_demux_plan
+    from pmarlo.io.trajectory_reader import MDTrajReader
+    from pmarlo.io.trajectory_writer import MDTrajDCDWriter
 
     pdb, dcds = _make_replicas(tmp_path)
     n_replicas = len(dcds)

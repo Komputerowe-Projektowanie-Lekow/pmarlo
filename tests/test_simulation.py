@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from pmarlo.simulation.simulation import Simulation, feature_extraction, prepare_system
+from pmarlo.replica_exchange.simulation import Simulation, feature_extraction, prepare_system
 
 
 class TestSimulation:

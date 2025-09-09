@@ -1,75 +1,70 @@
-"""Randomness and logging utilities for reproducible PMARLO runs.
-
-This module provides helpers to seed global random number generators and
-silence verbose third-party libraries. Deterministic behaviour is
-critical for scientific workflows, hence these utilities centralise the
-configuration in one location.
-"""
-
 from __future__ import annotations
 
-import contextlib
-import io
+"""
+Seeding utilities for deterministic behavior across Python, NumPy, and Torch.
+
+Expose a single entry point `set_global_seed(seed)` used by high‑level run
+entrypoints to standardize determinism across runs and processes.
+"""
+
 import logging
+import os
 import random
-from typing import Iterator
-
-import numpy as np
-from sklearn.utils import check_random_state
-
-logger = logging.getLogger("pmarlo")
+from typing import Optional
 
 
-def set_global_seed(seed: int) -> None:
-    """Seed common RNG sources for deterministic behaviour.
+def set_global_seed(seed: Optional[int]) -> None:
+    """Set global RNG seeds for reproducibility.
 
-    Parameters
-    ----------
-    seed:
-        The integer seed to apply globally.
-
-    Notes
-    -----
-    This function seeds Python's :mod:`random` module, NumPy's legacy
-    ``numpy.random`` module and initialises scikit-learn's RNG via
-    :func:`sklearn.utils.check_random_state`.
-
-    Molecular dynamics in OpenMM remain stochastic as integrators often
-    have their own random streams. If the integrator exposes a
-    ``setRandomNumberSeed`` method it should be seeded separately.
+    Applies to Python's `random`, NumPy, and PyTorch (if available). Also sets
+    `PYTHONHASHSEED` to stabilize hash‑based ordering in the current process.
+    Silently ignores libraries that are not installed.
     """
+    if seed is None:
+        return
+    s = int(seed) & 0xFFFFFFFF
+    try:
+        os.environ["PYTHONHASHSEED"] = str(s)
+    except Exception:
+        pass
+    try:
+        random.seed(s)
+    except Exception:
+        pass
+    try:
+        import numpy as _np  # type: ignore
 
-    random.seed(seed)
-    np.random.seed(seed)
-    # Initialise scikit-learn's global RNG helper
-    check_random_state(seed)
-    logger.info("Global seed set to %d", seed)
+        _np.random.seed(s)
+    except Exception:
+        pass
+    try:  # optional
+        import torch as _torch  # type: ignore
 
-
-def quiet_external_loggers(level: int = logging.INFO) -> None:
-    """Reduce stdout noise from verbose third-party libraries.
-
-    Parameters
-    ----------
-    level:
-        Log level to apply to known noisy loggers.
-    """
-
-    for name in ("openmm", "mdtraj", "dcdplugin"):
-        logging.getLogger(name).setLevel(level)
-
-    # Import mdtraj quietly to silence its plugin banner (e.g. dcdplugin)
-    with _suppress_stdout():
-        try:  # pragma: no cover - import side effect
-            import mdtraj  # type: ignore  # noqa: F401
+        _torch.manual_seed(s)
+        try:
+            _torch.use_deterministic_algorithms(True)  # type: ignore[attr-defined]
         except Exception:
             pass
+    except Exception:
+        pass
 
 
-@contextlib.contextmanager
-def _suppress_stdout() -> Iterator[None]:
-    """Context manager that redirects ``stdout`` to silence plugin banners."""
+def quiet_external_loggers(level: int = logging.WARNING) -> None:
+    """Lower verbosity from noisy third‑party libraries.
 
-    old_stdout = io.StringIO()
-    with contextlib.redirect_stdout(old_stdout):
-        yield
+    Intended for import‑time use to keep console output readable. This does not
+    alter PMARLO's own loggers.
+    """
+    noisy = [
+        "openmm",
+        "mdtraj",
+        "mlcolvar",
+        "torch",
+    ]
+    for name in noisy:
+        try:
+            lg = logging.getLogger(name)
+            lg.setLevel(level)
+            lg.propagate = False
+        except Exception:
+            continue

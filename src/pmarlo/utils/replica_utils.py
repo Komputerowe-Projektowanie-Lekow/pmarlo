@@ -66,7 +66,9 @@ def geometric_temperature_ladder(
     return list(exponential_temperature_ladder(min_temp, max_temp, n_replicas))
 
 
-def geometric_ladder(tmin: float, tmax: float, n: int, endpoint: bool = True) -> np.ndarray:
+def geometric_ladder(
+    tmin: float, tmax: float, n: int, endpoint: bool = True
+) -> np.ndarray:
     """Return a stable geometric ladder from ``tmin`` to ``tmax``.
 
     Parameters
@@ -97,7 +99,7 @@ def geometric_ladder(tmin: float, tmax: float, n: int, endpoint: bool = True) ->
     k = n - 1
     r = (tmax / tmin) ** (1.0 / k)
     idx = _np.arange(n, dtype=float)
-    vals = tmin * (r ** idx)
+    vals = tmin * (r**idx)
     if not endpoint:
         vals = tmin * (r ** (_np.arange(n) * (k / n)))
     return _np.array(vals, dtype=float)

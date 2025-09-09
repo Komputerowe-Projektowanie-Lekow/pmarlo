@@ -14,6 +14,7 @@ def test_compute_diffusion_metrics_basic():
     # exchange_frequency_steps = 500
     m = compute_diffusion_metrics(history, 500)
     assert m["mean_abs_disp_per_sweep"] > 0
-    assert m["mean_abs_disp_per_10k_steps"] == m["mean_abs_disp_per_sweep"] * (10000.0 / 500.0)
+    assert m["mean_abs_disp_per_10k_steps"] == m["mean_abs_disp_per_sweep"] * (
+        10000.0 / 500.0
+    )
     assert isinstance(m["sparkline"], list)
-

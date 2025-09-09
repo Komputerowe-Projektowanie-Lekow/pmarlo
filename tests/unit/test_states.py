@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from pmarlo.states import (
+from pmarlo.markov_state_model.bridge import (
     deserialize_macro_mapping,
     pcca_like_macrostates,
     serialize_macro_mapping,

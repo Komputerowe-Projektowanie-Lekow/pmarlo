@@ -6,9 +6,9 @@ from pathlib import Path
 import mdtraj as md
 import numpy as np
 
-from pmarlo.replica_exchange import config as demux_config
 from pmarlo.demultiplexing.demux_hints import load_demux_hints
 from pmarlo.demultiplexing.demux_metadata import DemuxMetadata
+from pmarlo.replica_exchange import config as demux_config
 from pmarlo.replica_exchange.replica_exchange import ReplicaExchange
 
 

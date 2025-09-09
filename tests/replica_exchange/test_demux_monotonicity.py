@@ -61,10 +61,13 @@ def test_15k_run_with_equilibration_and_stride1():
     assert windows[-1] == (14825, 14900)
 
 
-@pytest.mark.parametrize("stride_steps,exchange_freq", [
-    (4, 125),   # non-divisible pair
-    (5, 375),   # non-divisible pair
-])
+@pytest.mark.parametrize(
+    "stride_steps,exchange_freq",
+    [
+        (4, 125),  # non-divisible pair
+        (5, 375),  # non-divisible pair
+    ],
+)
 def test_rounding_consistency_no_backtrack(stride_steps: int, exchange_freq: int):
     total_md_steps = 14900
     equil_pre = 100
@@ -81,4 +84,3 @@ def test_rounding_consistency_no_backtrack(stride_steps: int, exchange_freq: int
     # Half-open: no duplicate boundary frames
     for i in range(1, len(windows)):
         assert windows[i - 1][1] <= windows[i][0]
-

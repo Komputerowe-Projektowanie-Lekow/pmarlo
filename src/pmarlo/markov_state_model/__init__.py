@@ -7,7 +7,48 @@ Markov State Model module for PMARLO.
 Provides enhanced MSM analysis with TRAM/dTRAM and comprehensive reporting.
 """
 
+from .ck_runner import CKRunResult, run_ck
 from .enhanced_msm import EnhancedMSM as MarkovStateModel
 from .enhanced_msm import run_complete_msm_analysis
+from .free_energy import FESResult, PMFResult, generate_1d_pmf, generate_2d_fes, periodic_kde_2d
+from .reduction import (
+    pca_reduce,
+    tica_reduce,
+    vamp_reduce,
+    reduce_features,
+    get_available_methods,
+)
+from .results import (
+    BaseResult,
+    REMDResult,
+    DemuxResult,
+    ClusteringResult,
+    MSMResult,
+    CKResult,
+    ITSResult,
+)
 
-__all__ = ["MarkovStateModel", "run_complete_msm_analysis"]
+__all__ = [
+    "MarkovStateModel",
+    "run_complete_msm_analysis",
+    "run_ck",
+    "CKRunResult",
+    "FESResult",
+    "PMFResult",
+    "generate_1d_pmf",
+    "generate_2d_fes",
+    "periodic_kde_2d",
+    "pca_reduce",
+    "tica_reduce",
+    "vamp_reduce",
+    "reduce_features",
+    "get_available_methods",
+    # Result classes
+    "BaseResult",
+    "REMDResult",
+    "DemuxResult",
+    "ClusteringResult",
+    "MSMResult",
+    "CKResult",
+    "ITSResult",
+]

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from pmarlo.states.msm_bridge import _stationary_from_T
+from pmarlo.markov_state_model.bridge import _stationary_from_T
 from pmarlo.utils.msm_utils import check_transition_matrix
 
 

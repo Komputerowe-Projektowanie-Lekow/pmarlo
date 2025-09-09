@@ -6,9 +6,17 @@ import numpy as np
 import pytest
 
 
-@pytest.mark.skipif(__import__("importlib.util").util.find_spec("openmm") is None, reason="Requires OpenMM")
-def test_diversified_starts_increase_bin_coverage(test_fixed_pdb_file: Path, tmp_path: Path):
-    from example_programs.app_usecase.app.backend import run_short_sim, emit_from_trajs_simple
+@pytest.mark.skipif(
+    __import__("importlib.util").util.find_spec("openmm") is None,
+    reason="Requires OpenMM",
+)
+def test_diversified_starts_increase_bin_coverage(
+    test_fixed_pdb_file: Path, tmp_path: Path
+):
+    from example_programs.app_usecase.app.backend import (
+        emit_from_trajs_simple,
+        run_short_sim,
+    )
     from pmarlo.data.shard import read_shard
 
     ws = tmp_path

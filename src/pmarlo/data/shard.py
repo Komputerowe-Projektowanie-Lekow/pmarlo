@@ -35,6 +35,8 @@ from typing import Any, Dict, Iterable, Tuple
 
 import numpy as np
 
+from pmarlo.io.shard_id import ShardId
+
 
 @dataclass(frozen=True)
 class ShardMeta:
@@ -52,7 +54,7 @@ class ShardMeta:
     created_at: str
     source: Dict[str, Any]
     arrays_hash: str
-    schema_version: str = "pmarlo.shard.v1"
+    schema_version: str = "2.0"
 
 
 def _canonical_json(obj: Dict[str, Any]) -> str:
@@ -62,6 +64,81 @@ def _canonical_json(obj: Dict[str, Any]) -> str:
     """
 
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def generate_canonical_shard_id_from_meta(meta: ShardMeta, json_path: Path) -> str:
+    """
+    Generate canonical shard ID from shard metadata.
+
+    This function attempts to construct a canonical shard identifier from the
+    metadata stored in a shard JSON file. It uses the source path information
+    to determine the canonical form.
+
+    Parameters
+    ----------
+    meta : ShardMeta
+        Shard metadata object
+    json_path : Path
+        Path to the shard JSON file
+
+    Returns
+    -------
+    str
+        Canonical shard identifier, or legacy format if parsing fails
+
+    Examples
+    --------
+    >>> meta = ShardMeta(...)
+    >>> canonical_id = generate_canonical_shard_id_from_meta(meta, Path("shard.json"))
+    >>> print(canonical_id)
+    'run-20250906-170155:demux:T300:0'
+    """
+    try:
+        # Extract source path from metadata
+        source = meta.source or {}
+        source_path_str = (
+            source.get("traj")
+            or source.get("path")
+            or source.get("file")
+            or source.get("source_path")
+        )
+
+        if source_path_str:
+            source_path = Path(source_path_str)
+            # Try to parse canonical ID from source path
+            try:
+                shard_id = ShardId(
+                    run_id=source.get("run_id") or source.get("run_uid") or "",
+                    source_kind=(
+                        "demux" if "demux" in str(source_path).lower() else "replica"
+                    ),
+                    temperature_K=(
+                        int(meta.temperature) if meta.temperature != 300.0 else None
+                    ),
+                    replica_index=None,  # Will be determined by parsing
+                    local_index=0,  # Placeholder, will be computed
+                    source_path=source_path,
+                    dataset_hash="",  # Not available from meta
+                )
+
+                # Use the parsing function to get proper local_index
+                from pmarlo.io.shard_id import parse_shard_id
+
+                parsed_id = parse_shard_id(source_path)
+                return parsed_id.canonical()
+
+            except Exception:
+                pass
+
+        # Fallback to legacy format
+        run_uid = (
+            source.get("run_uid") or source.get("run_id") or source.get("run_dir") or ""
+        )
+        return f"{run_uid}|{meta.shard_id}|{str(json_path.resolve())}"
+
+    except Exception:
+        # Ultimate fallback
+        return f"fallback|{meta.shard_id}|{str(json_path.resolve())}"
 
 
 def _sha256_bytes(*arrays: np.ndarray) -> str:
@@ -141,6 +218,33 @@ def write_shard(
     # Enrich source with explicit temperature_K and has_bias flags for provenance
     enriched_source = dict(source)
     try:
+        # Try to parse canonical provenance from a provided trajectory path
+        traj_path_str = (
+            enriched_source.get("traj")
+            or enriched_source.get("path")
+            or enriched_source.get("file")
+            or enriched_source.get("source_path")
+        )
+        if isinstance(traj_path_str, str) and traj_path_str:
+            try:
+                from pmarlo.io.shard_id import parse_shard_id as _parse_sid
+
+                sid = _parse_sid(Path(traj_path_str), require_exists=False)
+                # DEMUX-first: store explicit kind/run_id and conditional role fields
+                enriched_source.update(
+                    {
+                        "kind": sid.source_kind,
+                        "run_id": sid.run_id,
+                    }
+                )
+                if sid.source_kind == "demux" and sid.temperature_K is not None:
+                    enriched_source["temperature_K"] = float(sid.temperature_K)
+                if sid.source_kind == "replica" and sid.replica_index is not None:
+                    enriched_source["replica_index"] = int(sid.replica_index)
+            except Exception:
+                # Best-effort only; leave as-is on failure
+                pass
+
         enriched_source.update(
             {
                 "temperature_K": float(temperature),

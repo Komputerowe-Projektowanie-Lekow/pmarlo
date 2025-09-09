@@ -15,4 +15,3 @@ def test_geometric_ladder_sorted_and_bounds():
     # geometric spacing ratios are (approximately) constant
     ratios = [temps[i + 1] / temps[i] for i in range(len(temps) - 1)]
     assert np.allclose(ratios, np.full(len(ratios), ratios[0]))
-

@@ -1,7 +1,7 @@
 import numpy as np
 from sklearn.datasets import make_blobs
 
-from pmarlo.cluster.micro import cluster_microstates
+from pmarlo.markov_state_model.clustering import cluster_microstates
 from pmarlo.markov_state_model.enhanced_msm import EnhancedMSM
 from pmarlo.utils.seed import set_global_seed
 

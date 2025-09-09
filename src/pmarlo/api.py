@@ -7,19 +7,31 @@ from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 import mdtraj as md  # type: ignore
 import numpy as np
 
-from .analysis.ck import run_ck as _run_ck
-from .cluster.micro import cluster_microstates as _cluster_microstates
+from .markov_state_model.free_energy import FESResult
+from .markov_state_model.free_energy import generate_2d_fes as _generate_2d_fes
 from .data.aggregate import aggregate_and_build as _aggregate_and_build
 from .engine.build import AppliedOpts as _AppliedOpts
 from .engine.build import BuildOpts as _BuildOpts
 from .features import get_feature
 from .features.base import parse_feature_spec
-from .fes.surfaces import FESResult
-from .fes.surfaces import generate_2d_fes as _generate_2d_fes
 from .io import trajectory as _traj_io
+from .markov_state_model._msm_utils import build_simple_msm as _build_simple_msm
+from .markov_state_model._msm_utils import (
+    candidate_lag_ladder,
+)
+from .markov_state_model._msm_utils import compute_macro_mfpt as _compute_macro_mfpt
+from .markov_state_model._msm_utils import (
+    compute_macro_populations as _compute_macro_populations,
+)
+from .markov_state_model._msm_utils import (
+    lump_micro_to_macro_T as _lump_micro_to_macro_T,
+)
+from .markov_state_model._msm_utils import pcca_like_macrostates as _pcca_like
+from .markov_state_model.ck_runner import run_ck as _run_ck
+from .markov_state_model.clustering import cluster_microstates as _cluster_microstates
 from .markov_state_model.enhanced_msm import EnhancedMSM as MarkovStateModel
 from .progress import coerce_progress_callback
-from .reduce.reducers import pca_reduce, tica_reduce, vamp_reduce
+from .markov_state_model.reduction import pca_reduce, tica_reduce, vamp_reduce
 from .replica_exchange.config import RemdConfig
 from .replica_exchange.replica_exchange import ReplicaExchange
 from .reporting.export import write_conformations_csv_json
@@ -28,15 +40,9 @@ from .reporting.plots import (
     save_pmf_line,
     save_transition_matrix_heatmap,
 )
-from .states.msm_bridge import build_simple_msm as _build_simple_msm
-from .states.msm_bridge import compute_macro_mfpt as _compute_macro_mfpt
-from .states.msm_bridge import compute_macro_populations as _compute_macro_populations
-from .states.msm_bridge import lump_micro_to_macro_T as _lump_micro_to_macro_T
-from .states.msm_bridge import pcca_like_macrostates as _pcca_like
-from .states.picker import pick_frames_around_minima as _pick_frames_around_minima
+from .markov_state_model.picker import pick_frames_around_minima as _pick_frames_around_minima
 from .transform.plan import TransformPlan as _TransformPlan
 from .transform.plan import TransformStep as _TransformStep
-from .utils.msm_utils import candidate_lag_ladder
 
 logger = logging.getLogger("pmarlo")
 
@@ -844,8 +850,10 @@ def run_replica_exchange(
         exchange_frequency = int(exchange_frequency_steps)
 
     # Prefer random_state when both provided for back-compat
-    _seed = int(random_state) if random_state is not None else (
-        int(random_seed) if random_seed is not None else None
+    _seed = (
+        int(random_state)
+        if random_state is not None
+        else (int(random_seed) if random_seed is not None else None)
     )
     remd = ReplicaExchange.from_config(
         RemdConfig(
@@ -856,7 +864,9 @@ def run_replica_exchange(
             auto_setup=False,
             dcd_stride=dcd_stride,
             random_seed=_seed,
-            start_from_checkpoint=str(start_from_checkpoint) if start_from_checkpoint else None,
+            start_from_checkpoint=(
+                str(start_from_checkpoint) if start_from_checkpoint else None
+            ),
             start_from_pdb=str(start_from_pdb) if start_from_pdb else None,
             jitter_sigma_A=float(jitter_sigma_A) if jitter_start else 0.0,
             reseed_velocities=bool(velocity_reseed),
@@ -871,13 +881,18 @@ def run_replica_exchange(
     if start_from_checkpoint:
         try:
             import pickle as _pkl
+
             with open(start_from_checkpoint, "rb") as fh:
                 ckpt = _pkl.load(fh)
             remd.restore_from_checkpoint(ckpt)
             # Skip equilibration if resuming from a checkpoint
             equil = 0
         except Exception as exc:
-            logger.warning("Failed to restore from checkpoint %s: %s", str(start_from_checkpoint), exc)
+            logger.warning(
+                "Failed to restore from checkpoint %s: %s",
+                str(start_from_checkpoint),
+                exc,
+            )
     # Optional unified progress callback (many alias names accepted)
     cb = coerce_progress_callback(kwargs)
     remd.run_simulation(
@@ -896,9 +911,7 @@ def run_replica_exchange(
         try:
             from pmarlo.io.trajectory_reader import MDTrajReader as _MDTReader
 
-            nframes = _MDTReader(topology_path=str(pdb_file)).probe_length(
-                str(demuxed)
-            )
+            nframes = _MDTReader(topology_path=str(pdb_file)).probe_length(str(demuxed))
             reporter_stride = getattr(remd, "reporter_stride", None)
             eff_stride = int(
                 reporter_stride
@@ -1083,7 +1096,7 @@ def analyze_msm(  # noqa: C901
                     cache_path=str(cache_dir),
                 )
                 # 1) PMF on IC1
-                from .fes.surfaces import generate_1d_pmf
+                from .markov_state_model.free_energy import generate_1d_pmf
 
                 pmf = generate_1d_pmf(
                     Y2[:, 0], bins=int(max(30, adaptive_bins)), temperature=300.0
@@ -1365,6 +1378,7 @@ def emit_shards_rg_rmsd(
     deterministic shards under ``out_dir``.
     """
     import mdtraj as md  # type: ignore
+
     # Quiet streaming iterator for reading DCDs without plugin chatter
     from pmarlo.io import trajectory as _traj_io
 
@@ -1517,6 +1531,86 @@ def build_from_shards(
         progress_callback=progress_callback,
     )
     return br, ds_hash
+
+
+def demultiplex_run(
+    run_id: str,
+    replica_traj_paths: list[str | Path],
+    exchange_log_path: str | Path,
+    topology_path: str | Path,
+    ladder_K: list[float] | str,
+    dt_ps: float,
+    out_dir: str | Path,
+    fmt: str = "dcd",
+    chunk_size: int = 5000,
+) -> list[str]:
+    """Demultiplex a REMD run into per-temperature trajectories and manifests.
+
+    .. deprecated:: 0.0.42
+        This function is deprecated. Use :func:`pmarlo.demultiplexing.demux.demux_trajectories`
+        or the streaming demux functions directly.
+
+    Returns list of DemuxShard JSON paths.
+    """
+    import warnings
+
+    warnings.warn(
+        "demultiplex_run is deprecated; use pmarlo.demultiplexing.demux.demux_trajectories "
+        "or streaming demux functions directly",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
+    # For backward compatibility, try to use the streaming demux
+    try:
+        from pathlib import Path
+
+        from .demultiplexing.demux_engine import demux_streaming
+        from .demultiplexing.demux_plan import build_demux_plan
+        from .io.trajectory_reader import get_reader
+        from .io.trajectory_writer import get_writer
+        from .replica_exchange.demux_compat import (
+            parse_exchange_log,
+            parse_temperature_ladder,
+        )
+
+        # Parse inputs
+        temperatures = parse_temperature_ladder(ladder_K)
+        exchange_records = parse_exchange_log(str(exchange_log_path))
+
+        # Build demux plan
+        plan = build_demux_plan(
+            trajectory_paths=[str(p) for p in replica_traj_paths],
+            temperatures=temperatures,
+            exchange_records=exchange_records,
+            target_temperature=temperatures[0],  # Default to first temperature
+            equilibration_steps=0,  # Could be made configurable
+        )
+
+        # Set up reader/writer
+        reader = get_reader("mdtraj")
+        writer = get_writer("mdtraj")
+
+        # Create output path
+        out_path = Path(out_dir) / f"demux_{run_id}_T{temperatures[0]:.0f}K.{fmt}"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Execute demux
+        result = demux_streaming(
+            plan=plan,
+            topology_path=str(topology_path),
+            reader=reader,
+            writer=writer,
+            chunk_size=chunk_size,
+        )
+
+        return [str(out_path)] if result.total_frames_written > 0 else []
+
+    except Exception:
+        # Fallback: return empty list if anything fails
+        return []
+
+
 def extract_last_frame_to_pdb(
     *,
     trajectory_file: str | Path,
@@ -1542,8 +1636,8 @@ def extract_last_frame_to_pdb(
     Path
         The output PDB path.
     """
-    import numpy as _np
     import mdtraj as _md  # type: ignore
+    import numpy as _np
 
     traj = _md.load(str(trajectory_file), top=str(topology_pdb))
     if traj.n_frames <= 0:
@@ -1572,8 +1666,9 @@ def extract_random_highT_frame_to_pdb(
     Falls back to the last `replica_*.dcd` when metadata is missing.
     """
     import json as _json
-    import numpy as _np
+
     import mdtraj as _md  # type: ignore
+    import numpy as _np
 
     rd = Path(run_dir)
     analysis_json = rd / "replica_exchange" / "analysis_results.json"
@@ -1597,7 +1692,9 @@ def extract_random_highT_frame_to_pdb(
         # Fallback: pick highest replica index .dcd
         dcds = sorted((rd / "replica_exchange").glob("replica_*.dcd"))
         if not dcds:
-            raise FileNotFoundError(f"No replica_*.dcd found under {rd / 'replica_exchange'}")
+            raise FileNotFoundError(
+                f"No replica_*.dcd found under {rd / 'replica_exchange'}"
+            )
         traj_path = dcds[-1]
 
     traj = _md.load(str(traj_path), top=str(topology_pdb))

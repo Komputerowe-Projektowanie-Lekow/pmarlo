@@ -1,9 +1,8 @@
 from __future__ import annotations
 
+import types
 from pathlib import Path
 from typing import Any, List, Tuple
-
-import types
 
 import pytest
 
@@ -47,4 +46,3 @@ def test_run_replica_exchange_propagates_seed(monkeypatch, tmp_path: Path):
 
     assert captured.get("random_seed") == 4242
     assert isinstance(out, tuple) and isinstance(out[0], list)
-

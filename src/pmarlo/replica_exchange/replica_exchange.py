@@ -22,16 +22,19 @@ from openmm import Platform, unit
 from openmm.app import ForceField, PDBFile, Simulation
 
 from pmarlo.progress import ProgressCB, ProgressReporter
-from pmarlo.utils.progress import ProgressPrinter
+from pmarlo.transform.progress import ProgressPrinter
 
+from ..demultiplexing.demux import demux_trajectories as _demux_trajectories
 from ..results import REMDResult
 from ..utils.integrator import create_langevin_integrator
 from ..utils.naming import base_shape_str, permutation_name
 from ..utils.replica_utils import exponential_temperature_ladder
 from .config import RemdConfig
-from ..demultiplexing.demux import demux_trajectories as _demux_trajectories
-from .diagnostics import compute_exchange_statistics, retune_temperature_ladder
-from .diagnostics import compute_diffusion_metrics
+from .diagnostics import (
+    compute_diffusion_metrics,
+    compute_exchange_statistics,
+    retune_temperature_ladder,
+)
 from .platform_selector import select_platform_and_properties
 from .system_builder import (
     create_system,
@@ -134,7 +137,9 @@ class ReplicaExchange:
         self.resume_checkpoint: Optional[Path] = (
             Path(start_from_checkpoint) if start_from_checkpoint else None
         )
-        self.resume_pdb: Optional[Path] = Path(start_from_pdb) if start_from_pdb else None
+        self.resume_pdb: Optional[Path] = (
+            Path(start_from_pdb) if start_from_pdb else None
+        )
         # Jitter sigma in nanometers (A * 0.1)
         try:
             self.resume_jitter_sigma_nm: float = float(jitter_sigma_A) * 0.1
@@ -220,7 +225,9 @@ class ReplicaExchange:
             start_from_pdb=getattr(config, "start_from_pdb", None),
             jitter_sigma_A=float(getattr(config, "jitter_sigma_A", 0.0) or 0.0),
             reseed_velocities=bool(getattr(config, "reseed_velocities", False)),
-            temperature_schedule_mode=getattr(config, "temperature_schedule_mode", None),
+            temperature_schedule_mode=getattr(
+                config, "temperature_schedule_mode", None
+            ),
         )
 
     def plan_reporter_stride(
@@ -344,6 +351,7 @@ class ReplicaExchange:
                 # Optional small Gaussian jitter in nm
                 if self.resume_jitter_sigma_nm > 0.0:
                     import numpy as _np
+
                     arr = _np.array(
                         [[v.x, v.y, v.z] for v in pdb_resume.positions], dtype=float
                     )
@@ -367,7 +375,9 @@ class ReplicaExchange:
                     float(self.resume_jitter_sigma_nm),
                 )
             except Exception as exc:
-                logger.warning("Failed to load resume PDB %s: %s", str(self.resume_pdb), exc)
+                logger.warning(
+                    "Failed to load resume PDB %s: %s", str(self.resume_pdb), exc
+                )
                 resume_positions = None
         system = create_system(pdb, forcefield)
         log_system_info(system, logger)
@@ -402,7 +412,9 @@ class ReplicaExchange:
             # Optional velocity reseed on start
             if self.reseed_velocities:
                 try:
-                    simulation.context.setVelocitiesToTemperature(temperature * unit.kelvin)
+                    simulation.context.setVelocitiesToTemperature(
+                        temperature * unit.kelvin
+                    )
                 except Exception:
                     pass
 
@@ -1289,7 +1301,10 @@ class ReplicaExchange:
         for replica_idx, replica in enumerate(self.replicas):
             target_temp = self.temperatures[self.replica_states[replica_idx]]
             replica.integrator.setTemperature(target_temp * unit.kelvin)
-            replica.context.setVelocitiesToTemperature(target_temp * unit.kelvin)
+            # Avoid stochastic velocity reseeding here to preserve determinism across
+            # repeated runs with the same random_seed. Velocities will continue to
+            # evolve deterministically from prior steps under a seeded integrator.
+            # replica.context.setVelocitiesToTemperature(target_temp * unit.kelvin)
         equil_chunk_size = max(1, temp_equil_steps // 10)
         temp_progress = ProgressPrinter(temp_equil_steps)
         for i in range(0, temp_equil_steps, equil_chunk_size):
@@ -1672,10 +1687,15 @@ class ReplicaExchange:
                 "temperatures": [float(t) for t in self.temperatures],
             }
             diag.update(
-                compute_diffusion_metrics(self.exchange_history, self.exchange_frequency)
+                compute_diffusion_metrics(
+                    self.exchange_history, self.exchange_frequency
+                )
             )
             extra = compute_exchange_statistics(
-                self.exchange_history, self.n_replicas, self.pair_attempt_counts, self.pair_accept_counts
+                self.exchange_history,
+                self.n_replicas,
+                self.pair_attempt_counts,
+                self.pair_accept_counts,
             )
             # Extract per-pair acceptance as a compact list ordered by neighbor index
             pair_rates = []
@@ -1691,7 +1711,9 @@ class ReplicaExchange:
                 json.dump(diag, fh, sort_keys=True, separators=(",", ":"))
             logger.info("Exchange diagnostics saved to %s", str(dfile))
             # Also save under a canonical name for future tooling
-            with open(self.output_dir / "remd_diagnostics.json", "w", encoding="utf-8") as fh2:
+            with open(
+                self.output_dir / "remd_diagnostics.json", "w", encoding="utf-8"
+            ) as fh2:
                 json.dump(diag, fh2, sort_keys=True, separators=(",", ":"))
         except Exception as exc:
             logger.debug("Failed to save exchange diagnostics: %s", exc)
@@ -1761,6 +1783,7 @@ class ReplicaExchange:
         # Use streaming probe to avoid loading files and to keep plugins quiet
         try:
             from pmarlo.io.trajectory_reader import MDTrajReader as _MDTReader
+
             reader = _MDTReader(topology_path=str(self.pdb_file))
         except Exception:
             reader = None  # type: ignore[assignment]

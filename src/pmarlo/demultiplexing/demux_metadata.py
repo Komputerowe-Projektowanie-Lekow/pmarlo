@@ -92,7 +92,9 @@ class DemuxMetadata:
         d["integration_timestep_ps"] = float(self.integration_timestep_ps)
         d["frames_per_segment"] = int(self.frames_per_segment)
         d["schema_version"] = int(getattr(self, "schema_version", 2))
-        d["equilibration_steps_total"] = int(getattr(self, "equilibration_steps_total", 0))
+        d["equilibration_steps_total"] = int(
+            getattr(self, "equilibration_steps_total", 0)
+        )
         # temperature_schedule keys are already strings; make sure mapping types are basic
         d["temperature_schedule"] = {
             str(rep): {str(seg): float(temp) for seg, temp in segs.items()}
@@ -139,11 +141,15 @@ class DemuxMetadata:
         obj.plan_checksum = data.get("plan_checksum")
         obj.schema_version = int(data.get("schema_version", 2))
         try:
-            obj.equilibration_steps_total = int(data.get("equilibration_steps_total", 0))
+            obj.equilibration_steps_total = int(
+                data.get("equilibration_steps_total", 0)
+            )
         except Exception:
             obj.equilibration_steps_total = 0
         try:
-            obj.overlap_corrections = [int(x) for x in data.get("overlap_corrections", [])]
+            obj.overlap_corrections = [
+                int(x) for x in data.get("overlap_corrections", [])
+            ]
         except Exception:
             obj.overlap_corrections = []
         return obj
@@ -313,8 +319,12 @@ def serialize_metadata(
         schema_version=2,
         total_expected_frames=int(getattr(plan, "total_expected_frames", 0) or 0),
         contiguous_blocks=_compute_contiguous_blocks(result, plan),
-        equilibration_steps_total=int(runtime_info.get("equilibration_steps_total", 0) or 0),
-        overlap_corrections=[int(x) for x in (runtime_info.get("overlap_corrections", []) or [])],
+        equilibration_steps_total=int(
+            runtime_info.get("equilibration_steps_total", 0) or 0
+        ),
+        overlap_corrections=[
+            int(x) for x in (runtime_info.get("overlap_corrections", []) or [])
+        ],
     )
     d = meta.to_dict()
     # Provide a readable summary of warnings if present (non-breaking extra key)
@@ -325,5 +335,3 @@ def serialize_metadata(
     if d.get("time_per_frame_ps", None) is None:
         d.pop("time_per_frame_ps", None)
     return d
-
-

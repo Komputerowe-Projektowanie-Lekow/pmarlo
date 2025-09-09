@@ -48,7 +48,7 @@ def plot_msm(T: np.ndarray | None, pi: np.ndarray | None) -> plt.Figure:
 def plot_fes(fes: Any | None) -> plt.Figure:
     """Render a 2D FES contour if present.
 
-    Accepts a pmarlo.fes.surfaces.FESResult or a dict with the same fields.
+    Accepts a pmarlo.markov_state_model.free_energy.FESResult or a dict with the same fields.
     """
     if fes is None:
         fig, ax = plt.subplots(figsize=(5, 3))
@@ -84,5 +84,36 @@ def plot_fes(fes: Any | None) -> plt.Figure:
     else:
         ax.set_xlabel("cv1")
         ax.set_ylabel("cv2")
+    # Quality annotation if sparse sampling
+    try:
+        frac = None
+        frac = meta.get("empty_bins_fraction") if isinstance(meta, dict) else None
+        if frac is not None and float(frac) > 0.30:
+            ax.text(
+                0.5,
+                1.02,
+                "Sparse sampling: >30% empty bins",
+                transform=ax.transAxes,
+                ha="center",
+                va="bottom",
+                color="crimson",
+                fontsize=10,
+                fontweight="bold",
+            )
+        # Show adaptive smoothing banner when present
+        if isinstance(meta, dict) and meta.get("sparse_banner"):
+            ax.text(
+                0.5,
+                1.06,
+                str(meta.get("sparse_banner")),
+                transform=ax.transAxes,
+                ha="center",
+                va="bottom",
+                color="darkorange",
+                fontsize=10,
+                fontweight="bold",
+            )
+    except Exception:
+        pass
     ax.set_title("Free Energy Surface")
     return fig
