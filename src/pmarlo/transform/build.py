@@ -510,6 +510,12 @@ def build_result(
             )
             applied_obj.actual_plan = plan_to_use
 
+        artifacts: Dict[str, Any] = {}
+        if isinstance(working_dataset, dict):
+            raw_artifacts = working_dataset.get("__artifacts__")
+            if isinstance(raw_artifacts, dict):
+                artifacts = _sanitize_artifacts(raw_artifacts)
+
         transition_matrix: Optional[np.ndarray] = None
         stationary_distribution: Optional[np.ndarray] = None
         msm_payload: Optional[Any] = None
@@ -580,6 +586,9 @@ def build_result(
             flags["has_fes"] = True
         if tram_payload not in (None, {}):
             flags["has_tram"] = True
+        if "mlcv_deeptica" in artifacts:
+            summary = artifacts["mlcv_deeptica"]
+            flags["mlcv_deeptica_applied"] = bool(summary.get("applied"))
 
         return BuildResult(
             transition_matrix=transition_matrix,
@@ -592,6 +601,7 @@ def build_result(
             n_frames=n_frames,
             n_shards=n_shards,
             feature_names=feature_names,
+            artifacts=artifacts,
             flags=flags,
         )
 
@@ -632,6 +642,41 @@ def _extract_feature_names(dataset: Any) -> List[str]:
         return []
     except Exception:
         return []
+
+
+def _extract_cvs(
+    dataset: Any,
+) -> Optional[Tuple[np.ndarray, np.ndarray, Tuple[str, str], Tuple[bool, bool]]]:
+    try:
+        if isinstance(dataset, dict):
+            X = dataset.get("X")
+            if X is None:
+                return None
+            X = np.asarray(X, dtype=np.float64)
+            if X.ndim != 2 or X.shape[0] == 0 or X.shape[1] < 2:
+                return None
+            names = dataset.get("cv_names") or ()
+            if not isinstance(names, (list, tuple)):
+                names = ()
+            name_pair = (
+                str(names[0]) if len(names) > 0 else "cv1",
+                str(names[1]) if len(names) > 1 else "cv2",
+            )
+            periodic = dataset.get("periodic") or ()
+            if not isinstance(periodic, (list, tuple)):
+                periodic = ()
+            periodic_pair = (
+                bool(periodic[0]) if len(periodic) > 0 else False,
+                bool(periodic[1]) if len(periodic) > 1 else False,
+            )
+            return X[:, 0], X[:, 1], name_pair, periodic_pair
+        if hasattr(dataset, "X"):
+            X = np.asarray(getattr(dataset, "X"), dtype=np.float64)
+            if X.ndim == 2 and X.shape[1] >= 2:
+                return X[:, 0], X[:, 1], ("cv1", "cv2"), (False, False)
+    except Exception:
+        return None
+    return None
 
 
 def _build_msm(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
@@ -783,6 +828,22 @@ def validate_build_opts(opts: BuildOpts) -> List[str]:
         warnings.append("chunk_size must be positive")
 
     return warnings
+
+
+def _sanitize_artifacts(obj: Any) -> Any:
+    if isinstance(obj, (str, int, float, bool)) or obj is None:
+        return obj
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, dict):
+        return {str(k): _sanitize_artifacts(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_artifacts(v) for v in obj]
+    return str(obj)
 
 
 def estimate_memory_usage(dataset: Any, opts: BuildOpts) -> float:

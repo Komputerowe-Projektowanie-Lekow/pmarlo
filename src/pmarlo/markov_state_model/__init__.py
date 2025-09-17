@@ -33,6 +33,8 @@ from .results import (
     MSMResult,
     REMDResult,
 )
+from .reweighter import Reweighter
+from .msm_builder import MSMBuilder, MSMResult as BuilderMSMResult
 
 __all__ = [
     "MarkovStateModel",
@@ -57,4 +59,8 @@ __all__ = [
     "MSMResult",
     "CKResult",
     "ITSResult",
+    # Facades
+    "Reweighter",
+    "MSMBuilder",
+    "BuilderMSMResult",
 ]

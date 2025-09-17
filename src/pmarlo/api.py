@@ -40,6 +40,9 @@ from .reporting.plots import (
     save_pmf_line,
     save_transition_matrix_heatmap,
 )
+from .config import JOINT_USE_REWEIGHT
+from .workflow.joint import JointWorkflow, WorkflowConfig as JointWorkflowConfig
+
 from .transform.build import AppliedOpts as _AppliedOpts
 from .transform.build import BuildOpts as _BuildOpts
 from .transform.plan import TransformPlan as _TransformPlan
@@ -1501,11 +1504,20 @@ def build_from_shards(
         cv_pair[1]: _np.linspace(mins[1], maxs[1], int(bins.get(cv_pair[1], 32)) + 1),
     }
 
+    model_dir = None
+    if notes:
+        try:
+            model_dir = notes.get("model_dir") if isinstance(notes, dict) else None
+        except Exception:
+            model_dir = None
+
     steps: list[_TransformStep] = []
     if learn_cv:
         params = dict(deeptica_params or {})
         if "lag" not in params:
             params["lag"] = int(max(1, lag))
+        if model_dir and "model_dir" not in params:
+            params["model_dir"] = model_dir
         steps.append(_TransformStep("LEARN_CV", {"method": "deeptica", **params}))
     steps.append(_TransformStep("SMOOTH_FES", {"sigma": 0.6}))
     plan = _TransformPlan(steps=tuple(steps))
@@ -1712,3 +1724,26 @@ def extract_random_highT_frame_to_pdb(
     out_p.parent.mkdir(parents=True, exist_ok=True)
     frame.save_pdb(str(out_p))
     return out_p
+
+def build_joint_workflow(
+    shards_root: Path,
+    temperature_ref_K: float,
+    tau_steps: int,
+    n_clusters: int,
+    *,
+    use_reweight: Optional[bool] = None,
+) -> JointWorkflow:
+    """Construct a :class:`JointWorkflow` using library defaults only."""
+
+    if use_reweight is None:
+        use_reweight = JOINT_USE_REWEIGHT.get()
+
+    cfg = JointWorkflowConfig(
+        shards_root=Path(shards_root),
+        temperature_ref_K=temperature_ref_K,
+        tau_steps=int(tau_steps),
+        n_clusters=int(n_clusters),
+        use_reweight=bool(use_reweight),
+    )
+    return JointWorkflow(cfg)
+

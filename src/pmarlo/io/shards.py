@@ -1,256 +1,145 @@
 from __future__ import annotations
 
-"""
-Robust shard discovery and indexing utilities.
-
-This module provides tolerant parsing of shard JSON filenames and helpers to
-rescan/prune a lightweight index after workspace cleanups.
-"""
+"""Utilities for maintaining shard indexes backed by strict metadata."""
 
 import json
-import re
-from dataclasses import asdict, dataclass
+import warnings
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Sequence
 
-from pmarlo.io.shard_id import ShardId
+from pmarlo.shards.discover import discover_shard_jsons
+from pmarlo.shards.id import canonical_shard_id
+from pmarlo.shards.meta import load_shard_meta
 
+from .shard_id import ShardId
 
-@dataclass(frozen=True)
-class ShardIndexEntry:
-    path: str
-    uid: str
-    run_id: str
-    kind: str  # "demux" | "replica"
-    temperature_K: Optional[int]
+INDEX_VERSION = 2
 
-
-def _nearest_run_id(p: Path) -> str:
-    cur = p.resolve().parent
-    for _ in range(6):
-        if cur.name.startswith("run-"):
-            return cur.name
-        if cur.parent == cur:
-            break
-        cur = cur.parent
-    return ""
+__all__ = [
+    "rescan_shards",
+    "prune_missing_shards",
+    "ShardRegistry",
+    "parse_shard_json_filename",
+    "build_shard_id_from_json_fallback",
+]
 
 
-def parse_shard_json_filename(json_path: Path) -> Dict[str, Any]:
-    """Tolerant parser for shard JSON path.
+def _collect_json_paths(paths: Iterable[Path]) -> List[Path]:
+    collected: List[Path] = []
+    for entry in paths:
+        path = Path(entry)
+        if path.is_dir():
+            collected.extend(discover_shard_jsons(path))
+        elif path.suffix.lower() == ".json":
+            collected.append(path)
+    return collected
 
-    Tries metadata first; falls back to filename and parent directories.
-    Returns mapping with keys: run_id, kind, temperature_K, uid.
-    """
-    p = Path(json_path)
-    run_id = _nearest_run_id(p)
-    kind = "replica"
-    temperature_K: Optional[int] = None
-    uid = f"fallback|{p.stem}|{str(p.resolve())}"
 
-    # Attempt to read metadata to refine fields
-    try:
-        from pmarlo.data.shard import read_shard  # lazy import
+def parse_shard_json_filename(json_path: Path) -> Dict[str, object]:
+    """Deprecated shim retained for backwards compatibility."""
 
-        meta, _, _ = read_shard(p)
-        run_id = run_id or str(getattr(meta, "source", {}).get("run_uid", ""))
-        src = dict(getattr(meta, "source", {}))
-        src_path_str = (
-            src.get("traj")
-            or src.get("path")
-            or src.get("file")
-            or src.get("source_path")
-            or ""
-        )
-        if src_path_str:
-            s = str(src_path_str)
-            if "demux" in s.lower():
-                kind = "demux"
-            elif "replica" in s.lower():
-                kind = "replica"
-        # If path didn’t hint, use temperature heuristic
-        if kind == "replica":
-            try:
-                t = float(getattr(meta, "temperature", float("nan")))
-                if t == int(t):
-                    # Treat integer-like temperature as demux by default
-                    kind = "demux"
-                    temperature_K = int(t)
-            except Exception:
-                pass
-        else:
-            try:
-                t = float(getattr(meta, "temperature", float("nan")))
-                if t == int(t):
-                    temperature_K = int(t)
-            except Exception:
-                pass
-        # Prefer canonical uid when possible
-        try:
-            from pmarlo.io.shard_id import parse_shard_id
-
-            # Use source path when present; otherwise pass the JSON path
-            src_for_parse = Path(src_path_str) if src_path_str else p
-            sid = parse_shard_id(src_for_parse, require_exists=False)
-            uid = sid.canonical()
-        except Exception:
-            pass
-    except Exception:
-        # Fallback to filename heuristics if JSON cannot be read
-        name = p.name
-        m = re.search(r"demux_T(\d+)K", name)
-        if m:
-            kind = "demux"
-            temperature_K = int(m.group(1))
-        elif "demux" in name.lower():
-            kind = "demux"
-        # run_id may still be empty; keep fallback uid
-        pass
-
+    warnings.warn(
+        "parse_shard_json_filename is deprecated; use pmarlo.shards.meta.load_shard_meta",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    meta = load_shard_meta(json_path)
+    provenance = meta.provenance or {}
     return {
-        "run_id": run_id,
-        "kind": kind,
-        "temperature_K": temperature_K,
-        "uid": uid,
+        "canonical_id": canonical_shard_id(meta),
+        "temperature_K": meta.temperature_K,
+        "replica_id": meta.replica_id,
+        "segment_id": meta.segment_id,
+        "run_id": provenance.get("run_id") or provenance.get("run_uid") or "",
+        "kind": provenance.get("kind") or provenance.get("source_kind") or "demux",
     }
 
 
 def build_shard_id_from_json_fallback(
     json_path: Path, dataset_hash: str = ""
 ) -> ShardId:
-    """Construct a ShardId from shard JSON using tolerant parsing.
+    """Deprecated helper returning ``ShardId`` built from strict metadata."""
 
-    This is a best-effort fallback for cases where canonical trajectory path is
-    unavailable (e.g., after cleanup).
-    """
-    info = parse_shard_json_filename(json_path)
-    run_id = info.get("run_id") or _nearest_run_id(json_path) or "run-unknown"
-    kind = info.get("kind") or "replica"
-    tK = info.get("temperature_K") if kind == "demux" else None
-    ridx = None if kind == "demux" else 0
-    # local_index by sorted order within run dir if available
-    local_index = 0
-    run_dir_name = run_id
-    try:
-        cur = Path(json_path).resolve().parent
-        run_dir: Optional[Path] = None
-        for _ in range(6):
-            if cur.name == run_dir_name:
-                run_dir = cur
-                break
-            if cur.parent == cur:
-                break
-            cur = cur.parent
-        if run_dir is not None:
-            siblings = sorted(run_dir.rglob("*.json"))
-            local_index = max(0, siblings.index(Path(json_path).resolve()))
-    except Exception:
-        local_index = 0
-    return ShardId(
-        run_id=str(run_id),
-        source_kind="demux" if kind == "demux" else "replica",
-        temperature_K=(int(tK) if (tK is not None) else None),
-        replica_index=(int(ridx) if (ridx is not None) else None),
-        local_index=int(local_index),
-        source_path=Path(json_path).resolve(),
-        dataset_hash=str(dataset_hash),
+    warnings.warn(
+        "build_shard_id_from_json_fallback is deprecated; use ShardId.from_meta",
+        DeprecationWarning,
+        stacklevel=2,
     )
+    meta = load_shard_meta(json_path)
+    return ShardId.from_meta(meta, json_path, dataset_hash)
 
 
-def rescan_shards(root_dirs: Sequence[Path], out_index_json: Path) -> Path:
-    """Rescan root directories for shard JSONs and write an index JSON.
+def rescan_shards(
+    roots: Sequence[Path],
+    out_index_json: Path,
+) -> Path:
+    json_paths = sorted({p.resolve() for p in _collect_json_paths(roots)})
+    entries = []
+    for jp in json_paths:
+        meta = load_shard_meta(jp)
+        entries.append(
+            {
+                "path": str(jp),
+                "canonical_id": canonical_shard_id(meta),
+                "temperature_K": meta.temperature_K,
+                "replica_id": meta.replica_id,
+                "segment_id": meta.segment_id,
+            }
+        )
 
-    Scans only deterministic shard manifests named like ``shard_*.json``. This
-    avoids pulling unrelated JSON files into the index and prevents stale or
-    legacy entries from persisting after cleanup.
-
-    The index format:
-    {"version": 1, "roots": [...], "entries": [{...}], "count": N}
-    """
-    entries: List[ShardIndexEntry] = []
-    for root in root_dirs:
-        root = Path(root)
-        if not root.exists():
-            continue
-        # Accept simple shard filenames (preferred)
-        for jp in sorted(root.rglob("shard_*.json")):
-            try:
-                info = parse_shard_json_filename(jp)
-                entries.append(
-                    ShardIndexEntry(
-                        path=str(jp.resolve()),
-                        uid=str(info.get("uid", "")),
-                        run_id=str(info.get("run_id", "")),
-                        kind=str(info.get("kind", "replica")),
-                        temperature_K=(
-                            int(info["temperature_K"])
-                            if info.get("temperature_K") is not None
-                            else None
-                        ),
-                    )
-                )
-            except Exception:
-                # Skip problematic entries silently
-                continue
-    payload = {
-        "version": 1,
-        "roots": [str(Path(r)) for r in root_dirs],
-        "entries": [asdict(e) for e in entries],
-        "count": int(len(entries)),
+    index_data = {
+        "version": INDEX_VERSION,
+        "roots": sorted(str(Path(r).resolve()) for r in roots),
+        "entries": entries,
+        "count": len(entries),
     }
-    out_index_json = Path(out_index_json)
-    out_index_json.parent.mkdir(parents=True, exist_ok=True)
-    out_index_json.write_text(
-        json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    )
-    return out_index_json
+
+    out_path = Path(out_index_json)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(index_data, indent=2, sort_keys=True))
+    return out_path
 
 
 def prune_missing_shards(index_json_path: Path) -> Path:
-    """Remove missing shard paths from an existing index JSON in place."""
-    p = Path(index_json_path)
+    path = Path(index_json_path)
     try:
-        data = json.loads(p.read_text())
+        data = json.loads(path.read_text())
     except Exception:
-        return p
-    entries = data.get("entries", [])
+        return path
+
+    entries = data.get("entries")
     if not isinstance(entries, list):
-        return p
-    kept: List[Dict[str, Any]] = []
-    for e in entries:
-        try:
-            path = Path(e.get("path", ""))
-            if path.exists():
-                kept.append(e)
-        except Exception:
-            continue
+        return path
+
+    kept = []
+    for entry in entries:
+        json_path = Path(entry.get("path", ""))
+        if json_path.exists():
+            kept.append(entry)
     data["entries"] = kept
-    data["count"] = int(len(kept))
-    p.write_text(json.dumps(data, sort_keys=True, separators=(",", ":")))
-    return p
+    data["count"] = len(kept)
+    path.write_text(json.dumps(data, indent=2, sort_keys=True))
+    return path
 
 
 class ShardRegistry:
-    """Lightweight registry persisted as JSON for shard integrity and cleanup.
-
-    The registry stores entries with canonical-like IDs and basic provenance and
-    provides helpers to keep the index consistent after disk cleanup.
-    """
+    """JSON-backed registry for shard indexes."""
 
     def __init__(self, index_path: Path) -> None:
         self.index_path = Path(index_path)
 
-    def load(self) -> dict:
+    def load(self) -> Dict[str, object]:
         try:
-            return json.loads(self.index_path.read_text())
+            data = json.loads(self.index_path.read_text())
+            if not isinstance(data, dict):
+                raise ValueError
+            return data
         except Exception:
-            return {"version": 1, "roots": [], "entries": [], "count": 0}
+            return {"version": INDEX_VERSION, "roots": [], "entries": [], "count": 0}
 
-    def save(self, data: dict) -> None:
+    def save(self, data: Dict[str, object]) -> None:
         self.index_path.parent.mkdir(parents=True, exist_ok=True)
-        self.index_path.write_text(
-            json.dumps(data, sort_keys=True, separators=(",", ":"))
-        )
+        self.index_path.write_text(json.dumps(data, indent=2, sort_keys=True))
 
     def rescan(self, roots: Sequence[Path]) -> Path:
         return rescan_shards(roots, self.index_path)
@@ -260,74 +149,48 @@ class ShardRegistry:
 
     def add(self, shard_json: Path) -> None:
         data = self.load()
-        try:
-            info = parse_shard_json_filename(Path(shard_json))
-            entry = ShardIndexEntry(
-                path=str(Path(shard_json).resolve()),
-                uid=str(info.get("uid", "")),
-                run_id=str(info.get("run_id", "")),
-                kind=str(info.get("kind", "replica")),
-                temperature_K=(
-                    int(info["temperature_K"])
-                    if info.get("temperature_K") is not None
-                    else None
-                ),
-            )
-            entries = list(data.get("entries", []))
-            # Deduplicate by path
-            entries = [e for e in entries if e.get("path") != entry.path]
-            entries.append(asdict(entry))
-            data["entries"] = entries
-            data["count"] = int(len(entries))
-            self.save(data)
-        except Exception:
-            # ignore invalid/unsupported entries
-            return
+        meta = load_shard_meta(shard_json)
+        entry = {
+            "path": str(Path(shard_json).resolve()),
+            "canonical_id": canonical_shard_id(meta),
+            "temperature_K": meta.temperature_K,
+            "replica_id": meta.replica_id,
+            "segment_id": meta.segment_id,
+        }
+        entries = [
+            e
+            for e in data.get("entries", [])
+            if e.get("path") != entry["path"]
+        ]
+        entries.append(entry)
+        entries.sort(key=lambda e: e["canonical_id"])
+        data["entries"] = entries
+        data["count"] = len(entries)
+        self.save(data)
 
     def remove(self, shard_json: Path) -> None:
         data = self.load()
+        path_str = str(Path(shard_json).resolve())
         entries = [
-            e
-            for e in list(data.get("entries", []))
-            if e.get("path") != str(Path(shard_json).resolve())
+            e for e in data.get("entries", []) if e.get("path") != path_str
         ]
         data["entries"] = entries
-        data["count"] = int(len(entries))
+        data["count"] = len(entries)
         self.save(data)
 
-    def validate_paths(self) -> dict:
+    def validate_paths(self) -> Dict[str, List[str]]:
         data = self.load()
-        entries = list(data.get("entries", []))
-        missing = []
-        kept = []
-        for e in entries:
-            try:
-                p = Path(e.get("path", ""))
-                if p.exists():
-                    kept.append(e)
-                else:
-                    missing.append(e.get("path", ""))
-            except Exception:
-                continue
+        entries = data.get("entries", [])
+        missing: List[str] = []
+        kept: List[str] = []
+        for entry in entries:
+            json_path = Path(entry.get("path", ""))
+            if json_path.exists():
+                kept.append(str(json_path))
+            else:
+                missing.append(str(json_path))
         if missing:
-            data["entries"] = kept
-            data["count"] = int(len(kept))
+            data["entries"] = [e for e in entries if e.get("path") in kept]
+            data["count"] = len(data["entries"])
             self.save(data)
-        return {"missing": missing, "kept": [e.get("path", "") for e in kept]}
-
-
-def migrate_legacy_shards(root: Path) -> dict:
-    """One-time tolerant migration helper: map legacy shard JSONs to canonical IDs.
-
-    Does not modify shard JSON files; returns a mapping of json_path -> canonical_id
-    for diagnostic or index population purposes.
-    """
-    root = Path(root)
-    mapping: Dict[str, str] = {}
-    for jp in sorted(root.rglob("shard_*.json")):
-        try:
-            info = parse_shard_json_filename(jp)
-            mapping[str(jp.resolve())] = str(info.get("uid", ""))
-        except Exception:
-            continue
-    return mapping
+        return {"missing": missing, "kept": kept}
