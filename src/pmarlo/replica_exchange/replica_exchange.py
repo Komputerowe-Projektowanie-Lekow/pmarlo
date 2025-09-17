@@ -21,11 +21,10 @@ import openmm
 from openmm import Platform, unit
 from openmm.app import ForceField, PDBFile, Simulation
 
-from pmarlo.progress import ProgressCB, ProgressReporter
-from pmarlo.transform.progress import ProgressPrinter
+from pmarlo.transform.progress import ProgressCB, ProgressPrinter, ProgressReporter
 
 from ..demultiplexing.demux import demux_trajectories as _demux_trajectories
-from ..results import REMDResult
+from ..markov_state_model.results import REMDResult
 from ..utils.integrator import create_langevin_integrator
 from ..utils.naming import base_shape_str, permutation_name
 from ..utils.replica_utils import exponential_temperature_ladder

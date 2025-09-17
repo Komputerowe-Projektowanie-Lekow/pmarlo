@@ -3,7 +3,7 @@ from __future__ import annotations
 """Optional MLCV hooks for Deep-TICA.
 
 This module provides defaults and a small helper to prepare a LEARN_CV step
-config. The heavy lifting is handled inside pmarlo.engine.build.
+config. The heavy lifting is handled inside pmarlo.transform.build.
 """
 
 from typing import Dict, Any

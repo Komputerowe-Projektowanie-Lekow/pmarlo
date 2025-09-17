@@ -3,9 +3,11 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import math
 import os
 import tempfile
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field, is_dataclass, replace
+from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
@@ -13,9 +15,10 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 import numpy as np
 
 from ..markov_state_model._msm_utils import build_simple_msm
-from .progress import ProgressCB
+from ..utils.seed import set_global_seed
 from .apply import apply_transform_plan
 from .plan import TransformPlan, TransformStep
+from .progress import ProgressCB
 from .runner import apply_plan as _apply_plan
 
 logger = logging.getLogger("pmarlo")
@@ -24,60 +27,155 @@ logger = logging.getLogger("pmarlo")
 # --- Shard selection helpers -------------------------------------------------
 
 
+@lru_cache(maxsize=512)
+def _load_shard_metadata_cached(path_str: str) -> Dict[str, Any]:
+    try:
+        return json.loads(Path(path_str).read_text())
+    except Exception:
+        return {}
+
+
+def _get_shard_metadata(path: Path) -> Dict[str, Any]:
+    return _load_shard_metadata_cached(str(Path(path)))
+
+
+def _is_demux_shard(path: Path, meta: Optional[Dict[str, Any]] = None) -> bool:
+    data = meta if meta is not None else _get_shard_metadata(path)
+    if isinstance(data, dict):
+        source = data.get("source")
+        if isinstance(source, dict):
+            kind = str(source.get("kind", "")).lower()
+            if kind:
+                return kind == "demux"
+            for key in ("traj", "path", "file", "source_path"):
+                raw = source.get(key)
+                if isinstance(raw, str) and "demux" in raw.lower():
+                    return True
+    return "demux" in path.stem.lower()
+
+
+def _coerce_float(value: Any) -> Optional[float]:
+    try:
+        val = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(val):
+        return None
+    return val
+
+
+def _collect_demux_temperatures(meta: Dict[str, Any]) -> List[float]:
+    temps: List[float] = []
+    if not isinstance(meta, dict):
+        return temps
+
+    candidates = [meta.get("temperature")]
+    source = meta.get("source")
+    if isinstance(source, dict):
+        candidates.extend([source.get("temperature_K"), source.get("temperature")])
+
+    for candidate in candidates:
+        coerced = _coerce_float(candidate)
+        if coerced is None:
+            continue
+        if all(abs(coerced - existing) > 1e-9 for existing in temps):
+            temps.append(coerced)
+    return temps
+
+
+def _temperature_matches_target(
+    temperatures: Sequence[float], target: float, tolerance: float
+) -> bool:
+    tol = tolerance if tolerance >= 0.0 else 0.0
+    return any(abs(temp - target) <= tol for temp in temperatures)
+
+
 def select_shards(
     all_shards: Sequence[Union[str, Path]],
     *,
     mode: str = "demux",
     max_shards: Optional[int] = None,
     sort_key: Optional[Callable[[Union[str, Path]], Any]] = None,
+    demux_temperature: Optional[float] = None,
+    demux_temperature_tolerance: float = 0.5,
 ) -> List[Path]:
-    """Select a subset of shards for analysis.
-
-    Parameters
-    ----------
-    all_shards
-        Full list of shard paths.
-    mode
-        Selection mode: 'demux', 'first', 'last', 'random', or 'all'.
-    max_shards
-        Maximum number of shards to select.
-    sort_key
-        Optional function to sort shards before selection.
-
-    Returns
-    -------
-    List[Path]
-        Selected shard paths.
-    """
     shards = [Path(s) for s in all_shards]
 
-    if sort_key:
+    if sort_key is not None:
         shards = sorted(shards, key=sort_key)
 
+    tol = demux_temperature_tolerance if demux_temperature_tolerance >= 0 else 0.0
+
     if mode == "demux":
-        # For demux mode, prefer shards with demux metadata
-        demux_shards = [s for s in shards if "demux" in s.name.lower()]
-        if demux_shards:
-            shards = demux_shards
+        filtered: List[Path] = []
+        for shard_path in shards:
+            meta = _get_shard_metadata(shard_path)
+            if not _is_demux_shard(shard_path, meta):
+                continue
+            if demux_temperature is not None:
+                temps = _collect_demux_temperatures(meta)
+                if not temps:
+                    continue
+                if not _temperature_matches_target(
+                    temps, float(demux_temperature), tol
+                ):
+                    continue
+            filtered.append(shard_path)
+        shards = filtered
 
     elif mode == "first":
-        shards = shards[:max_shards] if max_shards else shards[:10]
+        limit = max_shards if max_shards else 10
+        shards = shards[:limit]
     elif mode == "last":
-        shards = shards[-max_shards:] if max_shards else shards[-10:]
+        limit = max_shards if max_shards else 10
+        shards = shards[-limit:]
     elif mode == "random":
         import random
 
-        random.shuffle(shards)
-        shards = shards[:max_shards] if max_shards else shards[:10]
+        shuffled = list(shards)
+        random.shuffle(shuffled)
+        limit = max_shards if max_shards else 10
+        shards = shuffled[:limit]
     elif mode == "all":
-        pass  # Use all shards
+        pass
     else:
         raise ValueError(f"Unknown selection mode: {mode}")
 
-    if max_shards and len(shards) > max_shards:
+    if max_shards and mode in {"demux", "all"} and len(shards) > max_shards:
         shards = shards[:max_shards]
 
     return shards
+
+
+def group_demux_shards_by_temperature(
+    shard_paths: Sequence[Union[str, Path]],
+    *,
+    tolerance: float = 0.5,
+) -> Dict[float, List[Path]]:
+    tol = tolerance if tolerance >= 0.0 else 0.0
+    groups: Dict[float, List[Path]] = {}
+
+    for raw_path in shard_paths:
+        shard_path = Path(raw_path)
+        meta = _get_shard_metadata(shard_path)
+        if not _is_demux_shard(shard_path, meta):
+            continue
+        temps = _collect_demux_temperatures(meta)
+        if not temps:
+            continue
+        temperature = temps[0]
+
+        key = None
+        for existing in groups:
+            if abs(existing - temperature) <= tol:
+                key = existing
+                break
+        if key is None:
+            key = float(round(temperature, 3))
+            groups[key] = []
+        groups[key].append(shard_path)
+
+    return groups
 
 
 # --- Configuration classes ---------------------------------------------------
@@ -85,77 +183,66 @@ def select_shards(
 
 @dataclass(frozen=True)
 class BuildOpts:
-    """Configuration options for the build process."""
-
-    # Transform plan
     plan: Optional[TransformPlan] = None
-
-    # Shard selection
     shard_selection_mode: str = "demux"
     max_shards: Optional[int] = None
-
-    # MSM options
+    seed: Optional[int] = None
+    temperature: float = 300.0
+    lag_candidates: Optional[Tuple[int, ...]] = None
+    count_mode: str = "sliding"
     n_clusters: int = 200
     n_states: int = 50
     lag_time: int = 10
     msm_mode: str = "kmeans+msm"
-
-    # FES options
     enable_fes: bool = True
     fes_temperature: float = 300.0
-
-    # TRAM options
     enable_tram: bool = False
     tram_lag: int = 1
     tram_n_iter: int = 100
-
-    # Output options
     output_format: str = "json"
     save_trajectories: bool = False
     save_plots: bool = True
-
-    # Performance options
     n_jobs: int = 1
     memory_limit_gb: Optional[float] = None
     chunk_size: int = 1000
-
-    # Debugging options
     debug: bool = False
     verbose: bool = False
 
+    def __post_init__(self) -> None:
+        if self.lag_candidates is not None:
+            object.__setattr__(
+                self, "lag_candidates", tuple(int(x) for x in self.lag_candidates)
+            )
+        if self.temperature is not None:
+            object.__setattr__(self, "fes_temperature", float(self.temperature))
+
     def with_plan(self, plan: TransformPlan) -> "BuildOpts":
-        """Return a new BuildOpts with the specified plan."""
         return replace(self, plan=plan)
 
     def with_shards(
         self, mode: str = "demux", max_shards: Optional[int] = None
     ) -> "BuildOpts":
-        """Return a new BuildOpts with shard selection options."""
         return replace(self, shard_selection_mode=mode, max_shards=max_shards)
 
     def with_msm(
         self, n_clusters: int = 200, n_states: int = 50, lag_time: int = 10
     ) -> "BuildOpts":
-        """Return a new BuildOpts with MSM options."""
         return replace(
             self, n_clusters=n_clusters, n_states=n_states, lag_time=lag_time
         )
 
 
-@dataclass(frozen=True)
+@dataclass
 class AppliedOpts:
-    """Applied configuration after processing BuildOpts."""
-
-    # Original options
-    original_opts: BuildOpts
-
-    # Resolved values
+    bins: Optional[Dict[str, int]] = None
+    lag: Optional[int] = None
+    macrostates: Optional[int] = None
+    notes: Dict[str, Any] = field(default_factory=dict)
+    original_opts: Optional[BuildOpts] = None
     selected_shards: List[Path] = field(default_factory=list)
     actual_plan: Optional[TransformPlan] = None
     effective_n_jobs: int = 1
     effective_memory_limit: Optional[float] = None
-
-    # Runtime metadata
     start_time: Optional[str] = None
     hostname: Optional[str] = None
     git_commit: Optional[str] = None
@@ -167,25 +254,23 @@ class AppliedOpts:
         selected_shards: List[Path],
         plan: Optional[TransformPlan] = None,
     ) -> "AppliedOpts":
-        """Create AppliedOpts from BuildOpts and runtime information."""
         import socket
         from datetime import datetime
 
+        now = datetime.now().isoformat()
         return cls(
             original_opts=opts,
-            selected_shards=selected_shards,
+            selected_shards=list(selected_shards),
             actual_plan=plan or opts.plan,
             effective_n_jobs=opts.n_jobs,
             effective_memory_limit=opts.memory_limit_gb,
-            start_time=datetime.now().isoformat(),
+            start_time=now,
             hostname=socket.gethostname(),
         )
 
 
 @dataclass
 class RunMetadata:
-    """Metadata about a build run."""
-
     run_id: str
     start_time: str
     end_time: Optional[str] = None
@@ -196,40 +281,62 @@ class RunMetadata:
     pmarlo_version: Optional[str] = None
     success: bool = False
     error_message: Optional[str] = None
+    transform_plan: Optional[Tuple[TransformStep, ...]] = None
+    applied_opts: Optional[AppliedOpts] = None
+    fes: Optional[Dict[str, Any]] = None
+    dataset_hash: Optional[str] = None
+    digest: Optional[str] = None
+    seed: Optional[int] = None
+    temperature: Optional[float] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "RunMetadata":
-        """Create RunMetadata from a dictionary."""
-        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+        payload = dict(data)
+        if payload.get("applied_opts") is not None:
+            payload["applied_opts"] = AppliedOpts(**payload["applied_opts"])
+        if payload.get("transform_plan") is not None:
+            steps: List[TransformStep] = []
+            for step in payload["transform_plan"]:
+                if isinstance(step, TransformStep):
+                    steps.append(step)
+                else:
+                    steps.append(TransformStep(**step))
+            payload["transform_plan"] = tuple(steps)
+        return cls(
+            **{k: v for k, v in payload.items() if k in cls.__dataclass_fields__}
+        )
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert RunMetadata to a dictionary."""
-        return asdict(self)
+        out = asdict(self)
+        if self.transform_plan is not None:
+            out["transform_plan"] = [asdict(step) for step in self.transform_plan]
+        if self.applied_opts is not None:
+            applied = asdict(self.applied_opts)
+            shards = applied.get("selected_shards")
+            if isinstance(shards, list):
+                applied["selected_shards"] = [str(s) for s in shards]
+            out["applied_opts"] = applied
+        return out
 
 
 @dataclass
 class BuildResult:
-    """Result of a build operation."""
-
-    # Core results
+    transition_matrix: Optional[np.ndarray] = None
+    stationary_distribution: Optional[np.ndarray] = None
     msm: Optional[Any] = None
     fes: Optional[Any] = None
     tram: Optional[Any] = None
-
-    # Metadata
     metadata: Optional[RunMetadata] = None
     applied_opts: Optional[AppliedOpts] = None
-
-    # Diagnostics
     n_frames: int = 0
     n_shards: int = 0
     feature_names: List[str] = field(default_factory=list)
     cluster_populations: Optional[np.ndarray] = None
+    artifacts: Dict[str, Any] = field(default_factory=dict)
+    messages: List[str] = field(default_factory=list)
+    flags: Dict[str, Any] = field(default_factory=dict)
 
-    # Serialization support
     def to_json(self) -> str:
-        """Serialize BuildResult to JSON string."""
-
         def _serialize_array(arr: Optional[np.ndarray]) -> Optional[Dict[str, Any]]:
             if arr is None:
                 return None
@@ -243,34 +350,66 @@ class BuildResult:
             if obj is None:
                 return None
             if hasattr(obj, "to_dict"):
-                return obj.to_dict()
+                return obj.to_dict()  # type: ignore[call-arg]
+            if is_dataclass(obj):
+                return asdict(obj)
             if hasattr(obj, "__dict__"):
                 return obj.__dict__
-            return str(obj)
+            return obj
+
+        def _serialize_fes(obj: Any) -> Any:
+            from ..markov_state_model.free_energy import FESResult
+
+            if obj is None:
+                return None
+            if isinstance(obj, FESResult):
+                return {
+                    "F": _serialize_array(obj.F),
+                    "xedges": _serialize_array(obj.xedges),
+                    "yedges": _serialize_array(obj.yedges),
+                    "levels_kJmol": _serialize_array(obj.levels_kJmol),
+                    "metadata": obj.metadata,
+                }
+            if isinstance(obj, dict):
+                return obj
+            return _serialize_generic(obj)
+
+        applied_dict = None
+        if self.applied_opts is not None:
+            applied_dict = asdict(self.applied_opts)
+            shards = applied_dict.get("selected_shards")
+            if isinstance(shards, list):
+                applied_dict["selected_shards"] = [str(s) for s in shards]
 
         data = {
+            "transition_matrix": _serialize_array(self.transition_matrix),
+            "stationary_distribution": _serialize_array(self.stationary_distribution),
             "msm": _serialize_generic(self.msm),
-            "fes": _serialize_generic(self.fes),
+            "fes": _serialize_fes(self.fes),
             "tram": _serialize_generic(self.tram),
             "metadata": self.metadata.to_dict() if self.metadata else None,
-            "applied_opts": _serialize_generic(self.applied_opts),
+            "applied_opts": applied_dict,
             "n_frames": self.n_frames,
             "n_shards": self.n_shards,
             "feature_names": self.feature_names,
             "cluster_populations": _serialize_array(self.cluster_populations),
+            "artifacts": self.artifacts,
+            "messages": list(self.messages),
+            "flags": dict(self.flags),
         }
 
-        return json.dumps(obj, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        return json.dumps(data, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
     @classmethod
     def from_json(cls, text: str) -> "BuildResult":
-        """Deserialize BuildResult from JSON produced by to_json."""
-        from pmarlo.markov_state_model.free_energy import (  # local import to avoid cycles
-            FESResult,
-        )
+        from ..markov_state_model.free_energy import FESResult
 
         data = json.loads(text)
-        md = RunMetadata.from_dict(data["metadata"]) if "metadata" in data else None
+        metadata = (
+            RunMetadata.from_dict(data["metadata"])
+            if data.get("metadata") is not None
+            else None
+        )
 
         def _decode_array(obj: Optional[Dict[str, Any]]) -> Optional[np.ndarray]:
             if obj is None:
@@ -280,190 +419,264 @@ class BuildResult:
             data_bytes = base64.b64decode(obj["data"])
             return np.frombuffer(data_bytes, dtype=dtype).reshape(shape)
 
-        def _decode_fes(obj: Optional[Dict[str, Any]]) -> Optional[FESResult]:
+        def _decode_fes(obj: Optional[Any]) -> Optional[Any]:
             if obj is None:
                 return None
-            # Reconstruct FESResult from serialized data
-            try:
-                return FESResult(
-                    F=_decode_array(obj.get("F")),
-                    xedges=_decode_array(obj.get("xedges")),
-                    yedges=_decode_array(obj.get("yedges")),
-                    levels_kJmol=_decode_array(obj.get("levels_kJmol")),
-                    metadata=obj.get("metadata", {}),
-                )
-            except Exception:
-                return None
+            if isinstance(obj, dict) and {"F", "xedges", "yedges"} <= obj.keys():
+                try:
+                    return FESResult(
+                        F=_decode_array(obj.get("F")),
+                        xedges=_decode_array(obj.get("xedges")),
+                        yedges=_decode_array(obj.get("yedges")),
+                        levels_kJmol=_decode_array(obj.get("levels_kJmol")),
+                        metadata=obj.get("metadata", {}),
+                    )
+                except Exception:
+                    return obj
+            return obj
+
+        applied_dict = data.get("applied_opts") or None
+        applied_obj = (
+            AppliedOpts(**applied_dict) if isinstance(applied_dict, dict) else None
+        )
 
         return cls(
+            transition_matrix=_decode_array(data.get("transition_matrix")),
+            stationary_distribution=_decode_array(data.get("stationary_distribution")),
             msm=data.get("msm"),
             fes=_decode_fes(data.get("fes")),
             tram=data.get("tram"),
-            metadata=md,
-            applied_opts=data.get("applied_opts"),
+            metadata=metadata,
+            applied_opts=applied_obj,
             n_frames=data.get("n_frames", 0),
             n_shards=data.get("n_shards", 0),
             feature_names=data.get("feature_names", []),
             cluster_populations=_decode_array(data.get("cluster_populations")),
+            artifacts=data.get("artifacts", {}),
+            messages=list(data.get("messages", [])),
+            flags=data.get("flags", {}),
         )
 
 
-# --- Build functions ----------------------------------------------------------
+# --- Build functions ---------------------------------------------------------
 
 
 def build_result(
     dataset: Any,
     opts: Optional[BuildOpts] = None,
+    plan: Optional[TransformPlan] = None,
+    applied: Optional[AppliedOpts] = None,
     *,
     progress_callback: Optional[ProgressCB] = None,
 ) -> BuildResult:
-    """Build MSM, FES, and other analyses from a dataset.
-
-    This is the main entry point for the build system. It applies the
-    configured transform plan and builds the requested analyses.
-
-    Parameters
-    ----------
-    dataset
-        Input dataset (typically from aggregate operations).
-    opts
-        Build configuration options.
-    progress_callback
-        Optional progress callback function.
-
-    Returns
-    -------
-    BuildResult
-        Results of the build operation.
-    """
     if opts is None:
         opts = BuildOpts()
 
-    # Create applied options
-    applied = AppliedOpts.from_opts(opts, [])
+    plan_to_use = plan or opts.plan
 
-    # Create metadata
+    if applied is None:
+        applied_obj = AppliedOpts.from_opts(opts, [], plan=plan_to_use)
+    else:
+        applied_obj = applied
+        if applied_obj.original_opts is None:
+            applied_obj.original_opts = opts
+        if applied_obj.actual_plan is None and plan_to_use is not None:
+            applied_obj.actual_plan = plan_to_use
+
+    set_global_seed(opts.seed)
+
+    import platform
+    import socket
+    from datetime import datetime
+
+    start_dt = datetime.now()
     metadata = RunMetadata(
         run_id=_generate_run_id(),
-        start_time=applied.start_time or "",
-        hostname=applied.hostname,
+        start_time=start_dt.isoformat(),
+        hostname=socket.gethostname(),
+        transform_plan=tuple(plan_to_use.steps) if plan_to_use else None,
+        applied_opts=applied_obj,
+        seed=opts.seed,
+        temperature=opts.temperature,
+        python_version=platform.python_version(),
     )
 
     try:
-        # Apply transform plan if specified
-        if opts.plan:
-            logger.info(f"Applying transform plan with {len(opts.plan.steps)} steps")
-            dataset = _apply_plan(
-                opts.plan, dataset, progress_callback=progress_callback
+        working_dataset = dataset
+        if plan_to_use is not None:
+            logger.info("Applying transform plan with %d steps", len(plan_to_use.steps))
+            working_dataset = _apply_plan(
+                plan_to_use, working_dataset, progress_callback=progress_callback
             )
+            applied_obj.actual_plan = plan_to_use
 
-        # Build MSM if requested
-        msm_result = None
+        transition_matrix: Optional[np.ndarray] = None
+        stationary_distribution: Optional[np.ndarray] = None
+        msm_payload: Optional[Any] = None
         if opts.msm_mode != "none":
             logger.info("Building MSM...")
-            msm_result = _build_msm(dataset, opts, applied)
+            msm_result = _build_msm(working_dataset, opts, applied_obj)
+            if isinstance(msm_result, tuple) and len(msm_result) == 2:
+                transition_matrix, stationary_distribution = msm_result
+            else:
+                msm_payload = msm_result
 
-        # Build FES if requested
-        fes_result = None
+        fes_payload: Optional[Any] = None
         if opts.enable_fes:
             logger.info("Building FES...")
-            fes_result = _build_fes(dataset, opts, applied)
+            fes_raw = _build_fes(working_dataset, opts, applied_obj)
+            if isinstance(fes_raw, dict) and "result" in fes_raw:
+                result_obj = fes_raw.get("result")
+                metadata.fes = {
+                    "bins": None,
+                    "names": tuple(
+                        x
+                        for x in (fes_raw.get("cv1_name"), fes_raw.get("cv2_name"))
+                        if x
+                    ),
+                    "temperature": opts.temperature,
+                }
+                fes_payload = result_obj
+            else:
+                metadata.fes = None
+                if isinstance(fes_raw, dict) and fes_raw.get("skipped"):
+                    fes_payload = None
+                else:
+                    fes_payload = fes_raw
 
-        # Build TRAM if requested
-        tram_result = None
+        tram_payload: Optional[Any] = None
         if opts.enable_tram:
             logger.info("Building TRAM...")
-            tram_result = _build_tram(dataset, opts, applied)
+            tram_payload = _build_tram(working_dataset, opts, applied_obj)
 
-        # Update metadata
-        from datetime import datetime
-
-        metadata.end_time = datetime.now().isoformat()
+        end_dt = datetime.now()
+        metadata.end_time = end_dt.isoformat()
+        metadata.duration_seconds = (end_dt - start_dt).total_seconds()
         metadata.success = True
 
-        # Count frames and features
-        n_frames = _count_frames(dataset)
-        feature_names = _extract_feature_names(dataset)
+        n_frames = _count_frames(working_dataset)
+        feature_names = _extract_feature_names(working_dataset)
+
+        if not applied_obj.selected_shards and isinstance(dataset, dict):
+            shards_meta = dataset.get("__shards__")
+            if isinstance(shards_meta, list):
+                try:
+                    applied_obj.selected_shards = [
+                        Path(str(item.get("id", ""))) for item in shards_meta
+                    ]
+                except Exception:
+                    applied_obj.selected_shards = []
+
+        n_shards = len(applied_obj.selected_shards)
+        if n_shards == 0 and isinstance(dataset, dict):
+            shards_meta = dataset.get("__shards__")
+            if isinstance(shards_meta, list):
+                n_shards = len(shards_meta)
+
+        flags: Dict[str, Any] = {}
+        if transition_matrix is not None and transition_matrix.size > 0:
+            flags["has_msm"] = True
+        if fes_payload is not None:
+            flags["has_fes"] = True
+        if tram_payload not in (None, {}):
+            flags["has_tram"] = True
 
         return BuildResult(
-            msm=msm_result,
-            fes=fes_result,
-            tram=tram_result,
+            transition_matrix=transition_matrix,
+            stationary_distribution=stationary_distribution,
+            msm=msm_payload,
+            fes=fes_payload,
+            tram=tram_payload,
             metadata=metadata,
-            applied_opts=applied,
+            applied_opts=applied_obj,
             n_frames=n_frames,
-            n_shards=len(applied.selected_shards),
+            n_shards=n_shards,
             feature_names=feature_names,
+            flags=flags,
         )
 
-    except Exception as e:
-        logger.error(f"Build failed: {e}")
-        metadata.error_message = str(e)
+    except Exception as exc:
+        logger.error("Build failed: %s", exc)
+        metadata.error_message = str(exc)
         metadata.success = False
         raise
 
 
 def _generate_run_id() -> str:
-    """Generate a unique run ID."""
     import time
 
     return f"build_{int(time.time())}_{os.getpid()}"
 
 
 def _count_frames(dataset: Any) -> int:
-    """Count the total number of frames in the dataset."""
     try:
         if hasattr(dataset, "__len__"):
             return len(dataset)
         if hasattr(dataset, "n_frames"):
             return dataset.n_frames
+        if isinstance(dataset, dict) and "X" in dataset:
+            return int(np.asarray(dataset["X"]).shape[0])
         return 0
     except Exception:
         return 0
 
 
 def _extract_feature_names(dataset: Any) -> List[str]:
-    """Extract feature names from the dataset."""
     try:
         if hasattr(dataset, "feature_names"):
             return list(dataset.feature_names)
         if hasattr(dataset, "columns"):
             return list(dataset.columns)
+        if isinstance(dataset, dict) and "cv_names" in dataset:
+            return [str(x) for x in dataset.get("cv_names", [])]
         return []
     except Exception:
         return []
 
 
 def _build_msm(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
-    """Build a Markov state model."""
     try:
+        dtrajs: Any = dataset
+        if isinstance(dataset, dict):
+            dtrajs = dataset.get("dtrajs")
+        if not dtrajs:
+            return None
+        if isinstance(dtrajs, list):
+            clean: List[np.ndarray] = []
+            for dt in dtrajs:
+                if dt is None:
+                    continue
+                arr = np.asarray(dt, dtype=np.int32).reshape(-1)
+                if arr.size:
+                    clean.append(arr)
+            if not clean:
+                return None
+            dtrajs = clean
         return build_simple_msm(
-            dataset,
-            n_clusters=opts.n_clusters,
+            dtrajs,
             n_states=opts.n_states,
-            lag_time=opts.lag_time,
+            lag=opts.lag_time,
+            count_mode=str(opts.count_mode),
         )
     except Exception as e:
-        logger.warning(f"MSM build failed: {e}")
+        logger.warning("MSM build failed: %s", e)
         return None
 
 
 def _build_fes(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
-    """Build a free energy surface."""
     try:
         return default_fes_builder(dataset, opts, applied)
     except Exception as e:
-        logger.warning(f"FES build failed: {e}")
+        logger.warning("FES build failed: %s", e)
         return None
 
 
 def _build_tram(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
-    """Build TRAM analysis."""
     try:
         return default_tram_builder(dataset, opts, applied)
     except Exception as e:
-        logger.warning(f"TRAM build failed: {e}")
-        return None
+        logger.warning("TRAM build failed: %s", e)
+        return {"skipped": True, "reason": f"tram_error: {e}"}
 
 
 # --- Default builders ---------------------------------------------------------
@@ -472,18 +685,13 @@ def _build_tram(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
 def default_fes_builder(
     dataset: Any, opts: BuildOpts, applied: AppliedOpts
 ) -> Any | None:
-    """Default FES builder using pmarlo.markov_state_model.free_energy.generate_2d_fes.
+    """Build a simple free energy surface with histogram fallback."""
 
-    Returns either a payload with a "result" field or a dict indicating a
-    skipped reason. Callers may treat non-dict/None as "no-op".
-    """
     cv_pair = _extract_cvs(dataset)
     if cv_pair is None:
         return {"skipped": True, "reason": "no_cvs"}
-    from pmarlo.markov_state_model.free_energy import generate_2d_fes
 
     cv1, cv2, names, periodic = cv_pair
-    # Guardrails: only attempt FES if data are finite and have non-zero extent
     try:
         a = np.asarray(cv1, dtype=float).reshape(-1)
         b = np.asarray(cv2, dtype=float).reshape(-1)
@@ -491,81 +699,65 @@ def default_fes_builder(
             return {"skipped": True, "reason": "empty_cvs"}
         if not np.isfinite(a).all() or not np.isfinite(b).all():
             return {"skipped": True, "reason": "non_finite_cvs"}
-        a_range = float(np.ptp(a))
-        b_range = float(np.ptp(b))
-        if a_range <= 1e-12 or b_range <= 1e-12:
-            return {"skipped": True, "reason": "zero_variance_cvs"}
-    except Exception:
-        return {"skipped": True, "reason": "cv_validation_error"}
+    except Exception as exc:
+        logger.warning("Failed to coerce CVs to float: %s", exc)
+        return {"skipped": True, "reason": "cv_coercion_failed"}
 
     try:
+        from pmarlo.markov_state_model.free_energy import generate_2d_fes
+
         fes = generate_2d_fes(
-            cv1,
-            cv2,
-            temperature=opts.fes_temperature,
+            a,
+            b,
+            temperature=opts.temperature,
             periodic=periodic,
         )
         return {"result": fes, "cv1_name": names[0], "cv2_name": names[1]}
-    except Exception as e:
-        logger.warning(f"FES generation failed: {e}")
-        return {"skipped": True, "reason": f"fes_error: {e}"}
+    except Exception as exc:
+        logger.warning("FES generation failed: %s; using histogram fallback", exc)
+        try:
+            hist, xedges, yedges = np.histogram2d(a, b, bins=32)
+        except Exception as exc2:
+            logger.warning("Histogram fallback failed: %s", exc2)
+            a_min, a_max = float(np.min(a)), float(np.max(a))
+            b_min, b_max = float(np.min(b)), float(np.max(b))
+            if not np.isfinite(a_min) or not np.isfinite(a_max):
+                a_min, a_max = -1.0, 1.0
+            if not np.isfinite(b_min) or not np.isfinite(b_max):
+                b_min, b_max = -1.0, 1.0
+            if a_max <= a_min:
+                a_max = a_min + 1.0
+            if b_max <= b_min:
+                b_max = b_min + 1.0
+            xedges = np.linspace(a_min, a_max, 33)
+            yedges = np.linspace(b_min, b_max, 33)
+            hist = np.ones((32, 32), dtype=np.float64)
+        hist = np.asarray(hist, dtype=np.float64)
+        with np.errstate(divide="ignore"):
+            F = -np.log(hist + 1e-12)
+
+        from pmarlo.markov_state_model.free_energy import FESResult
+
+        fallback = FESResult(
+            F=F,
+            xedges=xedges,
+            yedges=yedges,
+            metadata={"method": "histogram", "temperature": opts.temperature},
+        )
+        return {"result": fallback, "cv1_name": names[0], "cv2_name": names[1]}
 
 
 def default_tram_builder(
     dataset: Any, opts: BuildOpts, applied: AppliedOpts
 ) -> Any | None:
-    """Default TRAM builder (placeholder implementation)."""
     logger.info("TRAM builder not yet implemented")
     return {"skipped": True, "reason": "not_implemented"}
-
-
-def _extract_cvs(
-    dataset: Any,
-) -> Optional[Tuple[np.ndarray, np.ndarray, List[str], Tuple[bool, bool]]]:
-    """Extract a pair of collective variables from the dataset.
-
-    Returns (cv1, cv2, names, periodic) or None if no suitable pair found.
-    """
-    try:
-        # Try to extract CV data from various dataset formats
-        if hasattr(dataset, "get_cvs"):
-            cvs = dataset.get_cvs()
-            if len(cvs) >= 2:
-                cv1, cv2 = cvs[0], cvs[1]
-                names = [f"CV{i+1}" for i in range(2)]
-                periodic = (False, False)  # Default to non-periodic
-                return cv1, cv2, names, periodic
-
-        # Try common attribute names
-        for attr in ["features", "data", "X"]:
-            if hasattr(dataset, attr):
-                data = getattr(dataset, attr)
-                if hasattr(data, "shape") and len(data.shape) >= 2 and data.shape[1] >= 2:
-                    cv1, cv2 = data[:, 0], data[:, 1]
-                    names = [f"Feature{i+1}" for i in range(2)]
-                    periodic = (False, False)
-                    return cv1, cv2, names, periodic
-
-        # Try dictionary-like access
-        if hasattr(dataset, "keys") or isinstance(dataset, dict):
-            keys = list(dataset.keys()) if hasattr(dataset, "keys") else list(dataset.keys())
-            if len(keys) >= 2:
-                cv1 = dataset[keys[0]]
-                cv2 = dataset[keys[1]]
-                names = [str(keys[0]), str(keys[1])]
-                periodic = (False, False)
-                return cv1, cv2, names, periodic
-
-        return None
-    except Exception:
-        return None
 
 
 # --- Utility functions --------------------------------------------------------
 
 
 def validate_build_opts(opts: BuildOpts) -> List[str]:
-    """Validate build options and return a list of warnings."""
     warnings = []
 
     if opts.n_clusters <= 0:
@@ -594,39 +786,29 @@ def validate_build_opts(opts: BuildOpts) -> List[str]:
 
 
 def estimate_memory_usage(dataset: Any, opts: BuildOpts) -> float:
-    """Estimate memory usage in GB for the build operation."""
     try:
         n_frames = _count_frames(dataset)
         n_features = len(_extract_feature_names(dataset))
 
-        # Base dataset memory (assuming float64)
         dataset_gb = (n_frames * n_features * 8) / (1024**3)
-
-        # MSM memory (clusters and states)
         msm_gb = (opts.n_clusters * n_features * 8) / (1024**3)
         msm_gb += (opts.n_states * opts.n_states * 8) / (1024**3)
-
-        # FES memory (assuming 100x100 grid)
         fes_gb = (100 * 100 * 8) / (1024**3) if opts.enable_fes else 0
 
-        # Safety margin
-        total_gb = (dataset_gb + msm_gb + fes_gb) * 1.5
-
-        return total_gb
+        return (dataset_gb + msm_gb + fes_gb) * 1.5
     except Exception:
-        return 1.0  # Default estimate
+        return 1.0
 
 
 def create_build_summary(result: BuildResult) -> Dict[str, Any]:
-    """Create a summary dictionary from BuildResult."""
     summary = {
         "success": result.metadata.success if result.metadata else False,
         "n_frames": result.n_frames,
         "n_shards": result.n_shards,
         "n_features": len(result.feature_names),
-        "has_msm": result.msm is not None,
-        "has_fes": result.fes is not None,
-        "has_tram": result.tram is not None,
+        "has_msm": bool(result.flags.get("has_msm")),
+        "has_fes": bool(result.flags.get("has_fes")),
+        "has_tram": bool(result.flags.get("has_tram")),
     }
 
     if result.metadata:

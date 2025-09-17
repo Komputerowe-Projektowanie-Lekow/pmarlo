@@ -5,7 +5,7 @@ Aggregate many shard files and build a global analysis envelope.
 
 This module loads compatible shards (same cv_names and periodicity),
 concatenates their CV matrices, assembles a dataset dict, and calls
-``pmarlo.engine.build.build_result`` to produce MSM/FES/TRAM results.
+``pmarlo.transform.build.build_result`` to produce MSM/FES/TRAM results.
 
 Outputs a single JSON bundle via BuildResult.to_json() with a dataset hash
 recorded into RunMetadata (when available) for end-to-end reproducibility.
@@ -19,11 +19,11 @@ from typing import List, Sequence
 import numpy as np
 
 from pmarlo.data.shard import read_shard
-from pmarlo.transform.build import AppliedOpts, BuildOpts, BuildResult, build_result
-from pmarlo.utils.errors import TemperatureConsistencyError
 from pmarlo.io.shard_id import parse_shard_id
-from pmarlo.progress import coerce_progress_callback
+from pmarlo.transform.build import AppliedOpts, BuildOpts, BuildResult, build_result
 from pmarlo.transform.plan import TransformPlan
+from pmarlo.transform.progress import coerce_progress_callback
+from pmarlo.utils.errors import TemperatureConsistencyError
 
 from .shard_io import load_shard_meta
 
@@ -64,7 +64,7 @@ def _unique_shard_uid(meta, p: Path) -> str:
 def load_shards_as_dataset(shard_jsons: Sequence[Path]) -> dict:
     """Load shard JSON files and return a dataset mapping used by the builder.
 
-    The returned dict matches the structure expected by ``pmarlo.engine.build``:
+    The returned dict matches the structure expected by ``pmarlo.transform.build``:
     - keys: ``"X"``, ``"cv_names"``, ``"periodic"``, ``"dtrajs"``, ``"__shards__"``
 
     Parameters
@@ -237,7 +237,7 @@ def aggregate_and_build(
     out_bundle: Path,
     **kwargs,
 ) -> tuple[BuildResult, str]:
-    """Load shards, aggregate a dataset, build with engine, and archive.
+    """Load shards, aggregate a dataset, build with the transform pipeline, and archive.
 
     Returns (BuildResult, dataset_hash_hex).
     """
@@ -352,7 +352,7 @@ def aggregate_and_build(
 
     ds_hash = _dataset_hash(dtrajs, X_all, cv_names)
     try:
-        new_md = replace(res.metadata, dataset_hash=ds_hash)
+        new_md = replace(res.metadata, dataset_hash=ds_hash, digest=ds_hash)
         res.metadata = new_md  # type: ignore[assignment]
     except Exception:
         try:

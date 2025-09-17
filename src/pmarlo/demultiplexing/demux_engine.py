@@ -15,7 +15,7 @@ import numpy as np
 
 from ..io.trajectory_reader import TrajectoryIOError, TrajectoryReader
 from ..io.trajectory_writer import TrajectoryWriteError, TrajectoryWriter
-from ..progress import ProgressCB, ProgressReporter
+from ..transform.progress import ProgressCB, ProgressReporter
 from ..utils.errors import DemuxWriterError
 from .demux_plan import DemuxPlan, DemuxSegmentPlan
 

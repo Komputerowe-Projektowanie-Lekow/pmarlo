@@ -9,11 +9,11 @@ import warnings
 
 # Re-export from new location with deprecation warnings
 from ..markov_state_model.reduction import (  # noqa: F401
+    get_available_methods,
     pca_reduce,
+    reduce_features,
     tica_reduce,
     vamp_reduce,
-    reduce_features,
-    get_available_methods,
 )
 
 # Issue deprecation warning when this module is imported

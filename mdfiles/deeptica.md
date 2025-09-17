@@ -2,7 +2,7 @@ Deep‑TICA Learning Path: Instrumentation and Usage
 
 Overview
 - PMARLO can optionally learn data‑driven collective variables (CVs) via Deep‑TICA.
-- The engine now records detailed diagnostics about the learning step under the artifact key `mlcv_deeptica` inside build bundles.
+- The transform builder now records detailed diagnostics about the learning step under the artifact key `mlcv_deeptica` inside build bundles.
 - The example app shows two tabs: Original CVs and Deep‑TICA CVs. Deep‑TICA plots only render if learning actually applied.
 
 Artifact Schema (`artifacts["mlcv_deeptica"]`)
@@ -42,12 +42,12 @@ Picking Lag
 
 Optional Lag Fallback
 - You can enable a fallback ladder via `LEARN_CV(method="deeptica", lag=5, lag_fallback=[5,4,3,2,1], ...)`.
-- If no pairs are found at the requested lag, the engine tries smaller lags in order until pairs are available or the list is exhausted.
+- If no pairs are found at the requested lag, the transform builder tries smaller lags in order until pairs are available or the list is exhausted.
 - Artifacts record `lag_fallback`, `attempts`, and the `lag_used` that succeeded.
 
 Cross‑Shard Pairing (optional)
 - Enable with `LEARN_CV(method="deeptica", lag=…, cross_shard_pairing=True)`.
-- When shards are contiguous slices from the same trajectory (same `source.traj` and identical temperature), the engine merges adjacent shards for pair generation so that time‑lagged pairs can cross shard boundaries.
+- When shards are contiguous slices from the same trajectory (same `source.traj` and identical temperature), the transform pipeline merges adjacent shards for pair generation so that time‑lagged pairs can cross shard boundaries.
 - Replicas or different thermodynamic states are never merged (different temperatures).
 
 Interpreting the App UI
@@ -57,7 +57,7 @@ Interpreting the App UI
   - If a plot cannot be built, the UI shows "picture failed to create itself".
 
 Logging
-- During Deep‑TICA preparation, the engine prints per‑shard diagnostics:
+- During Deep‑TICA preparation, the transform builder prints per‑shard diagnostics:
   - Summary: `n_shards=... frames_total=... lag_requested=... pairs_total=...`
   - Per‑shard: `shard <id> frames=<n> pairs=<m>`
 

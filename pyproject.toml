@@ -104,6 +104,10 @@ tox = "==4.*"
 pytest     = "^8.2"
 pytest-cov = "^5.0"
 pytest-benchmark = "^5.1"
+pytest-testmon = "2.1.3"
+pytest-xdist = "3.8.0"
+pytest-randomly = "4.0.1"
+pytest-picked = "0.5.1"
 
 [tool.poetry.group.docs.dependencies]
 sphinx            = "^7.3"
@@ -152,7 +156,7 @@ ignore_errors = true
 # Tymczasowe wyciszenie błędów typów w wybranych modułach projektu,
 # aby odblokować zielone "tox -e type"; docelowo usuniemy te wpisy po refaktorze.
 module = [
-  "pmarlo.pipeline",
+  "pmarlo.transform.pipeline",
   "pmarlo.markov_state_model.enhanced_msm",
   "pmarlo.experiments.simulation",
   "pmarlo.main",
@@ -161,11 +165,33 @@ ignore_errors = true
 
 # ────────────────────────── Pytest defaults ───────────────────────────
 [tool.pytest.ini_options]
-testpaths        = ["tests"]
-addopts          = "-v --tb=short"
-python_files     = ["test_*.py"]
+testpaths = ["tests/unit"]
+addopts = "-q -ra --strict-markers --maxfail=1"
+norecursedirs = ["_assets", "_output", "_checkpoints", ".benchmarks", ".pytest_cache"]
+markers = [
+  "unit: fast, isolated tests",
+  "integration: slow, cross-module tests",
+  "perf: performance/benchmark tests",
+  "slow: heavy tests within unit or integration",
+  "data: tests for src/data",
+  "io: tests for src/io",
+  "features: tests for src/features",
+  "cv: tests for collective variable pipelines",
+  "reduce: tests for src/reduce / FES math",
+  "results: tests for API/result objects (FES, etc.)",
+  "transform: tests for src/transform",
+  "demux: tests for src/demultiplexing",
+  "msm: tests for src/markov_state_model",
+  "replica: tests for src/replica_exchange (REMD)",
+  "experiments: tests for src/experiments",
+  "protein: tests for src/protein",
+  "reporting: tests for src/reporting",
+  "workflow: tests for src/workflow",
+  "utils: tests for src/utils"
+]
+python_files = ["test_*.py"]
 python_functions = ["test_*"]
-python_classes   = ["Test*"]
+python_classes = ["Test*"]
 
 # ────────── Poetry-dynamic-versioning ──────────
 [tool.poetry-dynamic-versioning]

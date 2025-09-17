@@ -17,9 +17,9 @@ except Exception:  # pragma: no cover - environment dependent
 
 def test_deeptica_fit_and_artifact_metrics(tmp_path: Path):
     # Local import after skipping heavy deps above
-    from pmarlo.engine.build import AppliedOpts, BuildOpts, build_result
     from pmarlo.features.deeptica import DeepTICAConfig, train_deeptica
     from pmarlo.features.pairs import scaled_time_pairs
+    from pmarlo.transform.build import AppliedOpts, BuildOpts, build_result
     from pmarlo.transform.plan import TransformPlan, TransformStep
 
     rng = np.random.default_rng(0)

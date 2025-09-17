@@ -1,0 +1,55 @@
+{
+  "artifacts": {
+    "best_by_corr": null,
+    "best_by_loss": null,
+    "last_ckpt": "C:\\Users\\konrad_guest\\Documents\\GitHub\\pmarlo\\tests\\checkpoints\\deeptica\\1758024981-22576\\last.ckpt",
+    "metrics_csv": "C:\\Users\\konrad_guest\\Documents\\GitHub\\pmarlo\\tests\\checkpoints\\deeptica\\1758024981-22576\\metrics.csv"
+  },
+  "config": {
+    "activation": "tanh",
+    "batch_size": 64,
+    "batches_per_epoch": 200,
+    "dropout": 0.1,
+    "early_stopping": 1,
+    "hidden": [
+      8,
+      8
+    ],
+    "lag": 3,
+    "layer_norm_in": true,
+    "learning_rate": 0.001,
+    "log_every": 1,
+    "lr_schedule": "cosine",
+    "max_epochs": 1,
+    "n_out": 2,
+    "num_workers": 2,
+    "reweight_mode": "scaled_time",
+    "seed": 1,
+    "val_frac": 0.1,
+    "val_split": "by_shard",
+    "warmup_epochs": 5,
+    "weight_decay": 0.0001
+  },
+  "final_metrics": {
+    "train_loss_last": 0.019632309675216675,
+    "val_loss_last": 0.01176481693983078
+  },
+  "scaler": {
+    "mean": [
+      -0.07692056636733469,
+      -0.00539507286157459,
+      -0.01599350562901236
+    ],
+    "n_features": 3,
+    "std": [
+      1.1200569679729118,
+      0.9732780848814842,
+      0.9059250442112794
+    ]
+  },
+  "top_eigenvalues": [
+    0.07401352418157349,
+    -0.12202350416535947
+  ],
+  "wall_time_s": 21.226088285446167
+}

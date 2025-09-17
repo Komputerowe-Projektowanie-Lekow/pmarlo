@@ -20,9 +20,9 @@ from ..protein.protein import Protein
 from ..replica_exchange.config import RemdConfig
 from ..replica_exchange.replica_exchange import ReplicaExchange, run_remd_simulation
 from ..replica_exchange.simulation import Simulation
+from ..utils.seed import set_global_seed
 from .plan import TransformPlan, TransformStep
 from .runner import apply_plan
-from ..utils.seed import set_global_seed
 
 logger = logging.getLogger(__name__)
 
@@ -211,14 +211,22 @@ class Pipeline:
         logger.info("Stage 2/4: Replica Exchange Setup")
 
         remd_output_dir = self.output_dir / "replica_exchange"
+        if self.prepared_pdb is None:
+            raise ValueError("prepare_protein must run before replica exchange setup.")
 
         config = RemdConfig(
-            input_pdb=str(self.prepared_pdb),
+            pdb_file=str(self.prepared_pdb) if self.prepared_pdb else None,
             temperatures=self.temperatures,
             output_dir=str(remd_output_dir),
         )
 
-        self.replica_exchange = ReplicaExchange(config)
+        self.replica_exchange = ReplicaExchange.from_config(config)
+        self.replica_exchange.plan_reporter_stride(
+            total_steps=self.steps,
+            equilibration_steps=0,
+            target_frames=config.target_frames_per_replica,
+        )
+        self.replica_exchange.setup_replicas()
 
         logger.info(f"Replica exchange setup for {len(self.temperatures)} temperatures")
         return self.replica_exchange

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 import time
-from typing import Any, Callable, IO, Mapping, Optional, Tuple
+from typing import IO, Any, Callable, Mapping, Optional, Tuple
 
 ProgressCB = Callable[[str, Mapping[str, Any]], None]
 

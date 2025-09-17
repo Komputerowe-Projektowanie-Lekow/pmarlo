@@ -14,19 +14,24 @@ from .data.aggregate import aggregate_and_build
 from .data.demux_dataset import DemuxDataset, build_demux_dataset
 from .data.emit import emit_shards_from_trajectories
 from .data.shard import ShardMeta, read_shard, write_shard
-from .transform.build import AppliedOpts, BuildOpts, build_result
 from .markov_state_model._msm_utils import candidate_lag_ladder
 from .protein.protein import Protein
 from .replica_exchange.config import RemdConfig
 from .replica_exchange.replica_exchange import ReplicaExchange
 from .replica_exchange.simulation import Simulation
 from .transform import pm_apply_plan, pm_get_plan
+from .transform.build import AppliedOpts, BuildOpts, build_result
 from .utils.replica_utils import power_of_two_temperature_ladder
 from .utils.seed import quiet_external_loggers
 
 # Free energy surface functionality (stable API surface)
 try:
-    from .markov_state_model.free_energy import FESResult, PMFResult, generate_1d_pmf, generate_2d_fes
+    from .markov_state_model.free_energy import (
+        FESResult,
+        PMFResult,
+        generate_1d_pmf,
+        generate_2d_fes,
+    )
 except Exception:  # pragma: no cover - defensive against optional deps
     FESResult = None
     PMFResult = None
@@ -34,13 +39,13 @@ except Exception:  # pragma: no cover - defensive against optional deps
     generate_2d_fes = None
 
 if TYPE_CHECKING:  # Only for type annotations; avoids importing heavy deps at runtime
-    from .pipeline import Pipeline as PipelineType
+    from .transform.pipeline import Pipeline as PipelineType
 
 # Public API names with precise optional type annotations
 Pipeline: Optional[Type["PipelineType"]] = None
 
 try:  # Lazy imports: these modules may require heavy dependencies
-    from .pipeline import Pipeline as _PipelineRuntime
+    from .transform.pipeline import Pipeline as _PipelineRuntime
 
     Pipeline = _PipelineRuntime
 except Exception:  # pragma: no cover

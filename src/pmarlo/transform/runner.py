@@ -8,10 +8,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from ..progress import ProgressCB, ProgressReporter
 from .apply import apply_transform_plan
 from .plan import TransformPlan, TransformStep
 from .plan import to_text as plan_to_text
+from .progress import ProgressCB, ProgressReporter
 
 logger = logging.getLogger(__name__)
 
