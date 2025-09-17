@@ -192,7 +192,7 @@ def build_analysis(context: Dict[str, Any], **kwargs) -> Dict[str, Any]:
 
 def build_step(context: Dict[str, Any], **kwargs) -> Dict[str, Any]:
     """Adapter for BUILD step that delegates to build_result."""
-    from .build import build_result, BuildOpts, AppliedOpts
+    from .build import AppliedOpts, BuildOpts, build_result
     from .plan import TransformPlan
 
     # Extract dataset from context
@@ -200,7 +200,9 @@ def build_step(context: Dict[str, Any], **kwargs) -> Dict[str, Any]:
 
     # Create build options from step params and context
     opts_params = kwargs.copy()
-    opts = BuildOpts(**{k: v for k, v in opts_params.items() if k in BuildOpts.__dataclass_fields__})
+    opts = BuildOpts(
+        **{k: v for k, v in opts_params.items() if k in BuildOpts.__dataclass_fields__}
+    )
 
     # Create applied options
     applied = AppliedOpts()
@@ -254,7 +256,11 @@ def reduce_step(context: Dict[str, Any], **kwargs) -> Dict[str, Any]:
             n_components=n_components,
             lag=lag,
             scale=scale,
-            **{k: v for k, v in kwargs.items() if k not in ["method", "n_components", "lag", "scale"]}
+            **{
+                k: v
+                for k, v in kwargs.items()
+                if k not in ["method", "n_components", "lag", "scale"]
+            },
         )
 
         # Store reduced data back in context
@@ -270,7 +276,9 @@ def reduce_step(context: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         context["reduction_method"] = method
         context["reduction_components"] = n_components
 
-        logger.info(f"REDUCE step completed using {method} with {n_components} components")
+        logger.info(
+            f"REDUCE step completed using {method} with {n_components} components"
+        )
 
     except Exception as e:
         logger.error(f"Reduction step failed: {e}")

@@ -11,12 +11,12 @@ from .demux_compat import ExchangeRecord, parse_exchange_log, parse_temperature_
 from .replica_exchange import ReplicaExchange
 from .simulation import (
     Simulation,
+    build_transition_model,
+    feature_extraction,
+    plot_DG,
     prepare_system,
     production_run,
-    feature_extraction,
-    build_transition_model,
     relative_energies,
-    plot_DG,
 )
 
 __all__ = [

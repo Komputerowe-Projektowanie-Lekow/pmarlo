@@ -16,7 +16,7 @@ from openmm import unit  # type: ignore
 
 from pmarlo.io.trajectory_reader import get_reader
 from pmarlo.io.trajectory_writer import get_writer
-from pmarlo.progress import ProgressCB, ProgressReporter
+from pmarlo.transform.progress import ProgressCB, ProgressReporter
 
 from ..replica_exchange import config as _cfg
 from .demux_engine import demux_streaming

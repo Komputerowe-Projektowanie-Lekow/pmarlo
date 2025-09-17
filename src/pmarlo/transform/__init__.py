@@ -8,6 +8,7 @@ from .build import (
     default_fes_builder,
     default_tram_builder,
 )
+
 # Pipeline imports removed to avoid circular dependency
 # Use: from pmarlo.transform.pipeline import Pipeline, run_pmarlo
 from .plan import TransformPlan, TransformStep
@@ -15,8 +16,8 @@ from .planner import get_transform_plan
 from .progress import (
     ProgressPrinter,
     ProgressReporter,
-    console_progress_cb,
     coerce_progress_callback,
+    console_progress_cb,
     tee_progress,
 )
 from .runner import apply_plan

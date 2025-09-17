@@ -8,46 +8,46 @@ Main entry point for the PMARLO package. This module provides the core API
 imports and essential functionality for protein simulation and MSM analysis.
 """
 
-# Core API imports - the main interface for users
-from .transform.pipeline import Pipeline, run_pmarlo
-from .protein.protein import Protein
 from .markov_state_model import MarkovStateModel
-from .replica_exchange import ReplicaExchange, Simulation
-from .transform.plan import TransformPlan, TransformStep
-from .transform.runner import apply_plan
+from .markov_state_model.free_energy import FESResult, PMFResult
 
 # Essential result classes
 from .markov_state_model.results import (
     BaseResult,
-    REMDResult,
-    DemuxResult,
-    ClusteringResult,
-    MSMResult,
     CKResult,
+    ClusteringResult,
+    DemuxResult,
     ITSResult,
+    MSMResult,
+    REMDResult,
 )
-from .markov_state_model.free_energy import FESResult, PMFResult
+from .protein.protein import Protein
+from .replica_exchange import ReplicaExchange, Simulation
+
+# Core API imports - the main interface for users
+from .transform.pipeline import Pipeline, run_pmarlo
+from .transform.plan import TransformPlan, TransformStep
 
 # Progress reporting
 from .transform.progress import (
-    ProgressReporter,
     ProgressPrinter,
+    ProgressReporter,
     console_progress_cb,
 )
+from .transform.runner import apply_plan
 
 # Error classes
 from .utils.errors import (
-    TemperatureConsistencyError,
     DemuxError,
     DemuxIntegrityError,
     DemuxIOError,
     DemuxPlanError,
     DemuxWriterError,
+    TemperatureConsistencyError,
 )
 
 # Essential utilities
 from .utils.seed import set_global_seed
-
 
 __all__ = [
     # Main API
@@ -91,6 +91,7 @@ def get_version() -> str:
     """Get the PMARLO version string."""
     try:
         from ._version import __version__
+
         return __version__
     except ImportError:
         return "unknown"

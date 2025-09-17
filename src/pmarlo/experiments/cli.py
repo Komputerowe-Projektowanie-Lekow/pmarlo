@@ -12,7 +12,7 @@ from .utils import default_output_root, tests_data_dir
 
 
 def _tests_data_dir() -> Path:
-    """Return the path to ``tests/data`` for use as CLI defaults."""
+    """Return the path to ``tests/_assets`` for use as CLI defaults."""
 
     return tests_data_dir()
 

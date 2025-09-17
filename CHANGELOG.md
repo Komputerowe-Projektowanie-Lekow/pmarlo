@@ -14,7 +14,7 @@
 
 - `api.run_replica_exchange` accepts `**kwargs` and passes `progress_callback` to the simulation.
 - `ReplicaExchange.run_simulation` emits stage events (`setup`, `equilibrate`, `simulate`, `exchange`, `finished`).
-- `engine.build.build_result` optionally accepts `progress_callback` to surface aggregate events during transforms.
+- `transform.build.build_result` optionally accepts `progress_callback` to surface aggregate events during transforms.
 
 <a id='changelog-0.14.0'></a>
 # 0.14.0 — 2025-08-08

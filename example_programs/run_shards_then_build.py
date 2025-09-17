@@ -7,7 +7,7 @@ This script uses the bundled test trajectory and PDB to compute two simple
 CVs per frame (radius of gyration and RMSD to the first frame), splits the
 trajectory into a few slices (as shard inputs), emits deterministic shards,
 aggregates them into a single dataset, builds MSM/FES via the provenance-first
-engine, and saves a portable JSON bundle with a dataset hash and digest.
+transform builder, and saves a portable JSON bundle with a dataset hash and digest.
 """
 
 from pathlib import Path
@@ -16,7 +16,7 @@ from typing import Callable, Dict, Optional, Set, Tuple
 import numpy as np
 
 from pmarlo import aggregate_and_build, emit_shards_from_trajectories
-from pmarlo.engine import AppliedOpts, BuildOpts
+from pmarlo.transform import AppliedOpts, BuildOpts
 from pmarlo.transform.plan import TransformPlan, TransformStep
 
 BASE = Path(__file__).resolve().parents[1]

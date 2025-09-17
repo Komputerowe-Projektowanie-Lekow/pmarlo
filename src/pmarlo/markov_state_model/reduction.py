@@ -120,7 +120,9 @@ def _manual_tica(X: np.ndarray, lag: int = 1, n_components: int = 2) -> np.ndarr
     """Manual TICA implementation using generalized eigenvalue problem."""
     n_frames = X.shape[0]
     if lag >= n_frames:
-        raise ValueError(f"Lag time {lag} must be less than number of frames {n_frames}")
+        raise ValueError(
+            f"Lag time {lag} must be less than number of frames {n_frames}"
+        )
 
     # Compute covariance matrices
     X_t = X[:-lag]  # X(t)
@@ -130,7 +132,7 @@ def _manual_tica(X: np.ndarray, lag: int = 1, n_components: int = 2) -> np.ndarr
     C_00 = np.cov(X_t.T)
 
     # Time-lagged covariance C_0t
-    C_0t = np.cov(X_t.T, X_t_lag.T)[:X.shape[1], X.shape[1]:]
+    C_0t = np.cov(X_t.T, X_t_lag.T)[: X.shape[1], X.shape[1] :]
 
     # Solve generalized eigenvalue problem
     try:
@@ -204,7 +206,9 @@ def _manual_vamp(
     """Manual VAMP implementation using SVD-based approach."""
     n_frames = X.shape[0]
     if lag >= n_frames:
-        raise ValueError(f"Lag time {lag} must be less than number of frames {n_frames}")
+        raise ValueError(
+            f"Lag time {lag} must be less than number of frames {n_frames}"
+        )
 
     # Split data
     X_t = X[:-lag]  # X(t)
@@ -213,7 +217,7 @@ def _manual_vamp(
     # Compute covariance matrices with regularization
     C_00 = np.cov(X_t.T) + epsilon * np.eye(X.shape[1])
     C_11 = np.cov(X_t_lag.T) + epsilon * np.eye(X.shape[1])
-    C_01 = np.cov(X_t.T, X_t_lag.T)[:X.shape[1], X.shape[1]:]
+    C_01 = np.cov(X_t.T, X_t_lag.T)[: X.shape[1], X.shape[1] :]
 
     try:
         # VAMP-2 score optimization via SVD
@@ -272,13 +276,9 @@ def reduce_features(
     if method == "pca":
         return pca_reduce(X, n_components=n_components, scale=scale, **kwargs)
     elif method == "tica":
-        return tica_reduce(
-            X, lag=lag, n_components=n_components, scale=scale, **kwargs
-        )
+        return tica_reduce(X, lag=lag, n_components=n_components, scale=scale, **kwargs)
     elif method == "vamp":
-        return vamp_reduce(
-            X, lag=lag, n_components=n_components, scale=scale, **kwargs
-        )
+        return vamp_reduce(X, lag=lag, n_components=n_components, scale=scale, **kwargs)
     else:
         raise ValueError(f"Unknown reduction method: {method}")
 
@@ -296,6 +296,7 @@ def get_available_methods() -> List[str]:
     # Check for deeptime
     try:
         import deeptime
+
         methods.extend(["tica", "vamp"])
     except ImportError:
         pass
@@ -303,6 +304,7 @@ def get_available_methods() -> List[str]:
     # Check for pyemma (fallback)
     try:
         import pyemma
+
         if "tica" not in methods:
             methods.append("tica")
         if "vamp" not in methods:

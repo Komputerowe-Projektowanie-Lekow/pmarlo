@@ -32,7 +32,7 @@ from pmarlo.io.catalog import build_catalog_from_paths
 from pmarlo.io.shards import rescan_shards, prune_missing_shards
 from pmarlo.workflow.validation import validate_build_result, format_validation_report
 from pmarlo.markov_state_model.bridge import build_simple_msm
-from pmarlo.progress import console_progress_cb, tee_progress
+from pmarlo.transform.progress import console_progress_cb, tee_progress
 from pmarlo.utils.seed import set_global_seed
 
 
@@ -479,7 +479,7 @@ def aggregate_and_build_bundle(
         progress_cb, log_path = _progress_logger(Path(workspace), f"build-{_now_stamp()}")
     build_console = console_progress_cb()
     if progress_cb is not None:
-        from pmarlo.progress import tee_progress as _tee
+        from pmarlo.transform.progress import tee_progress as _tee
         progress_cb = _tee(progress_cb, build_console)
     else:
         progress_cb = build_console

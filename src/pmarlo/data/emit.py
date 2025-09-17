@@ -17,7 +17,7 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 import numpy as np
 
-from pmarlo.progress import ProgressCB, ProgressReporter
+from pmarlo.transform.progress import ProgressCB, ProgressReporter
 
 from .shard import write_shard
 
@@ -79,6 +79,17 @@ def emit_shards_from_trajectories(
     paths = [Path(p) for p in traj_files]
     paths.sort()
 
+    # Determine next shard index to avoid overwriting existing outputs
+    existing_indices: List[int] = []
+    for existing_json in sorted(out_dir.glob("shard_*.json")):
+        stem = existing_json.stem
+        try:
+            existing_indices.append(int(stem.split("_")[1]))
+        except (IndexError, ValueError):
+            continue
+    start_index = max(existing_indices) + 1 if existing_indices else 0
+    seed_offset = int(seed_start) + start_index
+
     json_paths: List[Path] = []
 
     # Wrap callback with ProgressReporter to enrich with elapsed and ETA
@@ -102,6 +113,7 @@ def emit_shards_from_trajectories(
         },
     )
     for i, traj in enumerate(paths):
+        shard_index = start_index + i
         _emit(
             "emit_one_begin",
             {
@@ -117,14 +129,14 @@ def emit_shards_from_trajectories(
         periodic = {
             name: bool((periodic_by_cv or {}).get(name, False)) for name in names
         }
-        shard_id = f"shard_{i:04d}"
+        shard_id = f"shard_{shard_index:04d}"
         json_path = write_shard(
             out_dir=out_dir,
             shard_id=shard_id,
             cvs=cvs,
             dtraj=dtraj,
             periodic=periodic,
-            seed=int(seed_start + i),
+            seed=int(seed_offset + i),
             temperature=float(temperature),
             source=dict(source_info),
         )

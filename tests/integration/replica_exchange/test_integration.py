@@ -1,7 +1,7 @@
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from pmarlo.pipeline import Pipeline
+from pmarlo.transform.pipeline import Pipeline
 
 
 class TestReplicaExchangeIntegration:

@@ -5,7 +5,7 @@
 All Capabilities Demo (minimal): REMD → MSM → FES → Conformations
 
 Outputs under: example_programs/programs_outputs/all_capabilities
-Uses bundled test asset: tests/data/3gd8-fixed.pdb
+Uses bundled test asset: tests/_assets/3gd8-fixed.pdb
 """
 
 from __future__ import annotations

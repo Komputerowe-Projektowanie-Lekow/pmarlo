@@ -1,0 +1,5 @@
+lr: 0.001
+lr_schedule: cosine
+max_epochs: 3
+warmup_epochs: 5
+weight_decay: 0.0001
