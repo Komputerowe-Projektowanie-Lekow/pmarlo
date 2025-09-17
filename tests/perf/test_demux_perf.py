@@ -18,20 +18,26 @@ import os
 import tracemalloc
 from pathlib import Path
 
+import mdtraj as md
 import numpy as np
 import pytest
-import mdtraj as md
 
 pytestmark = pytest.mark.perf
 
 # Optional plugin
-pytest_benchmark = pytest.importorskip("pytest_benchmark", reason="pytest-benchmark not installed")
+pytest_benchmark = pytest.importorskip(
+    "pytest_benchmark", reason="pytest-benchmark not installed"
+)
 
 if not os.getenv("PMARLO_RUN_PERF"):
-    pytest.skip("perf tests disabled; set PMARLO_RUN_PERF=1 to run", allow_module_level=True)
+    pytest.skip(
+        "perf tests disabled; set PMARLO_RUN_PERF=1 to run", allow_module_level=True
+    )
 
 
-def _make_replicas(tmp_path: Path, n_replicas: int = 5, n_frames: int = 1000, n_atoms: int = 3):
+def _make_replicas(
+    tmp_path: Path, n_replicas: int = 5, n_frames: int = 1000, n_atoms: int = 3
+):
     top = md.Topology()
     chain = top.add_chain()
     residue = top.add_residue("GLY", chain)
@@ -82,7 +88,7 @@ def _benchmark_memory(func, *args, **kwargs):
 
 
 def test_perf_legacy_demux(benchmark, tmp_path: Path):
-    from pmarlo.replica_exchange.demux import demux_trajectories
+    from pmarlo.demultiplexing.demux import demux_trajectories
 
     pdb, dcds = _make_replicas(tmp_path)
     remd = _build_legacy_remd(pdb, dcds, tmp_path)
@@ -101,8 +107,8 @@ def test_perf_legacy_demux(benchmark, tmp_path: Path):
 
 
 def test_perf_streaming_demux(benchmark, tmp_path: Path):
-    from pmarlo.replica_exchange.demux_plan import build_demux_plan
-    from pmarlo.replica_exchange.demux_engine import demux_streaming
+    from pmarlo.demultiplexing.demux_engine import demux_streaming
+    from pmarlo.demultiplexing.demux_plan import build_demux_plan
     from pmarlo.io.trajectory_reader import MDTrajReader
     from pmarlo.io.trajectory_writer import MDTrajDCDWriter
 

@@ -22,11 +22,11 @@ def timestamp_dir(base_dir: Union[str, Path]) -> Path:
 
 
 def tests_data_dir() -> Path:
-    """Return the repository's ``tests/data`` directory robustly.
+    """Return the repository's ``tests/_assets`` directory robustly.
 
     - Honors environment override via ``PMARLO_TESTS_DIR`` when set.
-    - Searches upward from this file for a parent that contains ``tests/data``.
-    - Falls back to current working directory's ``tests/data`` if found.
+    - Searches upward from this file for a parent that contains ``tests/_assets``.
+    - Falls back to current working directory's ``tests/_assets`` if found.
     """
     # 1) Explicit override for CI or bespoke layouts
     env = os.getenv("PMARLO_TESTS_DIR")
@@ -35,21 +35,21 @@ def tests_data_dir() -> Path:
         if (p / "3gd8-fixed.pdb").exists() or p.exists():
             return p
 
-    # 2) Walk up parents to locate a repo root that has tests/data
+    # 2) Walk up parents to locate a repo root that has tests/_assets
     here = Path(__file__).resolve()
     for ancestor in [here.parent, *here.parents]:
-        candidate = ancestor / "tests" / "data"
+        candidate = ancestor / "tests" / "_assets"
         if candidate.exists():
             return candidate
 
-    # 3) As a last resort, try CWD/tests/data
-    cwd_candidate = Path.cwd() / "tests" / "data"
+    # 3) As a last resort, try CWD/tests/_assets
+    cwd_candidate = Path.cwd() / "tests" / "_assets"
     if cwd_candidate.exists():
         return cwd_candidate
 
     # 4) If not found, construct a best-effort path relative to package root
     # (does not assert existence to avoid import-time failures)
-    return here.parent.parent.parent / "tests" / "data"
+    return here.parent.parent.parent / "tests" / "_assets"
 
 
 def default_output_root() -> str:

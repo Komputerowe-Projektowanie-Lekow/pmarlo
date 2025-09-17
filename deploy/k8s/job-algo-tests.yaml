@@ -34,7 +34,7 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.annotations['batch.kubernetes.io/job-completion-index']
-        # Predefined suite uses tests/data and standard output roots; no extra env needed
+        # Predefined suite uses tests/_assets and standard output roots; no extra env needed
         resources:
           requests:
             cpu: "1"

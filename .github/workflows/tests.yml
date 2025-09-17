@@ -1,0 +1,131 @@
+﻿name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      integration: ${{ steps.filter.outputs.integration }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            integration:
+              - 'src/pmarlo/workflow/**'
+              - 'src/pmarlo/replica_exchange/**'
+              - 'example_programs/app_usecase/**'
+              - 'tests/integration/**'
+
+  fast:
+    runs-on: ubuntu-latest
+    needs: changes
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Poetry
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install poetry==1.8.3
+      - name: Configure Poetry
+        run: poetry config virtualenvs.in-project true
+      - name: Cache virtualenv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
+          restore-keys: |
+            venv-${{ runner.os }}-
+      - name: Cache testmon data
+        uses: actions/cache@v4
+        with:
+          path: .testmondata
+          key: testmon-${{ runner.os }}-${{ hashFiles('poetry.lock', 'pyproject.toml', 'src/**/*.py', 'tests/**/*.py') }}
+          restore-keys: |
+            testmon-${{ runner.os }}-
+      - name: Install dependencies
+        run: poetry install --with dev,tests
+      - name: Run fast unit suite
+        run: poetry run pytest --testmon -n auto
+
+  smoke:
+    runs-on: ubuntu-latest
+    needs: fast
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Poetry
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install poetry==1.8.3
+      - name: Configure Poetry
+        run: poetry config virtualenvs.in-project true
+      - name: Cache virtualenv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
+          restore-keys: |
+            venv-${{ runner.os }}-
+      - name: Cache testmon data
+        uses: actions/cache@v4
+        with:
+          path: .testmondata
+          key: testmon-${{ runner.os }}-${{ hashFiles('poetry.lock', 'pyproject.toml', 'src/**/*.py', 'tests/**/*.py') }}
+          restore-keys: |
+            testmon-${{ runner.os }}-
+      - name: Install dependencies
+        run: poetry install --with dev,tests
+      - name: Run smoke integration suite
+        run: poetry run pytest --testmon -m "integration and not slow" -n auto
+
+  full:
+    runs-on: ubuntu-latest
+    needs: [changes, fast]
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/main' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && (
+        contains(github.event.pull_request.labels.*.name, 'full-ci') ||
+        needs.changes.outputs.integration == 'true'
+      ))
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Poetry
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install poetry==1.8.3
+      - name: Configure Poetry
+        run: poetry config virtualenvs.in-project true
+      - name: Cache virtualenv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
+          restore-keys: |
+            venv-${{ runner.os }}-
+      - name: Cache testmon data
+        uses: actions/cache@v4
+        with:
+          path: .testmondata
+          key: testmon-${{ runner.os }}-${{ hashFiles('poetry.lock', 'pyproject.toml', 'src/**/*.py', 'tests/**/*.py') }}
+          restore-keys: |
+            testmon-${{ runner.os }}-
+      - name: Install dependencies
+        run: poetry install --with dev,tests
+      - name: Run full unit + integration suite
+        run: poetry run pytest -m "unit or integration" -n auto

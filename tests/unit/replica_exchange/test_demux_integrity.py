@@ -4,7 +4,7 @@ import mdtraj as md
 import numpy as np
 import pytest
 
-from pmarlo.replica_exchange.demux_metadata import DemuxIntegrityError
+from pmarlo.demultiplexing.demux_metadata import DemuxIntegrityError
 from pmarlo.replica_exchange.replica_exchange import ReplicaExchange
 
 

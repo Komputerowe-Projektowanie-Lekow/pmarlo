@@ -21,3 +21,15 @@ class DemuxPlanError(DemuxError):
 
 class DemuxWriterError(DemuxError):
     """Failure to write output trajectory frames or finalize writing."""
+
+
+class TemperatureConsistencyError(ValueError):
+    """Raised when a dataset violates the temperature/demux contract.
+
+    Contract summary:
+    - All shards must be demultiplexed (kind == "demux").
+    - All shards must share the same temperature_K.
+    - Each shard must represent a contiguous time block (non-empty, start<stop).
+    """
+
+    pass

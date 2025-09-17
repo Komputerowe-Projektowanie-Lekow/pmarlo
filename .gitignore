@@ -83,3 +83,7 @@ example_programs/programs_outputs/sharded_build/shards/slice_000066_000100.dcd
 temperatures_suggested.json
 typelog.txt
 /example_programs/programs_outputs/sharded_build/
+
+/checkpoints/
+/runs/
+/tests/checkpoints/

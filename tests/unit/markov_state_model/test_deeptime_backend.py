@@ -3,7 +3,7 @@ from deeptime.markov import TransitionCountEstimator
 from deeptime.markov.msm import MaximumLikelihoodMSM
 
 from pmarlo.markov_state_model import MarkovStateModel
-from pmarlo.states.msm_bridge import build_simple_msm
+from pmarlo.markov_state_model.bridge import build_simple_msm
 
 
 def _simulate_chain(

@@ -3,7 +3,9 @@ from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
 TransformName = Literal[
+    # Existing transform operations
     "LEARN_CV",
+    "REDUCE",
     "SMOOTH_FES",
     "MERGE_BINS",
     "FILL_GAPS",
@@ -15,6 +17,19 @@ TransformName = Literal[
     "MSM",
     "FES",
     "TRAM",
+    "BUILD",
+    # Pipeline stage operations
+    "PROTEIN_PREPARATION",
+    "SYSTEM_SETUP",
+    "REPLICA_INITIALIZATION",
+    "ENERGY_MINIMIZATION",
+    "GRADUAL_HEATING",
+    "EQUILIBRATION",
+    "PRODUCTION_SIMULATION",
+    "TRAJECTORY_DEMUX",
+    "TRAJECTORY_ANALYSIS",
+    "MSM_BUILD",
+    "BUILD_ANALYSIS",
 ]
 
 

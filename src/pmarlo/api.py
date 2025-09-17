@@ -7,19 +7,31 @@ from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 import mdtraj as md  # type: ignore
 import numpy as np
 
-from .analysis.ck import run_ck as _run_ck
-from .cluster.micro import cluster_microstates as _cluster_microstates
 from .data.aggregate import aggregate_and_build as _aggregate_and_build
-from .engine.build import AppliedOpts as _AppliedOpts
-from .engine.build import BuildOpts as _BuildOpts
 from .features import get_feature
 from .features.base import parse_feature_spec
-from .fes.surfaces import FESResult
-from .fes.surfaces import generate_2d_fes as _generate_2d_fes
 from .io import trajectory as _traj_io
+from .markov_state_model._msm_utils import build_simple_msm as _build_simple_msm
+from .markov_state_model._msm_utils import (
+    candidate_lag_ladder,
+)
+from .markov_state_model._msm_utils import compute_macro_mfpt as _compute_macro_mfpt
+from .markov_state_model._msm_utils import (
+    compute_macro_populations as _compute_macro_populations,
+)
+from .markov_state_model._msm_utils import (
+    lump_micro_to_macro_T as _lump_micro_to_macro_T,
+)
+from .markov_state_model._msm_utils import pcca_like_macrostates as _pcca_like
+from .markov_state_model.ck_runner import run_ck as _run_ck
+from .markov_state_model.clustering import cluster_microstates as _cluster_microstates
 from .markov_state_model.enhanced_msm import EnhancedMSM as MarkovStateModel
-from .progress import coerce_progress_callback
-from .reduce.reducers import pca_reduce, tica_reduce, vamp_reduce
+from .markov_state_model.free_energy import FESResult
+from .markov_state_model.free_energy import generate_2d_fes as _generate_2d_fes
+from .markov_state_model.picker import (
+    pick_frames_around_minima as _pick_frames_around_minima,
+)
+from .markov_state_model.reduction import pca_reduce, tica_reduce, vamp_reduce
 from .replica_exchange.config import RemdConfig
 from .replica_exchange.replica_exchange import ReplicaExchange
 from .reporting.export import write_conformations_csv_json
@@ -28,15 +40,14 @@ from .reporting.plots import (
     save_pmf_line,
     save_transition_matrix_heatmap,
 )
-from .states.msm_bridge import build_simple_msm as _build_simple_msm
-from .states.msm_bridge import compute_macro_mfpt as _compute_macro_mfpt
-from .states.msm_bridge import compute_macro_populations as _compute_macro_populations
-from .states.msm_bridge import lump_micro_to_macro_T as _lump_micro_to_macro_T
-from .states.msm_bridge import pcca_like_macrostates as _pcca_like
-from .states.picker import pick_frames_around_minima as _pick_frames_around_minima
+from .config import JOINT_USE_REWEIGHT
+from .workflow.joint import JointWorkflow, WorkflowConfig as JointWorkflowConfig
+
+from .transform.build import AppliedOpts as _AppliedOpts
+from .transform.build import BuildOpts as _BuildOpts
 from .transform.plan import TransformPlan as _TransformPlan
 from .transform.plan import TransformStep as _TransformStep
-from .utils.msm_utils import candidate_lag_ladder
+from .transform.progress import coerce_progress_callback
 
 logger = logging.getLogger("pmarlo")
 
@@ -808,11 +819,26 @@ def run_replica_exchange(
     output_dir: str | Path,
     temperatures: List[float],
     total_steps: int,
+    *,
+    random_seed: int | None = None,
+    random_state: int | None = None,
+    start_from_checkpoint: str | Path | None = None,
+    start_from_pdb: str | Path | None = None,
+    jitter_start: bool = False,
+    jitter_sigma_A: float = 0.05,
+    velocity_reseed: bool = False,
+    exchange_frequency_steps: int | None = None,
+    save_state_frequency: int | None = None,
+    temperature_schedule_mode: str | None = None,
     **kwargs: Any,
 ) -> Tuple[List[str], List[float]]:
     """Run REMD and return (trajectory_files, analysis_temperatures).
 
     Attempts demultiplexing to ~300 K; falls back to per-replica trajectories.
+    When ``random_state`` or ``random_seed`` is provided, the seed is forwarded
+    to the underlying :class:`ReplicaExchange` for deterministic behavior. If
+    both are provided, ``random_state`` takes precedence for backward
+    compatibility.
     """
     remd_out = Path(output_dir) / "replica_exchange"
 
@@ -824,7 +850,16 @@ def run_replica_exchange(
         equil = min(total_steps // 20, 100)
         exchange_frequency = max(50, total_steps // 40)
         dcd_stride = max(1, int(total_steps // 1000))
+    # Allow explicit override from caller
+    if exchange_frequency_steps is not None and int(exchange_frequency_steps) > 0:
+        exchange_frequency = int(exchange_frequency_steps)
 
+    # Prefer random_state when both provided for back-compat
+    _seed = (
+        int(random_state)
+        if random_state is not None
+        else (int(random_seed) if random_seed is not None else None)
+    )
     remd = ReplicaExchange.from_config(
         RemdConfig(
             pdb_file=str(pdb_file),
@@ -833,17 +868,42 @@ def run_replica_exchange(
             exchange_frequency=exchange_frequency,
             auto_setup=False,
             dcd_stride=dcd_stride,
+            random_seed=_seed,
+            start_from_checkpoint=(
+                str(start_from_checkpoint) if start_from_checkpoint else None
+            ),
+            start_from_pdb=str(start_from_pdb) if start_from_pdb else None,
+            jitter_sigma_A=float(jitter_sigma_A) if jitter_start else 0.0,
+            reseed_velocities=bool(velocity_reseed),
+            temperature_schedule_mode=temperature_schedule_mode,
         )
     )
     remd.plan_reporter_stride(
         total_steps=int(total_steps), equilibration_steps=int(equil), target_frames=5000
     )
     remd.setup_replicas()
+    # Optional resume from checkpoint state
+    if start_from_checkpoint:
+        try:
+            import pickle as _pkl
+
+            with open(start_from_checkpoint, "rb") as fh:
+                ckpt = _pkl.load(fh)
+            remd.restore_from_checkpoint(ckpt)
+            # Skip equilibration if resuming from a checkpoint
+            equil = 0
+        except Exception as exc:
+            logger.warning(
+                "Failed to restore from checkpoint %s: %s",
+                str(start_from_checkpoint),
+                exc,
+            )
     # Optional unified progress callback (many alias names accepted)
     cb = coerce_progress_callback(kwargs)
     remd.run_simulation(
         total_steps=int(total_steps),
         equilibration_steps=int(equil),
+        save_state_frequency=int(save_state_frequency or 10_000),
         progress_callback=cb,
         cancel_token=kwargs.get("cancel_token"),
     )
@@ -854,7 +914,9 @@ def run_replica_exchange(
     )
     if demuxed:
         try:
-            traj = md.load(str(demuxed), top=str(pdb_file))
+            from pmarlo.io.trajectory_reader import MDTrajReader as _MDTReader
+
+            nframes = _MDTReader(topology_path=str(pdb_file)).probe_length(str(demuxed))
             reporter_stride = getattr(remd, "reporter_stride", None)
             eff_stride = int(
                 reporter_stride
@@ -866,7 +928,7 @@ def run_replica_exchange(
             # Accept demux if it's close to expected or at least a safe fraction.
             # Large runs may have minor segment repairs or stride mismatches.
             threshold = max(1, expected // 5)  # 20% of expected frames
-            if traj.n_frames >= threshold:
+            if int(nframes) >= threshold:
                 return [str(demuxed)], [300.0]
         except Exception:
             pass
@@ -1039,7 +1101,7 @@ def analyze_msm(  # noqa: C901
                     cache_path=str(cache_dir),
                 )
                 # 1) PMF on IC1
-                from .fes.surfaces import generate_1d_pmf
+                from .markov_state_model.free_energy import generate_1d_pmf
 
                 pmf = generate_1d_pmf(
                     Y2[:, 0], bins=int(max(30, adaptive_bins)), temperature=300.0
@@ -1312,6 +1374,7 @@ def emit_shards_rg_rmsd(
     temperature: float = 300.0,
     seed_start: int = 0,
     progress_callback=None,
+    provenance: dict | None = None,
 ) -> list[Path]:
     """Stream trajectories and emit shards with Rg and RMSD to a reference.
 
@@ -1320,6 +1383,9 @@ def emit_shards_rg_rmsd(
     deterministic shards under ``out_dir``.
     """
     import mdtraj as md  # type: ignore
+
+    # Quiet streaming iterator for reading DCDs without plugin chatter
+    from pmarlo.io import trajectory as _traj_io
 
     pdb_file = Path(pdb_file)
     out_dir = Path(out_dir)
@@ -1361,10 +1427,18 @@ def emit_shards_rg_rmsd(
             if rmsd_parts
             else _np.zeros((0,), dtype=_np.float64)
         )
+        base_src = {"traj": str(traj_path), "n_frames": int(n)}
+        if provenance:
+            try:
+                merged = dict(provenance)
+                merged.update(base_src)
+                base_src = merged
+            except Exception:
+                pass
         return (
             {"Rg": rg, "RMSD_ref": rmsd},
             None,
-            {"traj": str(traj_path), "n_frames": int(n)},
+            base_src,
         )
 
     from .data.emit import emit_shards_from_trajectories as _emit
@@ -1430,11 +1504,20 @@ def build_from_shards(
         cv_pair[1]: _np.linspace(mins[1], maxs[1], int(bins.get(cv_pair[1], 32)) + 1),
     }
 
+    model_dir = None
+    if notes:
+        try:
+            model_dir = notes.get("model_dir") if isinstance(notes, dict) else None
+        except Exception:
+            model_dir = None
+
     steps: list[_TransformStep] = []
     if learn_cv:
         params = dict(deeptica_params or {})
         if "lag" not in params:
             params["lag"] = int(max(1, lag))
+        if model_dir and "model_dir" not in params:
+            params["model_dir"] = model_dir
         steps.append(_TransformStep("LEARN_CV", {"method": "deeptica", **params}))
     steps.append(_TransformStep("SMOOTH_FES", {"sigma": 0.6}))
     plan = _TransformPlan(steps=tuple(steps))
@@ -1462,3 +1545,205 @@ def build_from_shards(
         progress_callback=progress_callback,
     )
     return br, ds_hash
+
+
+def demultiplex_run(
+    run_id: str,
+    replica_traj_paths: list[str | Path],
+    exchange_log_path: str | Path,
+    topology_path: str | Path,
+    ladder_K: list[float] | str,
+    dt_ps: float,
+    out_dir: str | Path,
+    fmt: str = "dcd",
+    chunk_size: int = 5000,
+) -> list[str]:
+    """Demultiplex a REMD run into per-temperature trajectories and manifests.
+
+    .. deprecated:: 0.0.42
+        This function is deprecated. Use :func:`pmarlo.demultiplexing.demux.demux_trajectories`
+        or the streaming demux functions directly.
+
+    Returns list of DemuxShard JSON paths.
+    """
+    import warnings
+
+    warnings.warn(
+        "demultiplex_run is deprecated; use pmarlo.demultiplexing.demux.demux_trajectories "
+        "or streaming demux functions directly",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
+    # For backward compatibility, try to use the streaming demux
+    try:
+        from pathlib import Path
+
+        from .demultiplexing.demux_engine import demux_streaming
+        from .demultiplexing.demux_plan import build_demux_plan
+        from .io.trajectory_reader import get_reader
+        from .io.trajectory_writer import get_writer
+        from .replica_exchange.demux_compat import (
+            parse_exchange_log,
+            parse_temperature_ladder,
+        )
+
+        # Parse inputs
+        temperatures = parse_temperature_ladder(ladder_K)
+        exchange_records = parse_exchange_log(str(exchange_log_path))
+
+        # Build demux plan
+        plan = build_demux_plan(
+            trajectory_paths=[str(p) for p in replica_traj_paths],
+            temperatures=temperatures,
+            exchange_records=exchange_records,
+            target_temperature=temperatures[0],  # Default to first temperature
+            equilibration_steps=0,  # Could be made configurable
+        )
+
+        # Set up reader/writer
+        reader = get_reader("mdtraj")
+        writer = get_writer("mdtraj")
+
+        # Create output path
+        out_path = Path(out_dir) / f"demux_{run_id}_T{temperatures[0]:.0f}K.{fmt}"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Execute demux
+        result = demux_streaming(
+            plan=plan,
+            topology_path=str(topology_path),
+            reader=reader,
+            writer=writer,
+            chunk_size=chunk_size,
+        )
+
+        return [str(out_path)] if result.total_frames_written > 0 else []
+
+    except Exception:
+        # Fallback: return empty list if anything fails
+        return []
+
+
+def extract_last_frame_to_pdb(
+    *,
+    trajectory_file: str | Path,
+    topology_pdb: str | Path,
+    out_pdb: str | Path,
+    jitter_sigma_A: float = 0.0,
+) -> Path:
+    """Extract the last frame from a trajectory and write as a PDB.
+
+    Parameters
+    ----------
+    trajectory_file:
+        Path to the input trajectory (e.g., DCD).
+    topology_pdb:
+        PDB topology defining atom order.
+    out_pdb:
+        Destination PDB path to write.
+    jitter_sigma_A:
+        Optional Gaussian noise sigma in Angstroms applied to positions.
+
+    Returns
+    -------
+    Path
+        The output PDB path.
+    """
+    import mdtraj as _md  # type: ignore
+    import numpy as _np
+
+    traj = _md.load(str(trajectory_file), top=str(topology_pdb))
+    if traj.n_frames <= 0:
+        raise ValueError("Trajectory has no frames to extract")
+    last = traj[traj.n_frames - 1]
+    if jitter_sigma_A and float(jitter_sigma_A) > 0.0:
+        noise = _np.random.normal(0.0, float(jitter_sigma_A), size=last.xyz.shape)
+        # MDTraj units are nm; 1 Å = 0.1 nm
+        last.xyz = last.xyz + (noise * 0.1)
+    out_p = Path(out_pdb)
+    out_p.parent.mkdir(parents=True, exist_ok=True)
+    last.save_pdb(str(out_p))
+    return out_p
+
+
+def extract_random_highT_frame_to_pdb(
+    *,
+    run_dir: str | Path,
+    topology_pdb: str | Path,
+    out_pdb: str | Path,
+    jitter_sigma_A: float = 0.0,
+    rng_seed: int | None = None,
+) -> Path:
+    """Extract a random frame from the highest-temperature replica of a run.
+
+    Falls back to the last `replica_*.dcd` when metadata is missing.
+    """
+    import json as _json
+
+    import mdtraj as _md  # type: ignore
+    import numpy as _np
+
+    rd = Path(run_dir)
+    analysis_json = rd / "replica_exchange" / "analysis_results.json"
+    traj_path: Path | None = None
+    if analysis_json.exists():
+        try:
+            data = _json.loads(analysis_json.read_text())
+            remd = data.get("remd", {})
+            temps = remd.get("temperatures", [])
+            tfiles = remd.get("trajectory_files", [])
+            if temps and tfiles and len(temps) == len(tfiles):
+                # Choose highest temperature index
+                # temps may be nested list from metadata-only; coerce
+                temps_f = [float(x) for x in temps]
+                i_max = int(_np.argmax(temps_f))
+                cand = Path(tfiles[i_max])
+                traj_path = cand if cand.is_absolute() else (rd / cand)
+        except Exception:
+            traj_path = None
+    if traj_path is None:
+        # Fallback: pick highest replica index .dcd
+        dcds = sorted((rd / "replica_exchange").glob("replica_*.dcd"))
+        if not dcds:
+            raise FileNotFoundError(
+                f"No replica_*.dcd found under {rd / 'replica_exchange'}"
+            )
+        traj_path = dcds[-1]
+
+    traj = _md.load(str(traj_path), top=str(topology_pdb))
+    if traj.n_frames <= 0:
+        raise ValueError("Trajectory has no frames to extract")
+    rng = _np.random.default_rng(rng_seed)
+    idx = int(rng.integers(0, traj.n_frames))
+    frame = traj[idx]
+    if jitter_sigma_A and float(jitter_sigma_A) > 0.0:
+        noise = _np.random.normal(0.0, float(jitter_sigma_A), size=frame.xyz.shape)
+        frame.xyz = frame.xyz + (noise * 0.1)
+    out_p = Path(out_pdb)
+    out_p.parent.mkdir(parents=True, exist_ok=True)
+    frame.save_pdb(str(out_p))
+    return out_p
+
+def build_joint_workflow(
+    shards_root: Path,
+    temperature_ref_K: float,
+    tau_steps: int,
+    n_clusters: int,
+    *,
+    use_reweight: Optional[bool] = None,
+) -> JointWorkflow:
+    """Construct a :class:`JointWorkflow` using library defaults only."""
+
+    if use_reweight is None:
+        use_reweight = JOINT_USE_REWEIGHT.get()
+
+    cfg = JointWorkflowConfig(
+        shards_root=Path(shards_root),
+        temperature_ref_K=temperature_ref_K,
+        tau_steps=int(tau_steps),
+        n_clusters=int(n_clusters),
+        use_reweight=bool(use_reweight),
+    )
+    return JointWorkflow(cfg)
+

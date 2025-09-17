@@ -52,6 +52,47 @@ def compute_exchange_statistics(
     }
 
 
+def compute_diffusion_metrics(
+    exchange_history: List[List[int]],
+    exchange_frequency_steps: int,
+    *,
+    spark_max_points: int = 200,
+) -> Dict[str, Any]:
+    """Compute replica index diffusion metrics from exchange history.
+
+    Metrics:
+    - mean_abs_disp_per_sweep: average |Δstate| across replicas per exchange sweep
+    - mean_abs_disp_per_10k_steps: scaled by 10k / exchange_frequency_steps
+    - sparkline: sampled per-sweep average displacements for plotting
+    """
+    if not exchange_history or len(exchange_history) < 2:
+        return {
+            "mean_abs_disp_per_sweep": 0.0,
+            "mean_abs_disp_per_10k_steps": 0.0,
+            "sparkline": [],
+        }
+    # per-sweep mean absolute displacement across replicas
+    per_sweep: List[float] = []
+    for prev, cur in zip(exchange_history[:-1], exchange_history[1:]):
+        a = np.asarray(prev, dtype=int)
+        b = np.asarray(cur, dtype=int)
+        m = float(np.mean(np.abs(b - a)))
+        per_sweep.append(m)
+    mean_per_sweep = float(np.mean(per_sweep)) if per_sweep else 0.0
+    scale = 10000.0 / max(1, int(exchange_frequency_steps))
+    per_10k = mean_per_sweep * scale
+    # Downsample sparkline to at most spark_max_points
+    spark = per_sweep
+    if len(spark) > spark_max_points:
+        idx = np.linspace(0, len(spark) - 1, spark_max_points).astype(int)
+        spark = [float(spark[i]) for i in idx]
+    return {
+        "mean_abs_disp_per_sweep": mean_per_sweep,
+        "mean_abs_disp_per_10k_steps": float(per_10k),
+        "sparkline": [float(x) for x in spark],
+    }
+
+
 def retune_temperature_ladder(
     temperatures: List[float],
     pair_attempt_counts: Dict[tuple[int, int], int],

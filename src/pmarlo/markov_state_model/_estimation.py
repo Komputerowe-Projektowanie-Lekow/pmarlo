@@ -6,8 +6,7 @@ from typing import List, Optional, Protocol, Tuple
 import numpy as np
 from scipy.sparse import csc_matrix, issparse, save_npz
 
-from pmarlo.states.msm_bridge import _row_normalize, _stationary_from_T
-from pmarlo.utils.msm_utils import ensure_connected_counts
+from ._msm_utils import _row_normalize, _stationary_from_T, ensure_connected_counts
 
 
 class _HasEstimationAttrs(Protocol):
