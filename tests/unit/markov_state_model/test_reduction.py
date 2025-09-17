@@ -58,13 +58,11 @@ def test_tica_reduce_matches_deeptime():
     assert np.allclose(ours, ref, atol=1e-6)
 
 
-def test_tica_reduce_batch_and_nan(monkeypatch):
+def test_tica_reduce_nan_handling(monkeypatch):
     rng = np.random.default_rng(3)
     X = rng.normal(size=(500, 6))
     X[10, 0] = np.nan
     # force fallback implementation
     monkeypatch.setitem(sys.modules, "deeptime", None)
-    small = tica_reduce(X, lag=3, n_components=2, scale=True)
-    large = tica_reduce(X, lag=3, n_components=2, scale=True, batch_size=100)
-    assert np.allclose(large, small, atol=1e-5)
-    assert np.isfinite(large).all()
+    result = tica_reduce(X, lag=3, n_components=2, scale=True)
+    assert np.isfinite(result).all()

@@ -11,6 +11,8 @@ import numpy as np
 import torch
 from torch.nn.utils import clip_grad_norm_
 
+from .deeptica.losses import VAMP2Loss
+
 __all__ = ["TrainerConfig", "DeepTICATrainer"]
 
 
@@ -24,7 +26,7 @@ class TrainerConfig:
     weight_decay: float = 0.0
     use_weights: bool = True
     tau_schedule: Tuple[int, ...] = ()
-    grad_clip_norm: Optional[float] = 1.0
+    grad_clip_norm: Optional[float] = 5.0
     log_every: int = 25
     checkpoint_dir: Optional[Path] = None
     checkpoint_metric: str = "vamp2"
@@ -45,6 +47,7 @@ class DeepTICATrainer:
         self.device = torch.device(device_str)
         self.model.net.to(self.device)
         self.model.net.train()
+        self.loss_module = VAMP2Loss().to(self.device)
 
         self.optimizer = torch.optim.AdamW(
             self.model.net.parameters(),
@@ -206,42 +209,8 @@ class DeepTICATrainer:
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         out_t = self.model.net(x_t)
         out_tau = self.model.net(x_tau)
-        score = self._vamp2_score(out_t, out_tau, weights)
-        loss = -score
-        return loss, score.detach()
-
-    def _vamp2_score(
-        self,
-        x_t: torch.Tensor,
-        x_tau: torch.Tensor,
-        weights: torch.Tensor,
-        eps: float = 1e-6,
-    ) -> torch.Tensor:
-        weights = weights.reshape(-1, 1)
-        weights = torch.clamp(weights, min=1e-12)
-        mean_t = torch.sum(x_t * weights, dim=0, keepdim=True)
-        mean_tau = torch.sum(x_tau * weights, dim=0, keepdim=True)
-        x_center = x_t - mean_t
-        y_center = x_tau - mean_tau
-
-        w_sqrt = torch.sqrt(weights)
-        x_weighted = x_center * w_sqrt
-        y_weighted = y_center * w_sqrt
-
-        dim = x_t.shape[1]
-        eye = torch.eye(dim, device=self.device, dtype=torch.float32)
-        C00 = x_weighted.T @ x_weighted + eps * eye
-        Ctt = y_weighted.T @ y_weighted + eps * eye
-        C0tau = x_weighted.T @ y_weighted
-
-        L0 = torch.linalg.cholesky(C00)
-        Lt = torch.linalg.cholesky(Ctt)
-        S = torch.linalg.solve(L0, C0tau)
-        S = torch.linalg.solve(Lt, S.T).T
-
-        svals = torch.linalg.svdvals(S)
-        k = min(int(getattr(self.model.cfg, "n_out", svals.shape[0])), svals.shape[0])
-        return torch.sum((svals[:k]) ** 2)
+        loss, score = self.loss_module(out_t, out_tau, weights)
+        return loss, score
 
     def _record_metrics(self, metrics: Dict[str, float]) -> None:
         self.history.append(metrics)

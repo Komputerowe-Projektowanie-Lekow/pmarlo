@@ -67,7 +67,6 @@ def tica_reduce(
     lag: int = 1,
     n_components: int = 2,
     scale: bool = True,
-    reversible: bool = True,
 ) -> np.ndarray:
     """TICA (Time-lagged Independent Component Analysis) reduction.
 
@@ -81,8 +80,6 @@ def tica_reduce(
         Number of independent components to retain.
     scale : bool
         Whether to standardize features before TICA.
-    reversible : bool
-        Whether to enforce detailed balance (symmetrize covariances).
 
     Returns
     -------
@@ -95,7 +92,7 @@ def tica_reduce(
     try:
         from deeptime.decomposition import TICA
 
-        tica = TICA(lagtime=lag, dim=n_components, reversible=reversible)
+        tica = TICA(lagtime=lag, dim=n_components)
         model = tica.fit(X_prep)
         return model.transform(X_prep)
     except ImportError:
@@ -106,7 +103,7 @@ def tica_reduce(
         import pyemma
 
         tica = pyemma.coordinates.tica(
-            [X_prep], lag=lag, dim=n_components, reversible=reversible
+            [X_prep], lag=lag, dim=n_components
         )
         return tica.get_output()[0]
     except ImportError:
