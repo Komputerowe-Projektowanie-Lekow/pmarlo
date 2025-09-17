@@ -684,7 +684,7 @@ def _build_msm(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
         dtrajs: Any = dataset
         if isinstance(dataset, dict):
             dtrajs = dataset.get("dtrajs")
-        
+
         # If dtrajs are missing or empty, try to create them from continuous CV data
         if not dtrajs or (isinstance(dtrajs, list) and all(d is None for d in dtrajs)):
             if isinstance(dataset, dict) and "X" in dataset:
@@ -693,15 +693,15 @@ def _build_msm(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
                 if isinstance(X, np.ndarray) and X.size > 0:
                     # Import clustering function
                     from ..markov_state_model.clustering import cluster_microstates
-                    
+
                     # Perform clustering to create discrete trajectories
                     clustering = cluster_microstates(
-                        X, 
-                        n_states=opts.n_states, 
+                        X,
+                        n_states=opts.n_states,
                         method="kmeans",
                         random_state=opts.seed
                     )
-                    
+
                     labels = clustering.labels
                     if labels is not None and labels.size > 0:
                         # Split labels back into per-shard trajectories based on shard info
@@ -717,7 +717,7 @@ def _build_msm(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
                         else:
                             # Single trajectory case
                             dtrajs = [labels.astype(np.int32)]
-                        
+
                         logger.info(f"Created {len(dtrajs)} discrete trajectories from clustering")
                     else:
                         logger.warning("Clustering failed to produce labels")
@@ -728,7 +728,7 @@ def _build_msm(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
             else:
                 logger.warning("No dtrajs or continuous data available for MSM building")
                 return None
-        
+
         if isinstance(dtrajs, list):
             clean: List[np.ndarray] = []
             for dt in dtrajs:
