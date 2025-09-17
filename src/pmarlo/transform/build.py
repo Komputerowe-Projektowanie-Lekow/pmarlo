@@ -355,7 +355,7 @@ class BuildResult:
                 return asdict(obj)
             if hasattr(obj, "__dict__"):
                 return obj.__dict__
-            return obj
+            return _sanitize_artifacts(obj)
 
         def _serialize_fes(obj: Any) -> Any:
             from ..markov_state_model.free_energy import FESResult
@@ -368,7 +368,7 @@ class BuildResult:
                     "xedges": _serialize_array(obj.xedges),
                     "yedges": _serialize_array(obj.yedges),
                     "levels_kJmol": _serialize_array(obj.levels_kJmol),
-                    "metadata": obj.metadata,
+                    "metadata": _sanitize_artifacts(obj.metadata),
                 }
             if isinstance(obj, dict):
                 return obj
@@ -393,9 +393,9 @@ class BuildResult:
             "n_shards": self.n_shards,
             "feature_names": self.feature_names,
             "cluster_populations": _serialize_array(self.cluster_populations),
-            "artifacts": self.artifacts,
+            "artifacts": _sanitize_artifacts(self.artifacts),
             "messages": list(self.messages),
-            "flags": dict(self.flags),
+            "flags": _sanitize_artifacts(dict(self.flags)),
         }
 
         return json.dumps(data, sort_keys=True, separators=(",", ":"), allow_nan=False)
@@ -684,8 +684,51 @@ def _build_msm(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
         dtrajs: Any = dataset
         if isinstance(dataset, dict):
             dtrajs = dataset.get("dtrajs")
-        if not dtrajs:
-            return None
+        
+        # If dtrajs are missing or empty, try to create them from continuous CV data
+        if not dtrajs or (isinstance(dtrajs, list) and all(d is None for d in dtrajs)):
+            if isinstance(dataset, dict) and "X" in dataset:
+                logger.info("No discrete trajectories found, clustering continuous CV data for MSM...")
+                X = dataset["X"]
+                if isinstance(X, np.ndarray) and X.size > 0:
+                    # Import clustering function
+                    from ..markov_state_model.clustering import cluster_microstates
+                    
+                    # Perform clustering to create discrete trajectories
+                    clustering = cluster_microstates(
+                        X, 
+                        n_states=opts.n_states, 
+                        method="kmeans",
+                        random_state=opts.seed
+                    )
+                    
+                    labels = clustering.labels
+                    if labels is not None and labels.size > 0:
+                        # Split labels back into per-shard trajectories based on shard info
+                        shards_info = dataset.get("__shards__", [])
+                        if shards_info:
+                            dtrajs = []
+                            for shard_info in shards_info:
+                                start = int(shard_info.get("start", 0))
+                                stop = int(shard_info.get("stop", start))
+                                if stop > start:
+                                    shard_labels = labels[start:stop]
+                                    dtrajs.append(shard_labels.astype(np.int32))
+                        else:
+                            # Single trajectory case
+                            dtrajs = [labels.astype(np.int32)]
+                        
+                        logger.info(f"Created {len(dtrajs)} discrete trajectories from clustering")
+                    else:
+                        logger.warning("Clustering failed to produce labels")
+                        return None
+                else:
+                    logger.warning("No continuous CV data available for clustering")
+                    return None
+            else:
+                logger.warning("No dtrajs or continuous data available for MSM building")
+                return None
+        
         if isinstance(dtrajs, list):
             clean: List[np.ndarray] = []
             for dt in dtrajs:

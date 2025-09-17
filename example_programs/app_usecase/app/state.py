@@ -129,3 +129,31 @@ class StateManager:
             "builds": len(self._data.get("builds", [])),
         }
 
+    # ------------------------------------------------------------------
+    # Delete helpers
+    # ------------------------------------------------------------------
+    def _remove_entry(self, key: str, index: int) -> Dict[str, Any] | None:
+        """Remove entry at index from the specified list and return it."""
+        bucket = self._data.get(key, [])
+        if 0 <= index < len(bucket):
+            removed = bucket.pop(index)
+            self.save()
+            return removed
+        return None
+
+    def remove_run(self, index: int) -> Dict[str, Any] | None:
+        """Remove a run entry by index."""
+        return self._remove_entry("runs", index)
+
+    def remove_shards(self, index: int) -> Dict[str, Any] | None:
+        """Remove a shards entry by index."""
+        return self._remove_entry("shards", index)
+
+    def remove_model(self, index: int) -> Dict[str, Any] | None:
+        """Remove a model entry by index."""
+        return self._remove_entry("models", index)
+
+    def remove_build(self, index: int) -> Dict[str, Any] | None:
+        """Remove a build entry by index."""
+        return self._remove_entry("builds", index)
+

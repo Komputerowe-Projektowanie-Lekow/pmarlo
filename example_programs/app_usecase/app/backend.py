@@ -22,11 +22,12 @@ while keeping the logic reusable for non-UI automation in the future.
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+import shutil
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from pmarlo.api import build_from_shards, emit_shards_rg_rmsd, run_replica_exchange
 from pmarlo.data.shard import read_shard
-from pmarlo.transform.build import BuildResult
+from pmarlo.transform.build import BuildResult, _sanitize_artifacts
 
 try:  # Package-relative when imported as module
     from .state import StateManager
@@ -49,6 +50,8 @@ __all__ = [
     "BuildConfig",
     "BuildArtifact",
     "WorkflowBackend",
+    "choose_sim_seed",
+    "run_short_sim",
 ]
 
 
@@ -66,6 +69,54 @@ def _slugify(label: Optional[str]) -> Optional[str]:
     safe = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in str(label))
     safe = safe.strip("_").lower()
     return safe or None
+
+
+def choose_sim_seed(mode: str, *, fixed: Optional[int] = None) -> Optional[int]:
+    """Choose simulation seed based on mode."""
+    import random
+    
+    if mode == "none":
+        return None
+    elif mode == "fixed":
+        return fixed
+    elif mode == "auto":
+        return random.randint(1, 1000000)
+    else:
+        raise ValueError(f"Unknown seed mode: {mode}")
+
+
+def run_short_sim(
+    pdb_path: Path,
+    workspace: Path,
+    temperatures: Sequence[float],
+    *,
+    steps: int = 1000,
+    quick: bool = True,
+    random_seed: Optional[int] = None,
+) -> "SimulationResult":
+    """Run a short simulation for testing purposes."""
+    layout = WorkspaceLayout(
+        app_root=workspace,
+        inputs_dir=workspace / "inputs",
+        workspace_dir=workspace / "output",
+        sims_dir=workspace / "output" / "sims",
+        shards_dir=workspace / "output" / "shards",
+        models_dir=workspace / "output" / "models",
+        bundles_dir=workspace / "output" / "bundles",
+        logs_dir=workspace / "output" / "logs",
+        state_path=workspace / "output" / "state.json",
+    )
+    layout.ensure()
+    
+    backend = WorkflowBackend(layout)
+    config = SimulationConfig(
+        pdb_path=pdb_path,
+        temperatures=temperatures,
+        steps=steps,
+        quick=quick,
+        random_seed=random_seed,
+    )
+    return backend.run_sampling(config)
 
 
 @dataclass(frozen=True)
@@ -381,7 +432,7 @@ class WorkflowBackend:
                 "seed": int(config.seed),
                 "temperature": float(config.temperature),
                 "created_at": stamp,
-                "metrics": br.artifacts.get("mlcv_deeptica", {}),
+                "metrics": _sanitize_artifacts(br.artifacts.get("mlcv_deeptica", {})),
             }
         )
         return result
@@ -427,8 +478,8 @@ class WorkflowBackend:
                 "temperature": float(config.temperature),
                 "learn_cv": bool(config.learn_cv),
                 "created_at": stamp,
-                "flags": br.flags,
-                "mlcv": br.artifacts.get("mlcv_deeptica", {}),
+                "flags": _sanitize_artifacts(br.flags),
+                "mlcv": _sanitize_artifacts(br.artifacts.get("mlcv_deeptica", {})),
             }
         )
         return artifact
@@ -500,3 +551,103 @@ class WorkflowBackend:
             steps=steps,
             created_at=created_at,
         )
+
+    # ------------------------------------------------------------------
+    # Asset deletion methods
+    # ------------------------------------------------------------------
+    def delete_simulation(self, index: int) -> bool:
+        """Delete a simulation run and its associated files."""
+        entry = self.state.remove_run(index)
+        if entry is None:
+            return False
+        
+        try:
+            # Delete simulation directory
+            run_dir = Path(entry.get("run_dir", ""))
+            if run_dir.exists() and run_dir.is_dir():
+                shutil.rmtree(run_dir)
+            
+            # Also remove any associated shards
+            run_id = entry.get("run_id", "")
+            if run_id:
+                # Find and remove associated shard entries
+                shards_to_remove = []
+                for i, shard_entry in enumerate(self.state.shards):
+                    if shard_entry.get("run_id") == run_id:
+                        shards_to_remove.append(i)
+                
+                # Remove in reverse order to maintain indices
+                for i in reversed(shards_to_remove):
+                    self.delete_shard_batch(i)
+            
+            return True
+        except Exception:
+            return False
+
+    def delete_shard_batch(self, index: int) -> bool:
+        """Delete a shard batch and its associated files."""
+        entry = self.state.remove_shards(index)
+        if entry is None:
+            return False
+        
+        try:
+            # Delete individual shard files
+            paths = entry.get("paths", [])
+            for path_str in paths:
+                path = Path(path_str)
+                if path.exists():
+                    path.unlink()  # Delete the .json file
+                    # Also delete associated .npz file
+                    npz_path = path.with_suffix('.npz')
+                    if npz_path.exists():
+                        npz_path.unlink()
+            
+            # Delete shard directory if empty
+            directory = Path(entry.get("directory", ""))
+            if directory.exists() and directory.is_dir():
+                try:
+                    directory.rmdir()  # Only removes if empty
+                except OSError:
+                    pass  # Directory not empty, that's OK
+            
+            return True
+        except Exception:
+            return False
+
+    def delete_model(self, index: int) -> bool:
+        """Delete a model and its associated files."""
+        entry = self.state.remove_model(index)
+        if entry is None:
+            return False
+        
+        try:
+            # Delete model bundle file and associated files
+            bundle_path = Path(entry.get("bundle", ""))
+            if bundle_path.exists():
+                base_name = bundle_path.stem
+                model_dir = bundle_path.parent
+                
+                # Find and delete related files (history, json, pt files)
+                for file_path in model_dir.glob(f"{base_name}.*"):
+                    if file_path.is_file():
+                        file_path.unlink()
+            
+            return True
+        except Exception:
+            return False
+
+    def delete_analysis_bundle(self, index: int) -> bool:
+        """Delete an analysis bundle and its associated files."""
+        entry = self.state.remove_build(index)
+        if entry is None:
+            return False
+        
+        try:
+            # Delete bundle file
+            bundle_path = Path(entry.get("bundle", ""))
+            if bundle_path.exists():
+                bundle_path.unlink()
+            
+            return True
+        except Exception:
+            return False
