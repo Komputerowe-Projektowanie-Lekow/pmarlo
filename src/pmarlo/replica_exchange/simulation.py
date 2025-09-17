@@ -1,5 +1,5 @@
-# Copyright (c) 2025 PMARLO Development Team
 # SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2025 PMARLO Development Team
 
 """
 Simulation module for PMARLO.
@@ -9,6 +9,7 @@ system preparation.
 """
 
 from collections import defaultdict
+from typing import Optional
 
 import mdtraj as md
 import numpy as np
@@ -18,6 +19,7 @@ import openmm.unit as unit
 from openmm.app.metadynamics import BiasVariable, Metadynamics
 
 from pmarlo import api
+from .bias_hook import BiasHook
 
 # Compatibility shim for OpenMM XML deserialization API changes
 if not hasattr(openmm.XmlSerializer, "load"):
@@ -83,6 +85,7 @@ class Simulation:
         # Metadynamics setup
         self.metadynamics = None
         self.bias_variables = []
+        self.bias_hook: Optional[BiasHook] = None
 
     def prepare_system(self, forcefield_files=None, water_model="tip3p"):
         """
@@ -292,7 +295,7 @@ class Simulation:
         print("Equilibration complete.")
         return self
 
-    def production_run(self, steps=100000, report_interval=1000, save_trajectory=True):
+    def production_run(self, steps=100000, report_interval=1000, save_trajectory=True, bias_hook: Optional[BiasHook] = None):
         """
         Run production molecular dynamics simulation.
 
@@ -304,6 +307,8 @@ class Simulation:
             Frequency of trajectory and energy reporting (default: 1000)
         save_trajectory : bool, optional
             Whether to save trajectory to file (default: True)
+        bias_hook : BiasHook | None, optional
+            If provided, bias_hook(cv_values) must return per-frame bias potentials in CV space.
 
         Returns
         -------
@@ -314,6 +319,7 @@ class Simulation:
             raise RuntimeError("System not equilibrated. Call equilibrate() first.")
 
         print(f"Running production simulation for {steps} steps...")
+        self.bias_hook = bias_hook
 
         # Clear previous reporters
         self.simulation.reporters.clear()
@@ -625,7 +631,7 @@ def prepare_system(pdb_file, forcefield_files=None, water_model="tip3p"):
     return sim
 
 
-def production_run(sim, steps=100000, report_interval=1000):
+def production_run(sim, steps=100000, report_interval=1000, bias_hook: Optional[BiasHook] = None):
     """
     Run a production simulation.
 
@@ -637,13 +643,15 @@ def production_run(sim, steps=100000, report_interval=1000):
         Number of simulation steps
     report_interval : int, optional
         Reporting frequency
+    bias_hook : BiasHook | None, optional
+        If provided, bias_hook(cv_values) must return per-frame bias potentials in CV space.
 
     Returns
     -------
     Simulation
         Simulation object after production run
     """
-    return sim.production_run(steps, report_interval)
+    return sim.production_run(steps=steps, report_interval=report_interval, bias_hook=bias_hook)
 
 
 def feature_extraction(sim, feature_specs=None):
@@ -767,3 +775,20 @@ def plot_DG(features, save_path=None):
     except ImportError:
         print("Warning: matplotlib not available for plotting")
         return None
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

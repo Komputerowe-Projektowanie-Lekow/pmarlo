@@ -3,7 +3,7 @@ import sys
 import numpy as np
 import pytest
 
-from pmarlo.reduce.reducers import pca_reduce, tica_reduce
+from pmarlo.markov_state_model.reduction import pca_reduce, tica_reduce
 
 
 def test_pca_reduce_matches_sklearn():

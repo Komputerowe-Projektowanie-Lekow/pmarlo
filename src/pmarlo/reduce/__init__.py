@@ -1,28 +1,17 @@
-"""Dimensionality reduction utilities (PCA, TICA, VAMP).
+"""Compatibility shim for legacy ``pmarlo.reduce`` imports."""
 
-.. deprecated::
-   This module has been moved. Use :mod:`pmarlo.markov_state_model.reduction` for
-   reduction functionality. This compatibility shim will be removed in a future release.
-"""
+from __future__ import annotations
 
+import sys
+import types
 import warnings
 
-# Re-export from new location with deprecation warnings
-from ..markov_state_model.reduction import (  # noqa: F401
+from ..markov_state_model.reduction import (
     get_available_methods,
     pca_reduce,
     reduce_features,
     tica_reduce,
     vamp_reduce,
-)
-
-# Issue deprecation warning when this module is imported
-warnings.warn(
-    "pmarlo.reduce is deprecated. Use pmarlo.markov_state_model.reduction "
-    "for reduction functionality. This compatibility shim will be "
-    "removed in a future release.",
-    DeprecationWarning,
-    stacklevel=2,
 )
 
 __all__ = [
@@ -32,3 +21,30 @@ __all__ = [
     "reduce_features",
     "get_available_methods",
 ]
+
+warnings.warn(
+    "`pmarlo.reduce` is deprecated and will be removed in a future release. "
+    "Import from `pmarlo.markov_state_model.reduction` instead.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
+_NAMES = tuple(__all__)
+
+class _ReducersModule(types.ModuleType):
+    __all__ = list(_NAMES)
+
+    def __getattr__(self, name: str):
+        if name in _NAMES:
+            warnings.warn(
+                "`pmarlo.reduce.reducers` is deprecated; use "
+                "`pmarlo.markov_state_model.reduction`.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            value = globals()[name]
+            setattr(self, name, value)
+            return value
+        raise AttributeError(name)
+
+sys.modules.setdefault("pmarlo.reduce.reducers", _ReducersModule("pmarlo.reduce.reducers"))
