@@ -154,6 +154,12 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
             else None
         ),
     }
+    
+    # Include full curves if available (will be sanitized during JSON serialization)
+    if isinstance(history.get("loss_curve"), list) and history.get("loss_curve"):
+        summary["loss_curve"] = history["loss_curve"]
+    if isinstance(history.get("objective_curve"), list) and history.get("objective_curve"):
+        summary["objective_curve"] = history["objective_curve"]
 
     model_dir = params.get("model_dir")
     saved_prefix = None

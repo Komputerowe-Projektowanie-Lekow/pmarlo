@@ -18,6 +18,7 @@ try:  # Prefer package-relative imports when launched via `streamlit run -m`
         WorkspaceLayout,
     )
     from .plots import plot_fes, plot_msm
+    from pmarlo.transform.build import _sanitize_artifacts
 except ImportError:  # Fallback for `streamlit run app.py`
     import sys
 
@@ -35,6 +36,7 @@ except ImportError:  # Fallback for `streamlit run app.py`
         WorkspaceLayout,
     )
     from plots import plot_fes, plot_msm  # type: ignore
+    from pmarlo.transform.build import _sanitize_artifacts
 
 
 # Keys used inside st.session_state
@@ -426,7 +428,7 @@ def main() -> None:
                     summary = result.build_result.artifacts.get("mlcv_deeptica") if result.build_result else None
                     if summary:
                         st.caption("Deep-TICA summary")
-                        st.json(summary)
+                        st.json(_sanitize_artifacts(summary))
                 except Exception as exc:
                     st.error(f"Training failed: {exc}")
 
@@ -517,18 +519,88 @@ def main() -> None:
 
     with tab_assets:
         st.header("Recorded assets")
-        runs_df = pd.DataFrame(backend.state.runs)
-        shards_df = pd.DataFrame(backend.state.shards)
-        models_df = pd.DataFrame(backend.list_models())
-        builds_df = pd.DataFrame(backend.list_builds())
+        
+        # Simulations section
         st.subheader("Simulations")
-        st.dataframe(runs_df if not runs_df.empty else pd.DataFrame({}), width="stretch")
+        runs = backend.state.runs
+        if runs:
+            for i, run in enumerate(runs):
+                col1, col2 = st.columns([8, 1])
+                with col1:
+                    st.write(f"**{run.get('run_id', 'Unknown')}** - {run.get('steps', 0)} steps - {run.get('created_at', 'Unknown date')}")
+                    st.caption(f"Temperatures: {run.get('temperatures', [])} K")
+                with col2:
+                    if st.button("❌", key=f"delete_run_{i}", help="Delete this simulation"):
+                        if backend.delete_simulation(i):
+                            st.success(f"Deleted simulation {run.get('run_id', 'Unknown')}")
+                            st.rerun()
+                        else:
+                            st.error("Failed to delete simulation")
+                st.divider()
+        else:
+            st.info("No simulations recorded yet.")
+        
+        # Shard batches section  
         st.subheader("Shard batches")
-        st.dataframe(shards_df if not shards_df.empty else pd.DataFrame({}), width="stretch")
-        st.subheader("Models")
-        st.dataframe(models_df if not models_df.empty else pd.DataFrame({}), width="stretch")
+        shards = backend.state.shards
+        if shards:
+            for i, shard in enumerate(shards):
+                col1, col2 = st.columns([8, 1])
+                with col1:
+                    st.write(f"**{shard.get('run_id', 'Unknown')}** - {shard.get('n_shards', 0)} shards ({shard.get('n_frames', 0)} frames)")
+                    st.caption(f"Temperature: {shard.get('temperature', 0)} K, Stride: {shard.get('stride', 0)} - {shard.get('created_at', 'Unknown date')}")
+                with col2:
+                    if st.button("❌", key=f"delete_shard_{i}", help="Delete this shard batch"):
+                        if backend.delete_shard_batch(i):
+                            st.success(f"Deleted shard batch from {shard.get('run_id', 'Unknown')}")
+                            st.rerun()
+                        else:
+                            st.error("Failed to delete shard batch")
+                st.divider()
+        else:
+            st.info("No shard batches recorded yet.")
+        
+        # Models section
+        st.subheader("Models") 
+        models = backend.list_models()
+        if models:
+            for i, model in enumerate(models):
+                col1, col2 = st.columns([8, 1])
+                with col1:
+                    bundle_name = Path(model.get('bundle', '')).name
+                    st.write(f"**{bundle_name}** - Lag: {model.get('lag', 0)}, Temperature: {model.get('temperature', 0)} K")
+                    st.caption(f"Bins: Rg={model.get('bins', {}).get('Rg', 0)}, RMSD={model.get('bins', {}).get('RMSD_ref', 0)} - {model.get('created_at', 'Unknown date')}")
+                with col2:
+                    if st.button("❌", key=f"delete_model_{i}", help="Delete this model"):
+                        if backend.delete_model(i):
+                            st.success(f"Deleted model {bundle_name}")
+                            st.rerun()
+                        else:
+                            st.error("Failed to delete model")
+                st.divider()
+        else:
+            st.info("No models recorded yet.")
+        
+        # Analysis bundles section
         st.subheader("Analysis bundles")
-        st.dataframe(builds_df if not builds_df.empty else pd.DataFrame({}), width="stretch")
+        builds = backend.list_builds()
+        if builds:
+            for i, build in enumerate(builds):
+                col1, col2 = st.columns([8, 1])
+                with col1:
+                    bundle_name = Path(build.get('bundle', '')).name
+                    st.write(f"**{bundle_name}** - Lag: {build.get('lag', 0)}, Temperature: {build.get('temperature', 0)} K")
+                    st.caption(f"Learn CV: {build.get('learn_cv', False)} - {build.get('created_at', 'Unknown date')}")
+                with col2:
+                    if st.button("❌", key=f"delete_build_{i}", help="Delete this analysis bundle"):
+                        if backend.delete_analysis_bundle(i):
+                            st.success(f"Deleted analysis bundle {bundle_name}")
+                            st.rerun()
+                        else:
+                            st.error("Failed to delete analysis bundle")
+                st.divider()
+        else:
+            st.info("No analysis bundles recorded yet.")
 
     st.caption("Run this app with: poetry run streamlit run example_programs/app_usecase/app/app.py")
 
