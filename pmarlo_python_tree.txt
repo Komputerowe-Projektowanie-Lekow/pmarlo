@@ -1,0 +1,117 @@
+├── __init__.py
+├── _typing.py
+├── _version.py
+├── api.py
+├── config.py
+├── data
+│   ├── aggregate.py
+│   ├── demux_dataset.py
+│   ├── emit.py
+│   ├── shard.py
+│   ├── shard_io.py
+│   └── shard_schema.py
+├── demultiplexing
+│   ├── __init__.py
+│   ├── _arch_notes.py
+│   ├── demux.py
+│   ├── demux_engine.py
+│   ├── demux_hints.py
+│   ├── demux_metadata.py
+│   └── demux_plan.py
+├── experiments
+│   ├── __init__.py
+│   ├── benchmark_utils.py
+│   ├── cli.py
+│   ├── kpi.py
+│   ├── msm.py
+│   ├── replica_exchange.py
+│   ├── simulation.py
+│   ├── suite.py
+│   └── utils.py
+├── features
+│   ├── __init__.py
+│   ├── base.py
+│   ├── builtins.py
+│   ├── collective_variables.py
+│   ├── data_loaders.py
+│   ├── deeptica.py
+│   ├── diagnostics.py
+│   ├── pairs.py
+│   └── ramachandran.py
+├── io
+│   ├── __init__.py
+│   ├── catalog.py
+│   ├── export.py
+│   ├── shard_id.py
+│   ├── shards.py
+│   ├── trajectory.py
+│   ├── trajectory_reader.py
+│   └── trajectory_writer.py
+├── main.py
+├── markov_state_model
+│   ├── __init__.py
+│   ├── _base.py
+│   ├── _ck.py
+│   ├── _clustering.py
+│   ├── _estimation.py
+│   ├── _export.py
+│   ├── _features.py
+│   ├── _fes.py
+│   ├── _its.py
+│   ├── _loading.py
+│   ├── _msm_utils.py
+│   ├── _plots.py
+│   ├── _states.py
+│   ├── _tica.py
+│   ├── _tram.py
+│   ├── bridge.py
+│   ├── ck_runner.py
+│   ├── clustering.py
+│   ├── enhanced_msm.py
+│   ├── free_energy.py
+│   ├── picker.py
+│   ├── pipeline.py
+│   ├── reduction.py
+│   ├── results.py
+│   └── utils.py
+├── protein
+│   ├── __init__.py
+│   └── protein.py
+├── reduce
+│   ├── __init__.py
+│   └── reducers.py
+├── replica_exchange
+│   ├── __init__.py
+│   ├── config.py
+│   ├── demux_compat.py
+│   ├── diagnostics.py
+│   ├── exchange_engine.py
+│   ├── platform_selector.py
+│   ├── replica_exchange.py
+│   ├── simulation.py
+│   ├── system_builder.py
+│   └── trajectory.py
+├── reporting
+│   ├── __init__.py
+│   ├── export.py
+│   └── plots.py
+├── transform
+│   ├── __init__.py
+│   ├── apply.py
+│   ├── build.py
+│   ├── pipeline.py
+│   ├── plan.py
+│   ├── planner.py
+│   ├── progress.py
+│   └── runner.py
+├── utils
+│   ├── __init__.py
+│   ├── cleanup.py
+│   ├── errors.py
+│   ├── integrator.py
+│   ├── msm_utils.py
+│   ├── naming.py
+│   ├── replica_utils.py
+│   └── seed.py
+└── workflow
+    └── validation.py

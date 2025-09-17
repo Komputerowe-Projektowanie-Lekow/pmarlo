@@ -59,7 +59,7 @@ Combine `--focus` with `--testmon` whenever you want to zero in on a subset of p
 ## Quickstart
 
 ```python
-from pmarlo.pipeline import run_pmarlo
+from pmarlo.transform.pipeline import run_pmarlo
 
 results = run_pmarlo(
     pdb_file="protein.pdb",
@@ -218,6 +218,3 @@ Events overview:
 [stars-url]: https://github.com/Komputerowe-Projektowanie-Lekow/pmarlo
 [license-image]: https://img.shields.io/pypi/l/pmarlo
 [license-url]: https://github.com/Komputerowe-Projektowanie-Lekow/pmarlo/blob/main/LICENSE
-
-
-

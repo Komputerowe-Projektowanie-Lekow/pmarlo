@@ -416,7 +416,7 @@ class ITSMixin:
         rate_means: List[List[float]],
         rate_ci: List[List[List[float]]],
     ):
-        from pmarlo.results import ITSResult
+        from pmarlo.markov_state_model.results import ITSResult
 
         return ITSResult(
             lag_times=np.asarray(lag_times, dtype=int),
@@ -491,7 +491,7 @@ class ITSMixin:
             _logging.getLogger("pmarlo").warning(
                 "No trajectories available for implied timescales"
             )
-            from pmarlo.results import ITSResult
+            from pmarlo.markov_state_model.results import ITSResult
 
             empty = ITSResult(
                 lag_times=np.array([], dtype=int),
@@ -510,7 +510,7 @@ class ITSMixin:
             _logging.getLogger("pmarlo").warning(
                 "Trajectories too short for implied timescales"
             )
-            from pmarlo.results import ITSResult
+            from pmarlo.markov_state_model.results import ITSResult
 
             empty = ITSResult(
                 lag_times=np.array([], dtype=int),
@@ -532,7 +532,7 @@ class ITSMixin:
         lag_times = [lt for lt in original_lag_times if 1 <= lt <= max_valid_lag]
         if not lag_times:
             _logging.getLogger("pmarlo").warning("No valid lag times after capping")
-            from pmarlo.results import ITSResult
+            from pmarlo.markov_state_model.results import ITSResult
 
             empty = ITSResult(
                 lag_times=np.array([], dtype=int),

@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from pmarlo.results import FESResult
+from pmarlo.markov_state_model.free_energy import FESResult
 
 
 def test_result_roundtrip(tmp_path: Path) -> None:
