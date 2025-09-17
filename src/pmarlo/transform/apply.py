@@ -141,6 +141,12 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
         "n_out": n_out,
         "pairs_total": int(idx_t.shape[0]),
         "wall_time_s": float(history.get("wall_time_s", 0.0)),
+        "initial_objective": (
+            float(history.get("initial_objective"))
+            if history.get("initial_objective") is not None
+            else None
+        ),
+        "output_variance": history.get("output_variance"),
         "loss_curve_last": (
             float(history["loss_curve"][-1])
             if isinstance(history.get("loss_curve"), list)
@@ -153,6 +159,42 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
             and history.get("objective_curve")
             else None
         ),
+        "val_score_last": (
+            float(history["val_score_curve"][-1])
+            if isinstance(history.get("val_score_curve"), list)
+            and history.get("val_score_curve")
+            else None
+        ),
+        "var_z0_last": (
+            history.get("var_z0_curve", [None])[-1]
+            if isinstance(history.get("var_z0_curve"), list)
+            and history.get("var_z0_curve")
+            else None
+        ),
+        "var_zt_last": (
+            history.get("var_zt_curve", [None])[-1]
+            if isinstance(history.get("var_zt_curve"), list)
+            and history.get("var_zt_curve")
+            else None
+        ),
+        "cond_c00_last": (
+            float(history.get("cond_c00_curve", [None])[-1])
+            if isinstance(history.get("cond_c00_curve"), list)
+            and history.get("cond_c00_curve")
+            else None
+        ),
+        "cond_ctt_last": (
+            float(history.get("cond_ctt_curve", [None])[-1])
+            if isinstance(history.get("cond_ctt_curve"), list)
+            and history.get("cond_ctt_curve")
+            else None
+        ),
+        "grad_norm_last": (
+            float(history.get("grad_norm_curve", [None])[-1])
+            if isinstance(history.get("grad_norm_curve"), list)
+            and history.get("grad_norm_curve")
+            else None
+        ),
     }
 
     # Include full curves if available (will be sanitized during JSON serialization)
@@ -160,6 +202,20 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
         summary["loss_curve"] = history["loss_curve"]
     if isinstance(history.get("objective_curve"), list) and history.get("objective_curve"):
         summary["objective_curve"] = history["objective_curve"]
+    if isinstance(history.get("val_score_curve"), list) and history.get("val_score_curve"):
+        summary["val_score_curve"] = history["val_score_curve"]
+    if isinstance(history.get("var_z0_curve"), list) and history.get("var_z0_curve"):
+        summary["var_z0_curve"] = history["var_z0_curve"]
+    if isinstance(history.get("var_zt_curve"), list) and history.get("var_zt_curve"):
+        summary["var_zt_curve"] = history["var_zt_curve"]
+    if isinstance(history.get("cond_c00_curve"), list) and history.get("cond_c00_curve"):
+        summary["cond_c00_curve"] = history["cond_c00_curve"]
+    if isinstance(history.get("cond_ctt_curve"), list) and history.get("cond_ctt_curve"):
+        summary["cond_ctt_curve"] = history["cond_ctt_curve"]
+    if isinstance(history.get("grad_norm_curve"), list) and history.get("grad_norm_curve"):
+        summary["grad_norm_curve"] = history["grad_norm_curve"]
+    if isinstance(history.get("val_score"), list) and history.get("val_score"):
+        summary["val_score"] = history["val_score"]
 
     model_dir = params.get("model_dir")
     saved_prefix = None

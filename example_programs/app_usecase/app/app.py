@@ -428,7 +428,36 @@ def main() -> None:
                     summary = result.build_result.artifacts.get("mlcv_deeptica") if result.build_result else None
                     if summary:
                         st.caption("Deep-TICA summary")
-                        st.json(_sanitize_artifacts(summary))
+                        summary = _sanitize_artifacts(summary)
+                        st.json(summary)
+                        with st.expander("Training diagnostics", expanded=False):
+                            epochs = list(range(1, len(summary.get("val_score_curve", [])) + 1))
+                            if epochs:
+                                df_score = pd.DataFrame({"val_score": summary.get("val_score_curve", [])}, index=epochs)
+                                st.line_chart(df_score, height=200)
+                            var_z0 = summary.get("var_z0_curve") or []
+                            if var_z0:
+                                df_var_z0 = pd.DataFrame(var_z0)
+                                df_var_z0.index = list(range(1, len(df_var_z0) + 1))
+                                df_var_z0.columns = [f"z0_{i+1}" for i in range(df_var_z0.shape[1])]
+                                st.line_chart(df_var_z0, height=200)
+                            var_zt = summary.get("var_zt_curve") or []
+                            if var_zt:
+                                df_var_zt = pd.DataFrame(var_zt)
+                                df_var_zt.index = list(range(1, len(df_var_zt) + 1))
+                                df_var_zt.columns = [f"zt_{i+1}" for i in range(df_var_zt.shape[1])]
+                                st.line_chart(df_var_zt, height=200)
+                            cond_data = {}
+                            if summary.get("cond_c00_curve"):
+                                cond_data["cond_C00"] = summary.get("cond_c00_curve")
+                            if summary.get("cond_ctt_curve"):
+                                cond_data["cond_Ctt"] = summary.get("cond_ctt_curve")
+                            if cond_data:
+                                df_cond = pd.DataFrame(cond_data)
+                                st.line_chart(df_cond, height=200)
+                            if summary.get("grad_norm_curve"):
+                                df_grad = pd.DataFrame({"grad_norm": summary.get("grad_norm_curve")})
+                                st.line_chart(df_grad, height=200)
                 except Exception as exc:
                     st.error(f"Training failed: {exc}")
 
