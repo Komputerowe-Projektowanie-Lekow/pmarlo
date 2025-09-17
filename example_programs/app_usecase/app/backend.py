@@ -1,440 +1,653 @@
 from __future__ import annotations
 
-"""Backend orchestration for the PMARLO sharded app.
+"""Backend utilities powering the Streamlit joint-learning demo.
 
-Functions:
-- run_short_sim: launch short REMD and return trajectory files
-- extractor_factory: build a CV extractor for Rg + RMSD to a reference
-- emit_from_trajs: write shards using pmarlo.data.emit
-- aggregate_and_build_bundle: aggregate shards and build a bundle
-- recompute_msm_from_shards: discretize globally and estimate MSM (for UI)
+The previous iteration of the app mixed UI callbacks, shard bookkeeping, and
+engine calls in a single ~900 line module. This rewrite keeps the backend
+focused on three responsibilities:
+
+1. manage the on-disk workspace layout (sims -> shards -> models -> bundles)
+2. provide thin orchestration wrappers around the high-level
+   :mod:`pmarlo.api` helpers that already implement REMD, shard emission, and
+   MSM/FES builds
+3. persist lightweight manifest entries so the UI can remain mostly stateless
+
+The goal is to make it straightforward to express the interactive workflow::
+
+    sample -> emit shards -> train CV model -> enrich dataset -> build MSM/FES
+
+while keeping the logic reusable for non-UI automation in the future.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+import shutil
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-import numpy as np
-
-from pmarlo.api import (
-    run_replica_exchange,
-    emit_shards_rg_rmsd as api_emit_rg_rmsd,
-    build_from_shards as api_build_from_shards,
-)
+from pmarlo.api import build_from_shards, emit_shards_rg_rmsd, run_replica_exchange
 from pmarlo.data.shard import read_shard
-from pmarlo.engine.build import BuildResult
-from pmarlo.states.msm_bridge import build_simple_msm
-from pmarlo.progress import console_progress_cb, tee_progress
+from pmarlo.transform.build import BuildResult, _sanitize_artifacts
+
+try:  # Package-relative when imported as module
+    from .state import StateManager
+except ImportError:  # Fallback for direct script import
+    import sys
+
+    _APP_DIR = Path(__file__).resolve().parent
+    if str(_APP_DIR) not in sys.path:
+        sys.path.insert(0, str(_APP_DIR))
+    from state import StateManager  # type: ignore
+
+__all__ = [
+    "WorkspaceLayout",
+    "SimulationConfig",
+    "SimulationResult",
+    "ShardRequest",
+    "ShardResult",
+    "TrainingConfig",
+    "TrainingResult",
+    "BuildConfig",
+    "BuildArtifact",
+    "WorkflowBackend",
+    "choose_sim_seed",
+    "run_short_sim",
+]
 
 
-# Module-level hook to allow chunk-level extract logging from emit calls
-_EXTRACT_CB: Optional[Callable[[str, Dict[str, Any]], None]] = None
-
-@dataclass
-class SimResult:
-    traj_files: List[Path]
-    analysis_temperatures: List[float]
-    run_dir: Path
-
-
-def _now_stamp() -> str:
+def _timestamp() -> str:
     return datetime.now().strftime("%Y%m%d-%H%M%S")
 
 
-def _write_log(workspace: Path, name: str, payload: Dict[str, Any]) -> Path:
-    logs = Path(workspace) / "logs"
-    logs.mkdir(parents=True, exist_ok=True)
-    p = logs / f"{name}.json"
-    import json
-
-    p.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")))
-    return p
+def _coerce_path_list(paths: Iterable[str | Path]) -> List[Path]:
+    return [Path(p).resolve() for p in paths]
 
 
-def _progress_logger(workspace: Path, stem: str) -> Tuple[Callable[[str, Dict[str, Any]], None], Path]:
-    """Return a progress_callback that appends NDJSON lines to logs/<stem>.log."""
-    logs = Path(workspace) / "logs"
-    logs.mkdir(parents=True, exist_ok=True)
-    out = logs / f"{stem}.log"
+def _slugify(label: Optional[str]) -> Optional[str]:
+    if not label:
+        return None
+    safe = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in str(label))
+    safe = safe.strip("_").lower()
+    return safe or None
 
-    def cb(event: str, payload: Dict[str, Any]) -> None:  # ProgressCB signature compatible
-        try:
-            import json, time
 
-            rec = {"t": datetime.now().isoformat(timespec="seconds"), "event": event, "data": dict(payload)}
-            with open(out, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(rec, sort_keys=True, separators=(",", ":")) + "\n")
-        except Exception:
-            pass
-
-    return cb, out
+def choose_sim_seed(mode: str, *, fixed: Optional[int] = None) -> Optional[int]:
+    """Choose simulation seed based on mode."""
+    import random
+    
+    if mode == "none":
+        return None
+    elif mode == "fixed":
+        return fixed
+    elif mode == "auto":
+        return random.randint(1, 1000000)
+    else:
+        raise ValueError(f"Unknown seed mode: {mode}")
 
 
 def run_short_sim(
-    pdb: Path,
-    base_out: Path,
-    temperatures: List[float],
-    steps: int,
+    pdb_path: Path,
+    workspace: Path,
+    temperatures: Sequence[float],
     *,
+    steps: int = 1000,
     quick: bool = True,
-) -> SimResult:
-    """Run a short REMD and return trajectory info.
-
-    Uses pmarlo.api.run_replica_exchange to perform the simulation.
-    """
-    base_out = Path(base_out)
-    run_dir = base_out / "sims" / f"run-{_now_stamp()}"
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    # progress log for simulation
-    sim_cb, sim_log = _progress_logger(base_out, f"sim-{_now_stamp()}")
-    sim_console = console_progress_cb()
-    sim_cb_tee = tee_progress(sim_cb, sim_console)
-
-    # Best-effort disk space check (warn in logs)
-    try:
-        import shutil
-
-        free_gb = shutil.disk_usage(str(base_out)).free / (1024 ** 3)
-        if free_gb < 1.0:
-            _write_log(base_out, f"warn-{_now_stamp()}", {"low_disk_gb": round(free_gb, 3)})
-    except Exception:
-        pass
-
-    # Enable checkpoint/resume for long runs
-    try:
-        from pmarlo.manager.checkpoint_manager import CheckpointManager  # type: ignore
-
-        cm = CheckpointManager(output_base_dir=str(run_dir), auto_continue=True, max_retries=2)
-        cm.setup_run_directory()
-    except Exception:
-        cm = None
-
-    traj_files, analysis_temps = run_replica_exchange(
-        pdb_file=str(pdb),
-        output_dir=str(run_dir),
-        temperatures=[float(t) for t in temperatures],
-        total_steps=int(steps),
-        quick=bool(quick),
-        progress_callback=sim_cb_tee,
-        checkpoint_manager=cm,
+    random_seed: Optional[int] = None,
+) -> "SimulationResult":
+    """Run a short simulation for testing purposes."""
+    layout = WorkspaceLayout(
+        app_root=workspace,
+        inputs_dir=workspace / "inputs",
+        workspace_dir=workspace / "output",
+        sims_dir=workspace / "output" / "sims",
+        shards_dir=workspace / "output" / "shards",
+        models_dir=workspace / "output" / "models",
+        bundles_dir=workspace / "output" / "bundles",
+        logs_dir=workspace / "output" / "logs",
+        state_path=workspace / "output" / "state.json",
     )
-
-    log = {
-        "time": _now_stamp(),
-        "pdb": str(pdb),
-        "run_dir": str(run_dir),
-        "temperatures": [float(x) for x in temperatures],
-        "steps": int(steps),
-        "traj_files": [str(Path(t)) for t in traj_files],
-        "analysis_temperatures": [float(x) for x in analysis_temps],
-    }
-    log["progress_log"] = str(sim_log)
-    _write_log(base_out, f"run-{_now_stamp()}-sim", log)
-    return SimResult([Path(t) for t in traj_files], [float(x) for x in analysis_temps], run_dir)
+    layout.ensure()
+    
+    backend = WorkflowBackend(layout)
+    config = SimulationConfig(
+        pdb_path=pdb_path,
+        temperatures=temperatures,
+        steps=steps,
+        quick=quick,
+        random_seed=random_seed,
+    )
+    return backend.run_sampling(config)
 
 
-def extractor_factory(
-    pdb: Path,
-    dcd_ref: Optional[Path] = None,
-    *,
-    stride: int = 1,
-) -> Callable[[Path], Tuple[Dict[str, np.ndarray], Optional[np.ndarray], Dict]]:
-    """Return an extractor computing Rg and RMSD to a reference.
+@dataclass(frozen=True)
+class WorkspaceLayout:
+    """Resolved paths for the app's workspace tree."""
 
-    - Uses the provided PDB as topology.
-    - If dcd_ref is provided, uses its first frame as the global reference;
-      otherwise uses the PDB-coordinates as reference.
-    """
-    import mdtraj as md  # type: ignore
+    app_root: Path
+    inputs_dir: Path
+    workspace_dir: Path
+    sims_dir: Path
+    shards_dir: Path
+    models_dir: Path
+    bundles_dir: Path
+    logs_dir: Path
+    state_path: Path
 
-    pdb = Path(pdb)
-    topo = md.load(str(pdb))
-    ref_traj = None
-    if dcd_ref is not None and Path(dcd_ref).exists():
-        try:
-            ref_traj = md.load(str(dcd_ref), top=str(pdb))[0]
-        except Exception:
-            ref_traj = topo[0]
-    else:
-        ref_traj = topo[0]
-
-    ca_sel = topo.topology.select("name CA")
-    ca_sel = ca_sel if ca_sel.size else None
-
-    # Use quiet streaming loader to avoid plugin chatter
-    from pmarlo.io import trajectory as traj_io
-
-    def _extract(traj_path: Path) -> Tuple[Dict[str, np.ndarray], Optional[np.ndarray], Dict]:
-        rg_list: list[np.ndarray] = []
-        rmsd_list: list[np.ndarray] = []
-        n_frames = 0
-        cb = _EXTRACT_CB
-        if cb is not None:
-            cb("extract_begin", {"traj": str(traj_path), "stride": int(max(1, stride))})
-        for chunk in traj_io.iterload(
-            str(traj_path), top=str(pdb), stride=int(max(1, stride)), atom_indices=None, chunk=1000
-        ):
-            try:
-                chunk = chunk.superpose(ref_traj, atom_indices=ca_sel)
-            except Exception:
-                pass
-            rg_block = md.compute_rg(chunk).astype(np.float64)
-            if cb is not None:
-                cb("extract_rg", {"traj": str(traj_path), "frames": int(getattr(chunk, "n_frames", 0))})
-            rmsd_block = md.rmsd(chunk, ref_traj, atom_indices=ca_sel).astype(np.float64)
-            if cb is not None:
-                cb("extract_rmsd", {"traj": str(traj_path)})
-            rg_list.append(rg_block)
-            rmsd_list.append(rmsd_block)
-            n_frames += int(chunk.n_frames)
-        rg = np.concatenate(rg_list) if rg_list else np.zeros((0,), dtype=np.float64)
-        rmsd = (
-            np.concatenate(rmsd_list) if rmsd_list else np.zeros((0,), dtype=np.float64)
+    @classmethod
+    def from_app_package(cls, file_path: Optional[Path] = None) -> "WorkspaceLayout":
+        here = Path(file_path or __file__).resolve()
+        app_dir = here.parent  # .../app
+        root = app_dir.parent  # .../app_usecase
+        workspace = root / "app_output"
+        layout = cls(
+            app_root=root,
+            inputs_dir=root / "app_intputs",
+            workspace_dir=workspace,
+            sims_dir=workspace / "sims",
+            shards_dir=workspace / "shards",
+            models_dir=workspace / "models",
+            bundles_dir=workspace / "bundles",
+            logs_dir=workspace / "logs",
+            state_path=workspace / "state.json",
         )
-        cvs = {"Rg": rg.reshape(-1), "RMSD_ref": rmsd.reshape(-1)}
-        dtraj = None  # no discretization at emission time
-        info = {"traj": str(traj_path), "n_frames": int(n_frames)}
-        if cb is not None:
-            cb("extract_end", {"traj": str(traj_path), "frames_total": int(n_frames)})
-        return cvs, dtraj, info
+        layout.ensure()
+        return layout
 
-    return _extract
+    def ensure(self) -> None:
+        for path in (self.workspace_dir, self.sims_dir, self.shards_dir, self.models_dir, self.bundles_dir, self.logs_dir):
+            path.mkdir(parents=True, exist_ok=True)
 
-
-def emit_from_trajs(
-    traj_files: List[Path],
-    shards_dir: Path,
-    extractor: Callable[[Path], Tuple[Dict[str, np.ndarray], Optional[np.ndarray], Dict]],
-    *,
-    temperature: float,
-    seed_start: int = 0,
-    periodic_by_cv: Optional[Dict[str, bool]] = None,
-) -> List[Path]:
-    """Emit shards using pmarlo.data.emit.emit_shards_from_trajectories.
-
-    Adds lightweight NDJSON progress log alongside shard emission for long runs.
-    """
-    periodic = dict(periodic_by_cv or {"Rg": False, "RMSD_ref": False})
-    out_dir = Path(shards_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    # progress log
-    cb, logp = _progress_logger(out_dir.parent.parent if out_dir.parent.name.startswith("run-") else out_dir.parent, f"emit-{_now_stamp()}")
-    cb("emit_begin", {"n_inputs": len(traj_files), "out_dir": str(out_dir)})
-    try:
-        # enable per-chunk extract logging for this emission
-        global _EXTRACT_CB
-        _EXTRACT_CB = cb
-        out = emit_shards_from_trajectories(
-            traj_files,
-            out_dir=out_dir,
-            extract_cvs=extractor,
-            seed_start=int(seed_start),
-            temperature=float(temperature),
-            periodic_by_cv=periodic,
-        )
-        _EXTRACT_CB = None
-        cb("emit_end", {"n_shards": len(out)})
-        return out
-    except Exception as e:
-        _EXTRACT_CB = None
-        cb("emit_error", {"error": str(e)})
-        raise
+    def available_inputs(self) -> List[Path]:
+        if not self.inputs_dir.exists():
+            return []
+        return sorted(p.resolve() for p in self.inputs_dir.glob("*.pdb"))
 
 
-def emit_from_trajs_simple(
-    traj_files: List[Path],
-    shards_dir: Path,
-    *,
-    pdb: Path,
-    ref_dcd: Optional[Path],
-    temperature: float,
-    seed_start: int = 0,
-    stride: int = 1,
-) -> List[Path]:
-    out_dir = Path(shards_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    cb, _ = _progress_logger(
-        out_dir.parent.parent if out_dir.parent.name.startswith("run-") else out_dir.parent,
-        f"emit-{_now_stamp()}",
-    )
-    emit_console = console_progress_cb()
-    emit_cb = tee_progress(cb, emit_console)
-    return api_emit_rg_rmsd(
-        pdb_file=str(pdb),
-        traj_files=[str(p) for p in traj_files],
-        out_dir=str(out_dir),
-        reference=str(ref_dcd) if ref_dcd else None,
-        stride=int(max(1, stride)),
-        temperature=float(temperature),
-        seed_start=int(seed_start),
-        progress_callback=emit_cb,
-    )
+@dataclass
+class SimulationConfig:
+    pdb_path: Path
+    temperatures: Sequence[float]
+    steps: int
+    quick: bool = True
+    random_seed: Optional[int] = None
+    label: Optional[str] = None
+    jitter_start: bool = False
+    jitter_sigma_A: float = 0.05
+    exchange_frequency_steps: Optional[int] = None
+    temperature_schedule_mode: Optional[str] = None
 
 
-def _compute_global_edges(
-    shard_jsons: List[Path],
-    *,
-    cv_names: Tuple[str, str],
-    bins: Tuple[int, int],
-) -> Dict[str, np.ndarray]:
-    a_min = [np.inf, np.inf]
-    a_max = [-np.inf, -np.inf]
-    for p in shard_jsons:
-        meta, X, _ = read_shard(p)
-        assert tuple(meta.cv_names)[:2] == cv_names, "cv_names mismatch across shards"
-        a_min[0] = min(a_min[0], float(np.nanmin(X[:, 0])))
-        a_min[1] = min(a_min[1], float(np.nanmin(X[:, 1])))
-        a_max[0] = max(a_max[0], float(np.nanmax(X[:, 0])))
-        a_max[1] = max(a_max[1], float(np.nanmax(X[:, 1])))
-    # guard identical ranges
-    if not np.isfinite(a_min[0]) or not np.isfinite(a_max[0]) or a_min[0] == a_max[0]:
-        a_max[0] = a_min[0] + 1e-8
-    if not np.isfinite(a_min[1]) or not np.isfinite(a_max[1]) or a_min[1] == a_max[1]:
-        a_max[1] = a_min[1] + 1e-8
-    return {
-        cv_names[0]: np.linspace(a_min[0], a_max[0], int(bins[0]) + 1),
-        cv_names[1]: np.linspace(a_min[1], a_max[1], int(bins[1]) + 1),
-    }
+@dataclass
+class SimulationResult:
+    run_id: str
+    run_dir: Path
+    pdb_path: Path
+    traj_files: List[Path]
+    analysis_temperatures: List[float]
+    steps: int
+    created_at: str
 
 
-def aggregate_and_build_bundle(
-    shard_jsons: List[Path],
-    out_bundle: Path,
-    *,
-    bins: Dict[str, int],
-    lag: int,
-    seed: int,
-    temperature: float,
-    learn_cv: bool = False,
-    deeptica_params: Optional[Dict[str, Any]] = None,
-    workspace: Optional[Path] = None,
-) -> Tuple[BuildResult, str, Dict[str, np.ndarray]]:
-    """Aggregate shards, build bundle, and return BuildResult + dataset hash.
+@dataclass
+class ShardRequest:
+    stride: int = 5
+    temperature: float = 300.0
+    reference: Optional[Path] = None
+    seed_start: int = 0
 
-    Notes:
-    - We always append SMOOTH_FES(sigma=0.6) to the plan.
-    - When learn_cv=True and extras are installed, the build pipeline will
-      switch to learned CVs automatically (engine handles it).
-    - We also compute and record global bin edges into applied.notes["cv_bin_edges"].
-    """
-    if not shard_jsons:
-        raise ValueError("No shards to aggregate")
 
-    # Determine CV names order from first shard
-    meta0, _, _ = read_shard(shard_jsons[0])
-    names = tuple(meta0.cv_names)
-    cv_pair = (names[0], names[1]) if len(names) >= 2 else ("cv1", "cv2")
-    # Ensure bins mapping matches cv names; fallback to first two provided values
-    if not (cv_pair[0] in bins and cv_pair[1] in bins):
-        vals = [int(v) for v in bins.values()]
-        if len(vals) >= 2:
-            bins = {cv_pair[0]: vals[0], cv_pair[1]: vals[1]}
-        else:
-            bins = {cv_pair[0]: 32, cv_pair[1]: 32}
-    bins_tuple = (int(bins.get(cv_pair[0], 32)), int(bins.get(cv_pair[1], 32)))
-    edges = _compute_global_edges(shard_jsons, cv_names=cv_pair, bins=bins_tuple)
+@dataclass
+class ShardResult:
+    run_id: str
+    shard_dir: Path
+    shard_paths: List[Path]
+    n_frames: int
+    n_shards: int
+    temperature: float
+    stride: int
+    created_at: str
 
-    steps: List[TransformStep] = []
-    if learn_cv:
-        params = dict(deeptica_params or {})
-        if "lag" not in params:
-            params["lag"] = int(max(1, lag))
-        steps.append(TransformStep("LEARN_CV", {"method": "deeptica", **params}))
-    steps.append(TransformStep("SMOOTH_FES", {"sigma": 0.6}))
-    plan = TransformPlan(steps=tuple(steps))
 
-    opts = BuildOpts(
-        seed=int(seed),
-        temperature=float(temperature),
-        lag_candidates=[int(lag), int(2 * lag), int(3 * lag)],
-    )
-    notes = {
-        "app": "pmarlo-sharded-app",
-        "cv_bin_edges": {k: v.tolist() for k, v in edges.items()},
-    }
-    if workspace is not None:
-        # Hint engine where to place learned CV artifacts
-        notes["model_dir"] = str(Path(workspace) / "models")
-    applied = AppliedOpts(bins=bins, lag=int(lag), macrostates=int((deeptica_params or {}).get("n_states", 5)), notes=notes)
+@dataclass
+class TrainingConfig:
+    lag: int = 5
+    bins: Dict[str, int] = field(default_factory=lambda: {"Rg": 64, "RMSD_ref": 64})
+    seed: int = 1337
+    temperature: float = 300.0
+    hidden: Sequence[int] = (128, 128)
+    max_epochs: int = 200
+    early_stopping: int = 25
 
-    progress_cb = None
-    log_path = None
-    if workspace is not None:
-        progress_cb, log_path = _progress_logger(Path(workspace), f"build-{_now_stamp()}")
-    build_console = console_progress_cb()
-    if progress_cb is not None:
-        from pmarlo.progress import tee_progress as _tee
-        progress_cb = _tee(progress_cb, build_console)
-    else:
-        progress_cb = build_console
-    br, ds_hash = aggregate_and_build(
-        shard_jsons,
-        opts=opts,
-        plan=plan,
-        applied=applied,
-        out_bundle=Path(out_bundle),
-        progress_callback=progress_cb,  # forwarded via coerce in data.aggregate
-    )
-
-    if workspace is not None:
-        info = {
-            "bundle": str(out_bundle),
-            "dataset_hash": ds_hash,
-            "digest": br.metadata.digest,
-            "flags": br.flags,
-            "steps": [s.name for s in plan.steps],
+    def deeptica_params(self) -> Dict[str, Any]:
+        return {
+            "lag": int(max(1, self.lag)),
+            "n_out": 2,
+            "hidden": tuple(int(h) for h in self.hidden),
+            "max_epochs": int(self.max_epochs),
+            "early_stopping": int(self.early_stopping),
+            "reweight_mode": "scaled_time",
         }
-        if log_path is not None:
-            info["progress_log"] = str(log_path)
-        _write_log(Path(workspace), f"build-{_now_stamp()}", info)
-
-    return br, ds_hash, edges
 
 
-def _digitize_block(X: np.ndarray, edges: Tuple[np.ndarray, np.ndarray]) -> np.ndarray:
-    bx = np.digitize(X[:, 0], edges[0]) - 1
-    by = np.digitize(X[:, 1], edges[1]) - 1
-    bx = np.clip(bx, 0, len(edges[0]) - 2)
-    by = np.clip(by, 0, len(edges[1]) - 2)
-    n_x = len(edges[0]) - 1
-    labels = bx * (len(edges[1]) - 1) + by
-    labels = labels.astype(int)
-    labels[(bx < 0) | (by < 0)] = -1
-    # ensure labels < n_states
-    labels = np.clip(labels, -1, n_x * (len(edges[1]) - 1) - 1)
-    return labels
+@dataclass
+class TrainingResult:
+    bundle_path: Path
+    dataset_hash: str
+    build_result: BuildResult
+    created_at: str
 
 
-def recompute_msm_from_shards(
-    shard_jsons: List[Path],
-    *,
-    edges_by_name: Dict[str, np.ndarray],
-    lag: int,
-    count_mode: str = "sliding",
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Discretize shards with provided global edges and build MSM.
+@dataclass
+class BuildConfig:
+    lag: int
+    bins: Dict[str, int]
+    seed: int
+    temperature: float
+    learn_cv: bool = False
+    deeptica_params: Optional[Dict[str, Any]] = None
+    notes: Dict[str, Any] = field(default_factory=dict)
 
-    Returns (T, pi). On failure, returns empty arrays.
-    """
-    if not shard_jsons:
-        return np.zeros((0, 0), dtype=float), np.zeros((0,), dtype=float)
 
-    # Determine order
-    meta0, _, _ = read_shard(shard_jsons[0])
-    names = tuple(meta0.cv_names)
-    cv_pair = (names[0], names[1])
-    E = (np.asarray(edges_by_name[cv_pair[0]]), np.asarray(edges_by_name[cv_pair[1]]))
+@dataclass
+class BuildArtifact:
+    bundle_path: Path
+    dataset_hash: str
+    build_result: BuildResult
+    created_at: str
 
-    dtrajs: List[np.ndarray] = []
-    for p in shard_jsons:
-        _, X, _ = read_shard(p)
-        d = _digitize_block(np.asarray(X, dtype=float), E)
-        dtrajs.append(d)
 
-    # number of states implied by edges
-    n_states = (len(E[0]) - 1) * (len(E[1]) - 1)
-    T, pi = build_simple_msm(dtrajs, n_states=n_states, lag=int(lag), count_mode=count_mode)
-    return T, pi
+class WorkflowBackend:
+    """High-level orchestration for the Streamlit UI."""
+
+    def __init__(self, layout: WorkspaceLayout) -> None:
+        self.layout = layout
+        self.state = StateManager(layout.state_path)
+
+    # ------------------------------------------------------------------
+    # Sampling & shard emission
+    # ------------------------------------------------------------------
+    def run_sampling(self, config: SimulationConfig) -> SimulationResult:
+        run_label = _slugify(config.label) or f"run-{_timestamp()}"
+        run_dir = self.layout.sims_dir / run_label
+        run_dir.mkdir(parents=True, exist_ok=True)
+        traj_files, temps = run_replica_exchange(
+            pdb_file=str(config.pdb_path),
+            output_dir=str(run_dir),
+            temperatures=[float(t) for t in config.temperatures],
+            total_steps=int(config.steps),
+            quick=bool(config.quick),
+            random_seed=int(config.random_seed) if config.random_seed is not None else None,
+            jitter_start=bool(config.jitter_start),
+            jitter_sigma_A=float(config.jitter_sigma_A),
+            exchange_frequency_steps=(
+                int(config.exchange_frequency_steps)
+                if config.exchange_frequency_steps is not None
+                else None
+            ),
+            temperature_schedule_mode=config.temperature_schedule_mode,
+        )
+        created = _timestamp()
+        result = SimulationResult(
+            run_id=run_label,
+            run_dir=run_dir.resolve(),
+            pdb_path=Path(config.pdb_path).resolve(),
+            traj_files=_coerce_path_list(traj_files),
+            analysis_temperatures=[float(t) for t in temps],
+            steps=int(config.steps),
+            created_at=created,
+        )
+        self.state.append_run(
+            {
+                "run_id": run_label,
+                "run_dir": str(result.run_dir),
+                "pdb": str(result.pdb_path),
+                "temperatures": [float(t) for t in config.temperatures],
+                "analysis_temperatures": result.analysis_temperatures,
+                "steps": int(config.steps),
+                "quick": bool(config.quick),
+                "random_seed": int(config.random_seed)
+                if config.random_seed is not None
+                else None,
+                "traj_files": [str(p) for p in result.traj_files],
+                "created_at": created,
+            }
+        )
+        return result
+
+    def emit_shards(
+        self,
+        simulation: SimulationResult,
+        request: ShardRequest,
+        *,
+        provenance: Optional[Dict[str, Any]] = None,
+    ) -> ShardResult:
+        shard_dir = self.layout.shards_dir / simulation.run_id
+        shard_dir.mkdir(parents=True, exist_ok=True)
+        note = {
+            "run_id": simulation.run_id,
+            "analysis_temperatures": simulation.analysis_temperatures,
+        }
+        if provenance:
+            note.update(provenance)
+        shard_paths = emit_shards_rg_rmsd(
+            pdb_file=simulation.pdb_path,
+            traj_files=[str(p) for p in simulation.traj_files],
+            out_dir=str(shard_dir),
+            reference=str(request.reference) if request.reference else None,
+            stride=int(max(1, request.stride)),
+            temperature=float(request.temperature),
+            seed_start=int(max(0, request.seed_start)),
+            provenance=note,
+        )
+        shard_paths = _coerce_path_list(shard_paths)
+        n_frames = 0
+        for path in shard_paths:
+            try:
+                meta, _, _ = read_shard(path)
+                n_frames += int(getattr(meta, "n_frames", 0))
+            except Exception:
+                continue
+        created = _timestamp()
+        result = ShardResult(
+            run_id=simulation.run_id,
+            shard_dir=shard_dir.resolve(),
+            shard_paths=shard_paths,
+            n_frames=int(n_frames),
+            n_shards=len(shard_paths),
+            temperature=float(request.temperature),
+            stride=int(max(1, request.stride)),
+            created_at=created,
+        )
+        self.state.append_shards(
+            {
+                "run_id": simulation.run_id,
+                "directory": str(result.shard_dir),
+                "paths": [str(p) for p in shard_paths],
+                "temperature": float(request.temperature),
+                "stride": int(max(1, request.stride)),
+                "n_shards": len(shard_paths),
+                "n_frames": int(n_frames),
+                "created_at": created,
+            }
+        )
+        return result
+
+    # ------------------------------------------------------------------
+    # Discovery helpers
+    # ------------------------------------------------------------------
+    def discover_shards(self) -> List[Path]:
+        if not self.layout.shards_dir.exists():
+            return []
+        return sorted(self.layout.shards_dir.rglob("*.json"))
+
+    def shard_summaries(self) -> List[Dict[str, Any]]:
+        info: List[Dict[str, Any]] = []
+        for entry in self.state.shards:
+            info.append(dict(entry))
+        return info
+
+    # ------------------------------------------------------------------
+    # Model training and analysis
+    # ------------------------------------------------------------------
+    def train_model(
+        self,
+        shard_jsons: Sequence[Path],
+        config: TrainingConfig,
+    ) -> TrainingResult:
+        shards = [Path(p).resolve() for p in shard_jsons]
+        if not shards:
+            raise ValueError("No shards selected for training")
+        stamp = _timestamp()
+        bundle_path = self.layout.models_dir / f"deeptica-{stamp}.pbz"
+        try:
+            br, ds_hash = build_from_shards(
+                shard_jsons=shards,
+                out_bundle=bundle_path,
+                bins=dict(config.bins),
+                lag=int(config.lag),
+                seed=int(config.seed),
+                temperature=float(config.temperature),
+                learn_cv=True,
+                deeptica_params=config.deeptica_params(),
+                notes={"model_dir": str(self.layout.models_dir)},
+            )
+        except ImportError as exc:
+            raise RuntimeError(
+                "Deep-TICA optional dependencies missing. Install pmarlo[mlcv] to enable"
+            ) from exc
+        except Exception:
+            raise
+        result = TrainingResult(
+            bundle_path=bundle_path.resolve(),
+            dataset_hash=ds_hash,
+            build_result=br,
+            created_at=stamp,
+        )
+        self.state.append_model(
+            {
+                "bundle": str(bundle_path.resolve()),
+                "dataset_hash": ds_hash,
+                "lag": int(config.lag),
+                "bins": dict(config.bins),
+                "seed": int(config.seed),
+                "temperature": float(config.temperature),
+                "created_at": stamp,
+                "metrics": _sanitize_artifacts(br.artifacts.get("mlcv_deeptica", {})),
+            }
+        )
+        return result
+
+    def build_analysis(
+        self,
+        shard_jsons: Sequence[Path],
+        config: BuildConfig,
+    ) -> BuildArtifact:
+        shards = [Path(p).resolve() for p in shard_jsons]
+        if not shards:
+            raise ValueError("No shards selected for analysis")
+        stamp = _timestamp()
+        bundle_path = self.layout.bundles_dir / f"bundle-{stamp}.pbz"
+        analysis_notes = dict(config.notes or {})
+        if config.learn_cv and "model_dir" not in analysis_notes:
+            analysis_notes["model_dir"] = str(self.layout.models_dir)
+
+        br, ds_hash = build_from_shards(
+            shard_jsons=shards,
+            out_bundle=bundle_path,
+            bins=dict(config.bins),
+            lag=int(config.lag),
+            seed=int(config.seed),
+            temperature=float(config.temperature),
+            learn_cv=bool(config.learn_cv),
+            deeptica_params=config.deeptica_params,
+            notes=analysis_notes,
+        )
+        artifact = BuildArtifact(
+            bundle_path=bundle_path.resolve(),
+            dataset_hash=ds_hash,
+            build_result=br,
+            created_at=stamp,
+        )
+        self.state.append_build(
+            {
+                "bundle": str(bundle_path.resolve()),
+                "dataset_hash": ds_hash,
+                "lag": int(config.lag),
+                "bins": dict(config.bins),
+                "seed": int(config.seed),
+                "temperature": float(config.temperature),
+                "learn_cv": bool(config.learn_cv),
+                "created_at": stamp,
+                "flags": _sanitize_artifacts(br.flags),
+                "mlcv": _sanitize_artifacts(br.artifacts.get("mlcv_deeptica", {})),
+            }
+        )
+        return artifact
+
+    # ------------------------------------------------------------------
+    # Utilities used by the UI
+    # ------------------------------------------------------------------
+    def latest_model_path(self) -> Optional[Path]:
+        if not self.state.models:
+            return None
+        last = self.state.models[-1]
+        p = Path(last.get("bundle", ""))
+        return p if p.exists() else None
+
+    def list_models(self) -> List[Dict[str, Any]]:
+        return [dict(entry) for entry in self.state.models]
+
+    def list_builds(self) -> List[Dict[str, Any]]:
+        return [dict(entry) for entry in self.state.builds]
+
+    def sidebar_summary(self) -> Dict[str, int]:
+        return self.state.summary()
+
+    # ------------------------------------------------------------------
+    # Rehydrate existing assets
+    # ------------------------------------------------------------------
+    def load_run(self, run_id: str) -> Optional[SimulationResult]:
+        """Best-effort reconstruction of a previous simulation result."""
+
+        if not run_id:
+            return None
+        record: Optional[Dict[str, Any]] = None
+        for entry in reversed(self.state.runs):
+            if str(entry.get("run_id")) == str(run_id):
+                record = dict(entry)
+                break
+        if record is None:
+            return None
+
+        run_dir = Path(record.get("run_dir", ""))
+        pdb_path = Path(record.get("pdb", ""))
+        if not run_dir.exists() or not pdb_path.exists():
+            return None
+
+        traj_strings: Sequence[str] = record.get("traj_files", []) or []
+        traj_files = [Path(p) for p in traj_strings if Path(p).exists()]
+        if not traj_files:
+            # Fallback: scan standard REMD output locations
+            candidates: List[Path] = []
+            replica_dir = run_dir / "replica_exchange"
+            demux_dir = run_dir
+            candidates.extend(sorted(replica_dir.rglob("*.dcd")))
+            candidates.extend(sorted(replica_dir.rglob("*.nc")))
+            candidates.extend(sorted(demux_dir.glob("demux_*.*")))
+            traj_files = candidates
+        if not traj_files:
+            return None
+
+        analysis_temps = [float(t) for t in record.get("analysis_temperatures", [])]
+        steps = int(record.get("steps", 0))
+        created_at = str(record.get("created_at", "")) or _timestamp()
+
+        return SimulationResult(
+            run_id=str(record.get("run_id")),
+            run_dir=run_dir.resolve(),
+            pdb_path=pdb_path.resolve(),
+            traj_files=[p.resolve() for p in traj_files],
+            analysis_temperatures=analysis_temps,
+            steps=steps,
+            created_at=created_at,
+        )
+
+    # ------------------------------------------------------------------
+    # Asset deletion methods
+    # ------------------------------------------------------------------
+    def delete_simulation(self, index: int) -> bool:
+        """Delete a simulation run and its associated files."""
+        entry = self.state.remove_run(index)
+        if entry is None:
+            return False
+        
+        try:
+            # Delete simulation directory
+            run_dir = Path(entry.get("run_dir", ""))
+            if run_dir.exists() and run_dir.is_dir():
+                shutil.rmtree(run_dir)
+            
+            # Also remove any associated shards
+            run_id = entry.get("run_id", "")
+            if run_id:
+                # Find and remove associated shard entries
+                shards_to_remove = []
+                for i, shard_entry in enumerate(self.state.shards):
+                    if shard_entry.get("run_id") == run_id:
+                        shards_to_remove.append(i)
+                
+                # Remove in reverse order to maintain indices
+                for i in reversed(shards_to_remove):
+                    self.delete_shard_batch(i)
+            
+            return True
+        except Exception:
+            return False
+
+    def delete_shard_batch(self, index: int) -> bool:
+        """Delete a shard batch and its associated files."""
+        entry = self.state.remove_shards(index)
+        if entry is None:
+            return False
+        
+        try:
+            # Delete individual shard files
+            paths = entry.get("paths", [])
+            for path_str in paths:
+                path = Path(path_str)
+                if path.exists():
+                    path.unlink()  # Delete the .json file
+                    # Also delete associated .npz file
+                    npz_path = path.with_suffix('.npz')
+                    if npz_path.exists():
+                        npz_path.unlink()
+            
+            # Delete shard directory if empty
+            directory = Path(entry.get("directory", ""))
+            if directory.exists() and directory.is_dir():
+                try:
+                    directory.rmdir()  # Only removes if empty
+                except OSError:
+                    pass  # Directory not empty, that's OK
+            
+            return True
+        except Exception:
+            return False
+
+    def delete_model(self, index: int) -> bool:
+        """Delete a model and its associated files."""
+        entry = self.state.remove_model(index)
+        if entry is None:
+            return False
+        
+        try:
+            # Delete model bundle file and associated files
+            bundle_path = Path(entry.get("bundle", ""))
+            if bundle_path.exists():
+                base_name = bundle_path.stem
+                model_dir = bundle_path.parent
+                
+                # Find and delete related files (history, json, pt files)
+                for file_path in model_dir.glob(f"{base_name}.*"):
+                    if file_path.is_file():
+                        file_path.unlink()
+            
+            return True
+        except Exception:
+            return False
+
+    def delete_analysis_bundle(self, index: int) -> bool:
+        """Delete an analysis bundle and its associated files."""
+        entry = self.state.remove_build(index)
+        if entry is None:
+            return False
+        
+        try:
+            # Delete bundle file
+            bundle_path = Path(entry.get("bundle", ""))
+            if bundle_path.exists():
+                bundle_path.unlink()
+            
+            return True
+        except Exception:
+            return False

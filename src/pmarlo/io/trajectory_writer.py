@@ -10,8 +10,8 @@ buffer thresholds and/or a backend that supports streaming writes.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Protocol, Self
 
@@ -44,7 +44,9 @@ class MDAnalysisDCDWriter:
                 "MDAnalysis is required for backend='mdanalysis'. Install extra 'pmarlo[mdanalysis]' or 'MDAnalysis'."
             ) from exc
 
-    def open(self, path: str, topology_path: str | None, overwrite: bool = False) -> "MDAnalysisDCDWriter":
+    def open(
+        self, path: str, topology_path: str | None, overwrite: bool = False
+    ) -> "MDAnalysisDCDWriter":
         self._require()
         if self._is_open:
             raise TrajectoryWriteError("Writer is already open")
@@ -52,12 +54,16 @@ class MDAnalysisDCDWriter:
         self.topology_path = topology_path or self.topology_path
         p = Path(self._path)
         if p.exists() and not overwrite:
-            raise TrajectoryWriteError(f"Output file exists and overwrite=False: {path}")
+            raise TrajectoryWriteError(
+                f"Output file exists and overwrite=False: {path}"
+            )
         if p.exists():
             try:
                 p.unlink()
             except Exception as exc:
-                raise TrajectoryWriteError(f"Failed to overwrite existing file: {exc}") from exc
+                raise TrajectoryWriteError(
+                    f"Failed to overwrite existing file: {exc}"
+                ) from exc
 
         # Writer created on first write when n_atoms is known
         self._n_atoms = None
@@ -76,8 +82,9 @@ class MDAnalysisDCDWriter:
             )
         if c.size == 0:
             return
-        from MDAnalysis.coordinates.DCD import DCDWriter  # type: ignore
         import MDAnalysis as mda  # type: ignore
+        from MDAnalysis.coordinates.DCD import DCDWriter  # type: ignore
+
         if self._n_atoms is None:
             self._n_atoms = int(c.shape[1])
             self._writer = DCDWriter(self._path, n_atoms=self._n_atoms)
@@ -142,7 +149,9 @@ class TrajectoryWriter(Protocol):
     memory.
     """
 
-    def open(self, path: str, topology_path: str | None, overwrite: bool = False) -> Self:  # noqa: D401 - short doc
+    def open(
+        self, path: str, topology_path: str | None, overwrite: bool = False
+    ) -> Self:  # noqa: D401 - short doc
         """Open or create an output trajectory at ``path``.
 
         Parameters
@@ -157,7 +166,9 @@ class TrajectoryWriter(Protocol):
             the file exists (default False).
         """
 
-    def write_frames(self, coords: np.ndarray, box: np.ndarray | None = None) -> None:  # noqa: D401 - short doc
+    def write_frames(
+        self, coords: np.ndarray, box: np.ndarray | None = None
+    ) -> None:  # noqa: D401 - short doc
         """Write one or more frames.
 
         Parameters
@@ -197,7 +208,9 @@ class MDTrajDCDWriter:
     _total_persisted: int = field(default=0, init=False, repr=False)
     _is_open: bool = field(default=False, init=False, repr=False)
 
-    def open(self, path: str, topology_path: str | None, overwrite: bool = False) -> Self:
+    def open(
+        self, path: str, topology_path: str | None, overwrite: bool = False
+    ) -> Self:
         if self._is_open:
             raise TrajectoryWriteError("Writer is already open")
         self._path = str(path)
@@ -207,16 +220,24 @@ class MDTrajDCDWriter:
         p = Path(self._path)
         if p.exists():
             if not overwrite:
-                raise TrajectoryWriteError(f"Output file exists and overwrite=False: {path}")
+                raise TrajectoryWriteError(
+                    f"Output file exists and overwrite=False: {path}"
+                )
             try:
                 p.unlink()
             except Exception as exc:  # pragma: no cover - defensive
-                raise TrajectoryWriteError(f"Failed to overwrite existing file: {exc}") from exc
+                raise TrajectoryWriteError(
+                    f"Failed to overwrite existing file: {exc}"
+                ) from exc
         self._buffer.clear()
         self._n_atoms = None
         self._total_persisted = 0
         self._is_open = True
-        logger.info("Opened MDTrajDCDWriter: %s (threshold=%d)", self._path, int(self.rewrite_threshold))
+        logger.info(
+            "Opened MDTrajDCDWriter: %s (threshold=%d)",
+            self._path,
+            int(self.rewrite_threshold),
+        )
         return self
 
     # Internal helpers
@@ -273,6 +294,7 @@ class MDTrajDCDWriter:
             old_len = reader.probe_length(old_path)
             # Build an mdtraj Trajectory from streaming old frames and new frames
             import mdtraj as md  # type: ignore
+
             # Need topology object for Trajectory
             topo = md.load_topology(self.topology_path)
             # Accumulate frames in a memory efficient way for small to medium sizes
@@ -280,7 +302,9 @@ class MDTrajDCDWriter:
             joined: Optional[md.Trajectory] = None
             if old_len > 0:
                 chunk_list: list[md.Trajectory] = []
-                for xyz in reader.iter_frames(old_path, start=0, stop=old_len, stride=1):
+                for xyz in reader.iter_frames(
+                    old_path, start=0, stop=old_len, stride=1
+                ):
                     chunk_list.append(md.Trajectory(xyz[np.newaxis, ...], topo))
                     # Periodically join to keep memory reasonable
                     if len(chunk_list) >= 256:

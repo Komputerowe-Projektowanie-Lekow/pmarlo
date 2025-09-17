@@ -1,7 +1,7 @@
 import numpy as np
 
+from pmarlo.markov_state_model.bridge import build_simple_msm
 from pmarlo.markov_state_model.enhanced_msm import EnhancedMSM
-from pmarlo.states.msm_bridge import build_simple_msm
 
 
 def _build_simple_msm(dtraj, lag_time, mode="sliding"):

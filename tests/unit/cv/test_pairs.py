@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from pmarlo.cv.pairs import make_training_pairs_from_shards, scaled_time_pairs
+from pmarlo.features.pairs import make_training_pairs_from_shards, scaled_time_pairs
 
 
 def test_scaled_time_pairs_uniform():

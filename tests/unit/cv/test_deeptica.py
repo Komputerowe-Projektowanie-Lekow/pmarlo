@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
@@ -6,13 +6,22 @@ import numpy as np
 import pytest
 
 mlc = pytest.importorskip("mlcolvar")
-mlc_features = pytest.importorskip("mlcolvar.features")
 torch = pytest.importorskip("torch")
+
+from pmarlo.features.deeptica import DeepTICAConfig
+
+def test_deeptica_config_linear_head_flag():
+    cfg_default = DeepTICAConfig(lag=5)
+    assert cfg_default.hidden == (32, 16)
+    assert cfg_default.linear_head is False
+    cfg_linear = DeepTICAConfig(lag=5, linear_head=True)
+    assert cfg_linear.linear_head is True
+
 
 
 def test_deeptica_train_transform_export_and_snippet(tmp_path: Path):
-    from pmarlo.cv.deeptica import DeepTICAConfig, train_deeptica
-    from pmarlo.cv.pairs import scaled_time_pairs
+    from pmarlo.features.deeptica import DeepTICAConfig, train_deeptica
+    from pmarlo.features.pairs import scaled_time_pairs
 
     rng = np.random.default_rng(0)
     # Tiny synthetic dataset: two shards emulated by two arrays
@@ -35,6 +44,17 @@ def test_deeptica_train_transform_export_and_snippet(tmp_path: Path):
         seed=1,
     )
     model = train_deeptica(X_list, (idx_t, idx_tlag), cfg, weights=None)
+
+    history = model.training_history or {}
+    loss_curve = history.get("loss_curve") or []
+    assert isinstance(loss_curve, list) and loss_curve, "Expected non-empty loss curve"
+    assert np.isfinite(np.asarray(loss_curve)).all(), "Loss curve contains non-finite values"
+    val_curve = history.get("val_loss_curve")
+    if isinstance(val_curve, list) and val_curve:
+        assert np.isfinite(np.asarray(val_curve)).all(), "Validation loss curve contains non-finite values"
+    score_curve = history.get("val_score_curve") or history.get("val_score")
+    if isinstance(score_curve, list) and score_curve:
+        assert np.isfinite(np.asarray(score_curve)).all(), "Validation score curve contains non-finite values"
 
     # Transform full concatenated features
     X_concat = np.concatenate(X_list, axis=0)

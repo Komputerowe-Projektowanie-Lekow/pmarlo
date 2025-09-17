@@ -41,3 +41,12 @@ repos:
           - -q
           - -e
           - type
+
+  - repo: local
+    hooks:
+      - id: pytest-fast
+        name: pytest fast (unit changed)
+        entry: poetry run pytest --testmon -q -m "unit and not slow"
+        language: system
+        pass_filenames: false
+        stages: [commit]

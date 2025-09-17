@@ -46,7 +46,8 @@ class ExportMixin:
 
         # Structured results
         analysis_results: Dict[str, Any] = {}
-        from pmarlo.results import FESResult, MSMResult
+        from pmarlo.markov_state_model.free_energy import FESResult
+        from pmarlo.markov_state_model.results import MSMResult
 
         if (
             getattr(self, "transition_matrix", None) is not None

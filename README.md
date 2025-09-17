@@ -38,14 +38,28 @@ pip install -e .
   with the `pytorch` module so `PYTORCH_MODEL` can load TorchScript models.
 
 
-## Documentation
-Documentation was made using cognition powered by Devin. Here is the link https://deepwiki.com/Komputerowe-Projektowanie-Lekow/pmarlo. It will be updated weekly whenever new features, bug fixes, or other changes are made.
+## Testing
+
+The test layout mirrors `src/pmarlo`, so unit tests live under `tests/unit/<domain>` and integration flows under `tests/integration/**`. Pytest discovers unit tests by default and the `pytest-testmon` plugin keeps reruns focused on files touched in the current branch.
+
+Default quick check: `poetry run pytest --testmon -n auto`.
+
+Suggested commands:
+
+- `poetry run pytest --testmon -n auto` - default fast loop (unit, change-aware)
+- `poetry run pytest --testmon --focus data,io -n auto` - run only the selected domains
+- `poetry run pytest -m "unit and data" -n auto` - use marker syntax when you prefer classic selection
+- `poetry run pytest -m "integration" tests/integration` - integration-only sweep
+- `poetry run pytest -m "unit or integration or perf" -n auto` - full suite on demand
+- `poetry run pytest --lf -q` - rerun only the most recent failures during triage
+
+Combine `--focus` with `--testmon` whenever you want to zero in on a subset of packages while letting pytest skip unrelated tests automatically.
 
 
 ## Quickstart
 
 ```python
-from pmarlo.pipeline import run_pmarlo
+from pmarlo.transform.pipeline import run_pmarlo
 
 results = run_pmarlo(
     pdb_file="protein.pdb",

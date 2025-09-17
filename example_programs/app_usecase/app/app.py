@@ -1,521 +1,637 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Dict, List, Sequence
 
-import matplotlib.pyplot as plt
-import numpy as np
+import pandas as pd
 import streamlit as st
 
-# Support running via `streamlit run app.py` (no package context)
-try:  # first try relative imports when executed as a package module
+try:  # Prefer package-relative imports when launched via `streamlit run -m`
     from .backend import (
-        SimResult,
-        aggregate_and_build_bundle,
-        emit_from_trajs,
-        emit_from_trajs_simple,
-        extractor_factory,
-        recompute_msm_from_shards,
-        run_short_sim,
+        BuildArtifact,
+        BuildConfig,
+        ShardRequest,
+        SimulationConfig,
+        TrainingConfig,
+        TrainingResult,
+        WorkflowBackend,
+        WorkspaceLayout,
     )
     from .plots import plot_fes, plot_msm
-    from .state import read_manifest, write_manifest
-    from .cv_hooks import default_deeptica_params
-except Exception:  # pragma: no cover - UI convenience fallback
-    import sys as _sys
-    _HERE = Path(__file__).resolve().parent
-    if str(_HERE) not in _sys.path:
-        _sys.path.insert(0, str(_HERE))
+    from pmarlo.transform.build import _sanitize_artifacts
+except ImportError:  # Fallback for `streamlit run app.py`
+    import sys
+
+    _APP_DIR = Path(__file__).resolve().parent
+    if str(_APP_DIR) not in sys.path:
+        sys.path.insert(0, str(_APP_DIR))
     from backend import (  # type: ignore
-        SimResult,
-        aggregate_and_build_bundle,
-        emit_from_trajs,
-        emit_from_trajs_simple,
-        extractor_factory,
-        recompute_msm_from_shards,
-        run_short_sim,
+        BuildArtifact,
+        BuildConfig,
+        ShardRequest,
+        SimulationConfig,
+        TrainingConfig,
+        TrainingResult,
+        WorkflowBackend,
+        WorkspaceLayout,
     )
     from plots import plot_fes, plot_msm  # type: ignore
-    from state import read_manifest, write_manifest  # type: ignore
-    from cv_hooks import default_deeptica_params  # type: ignore
-from pmarlo.engine.build import BuildResult
+    from pmarlo.transform.build import _sanitize_artifacts
 
 
-# Global single-worker executor to serialize runs
-EXECUTOR = ThreadPoolExecutor(max_workers=1)
+# Keys used inside st.session_state
+_LAST_SIM = "__pmarlo_last_simulation"
+_LAST_SHARDS = "__pmarlo_last_shards"
+_LAST_TRAIN = "__pmarlo_last_training"
+_LAST_TRAIN_CONFIG = "__pmarlo_last_train_cfg"
+_LAST_BUILD = "__pmarlo_last_build"
+_RUN_PENDING = "__pmarlo_run_pending"
 
 
-def _workspace_root() -> Path:
-    """App-local workspace under app_usecase/app_output.
-
-    Keeps all app artifacts (shards, bundles, models, logs) scoped to the app.
-    """
-    return (_app_root() / "app_output").resolve()
-
-
-def _app_root() -> Path:
-    # example_programs/app_usecase
-    return Path(__file__).resolve().parent.parent
-
-
-def _inputs_root() -> Path:
-    """App-local inputs directory under app_usecase/app_intputs (spelling as requested)."""
-    return (_app_root() / "app_intputs").resolve()
+def _parse_temperature_ladder(raw: str) -> List[float]:
+    cleaned = raw.replace(";", ",")
+    temps: List[float] = []
+    for token in cleaned.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        temps.append(float(token))
+    if not temps:
+        raise ValueError("Provide at least one temperature in Kelvin.")
+    return temps
 
 
-def _default_pdb() -> Path:
-    # Prefer input folder; fallback to legacy location next to app_usecase
-    p_inputs = _inputs_root() / "3gd8-fixed.pdb"
-    if p_inputs.exists():
-        return p_inputs.resolve()
-    legacy = _app_root() / "3gd8-fixed.pdb"
-    return legacy.resolve()
-
-
-def _resolve_input_path(raw: str) -> Path:
-    """Resolve user-provided path robustly relative to app location.
-
-    Tries as-is, then relative to the app root, then by filename in app root.
-    """
-    p = Path(raw)
-    if p.exists():
-        return p.resolve()
-    # try relative to inputs, then app root
-    cand_inputs = _inputs_root() / p
-    if cand_inputs.exists():
-        return cand_inputs.resolve()
-    # try relative to app root
-    cand1 = _app_root() / p
-    if cand1.exists():
-        return cand1.resolve()
-    cand2 = _app_root() / p.name
-    if cand2.exists():
-        return cand2.resolve()
-    return p
-
-
-def _scan_shards(ws: Path) -> List[Path]:
-    d = ws / "shards"
-    if not d.exists():
-        return []
-    # Recurse into run_* subfolders to collect all shard JSONs
-    return sorted(d.rglob("*.json"))
-
-
-def _latest_build_log(ws: Path) -> Path | None:
-    logs = ws / "logs"
-    if not logs.exists():
-        return None
-    files = sorted(logs.glob("build-*.log"))
-    return files[-1] if files else None
-
-
-def _latest_sim_log(ws: Path) -> Path | None:
-    logs = ws / "logs"
-    if not logs.exists():
-        return None
-    files = sorted(logs.glob("sim-*.log"))
-    return files[-1] if files else None
-
-
-def _update_manifest_after_build(ws: Path, res: BuildResult, bundle: Path, shard_ids: List[str], params: Dict[str, Any]) -> None:
-    m = read_manifest(ws)
-    m["params"] = dict(params)
-    m["shards"] = {"count": int(len(shard_ids)), "last_ids": shard_ids[-20:]}
-    m["last_build"] = {
-        "bundle": str(bundle),
-        "dataset_hash": res.metadata.dataset_hash,
-        "digest": res.metadata.digest,
-        "flags": res.flags,
-        "time": res.metadata.to_dict().get("build_opts", {}).get("seed", None),
+def _select_shard_paths(groups: Sequence[Dict[str, object]], run_ids: Sequence[str]) -> List[Path]:
+    lookup: Dict[str, Sequence[str]] = {
+        str(entry.get("run_id")): entry.get("paths", [])  # type: ignore[dict-item]
+        for entry in groups
     }
-    write_manifest(ws, m)
+    selected: List[Path] = []
+    for run_id in run_ids:
+        paths = lookup.get(run_id, [])
+        for p in paths:
+            selected.append(Path(p))
+    return selected
 
 
-def _update_manifest_after_sim(ws: Path, shard_ids: List[str], params: Dict[str, Any]) -> None:
-    m = read_manifest(ws)
-    m["params"] = dict(params)
-    # Count all shards present recursively for a global view
-    all_shards = _scan_shards(ws)
-    m["shards"] = {
-        "count": int(len(all_shards)),
-        "last_ids": [p.stem for p in all_shards][-20:],
-    }
-    # do not touch last_build here
-    write_manifest(ws, m)
+def _metrics_table(flags: Dict[str, object]) -> pd.DataFrame:
+    rows = []
+    for key, value in flags.items():
+        if isinstance(value, dict):
+            for sub_key, sub_val in value.items():
+                rows.append({"metric": f"{key}.{sub_key}", "value": sub_val})
+        else:
+            rows.append({"metric": key, "value": value})
+    return pd.DataFrame(rows) if rows else pd.DataFrame({"metric": [], "value": []})
+
+
+def _show_build_outputs(artifact: BuildArtifact | TrainingResult) -> None:
+    br = artifact.build_result
+    col1, col2 = st.columns(2)
+    with col1:
+        T = br.transition_matrix
+        pi = br.stationary_distribution
+        fig = plot_msm(T, pi)
+        st.pyplot(fig, clear_figure=True, width="stretch")
+    with col2:
+        fig = plot_fes(br.fes)
+        st.pyplot(fig, clear_figure=True, width="stretch")
+    meta_cols = st.columns(3)
+    meta_cols[0].metric("Shards", int(br.n_shards))
+    meta_cols[1].metric("Frames", int(br.n_frames))
+    meta_cols[2].metric("Features", len(br.feature_names))
+    if br.flags:
+        st.dataframe(_metrics_table(br.flags), width="stretch")
+    if br.messages:
+        st.write("Messages:")
+        for msg in br.messages:
+            st.write(f"- {msg}")
+
+
+def _ensure_session_defaults() -> None:
+    for key in (
+        _LAST_SIM,
+        _LAST_SHARDS,
+        _LAST_TRAIN,
+        _LAST_TRAIN_CONFIG,
+        _LAST_BUILD,
+    ):
+        st.session_state.setdefault(key, None)
+    st.session_state.setdefault(_RUN_PENDING, False)
 
 
 def main() -> None:
-    st.set_page_config(page_title="PMARLO Sharded MSM App", layout="wide")
-    st.title("PMARLO Sharded MSM App")
-    # Light auto-refresh to pick up job completion without manual interaction
-    try:
-        st.autorefresh(interval=2000, key="auto_refresh")  # type: ignore[attr-defined]
-    except Exception:
-        pass
+    st.set_page_config(page_title="PMARLO Joint Learning", layout="wide")
+    _ensure_session_defaults()
 
-    # Success banners for background jobs
-    try:
-        msg_sim = st.session_state.get("last_sim_message")
-        if msg_sim:
-            st.success(str(msg_sim))
-        msg_build = st.session_state.get("last_build_message")
-        if msg_build:
-            st.success(str(msg_build))
-    except Exception:
-        pass
+    layout = WorkspaceLayout.from_app_package()
+    backend = WorkflowBackend(layout)
 
-    ws = _workspace_root()
-    (ws / "shards").mkdir(parents=True, exist_ok=True)
-    (ws / "bundles").mkdir(parents=True, exist_ok=True)
-    (ws / "models").mkdir(parents=True, exist_ok=True)
-    (ws / "logs").mkdir(parents=True, exist_ok=True)
-    _inputs_root().mkdir(parents=True, exist_ok=True)
+    summary = backend.sidebar_summary()
+    with st.sidebar:
+        st.title("Workspace")
+        st.caption(str(layout.workspace_dir))
+        cols = st.columns(2)
+        cols[0].metric("Sim runs", summary.get("runs", 0))
+        cols[1].metric("Shard files", summary.get("shards", 0))
+        cols = st.columns(2)
+        cols[0].metric("Models", summary.get("models", 0))
+        cols[1].metric("Bundles", summary.get("builds", 0))
+        st.divider()
+        inputs = layout.available_inputs()
+        if inputs:
+            st.write("Available inputs:")
+            for pdb in inputs:
+                st.caption(pdb.name)
+        else:
+            st.info("Drop prepared PDB files into app_intputs/ to get started.")
 
-    # Sidebar-ish left column for controls
-    # 2-column layout: controls on the left (narrower), plots on the right
-    left, right = st.columns([1, 2])
+    tab_sampling, tab_training, tab_analysis, tab_assets = st.tabs(
+        [
+            "Sampling",
+            "Model Training",
+            "Analysis",
+            "Assets",
+        ]
+    )
 
-    with left:
-        st.header("Controls")
-        pdb_path = st.text_input("PDB file", value=str(_default_pdb()))
-        uploaded_pdb = st.file_uploader("or upload PDB", type=["pdb"], accept_multiple_files=False)
-        selected_pdb = pdb_path
-        if uploaded_pdb is not None:
-            up_dir = _inputs_root() / "uploads"
-            up_dir.mkdir(parents=True, exist_ok=True)
-            dest = up_dir / uploaded_pdb.name
-            with open(dest, "wb") as fh:
-                fh.write(uploaded_pdb.getbuffer())
-            selected_pdb = str(dest)
-        ref_dcd = st.text_input("Reference DCD (optional)", value="")
+    with tab_sampling:
+        st.header("Sampling & Shard Production")
+        inputs = layout.available_inputs()
+        if not inputs:
+            st.warning("No prepared proteins found. Place a PDB under app_intputs/.")
+        else:
+            default_index = 0
+            input_choice = st.selectbox(
+                "Protein input (PDB)",
+                options=inputs,
+                format_func=lambda p: p.name,
+                index=default_index,
+                key="sim_input_choice",
+            )
+            temps_raw = st.text_input(
+                "Temperature ladder (K)",
+                "300, 320, 340",
+                key="sim_temperature_ladder",
+            )
+            steps = st.number_input(
+                "Total MD steps",
+                min_value=1000,
+                max_value=5_000_000,
+                value=50_000,
+                step=5_000,
+                key="sim_total_steps",
+            )
+            quick = st.checkbox(
+                "Quick preset (short equilibration)",
+                value=True,
+                key="sim_quick_preset",
+            )
+            random_seed_str = st.text_input(
+                "Random seed (blank = auto)",
+                "",
+                key="sim_random_seed",
+            )
+            run_label = st.text_input(
+                "Run label (optional)",
+                "",
+                key="sim_run_label",
+            )
+            col_extra = st.expander("Advanced options", expanded=False)
+            with col_extra:
+                jitter = st.checkbox(
+                    "Jitter starting structure",
+                    value=False,
+                    key="sim_jitter_toggle",
+                )
+                jitter_sigma = st.number_input(
+                    "Jitter sigma (Angstrom)",
+                    min_value=0.0,
+                    value=0.05,
+                    step=0.01,
+                    key="sim_jitter_sigma",
+                )
+                exchange_override = st.number_input(
+                    "Exchange frequency override (steps)",
+                    min_value=0,
+                    value=0,
+                    step=50,
+                    help="0 keeps the automatic heuristic.",
+                    key="sim_exchange_override",
+                )
+                temp_schedule = st.selectbox(
+                    "Temperature schedule",
+                    options=["auto", "exponential", "geometric", "linear"],
+                    index=0,
+                    key="sim_temperature_schedule",
+                )
+                schedule_mode = None if temp_schedule == "auto" else temp_schedule
 
-        # Sim parameters
-        with st.expander("Set simulation and build parameters", expanded=True):
-            minT = st.number_input("Min T (K)", value=290.0, step=1.0)
-            maxT = st.number_input("Max T (K)", value=350.0, step=1.0)
-            nrep = st.number_input("Num replicas", value=4, step=1)
-            steps = st.number_input("Total MD steps", value=5000, step=100)
-            lag = st.number_input("Lag (frames)", value=5, step=1)
-            bins_cv1 = st.number_input("Bins for cv1 (Rg)", value=24, step=1)
-            bins_cv2 = st.number_input("Bins for cv2 (RMSD)", value=24, step=1)
-            seed = st.number_input("Seed", value=123, step=1)
-            emit_stride = st.number_input("Emit stride (downsample)", value=1, step=1, min_value=1)
+            run_in_progress = bool(st.session_state.get(_RUN_PENDING, False))
+            if st.button(
+                "Run replica exchange",
+                type="primary",
+                disabled=run_in_progress,
+                key="sim_run_button",
+            ):
+                st.session_state[_RUN_PENDING] = True
 
-            learn_cv = st.checkbox("Learn CVs (Deep-TICA)", value=False)
-            deeptica_params: Dict[str, Any] = {}
+            if st.session_state.get(_RUN_PENDING, False):
+                try:
+                    temps = _parse_temperature_ladder(temps_raw)
+                    seed_val = int(random_seed_str) if random_seed_str.strip() else None
+                    config = SimulationConfig(
+                        pdb_path=input_choice,
+                        temperatures=temps,
+                        steps=int(steps),
+                        quick=quick,
+                        random_seed=seed_val,
+                        label=run_label or None,
+                        jitter_start=bool(jitter),
+                        jitter_sigma_A=float(jitter_sigma),
+                        exchange_frequency_steps=(
+                            int(exchange_override) if exchange_override > 0 else None
+                        ),
+                        temperature_schedule_mode=schedule_mode,
+                    )
+                    with st.spinner("Running replica exchange..."):
+                        sim_result = backend.run_sampling(config)
+                    st.session_state[_LAST_SIM] = sim_result
+                    st.session_state[_LAST_SHARDS] = None
+                except Exception as exc:
+                    st.error(f"Simulation failed: {exc}")
+                finally:
+                    st.session_state[_RUN_PENDING] = False
+
+        sim = st.session_state.get(_LAST_SIM)
+
+        if backend.state.runs:
+            with st.expander("Load recorded run", expanded=sim is None):
+                run_entries = backend.state.runs
+                run_ids = [str(entry.get("run_id")) for entry in run_entries]
+                if run_ids:
+                    current_idx = 0
+                    if sim is not None and sim.run_id in run_ids:
+                        current_idx = run_ids.index(sim.run_id)
+                    selected_run_id = st.selectbox(
+                        "Select run",
+                        options=run_ids,
+                        index=current_idx,
+                        key="load_run_select",
+                    )
+                    if st.button("Use this run", key="load_run_button"):
+                        loaded = backend.load_run(selected_run_id)
+                        if loaded is not None:
+                            st.session_state[_LAST_SIM] = loaded
+                            st.session_state[_LAST_SHARDS] = None
+                            sim = loaded
+                            st.success(f"Loaded run {loaded.run_id}.")
+                        else:
+                            st.error("Could not load the selected run from disk.")
+                else:
+                    st.info("No recorded runs available yet.")
+
+        if sim is not None:
+            st.success(
+                f"Latest run {sim.run_id} produced {len(sim.traj_files)} "
+                f"trajectories across {len(sim.analysis_temperatures)} temperatures."
+            )
+            st.caption(f"Workspace: {sim.run_dir}")
+            with st.expander("Run outputs", expanded=False):
+                st.json(
+                    {
+                        "run_id": sim.run_id,
+                        "trajectories": [p.name for p in sim.traj_files],
+                        "analysis_temperatures": sim.analysis_temperatures,
+                    }
+                )
+            st.subheader("Emit shards from the latest run")
+            with st.form("emit_shards_form"):
+                stride = st.number_input(
+                    "Stride (frames)",
+                    min_value=1,
+                    value=5,
+                    step=1,
+                    key="emit_stride",
+                )
+                temp_default = sim.analysis_temperatures[0] if sim.analysis_temperatures else 300.0
+                shard_temp = st.number_input(
+                    "Shard metadata temperature (K)",
+                    min_value=0.0,
+                    value=float(temp_default),
+                    step=5.0,
+                    key="emit_temperature",
+                )
+                seed_start = st.number_input(
+                    "Shard ID seed start",
+                    min_value=0,
+                    value=0,
+                    step=1,
+                    key="emit_seed_start",
+                )
+                reference_path = st.text_input(
+                    "Reference PDB for RMSD (optional)",
+                    value="",
+                    key="emit_reference",
+                )
+                emit = st.form_submit_button("Emit shard files")
+                if emit:
+                    try:
+                        request = ShardRequest(
+                            stride=int(stride),
+                            temperature=float(shard_temp),
+                            seed_start=int(seed_start),
+                            reference=Path(reference_path).expanduser().resolve()
+                            if reference_path.strip()
+                            else None,
+                        )
+                        shard_result = backend.emit_shards(
+                            sim,
+                            request,
+                            provenance={"source": "app_usecase"},
+                        )
+                        st.session_state[_LAST_SHARDS] = shard_result
+                        st.success(
+                            f"Emitted {shard_result.n_shards} shards "
+                            f"({shard_result.n_frames} frames)."
+                        )
+                        st.json(
+                            {
+                                "directory": str(shard_result.shard_dir),
+                                "files": [p.name for p in shard_result.shard_paths],
+                            }
+                        )
+                    except Exception as exc:
+                        st.error(f"Shard emission failed: {exc}")
+
+    with tab_training:
+        st.header("Train collective-variable model")
+        shard_groups = backend.shard_summaries()
+        if not shard_groups:
+            st.info("Emit shards before training a CV model.")
+        else:
+            run_ids = [str(entry.get("run_id")) for entry in shard_groups]
+            selected_runs = st.multiselect(
+                "Shard groups",
+                options=run_ids,
+                default=run_ids[-1:] if run_ids else [],
+            )
+            selected_paths = _select_shard_paths(shard_groups, selected_runs)
+            st.write(f"Selected {len(selected_paths)} shard files.")
+            col_a, col_b, col_c = st.columns(3)
+            lag = col_a.number_input("Lag (steps)", min_value=1, value=5, step=1, key="train_lag")
+            bins_rg = col_b.number_input("Bins for Rg", min_value=8, value=64, step=4, key="train_bins_rg")
+            bins_rmsd = col_c.number_input("Bins for RMSD", min_value=8, value=64, step=4, key="train_bins_rmsd")
+            col_d, col_e, col_f = st.columns(3)
+            seed = col_d.number_input("Training seed", min_value=0, value=1337, step=1, key="train_seed")
+            max_epochs = col_e.number_input("Max epochs", min_value=20, value=200, step=10, key="train_max_epochs")
+            patience = col_f.number_input(
+                "Early stopping patience",
+                min_value=5,
+                value=25,
+                step=5,
+                key="train_patience",
+            )
+            temperature = st.number_input(
+                "Reference temperature (K)",
+                min_value=0.0,
+                value=300.0,
+                step=5.0,
+                key="train_temperature",
+            )
+            hidden = st.text_input(
+                "Hidden layer widths",
+                value="128,128",
+                help="Comma-separated integers for the Deep-TICA network.",
+                key="train_hidden_layers",
+            )
+            hidden_layers = tuple(int(v.strip()) for v in hidden.split(",") if v.strip()) or (128, 128)
+            disabled = len(selected_paths) == 0
+            if st.button("Train Deep-TICA model", type="primary", disabled=disabled, key="train_button"):
+                try:
+                    train_cfg = TrainingConfig(
+                        lag=int(lag),
+                        bins={"Rg": int(bins_rg), "RMSD_ref": int(bins_rmsd)},
+                        seed=int(seed),
+                        temperature=float(temperature),
+                        max_epochs=int(max_epochs),
+                        early_stopping=int(patience),
+                        hidden=hidden_layers,
+                    )
+                    result = backend.train_model(selected_paths, train_cfg)
+                    st.session_state[_LAST_TRAIN] = result
+                    st.session_state[_LAST_TRAIN_CONFIG] = train_cfg
+                    st.success(
+                        f"Model stored at {result.bundle_path.name} (hash {result.dataset_hash})."
+                    )
+                    _show_build_outputs(result)
+                    summary = result.build_result.artifacts.get("mlcv_deeptica") if result.build_result else None
+                    if summary:
+                        st.caption("Deep-TICA summary")
+                        summary = _sanitize_artifacts(summary)
+                        st.json(summary)
+                        with st.expander("Training diagnostics", expanded=False):
+                            epochs = list(range(1, len(summary.get("val_score_curve", [])) + 1))
+                            if epochs:
+                                df_score = pd.DataFrame({"val_score": summary.get("val_score_curve", [])}, index=epochs)
+                                st.line_chart(df_score, height=200)
+                            var_z0 = summary.get("var_z0_curve") or []
+                            if var_z0:
+                                df_var_z0 = pd.DataFrame(var_z0)
+                                df_var_z0.index = list(range(1, len(df_var_z0) + 1))
+                                df_var_z0.columns = [f"z0_{i+1}" for i in range(df_var_z0.shape[1])]
+                                st.line_chart(df_var_z0, height=200)
+                            var_zt = summary.get("var_zt_curve") or []
+                            if var_zt:
+                                df_var_zt = pd.DataFrame(var_zt)
+                                df_var_zt.index = list(range(1, len(df_var_zt) + 1))
+                                df_var_zt.columns = [f"zt_{i+1}" for i in range(df_var_zt.shape[1])]
+                                st.line_chart(df_var_zt, height=200)
+                            cond_data = {}
+                            if summary.get("cond_c00_curve"):
+                                cond_data["cond_C00"] = summary.get("cond_c00_curve")
+                            if summary.get("cond_ctt_curve"):
+                                cond_data["cond_Ctt"] = summary.get("cond_ctt_curve")
+                            if cond_data:
+                                df_cond = pd.DataFrame(cond_data)
+                                st.line_chart(df_cond, height=200)
+                            if summary.get("grad_norm_curve"):
+                                df_grad = pd.DataFrame({"grad_norm": summary.get("grad_norm_curve")})
+                                st.line_chart(df_grad, height=200)
+                except Exception as exc:
+                    st.error(f"Training failed: {exc}")
+
+        last_model_path = backend.latest_model_path()
+        if last_model_path is not None:
+            st.caption(f"Latest model bundle: {last_model_path}")
+
+    with tab_analysis:
+        st.header("Build MSM and FES")
+        shard_groups = backend.shard_summaries()
+        if not shard_groups:
+            st.info("Emit shards to build an MSM/FES bundle.")
+        else:
+            run_ids = [str(entry.get("run_id")) for entry in shard_groups]
+            selected_runs = st.multiselect(
+                "Shard groups for analysis",
+                options=run_ids,
+                default=run_ids,
+            )
+            selected_paths = _select_shard_paths(shard_groups, selected_runs)
+            st.write(f"Using {len(selected_paths)} shard files for analysis.")
+            col_a, col_b, col_c = st.columns(3)
+            lag = col_a.number_input("Lag (steps)", min_value=1, value=10, step=1, key="analysis_lag")
+            bins_rg = col_b.number_input("Bins for Rg", min_value=8, value=72, step=4, key="analysis_bins_rg")
+            bins_rmsd = col_c.number_input("Bins for RMSD", min_value=8, value=72, step=4, key="analysis_bins_rmsd")
+            col_d, col_e = st.columns(2)
+            seed = col_d.number_input("Build seed", min_value=0, value=2025, step=1, key="analysis_seed")
+            temperature = col_e.number_input(
+                "Reference temperature (K)",
+                min_value=0.0,
+                value=300.0,
+                step=5.0,
+                key="analysis_temperature",
+            )
+            learn_cv = st.checkbox(
+                "Re-learn Deep-TICA during build",
+                value=False,
+                key="analysis_learn_cv",
+            )
+            deeptica_params = None
             if learn_cv:
-                deeptica_params["lag"] = st.number_input("DeepTICA lag", value=int(max(1, lag)))
-                deeptica_params["n_out"] = st.number_input("DeepTICA outputs", value=2, step=1)
-                deeptica_params["hidden"] = (64, 64)
-                deeptica_params["max_epochs"] = 200
-                deeptica_params["early_stopping"] = 20
-                deeptica_params["reweight_mode"] = "scaled_time"
-
-        # Run/build controls
-        sim_fut_ref = st.session_state.get("sim_future")
-        build_fut_ref = st.session_state.get("build_future")
-        sim_running = bool(sim_fut_ref is not None and not getattr(sim_fut_ref, "done", lambda: True)())
-        build_running = bool(build_fut_ref is not None and not getattr(build_fut_ref, "done", lambda: True)())
-        any_running = bool(sim_running or build_running)
-
-        if st.button("Start new simulation (emit shards)", disabled=any_running):
-            if not any_running:
-                # Clear previous messages
-                st.session_state["last_sim_message"] = None
-                st.session_state["sim_future"] = EXECUTOR.submit(
-                    _run_sim_and_emit_job,
-                    _resolve_input_path(selected_pdb),
-                    _resolve_input_path(ref_dcd) if ref_dcd.strip() else None,
-                    ws,
-                    float(minT),
-                    float(maxT),
-                    int(nrep),
-                    int(steps),
-                    {"Rg": int(bins_cv1), "RMSD_ref": int(bins_cv2)},
-                    int(seed),
-                    int(emit_stride),
+                reuse = st.checkbox(
+                    "Reuse last training hyperparameters",
+                    value=st.session_state.get(_LAST_TRAIN_CONFIG) is not None,
+                    key="analysis_reuse_train_cfg",
                 )
+                if reuse and st.session_state.get(_LAST_TRAIN_CONFIG) is not None:
+                    cfg: TrainingConfig = st.session_state[_LAST_TRAIN_CONFIG]
+                    deeptica_params = cfg.deeptica_params()
+                else:
+                    lag_ml = st.number_input("Deep-TICA lag", min_value=1, value=int(lag), key="analysis_lag_ml")
+                    hidden_ml = st.text_input("Deep-TICA hidden layers", value="128,128", key="analysis_hidden_layers")
+                    hidden_layers = tuple(
+                        int(v.strip())
+                        for v in hidden_ml.split(",")
+                        if v.strip()
+                    ) or (128, 128)
+                    max_epochs = st.number_input("Deep-TICA max epochs", min_value=20, value=200, step=10, key="analysis_max_epochs")
+                    patience = st.number_input("Deep-TICA patience", min_value=5, value=25, step=5, key="analysis_patience")
+                    deeptica_params = {
+                        "lag": int(lag_ml),
+                        "n_out": 2,
+                        "hidden": hidden_layers,
+                        "max_epochs": int(max_epochs),
+                        "early_stopping": int(patience),
+                        "reweight_mode": "scaled_time",
+                    }
+            disabled = len(selected_paths) == 0
+            if st.button("Build MSM/FES bundle", type="primary", disabled=disabled, key="analysis_build_button"):
                 try:
-                    st.experimental_rerun()
-                except Exception:
-                    pass
+                    build_cfg = BuildConfig(
+                        lag=int(lag),
+                        bins={"Rg": int(bins_rg), "RMSD_ref": int(bins_rmsd)},
+                        seed=int(seed),
+                        temperature=float(temperature),
+                        learn_cv=bool(learn_cv),
+                        deeptica_params=deeptica_params,
+                        notes={"source": "app_usecase"},
+                    )
+                    artifact = backend.build_analysis(selected_paths, build_cfg)
+                    st.session_state[_LAST_BUILD] = artifact
+                    st.success(
+                        f"Bundle {artifact.bundle_path.name} written (hash {artifact.dataset_hash})."
+                    )
+                    _show_build_outputs(artifact)
+                except Exception as exc:
+                    st.error(f"Analysis failed: {exc}")
 
-        if st.button("Build MSM/FES from existing shards", disabled=any_running):
-            if not any_running:
-                st.session_state["last_build_message"] = None
-                st.session_state["build_future"] = EXECUTOR.submit(
-                    _build_from_existing,
-                    ws,
-                    int(lag),
-                    {"Rg": int(bins_cv1), "RMSD_ref": int(bins_cv2)},
-                    int(seed),
-                    float((minT + maxT) / 2.0),
-                    bool(learn_cv),
-                    dict(deeptica_params or {}),
-                )
-                try:
-                    st.experimental_rerun()
-                except Exception:
-                    pass
+    with tab_assets:
+        st.header("Recorded assets")
+        
+        # Simulations section
+        st.subheader("Simulations")
+        runs = backend.state.runs
+        if runs:
+            for i, run in enumerate(runs):
+                col1, col2 = st.columns([8, 1])
+                with col1:
+                    st.write(f"**{run.get('run_id', 'Unknown')}** - {run.get('steps', 0)} steps - {run.get('created_at', 'Unknown date')}")
+                    st.caption(f"Temperatures: {run.get('temperatures', [])} K")
+                with col2:
+                    if st.button("❌", key=f"delete_run_{i}", help="Delete this simulation"):
+                        if backend.delete_simulation(i):
+                            st.success(f"Deleted simulation {run.get('run_id', 'Unknown')}")
+                            st.rerun()
+                        else:
+                            st.error("Failed to delete simulation")
+                st.divider()
+        else:
+            st.info("No simulations recorded yet.")
+        
+        # Shard batches section  
+        st.subheader("Shard batches")
+        shards = backend.state.shards
+        if shards:
+            for i, shard in enumerate(shards):
+                col1, col2 = st.columns([8, 1])
+                with col1:
+                    st.write(f"**{shard.get('run_id', 'Unknown')}** - {shard.get('n_shards', 0)} shards ({shard.get('n_frames', 0)} frames)")
+                    st.caption(f"Temperature: {shard.get('temperature', 0)} K, Stride: {shard.get('stride', 0)} - {shard.get('created_at', 'Unknown date')}")
+                with col2:
+                    if st.button("❌", key=f"delete_shard_{i}", help="Delete this shard batch"):
+                        if backend.delete_shard_batch(i):
+                            st.success(f"Deleted shard batch from {shard.get('run_id', 'Unknown')}")
+                            st.rerun()
+                        else:
+                            st.error("Failed to delete shard batch")
+                st.divider()
+        else:
+            st.info("No shard batches recorded yet.")
+        
+        # Models section
+        st.subheader("Models") 
+        models = backend.list_models()
+        if models:
+            for i, model in enumerate(models):
+                col1, col2 = st.columns([8, 1])
+                with col1:
+                    bundle_name = Path(model.get('bundle', '')).name
+                    st.write(f"**{bundle_name}** - Lag: {model.get('lag', 0)}, Temperature: {model.get('temperature', 0)} K")
+                    st.caption(f"Bins: Rg={model.get('bins', {}).get('Rg', 0)}, RMSD={model.get('bins', {}).get('RMSD_ref', 0)} - {model.get('created_at', 'Unknown date')}")
+                with col2:
+                    if st.button("❌", key=f"delete_model_{i}", help="Delete this model"):
+                        if backend.delete_model(i):
+                            st.success(f"Deleted model {bundle_name}")
+                            st.rerun()
+                        else:
+                            st.error("Failed to delete model")
+                st.divider()
+        else:
+            st.info("No models recorded yet.")
+        
+        # Analysis bundles section
+        st.subheader("Analysis bundles")
+        builds = backend.list_builds()
+        if builds:
+            for i, build in enumerate(builds):
+                col1, col2 = st.columns([8, 1])
+                with col1:
+                    bundle_name = Path(build.get('bundle', '')).name
+                    st.write(f"**{bundle_name}** - Lag: {build.get('lag', 0)}, Temperature: {build.get('temperature', 0)} K")
+                    st.caption(f"Learn CV: {build.get('learn_cv', False)} - {build.get('created_at', 'Unknown date')}")
+                with col2:
+                    if st.button("❌", key=f"delete_build_{i}", help="Delete this analysis bundle"):
+                        if backend.delete_analysis_bundle(i):
+                            st.success(f"Deleted analysis bundle {bundle_name}")
+                            st.rerun()
+                        else:
+                            st.error("Failed to delete analysis bundle")
+                st.divider()
+        else:
+            st.info("No analysis bundles recorded yet.")
 
-        if st.button("Build MSM/FES with Deep‑TICA", disabled=any_running):
-            if not any_running:
-                dparams = default_deeptica_params(lag=int(max(1, lag)))
-                st.session_state["last_build_message"] = None
-                st.session_state["build_future"] = EXECUTOR.submit(
-                    _build_from_existing,
-                    ws,
-                    int(lag),
-                    {"Rg": int(bins_cv1), "RMSD_ref": int(bins_cv2)},
-                    int(seed),
-                    float((minT + maxT) / 2.0),
-                    True,
-                    dparams,
-                )
-                try:
-                    st.experimental_rerun()
-                except Exception:
-                    pass
-        st.caption("Tip: Learn CVs is a build‑time option; no new simulation needed.")
-
-        if st.button("Clear all data (outputs)", disabled=any_running):
-            _clear_workspace(ws)
-            try:
-                st.session_state["last_sim_message"] = None
-                st.session_state["last_build_message"] = None
-            except Exception:
-                pass
-            try:
-                st.experimental_rerun()
-            except Exception:
-                pass
-
-        st.write("Sim status:", "running…" if sim_running else "idle")
-        st.write("Build status:", "running…" if build_running else "idle")
-
-        # Current info panel
-        st.subheader("Current Info")
-        man = read_manifest(ws)
-        last = man.get("last_build")
-        st.write("Shards:", man.get("shards", {}))
-        if last:
-            st.write("Last build digest:", last.get("digest"))
-            st.write("Dataset hash:", last.get("dataset_hash"))
-            st.write("Flags:", last.get("flags"))
-        with st.expander("Build logs", expanded=False):
-            logp = _latest_build_log(ws)
-            if logp and logp.exists():
-                try:
-                    text = logp.read_text(encoding="utf-8")
-                    st.code(text[-4000:] if len(text) > 4000 else text)
-                except Exception as e:
-                    st.write("(no logs)")
-        with st.expander("Emit logs", expanded=False):
-            logs = (ws / "logs")
-            if logs.exists():
-                files = sorted(logs.glob("emit-*.log"))
-                if files:
-                    try:
-                        text = files[-1].read_text(encoding="utf-8")
-                        st.code(text[-4000:] if len(text) > 4000 else text)
-                    except Exception:
-                        st.write("(no logs)")
-        with st.expander("Sim logs", expanded=False):
-            logp = _latest_sim_log(ws)
-            if logp and logp.exists():
-                try:
-                    text = logp.read_text(encoding="utf-8")
-                    st.code(text[-4000:] if len(text) > 4000 else text)
-                except Exception:
-                    st.write("(no logs)")
-
-    # Right panel: plots
-    with right:
-        # Stack plots vertically for better proportions on wide screens
-        bundle_paths = sorted((ws / "bundles").glob("*.json"))
-        latest_bundle = bundle_paths[-1] if bundle_paths else None
-        res: BuildResult | None = None
-        if latest_bundle and latest_bundle.exists():
-            try:
-                res = BuildResult.from_json(latest_bundle.read_text(encoding="utf-8"))
-            except Exception:
-                res = None
-
-        # MSM
-        T = res.transition_matrix if (res and res.transition_matrix is not None) else None
-        pi = res.stationary_distribution if (res and res.stationary_distribution is not None) else None
-        if T is None or pi is None or T.size == 0:
-            # try recomputing from shards using manifest-stored edges if present
-            man = read_manifest(ws)
-            notes = (res.metadata.applied_opts.notes if res else {}) or {}
-            edges_map = notes.get("cv_bin_edges", {})
-            if edges_map:
-                edge_arrays = {k: np.asarray(v, dtype=float) for k, v in edges_map.items()}
-                shards = _scan_shards(ws)
-                if shards:
-                    try:
-                        T, pi = recompute_msm_from_shards(shards, edges_by_name=edge_arrays, lag=int(man.get("params", {}).get("lag", 5)))
-                    except Exception:
-                        T, pi = None, None
-        st.subheader("Transition Matrix / π")
-        fig1 = plot_msm(T, pi)
-        st.pyplot(fig1, use_container_width=True)
-
-        # FES
-        fes = res.fes if res else None
-        st.subheader("Free Energy Surface")
-        fig2 = plot_fes(fes)
-        st.pyplot(fig2, use_container_width=True)
-
-        if res is not None:
-            st.write("Digest:", res.metadata.digest)
-            st.write("Dataset hash:", res.metadata.dataset_hash)
-            st.write("Flags:", res.flags)
-            # Show MLCV status if present
-            mlcv = (res.artifacts or {}).get("mlcv_deeptica") if hasattr(res, "artifacts") else None
-            if isinstance(mlcv, dict):
-                if mlcv.get("applied"):
-                    st.success("Learned CVs applied (Deep‑TICA)")
-                elif mlcv.get("skipped"):
-                    st.info(f"Learned CVs skipped: {mlcv.get('reason','unknown')}")
-
-    # Poll background jobs
-    sim_fut = st.session_state.get("sim_future")
-    if sim_fut is not None and sim_fut.done():
-        try:
-            sim_fut.result()
-            st.session_state["last_sim_message"] = "Simulation and emission finished successfully. You can now Build MSM/FES."
-        except Exception as e:
-            st.error(f"Simulation failed: {e}")
-        finally:
-            st.session_state["sim_future"] = None
-            try:
-                st.experimental_rerun()
-            except Exception:
-                pass
-
-    b_fut = st.session_state.get("build_future")
-    if b_fut is not None and b_fut.done():
-        try:
-            b_fut.result()
-            st.session_state["last_build_message"] = "Build finished successfully. Plots updated."
-        except Exception as e:
-            st.error(f"Build failed: {e}")
-        finally:
-            st.session_state["build_future"] = None
-            try:
-                st.experimental_rerun()
-            except Exception:
-                pass
-
-
-def _run_sim_and_emit_job(
-    pdb: Path,
-    ref_dcd: Path | None,
-    ws: Path,
-    minT: float,
-    maxT: float,
-    nrep: int,
-    steps: int,
-    bins: Dict[str, int],
-    seed: int,
-    emit_stride: int,
-) -> None:
-    # 1) run sim
-    temps = list(np.linspace(float(minT), float(maxT), int(max(2, nrep))))
-    sim = run_short_sim(Path(pdb), ws, temps, int(steps), quick=True)
-
-    # 2) emit shards under unique subdir per run to avoid overwriting (simple API)
-    shards_dir = ws / "shards" / Path(sim.run_dir).name
-    shard_jsons = emit_from_trajs_simple(
-        sim.traj_files,
-        shards_dir,
-        pdb=Path(pdb),
-        ref_dcd=Path(ref_dcd) if ref_dcd else None,
-        temperature=float(np.median(temps)),
-        seed_start=int(seed),
-        stride=int(max(1, emit_stride)),
-    )
-
-    # 3) update manifest (no build here)
-    params = {
-        "temperatures": temps,
-        "steps": int(steps),
-        "bins": bins,
-        "seed": int(seed),
-    }
-    _update_manifest_after_sim(ws, [Path(p).stem for p in shard_jsons], params)
-    # Explicit console cue for users following logs
-    try:
-        print(
-            "[pmarlo] workflow: simulation + emission finished successfully; next → Build MSM/FES",
-            flush=True,
-        )
-    except Exception:
-        pass
-
-
-def _build_from_existing(
-    ws: Path,
-    lag: int,
-    bins: Dict[str, int],
-    seed: int,
-    temperature: float,
-    learn_cv: bool,
-    deeptica_params: Dict[str, Any],
-) -> None:
-    shards = _scan_shards(ws)
-    if not shards:
-        st.warning("No shards found to rebuild.")
-        return
-    out_bundle = ws / "bundles" / f"build-rebuild-{len(shards)}-{np.random.randint(0, 1e6):06d}.json"
-    res, ds_hash, edges = aggregate_and_build_bundle(
-        shards,
-        out_bundle,
-        bins=bins,
-        lag=int(lag),
-        seed=int(seed),
-        temperature=float(temperature),
-        learn_cv=bool(learn_cv),
-        deeptica_params=dict(deeptica_params or {}),
-        workspace=ws,
-    )
-    params = {
-        "lag": int(lag),
-        "bins": bins,
-        "seed": int(seed),
-        "learn_cv": bool(learn_cv),
-        "deeptica_params": dict(deeptica_params or {}),
-        "cv_bin_edges": {k: v.tolist() for k, v in edges.items()},
-    }
-    _update_manifest_after_build(ws, res, out_bundle, [p.stem for p in shards], params)
-    # Explicit console cue for users following logs
-    try:
-        print(
-            "[pmarlo] workflow: build finished successfully; plots updated",
-            flush=True,
-        )
-    except Exception:
-        pass
-
-
-def _clear_workspace(ws: Path) -> None:
-    # Remove standard subfolders and state.json
-    for sub in ("shards", "bundles", "models", "logs", "sims"):
-        p = ws / sub
-        if p.exists():
-            import shutil
-
-            shutil.rmtree(p, ignore_errors=True)
-    state = ws / "state.json"
-    try:
-        if state.exists():
-            state.unlink()
-    except Exception:
-        pass
+    st.caption("Run this app with: poetry run streamlit run example_programs/app_usecase/app/app.py")
 
 
 if __name__ == "__main__":

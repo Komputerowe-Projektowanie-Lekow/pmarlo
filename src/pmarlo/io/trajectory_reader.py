@@ -6,13 +6,12 @@ from a trajectory without loading the whole file.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Optional, Protocol
 
 import numpy as np
-
 
 logger = logging.getLogger("pmarlo")
 
@@ -36,7 +35,9 @@ class TrajectoryReader(Protocol):
     per-frame coordinate arrays of shape ``(n_atoms, 3)``.
     """
 
-    def iter_frames(self, path: str, start: int, stop: int, stride: int = 1) -> Iterator[np.ndarray]:
+    def iter_frames(
+        self, path: str, start: int, stop: int, stride: int = 1
+    ) -> Iterator[np.ndarray]:
         """Iterate frames from ``start`` to ``stop`` (exclusive) with ``stride``.
 
         Parameters
@@ -83,7 +84,9 @@ class MDAnalysisReader:
                 "MDAnalysis is required for backend='mdanalysis'. Install extra 'pmarlo[mdanalysis]' or 'MDAnalysis'."
             ) from exc
 
-    def iter_frames(self, path: str, start: int, stop: int, stride: int = 1) -> Iterator[np.ndarray]:
+    def iter_frames(
+        self, path: str, start: int, stop: int, stride: int = 1
+    ) -> Iterator[np.ndarray]:
         self._require()
         import MDAnalysis as mda  # type: ignore
 
@@ -101,11 +104,14 @@ class MDAnalysisReader:
                 # MDAnalysis uses Angstroms by default; we return raw arrays to avoid assumptions
                 yield np.array(ts.positions, copy=True)
         except Exception as exc:  # pragma: no cover - defensive
-            raise TrajectoryIOError(f"Failed MDAnalysis stream of '{path}': {exc}") from exc
+            raise TrajectoryIOError(
+                f"Failed MDAnalysis stream of '{path}': {exc}"
+            ) from exc
 
     def probe_length(self, path: str) -> int:
         self._require()
         import MDAnalysis as mda  # type: ignore
+
         if self.topology_path is None:
             raise TrajectoryMissingTopologyError(
                 f"Topology is required to read '{path}' with MDAnalysis. Provide topology_path."
@@ -114,7 +120,9 @@ class MDAnalysisReader:
             u = mda.Universe(self.topology_path, path)
             return int(len(u.trajectory))
         except Exception as exc:  # pragma: no cover - defensive
-            raise TrajectoryIOError(f"Failed to probe length with MDAnalysis for '{path}': {exc}") from exc
+            raise TrajectoryIOError(
+                f"Failed to probe length with MDAnalysis for '{path}': {exc}"
+            ) from exc
 
 
 def get_reader(backend: str, topology_path: Optional[str]) -> TrajectoryReader:
@@ -179,11 +187,11 @@ class MDTrajReader:
         return ext in {".dcd", ".xtc", ".trr", ".nc"}
 
     def _iterload(self, path: str, *, stride: int = 1):  # type: ignore[override]
-        try:
-            import mdtraj as md  # type: ignore
-        except Exception as exc:  # pragma: no cover - import errors are environmental
-            raise TrajectoryIOError("mdtraj is required for MDTrajReader") from exc
+        """Open an iterator over trajectory chunks with plugin chatter silenced.
 
+        Uses pmarlo.io.trajectory.iterload which redirects the VMD/MDTraj DCD
+        plugin output away from stdout/stderr, preventing noisy console spam.
+        """
         top = self.topology_path
         if self._requires_topology(path) and not top:
             raise TrajectoryMissingTopologyError(
@@ -191,11 +199,21 @@ class MDTrajReader:
             )
 
         try:
-            return md.iterload(path, top=top, chunk=self.chunk_size, stride=1)
-        except Exception as exc:
-            raise TrajectoryFormatError(f"Failed to open trajectory '{path}': {exc}") from exc
+            from pmarlo.io import trajectory as _traj_io
 
-    def iter_frames(self, path: str, start: int, stop: int, stride: int = 1) -> Iterator[np.ndarray]:
+            return _traj_io.iterload(
+                path, top=top, chunk=int(self.chunk_size), stride=1
+            )
+        except TrajectoryIOError:
+            raise
+        except Exception as exc:
+            raise TrajectoryFormatError(
+                f"Failed to open trajectory '{path}': {exc}"
+            ) from exc
+
+    def iter_frames(
+        self, path: str, start: int, stop: int, stride: int = 1
+    ) -> Iterator[np.ndarray]:
         """Iterate per-frame coordinates between ``start`` and ``stop``.
 
         This implementation streams the trajectory sequentially using
@@ -244,7 +262,9 @@ class MDTrajReader:
         except TrajectoryIOError:
             raise
         except Exception as exc:
-            raise TrajectoryIOError(f"Error while streaming frames from '{path}': {exc}") from exc
+            raise TrajectoryIOError(
+                f"Error while streaming frames from '{path}': {exc}"
+            ) from exc
 
     def probe_length(self, path: str) -> int:
         """Return the number of frames by streaming and counting.
@@ -259,4 +279,6 @@ class MDTrajReader:
         except TrajectoryIOError:
             raise
         except Exception as exc:
-            raise TrajectoryIOError(f"Failed to probe length of '{path}': {exc}") from exc
+            raise TrajectoryIOError(
+                f"Failed to probe length of '{path}': {exc}"
+            ) from exc

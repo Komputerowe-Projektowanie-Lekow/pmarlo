@@ -55,6 +55,56 @@ def exponential_temperature_ladder(
     return [float(t) for t in temps]
 
 
+def geometric_temperature_ladder(
+    min_temp: float, max_temp: float, n_replicas: int
+) -> list[float]:
+    """Generate a geometrically spaced temperature ladder.
+
+    This is an alias for :func:`exponential_temperature_ladder` for clarity in
+    UI contexts. Returns a sorted, strictly positive list including bounds.
+    """
+    return list(exponential_temperature_ladder(min_temp, max_temp, n_replicas))
+
+
+def geometric_ladder(
+    tmin: float, tmax: float, n: int, endpoint: bool = True
+) -> np.ndarray:
+    """Return a stable geometric ladder from ``tmin`` to ``tmax``.
+
+    Parameters
+    ----------
+    tmin : float
+        Minimum temperature (K), strictly positive.
+    tmax : float
+        Maximum temperature (K), strictly greater than ``tmin``.
+    n : int
+        Number of points (>= 2).
+    endpoint : bool, default True
+        If True, include ``tmax``; if False, last point is ``tmax/r``.
+
+    Returns
+    -------
+    np.ndarray
+        Geometric sequence of temperatures in ascending order.
+    """
+    import numpy as _np
+
+    tmin = float(tmin)
+    tmax = float(tmax)
+    n = int(n)
+    if n < 2:
+        raise ValueError("n must be >= 2")
+    if not (tmin > 0.0 and tmax > 0.0 and tmax > tmin):
+        raise ValueError("Require 0 < tmin < tmax")
+    k = n - 1
+    r = (tmax / tmin) ** (1.0 / k)
+    idx = _np.arange(n, dtype=float)
+    vals = tmin * (r**idx)
+    if not endpoint:
+        vals = tmin * (r ** (_np.arange(n) * (k / n)))
+    return _np.array(vals, dtype=float)
+
+
 def power_of_two_temperature_ladder(
     min_temp: float, max_temp: float, n_replicas: int | None = None
 ) -> list[float]:
