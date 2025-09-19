@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 """Numerically stable VAMP-2 loss utilities for Deep-TICA training."""
 
@@ -55,8 +55,19 @@ class VAMP2Loss(nn.Module):
         C0t = z0_c.T @ (zt_c * w)
 
         eye = self._identity_like(C00, device)
-        C00 = C00 + self.eps * eye
-        Ctt = Ctt + self.eps * eye
+        dim = C00.shape[-1]
+        trace_floor = torch.tensor(1e-12, device=device, dtype=dtype)
+        tr0 = torch.clamp(torch.trace(C00), min=trace_floor)
+        trt = torch.clamp(torch.trace(Ctt), min=trace_floor)
+        mu0 = tr0 / float(max(1, dim))
+        mut = trt / float(max(1, dim))
+        ridge0 = mu0 * self.eps
+        ridget = mut * self.eps
+        alpha = 0.02
+        C00 = (1.0 - alpha) * C00 + (alpha * mu0 + ridge0) * eye
+        Ctt = (1.0 - alpha) * Ctt + (alpha * mut + ridget) * eye
+        C00 = (C00 + C00.T) * 0.5
+        Ctt = (Ctt + Ctt.T) * 0.5
 
         L0 = torch.linalg.cholesky(C00, upper=False)
         Lt = torch.linalg.cholesky(Ctt, upper=False)
