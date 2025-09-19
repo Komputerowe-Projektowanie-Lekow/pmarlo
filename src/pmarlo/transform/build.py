@@ -14,6 +14,8 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
+from ..analysis.fes import ensure_fes_inputs_whitened
+from ..analysis.msm import ensure_msm_inputs_whitened
 from ..markov_state_model._msm_utils import build_simple_msm
 from ..utils.seed import set_global_seed
 from .apply import apply_transform_plan
@@ -749,6 +751,11 @@ def _build_msm(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
     try:
         dtrajs: Any = dataset
         if isinstance(dataset, dict):
+            try:
+                ensure_msm_inputs_whitened(dataset)
+            except Exception:
+                logger.debug("Failed to apply CV whitening before MSM build", exc_info=True)
+        if isinstance(dataset, dict):
             dtrajs = dataset.get("dtrajs")
 
         # If dtrajs are missing or empty, try to create them from continuous CV data
@@ -846,6 +853,12 @@ def default_fes_builder(
     dataset: Any, opts: BuildOpts, applied: AppliedOpts
 ) -> Any | None:
     """Build a simple free energy surface with histogram fallback."""
+
+    if isinstance(dataset, dict):
+        try:
+            ensure_fes_inputs_whitened(dataset)
+        except Exception:
+            logger.debug("Failed to apply CV whitening before FES build", exc_info=True)
 
     cv_pair = _extract_cvs(dataset)
     if cv_pair is None:

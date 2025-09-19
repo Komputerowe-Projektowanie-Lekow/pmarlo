@@ -254,6 +254,7 @@ class BuildConfig:
     learn_cv: bool = False
     deeptica_params: Optional[Dict[str, Any]] = None
     notes: Dict[str, Any] = field(default_factory=dict)
+    apply_cv_whitening: bool = True
 
 
 @dataclass
@@ -487,6 +488,10 @@ class WorkflowBackend:
         analysis_notes = dict(config.notes or {})
         if config.learn_cv and "model_dir" not in analysis_notes:
             analysis_notes["model_dir"] = str(self.layout.models_dir)
+        analysis_notes["apply_cv_whitening_requested"] = bool(
+            config.apply_cv_whitening
+        )
+        analysis_notes["apply_cv_whitening_enforced"] = True
 
         br, ds_hash = build_from_shards(
             shard_jsons=shards,
@@ -518,6 +523,7 @@ class WorkflowBackend:
                 "created_at": stamp,
                 "flags": _sanitize_artifacts(br.flags),
                 "mlcv": _sanitize_artifacts(br.artifacts.get("mlcv_deeptica", {})),
+                "apply_cv_whitening": bool(config.apply_cv_whitening),
             }
         )
         return artifact
