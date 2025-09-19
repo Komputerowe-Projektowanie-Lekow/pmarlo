@@ -1,16 +1,15 @@
 ﻿from __future__ import annotations
 
+import importlib
 import sys
 import types
 from pathlib import Path
-import importlib
 from typing import Iterator
 
 import numpy as np
 import pytest
 import torch
 import torch.nn as nn
-
 
 if "mlcolvar" not in sys.modules:
     _mlc = types.ModuleType("mlcolvar")
@@ -29,6 +28,7 @@ if "mlcolvar" not in sys.modules:
 
 
 from pmarlo.features.deeptica.losses import VAMP2Loss
+
 
 class _DummyDictDataset(torch.utils.data.Dataset):
     def __init__(self, data: torch.Tensor, data_lag: torch.Tensor):
@@ -92,7 +92,9 @@ def _install_stub_mlcolvar():
             shuffle: bool = False,
             **_,
         ) -> "DummyDeepTICA":
-            loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+            loader = torch.utils.data.DataLoader(
+                dataset, batch_size=batch_size, shuffle=shuffle
+            )
             opt = torch.optim.Adam(self.parameters(), lr=1e-3)
             loss_fn = VAMP2Loss()
             for _ in range(min(max_epochs, 5)):
@@ -106,7 +108,14 @@ def _install_stub_mlcolvar():
             return self
 
     class DictModule:
-        def __init__(self, dataset, batch_size: int = 32, shuffle: bool = True, split: dict[str, float] | None = None, num_workers: int = 0):
+        def __init__(
+            self,
+            dataset,
+            batch_size: int = 32,
+            shuffle: bool = True,
+            split: dict[str, float] | None = None,
+            num_workers: int = 0,
+        ):
             if split is None:
                 split = {"train": 0.9, "val": 0.1}
             n = len(dataset)
@@ -119,10 +128,22 @@ def _install_stub_mlcolvar():
                 self.val_subset = torch.utils.data.Subset(dataset, indices[-1:])
             self.batch_size = batch_size
             self.shuffle = shuffle
+
         def train_dataloader(self):
-            return torch.utils.data.DataLoader(self.train_subset, batch_size=self.batch_size, shuffle=self.shuffle, num_workers=0)
+            return torch.utils.data.DataLoader(
+                self.train_subset,
+                batch_size=self.batch_size,
+                shuffle=self.shuffle,
+                num_workers=0,
+            )
+
         def val_dataloader(self):
-            return torch.utils.data.DataLoader(self.val_subset, batch_size=self.batch_size, shuffle=False, num_workers=0)
+            return torch.utils.data.DataLoader(
+                self.val_subset,
+                batch_size=self.batch_size,
+                shuffle=False,
+                num_workers=0,
+            )
 
     def create_timelagged_dataset(data: np.ndarray, lag: int) -> _DummyDictDataset:
         data = torch.as_tensor(data, dtype=torch.float32)
@@ -193,13 +214,19 @@ def _install_stub_lightning():
             self.callbacks = callbacks or []
             self.callback_metrics = {}
 
-        def fit(self, model, datamodule=None, train_dataloaders=None, val_dataloaders=None):
+        def fit(
+            self, model, datamodule=None, train_dataloaders=None, val_dataloaders=None
+        ):
             if not hasattr(model, "device"):
                 model.device = torch.device("cpu")
             model = model.to(torch.device("cpu"))
             if datamodule is not None:
                 train_loader = datamodule.train_dataloader()
-                val_loader = datamodule.val_dataloader() if hasattr(datamodule, "val_dataloader") else None
+                val_loader = (
+                    datamodule.val_dataloader()
+                    if hasattr(datamodule, "val_dataloader")
+                    else None
+                )
             else:
                 train_loader = train_dataloaders
                 val_loader = val_dataloaders
@@ -230,7 +257,11 @@ def _install_stub_lightning():
                 if scheduler is not None and hasattr(scheduler, "step"):
                     scheduler.step()
                 self.callback_metrics = {
-                    name: (val.detach().cpu() if isinstance(val, torch.Tensor) else torch.tensor(float(val)))
+                    name: (
+                        val.detach().cpu()
+                        if isinstance(val, torch.Tensor)
+                        else torch.tensor(float(val))
+                    )
                     for name, val in model._logged_metrics.items()
                 }
                 for cb in self.callbacks:
@@ -246,7 +277,11 @@ def _install_stub_lightning():
                         for batch in val_loader:
                             model.validation_step(batch, 0)
                     self.callback_metrics = {
-                        name: (val.detach().cpu() if isinstance(val, torch.Tensor) else torch.tensor(float(val)))
+                        name: (
+                            val.detach().cpu()
+                            if isinstance(val, torch.Tensor)
+                            else torch.tensor(float(val))
+                        )
                         for name, val in model._logged_metrics.items()
                     }
                     for cb in self.callbacks:
@@ -264,7 +299,16 @@ def _install_stub_lightning():
             pass
 
     class ModelCheckpoint(Callback):
-        def __init__(self, dirpath=None, filename=None, monitor=None, mode="max", save_top_k=1, save_last=False, every_n_epochs=None):
+        def __init__(
+            self,
+            dirpath=None,
+            filename=None,
+            monitor=None,
+            mode="max",
+            save_top_k=1,
+            save_last=False,
+            every_n_epochs=None,
+        ):
             self.dirpath = dirpath
             self.filename = filename
             self.monitor = monitor
@@ -308,12 +352,14 @@ def deeptica_module(monkeypatch):
     restore_ml = _install_stub_mlcolvar()
     restore_lightning = _install_stub_lightning()
     original_dataloader = torch.utils.data.DataLoader
+
     def _safe_dataloader(*args, **kwargs):
 
         kwargs["prefetch_factor"] = None
         kwargs["persistent_workers"] = False
         kwargs["num_workers"] = 0
         return original_dataloader(*args, **kwargs)
+
     torch.utils.data.DataLoader = _safe_dataloader
     sys.modules.pop("pmarlo.features.deeptica", None)
     import pmarlo.features.deeptica as deeptica

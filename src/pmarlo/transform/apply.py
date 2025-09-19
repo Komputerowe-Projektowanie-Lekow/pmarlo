@@ -118,7 +118,9 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
     try:
         Y = model.transform(X_all).astype(np.float64, copy=False)
     except Exception as exc:
-        raise RuntimeError(f"Failed to transform CVs with Deep-TICA model: {exc}") from exc
+        raise RuntimeError(
+            f"Failed to transform CVs with Deep-TICA model: {exc}"
+        ) from exc
 
     if Y.ndim != 2 or Y.shape[0] != X_all.shape[0]:
         raise RuntimeError("Deep-TICA returned invalid transformed features")
@@ -149,8 +151,7 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
         "output_variance": history.get("output_variance"),
         "loss_curve_last": (
             float(history["loss_curve"][-1])
-            if isinstance(history.get("loss_curve"), list)
-            and history.get("loss_curve")
+            if isinstance(history.get("loss_curve"), list) and history.get("loss_curve")
             else None
         ),
         "objective_last": (
@@ -200,19 +201,29 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
     # Include full curves if available (will be sanitized during JSON serialization)
     if isinstance(history.get("loss_curve"), list) and history.get("loss_curve"):
         summary["loss_curve"] = history["loss_curve"]
-    if isinstance(history.get("objective_curve"), list) and history.get("objective_curve"):
+    if isinstance(history.get("objective_curve"), list) and history.get(
+        "objective_curve"
+    ):
         summary["objective_curve"] = history["objective_curve"]
-    if isinstance(history.get("val_score_curve"), list) and history.get("val_score_curve"):
+    if isinstance(history.get("val_score_curve"), list) and history.get(
+        "val_score_curve"
+    ):
         summary["val_score_curve"] = history["val_score_curve"]
     if isinstance(history.get("var_z0_curve"), list) and history.get("var_z0_curve"):
         summary["var_z0_curve"] = history["var_z0_curve"]
     if isinstance(history.get("var_zt_curve"), list) and history.get("var_zt_curve"):
         summary["var_zt_curve"] = history["var_zt_curve"]
-    if isinstance(history.get("cond_c00_curve"), list) and history.get("cond_c00_curve"):
+    if isinstance(history.get("cond_c00_curve"), list) and history.get(
+        "cond_c00_curve"
+    ):
         summary["cond_c00_curve"] = history["cond_c00_curve"]
-    if isinstance(history.get("cond_ctt_curve"), list) and history.get("cond_ctt_curve"):
+    if isinstance(history.get("cond_ctt_curve"), list) and history.get(
+        "cond_ctt_curve"
+    ):
         summary["cond_ctt_curve"] = history["cond_ctt_curve"]
-    if isinstance(history.get("grad_norm_curve"), list) and history.get("grad_norm_curve"):
+    if isinstance(history.get("grad_norm_curve"), list) and history.get(
+        "grad_norm_curve"
+    ):
         summary["grad_norm_curve"] = history["grad_norm_curve"]
     if isinstance(history.get("val_score"), list) and history.get("val_score"):
         summary["val_score"] = history["val_score"]
@@ -224,11 +235,20 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
         try:
             base_dir = Path(model_dir)
             base_dir.mkdir(parents=True, exist_ok=True)
-            stem = params.get("model_prefix") or f"deeptica-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            stem = (
+                params.get("model_prefix")
+                or f"deeptica-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            )
             base_path = base_dir / stem
             model.save(base_path)
             saved_prefix = str(base_path)
-            for suffix in (".json", ".pt", ".scaler.pt", ".history.json", ".history.csv"):
+            for suffix in (
+                ".json",
+                ".pt",
+                ".scaler.pt",
+                ".history.json",
+                ".history.csv",
+            ):
                 candidate = base_path.with_suffix(suffix)
                 if candidate.exists():
                     saved_files.append(str(candidate))

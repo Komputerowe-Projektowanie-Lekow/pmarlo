@@ -516,6 +516,72 @@ def build_result(
             if isinstance(raw_artifacts, dict):
                 artifacts = _sanitize_artifacts(raw_artifacts)
 
+        # Record provenance notes for learned CVs, if present
+        try:
+            if "mlcv_deeptica" in artifacts:
+                # Minimal note to satisfy downstream gating/tests
+                note = {"method": "deeptica"}
+                # Include selected high-signal fields when available
+                try:
+                    summ = artifacts.get("mlcv_deeptica", {})
+                    if isinstance(summ, dict):
+                        for key in ("lag", "n_out", "pairs_total", "model_prefix"):
+                            if key in summ and summ[key] is not None:
+                                note[key] = summ[key]
+                except Exception:
+                    pass
+                if applied_obj.notes is None:
+                    applied_obj.notes = {}
+                applied_obj.notes["mlcv"] = note
+        except Exception:
+            # Notes are best-effort and must not break the build
+            pass
+
+        # Also record CV bin edges for the first two learned CVs
+        try:
+            if isinstance(working_dataset, dict) and "X" in working_dataset:
+                X_arr = np.asarray(working_dataset.get("X"), dtype=float)
+                if X_arr.ndim == 2 and X_arr.shape[1] >= 2 and X_arr.shape[0] > 0:
+                    cv1 = X_arr[:, 0]
+                    cv2 = X_arr[:, 1]
+                    n1 = 32
+                    n2 = 32
+                    try:
+                        if isinstance(applied_obj.bins, dict):
+                            n1 = int(applied_obj.bins.get("cv1", n1))
+                            n2 = int(applied_obj.bins.get("cv2", n2))
+                    except Exception:
+                        pass
+
+                    def _bounds(arr):
+                        a_min = float(np.nanmin(arr))
+                        a_max = float(np.nanmax(arr))
+                        if (
+                            not np.isfinite(a_min)
+                            or not np.isfinite(a_max)
+                            or a_max <= a_min
+                        ):
+                            return -1.0, 1.0
+                        return a_min, a_max
+
+                    a_min, a_max = _bounds(cv1)
+                    b_min, b_max = _bounds(cv2)
+                    e1 = (
+                        np.linspace(a_min, a_max, int(max(2, n1)) + 1)
+                        .astype(float)
+                        .tolist()
+                    )
+                    e2 = (
+                        np.linspace(b_min, b_max, int(max(2, n2)) + 1)
+                        .astype(float)
+                        .tolist()
+                    )
+                    if applied_obj.notes is None:
+                        applied_obj.notes = {}
+                    applied_obj.notes["cv_bin_edges"] = {"cv1": e1, "cv2": e2}
+        except Exception:
+            pass
+
         transition_matrix: Optional[np.ndarray] = None
         stationary_distribution: Optional[np.ndarray] = None
         msm_payload: Optional[Any] = None
@@ -688,7 +754,9 @@ def _build_msm(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
         # If dtrajs are missing or empty, try to create them from continuous CV data
         if not dtrajs or (isinstance(dtrajs, list) and all(d is None for d in dtrajs)):
             if isinstance(dataset, dict) and "X" in dataset:
-                logger.info("No discrete trajectories found, clustering continuous CV data for MSM...")
+                logger.info(
+                    "No discrete trajectories found, clustering continuous CV data for MSM..."
+                )
                 X = dataset["X"]
                 if isinstance(X, np.ndarray) and X.size > 0:
                     # Import clustering function
@@ -699,7 +767,7 @@ def _build_msm(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
                         X,
                         n_states=opts.n_states,
                         method="kmeans",
-                        random_state=opts.seed
+                        random_state=opts.seed,
                     )
 
                     labels = clustering.labels
@@ -718,7 +786,9 @@ def _build_msm(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
                             # Single trajectory case
                             dtrajs = [labels.astype(np.int32)]
 
-                        logger.info(f"Created {len(dtrajs)} discrete trajectories from clustering")
+                        logger.info(
+                            f"Created {len(dtrajs)} discrete trajectories from clustering"
+                        )
                     else:
                         logger.warning("Clustering failed to produce labels")
                         return None
@@ -726,7 +796,9 @@ def _build_msm(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
                     logger.warning("No continuous CV data available for clustering")
                     return None
             else:
-                logger.warning("No dtrajs or continuous data available for MSM building")
+                logger.warning(
+                    "No dtrajs or continuous data available for MSM building"
+                )
                 return None
 
         if isinstance(dtrajs, list):

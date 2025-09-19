@@ -51,6 +51,7 @@ except Exception as e:  # pragma: no cover - optional extra
 
 # External scaling via scikit-learn (avoid internal normalization)
 from sklearn.preprocessing import StandardScaler  # type: ignore
+
 from .losses import VAMP2Loss
 
 
@@ -113,7 +114,14 @@ def _apply_output_whitening(net, Z, idx_tau):
         cond_ctt = float(eig_ct.max() / eig_ct.min())
 
     wrapped = _WhitenWrapper(net, mean, inv_sqrt)
-    info = {"output_variance": output_var, "var_zt": var_zt, "cond_c00": 1.0, "cond_ctt": cond_ctt, "mean": mean.astype(float).tolist(), "transform": inv_sqrt.astype(float).tolist()}
+    info = {
+        "output_variance": output_var,
+        "var_zt": var_zt,
+        "cond_c00": 1.0,
+        "cond_ctt": cond_ctt,
+        "mean": mean.astype(float).tolist(),
+        "transform": inv_sqrt.astype(float).tolist(),
+    }
     return wrapped, info
 
     if linear_head or len(layers) <= 2:
@@ -131,6 +139,36 @@ def _apply_output_whitening(net, Z, idx_tau):
             modules.append(_resolve_activation_module(activation_name))
     if modules:
         core.nn = _nn.Sequential(*modules)  # type: ignore[attr-defined]
+
+
+# Provide a module-level whitening wrapper so helper functions can reference it
+try:
+    import torch.nn as _nn  # type: ignore
+except Exception:  # pragma: no cover - optional in environments without torch
+    _nn = None  # type: ignore
+
+if _nn is not None:
+
+    class _WhitenWrapper(_nn.Module):  # type: ignore[misc]
+        def __init__(
+            self,
+            inner,
+            mean: np.ndarray | torch.Tensor,
+            transform: np.ndarray | torch.Tensor,
+        ):
+            super().__init__()
+            self.inner = inner
+            # Register buffers to move with the module's device
+            self.register_buffer("mean", torch.as_tensor(mean, dtype=torch.float32))
+            self.register_buffer(
+                "transform", torch.as_tensor(transform, dtype=torch.float32)
+            )
+
+        def forward(self, x):  # type: ignore[override]
+            y = self.inner(x)
+            y = y - self.mean
+            return torch.matmul(y, self.transform.T)
+
 
 @dataclass(frozen=True)
 class DeepTICAConfig:
@@ -256,7 +294,9 @@ class DeepTICAModel:
         else:
             hidden_layers = hidden_cfg if hidden_cfg else (32, 16)
         layers = [in_dim, *hidden_layers, int(cfg.n_out)]
-        activation_name = str(getattr(cfg, "activation", "gelu")).lower().strip() or "gelu"
+        activation_name = (
+            str(getattr(cfg, "activation", "gelu")).lower().strip() or "gelu"
+        )
         try:
             core = DeepTICA(
                 layers=layers,
@@ -270,9 +310,13 @@ class DeepTICAModel:
                 n_cvs=int(cfg.n_out),
                 options={"norm_in": False},
             )
-            _override_core_mlp(core, layers, activation_name, bool(getattr(cfg, "linear_head", False)))
+            _override_core_mlp(
+                core, layers, activation_name, bool(getattr(cfg, "linear_head", False))
+            )
         else:
-            _override_core_mlp(core, layers, activation_name, bool(getattr(cfg, "linear_head", False)))
+            _override_core_mlp(
+                core, layers, activation_name, bool(getattr(cfg, "linear_head", False))
+            )
         import torch.nn as _nn  # type: ignore
 
         def _strip_batch_norm(module: _nn.Module) -> None:
@@ -314,9 +358,38 @@ class DeepTICAModel:
         self.net.eval()
         # Trace with single precision (typical for inference)
         example = torch.zeros(1, int(self.scaler.mean_.shape[0]), dtype=torch.float32)
+        # Work around LightningModule property access during JIT introspection
+        try:
+
+            def _mark_scripting_safe(mod):
+                try:
+                    if hasattr(mod, "_jit_is_scripting"):
+                        setattr(mod, "_jit_is_scripting", True)
+                except Exception:
+                    pass
+                try:
+                    for _name, _child in getattr(mod, "named_modules", lambda: [])():
+                        try:
+                            if hasattr(_child, "_jit_is_scripting"):
+                                setattr(_child, "_jit_is_scripting", True)
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+
+            _mark_scripting_safe(self.net)
+            base = getattr(self.net, "inner", None)
+            if base is not None:
+                _mark_scripting_safe(base)
+        except Exception:
+            pass
         ts = torch.jit.trace(self.net.to(torch.float32), example)
         out = path.with_suffix(".ts")
-        ts.save(str(out))
+        try:
+            ts.save(str(out))
+        except Exception:
+            # Fallback to torch.jit.save for broader compatibility
+            torch.jit.save(ts, str(out))
         return out
 
     def plumed_snippet(self, model_path: Path) -> str:
@@ -383,9 +456,13 @@ def train_deeptica(
             n_cvs=int(cfg.n_out),
             options={"norm_in": False},
         )
-        _override_core_mlp(core, layers, activation_name, bool(getattr(cfg, "linear_head", False)))
+        _override_core_mlp(
+            core, layers, activation_name, bool(getattr(cfg, "linear_head", False))
+        )
     else:
-        _override_core_mlp(core, layers, activation_name, bool(getattr(cfg, "linear_head", False)))
+        _override_core_mlp(
+            core, layers, activation_name, bool(getattr(cfg, "linear_head", False))
+        )
     # Wrap with input LayerNorm and light dropout for stability on tiny nets
     import torch.nn as _nn  # type: ignore
 
@@ -411,11 +488,18 @@ def train_deeptica(
             return self.inner(x)
 
     class _WhitenWrapper(_nn.Module):  # type: ignore[misc]
-        def __init__(self, inner, mean: np.ndarray | torch.Tensor, transform: np.ndarray | torch.Tensor):
+        def __init__(
+            self,
+            inner,
+            mean: np.ndarray | torch.Tensor,
+            transform: np.ndarray | torch.Tensor,
+        ):
             super().__init__()
             self.inner = inner
             self.register_buffer("mean", torch.as_tensor(mean, dtype=torch.float32))
-            self.register_buffer("transform", torch.as_tensor(transform, dtype=torch.float32))
+            self.register_buffer(
+                "transform", torch.as_tensor(transform, dtype=torch.float32)
+            )
 
         def forward(self, x):  # type: ignore[override]
             y = self.inner(x)
@@ -842,9 +926,7 @@ def train_deeptica(
                         if dm is not None or val_loader is not None
                         else "train_loss"
                     ),
-                    mode="max"
-                    if dm is not None or val_loader is not None
-                    else "min",
+                    mode="max" if dm is not None or val_loader is not None else "min",
                     save_top_k=3,
                     save_last=True,
                     every_n_epochs=5,
@@ -1043,7 +1125,11 @@ def train_deeptica(
                         "train_loss", loss, on_step=False, on_epoch=True, prog_bar=True
                     )
                     self.log(
-                        "train_vamp2", score, on_step=False, on_epoch=True, prog_bar=False
+                        "train_vamp2",
+                        score,
+                        on_step=False,
+                        on_epoch=True,
+                        prog_bar=False,
                     )
                     return loss
 
@@ -1051,9 +1137,13 @@ def train_deeptica(
                     grad_sq = []
                     for param in self.parameters():
                         if param.grad is not None:
-                            grad_sq.append(torch.sum(param.grad.detach().to(torch.float64) ** 2))
+                            grad_sq.append(
+                                torch.sum(param.grad.detach().to(torch.float64) ** 2)
+                            )
                     if grad_sq:
-                        grad_norm = float(torch.sqrt(torch.stack(grad_sq).sum()).cpu().item())
+                        grad_norm = float(
+                            torch.sqrt(torch.stack(grad_sq).sum()).cpu().item()
+                        )
                     else:
                         grad_norm = 0.0
                     self._grad_norm_accum.append(float(grad_norm))
@@ -1074,13 +1164,17 @@ def train_deeptica(
                             y_t_eval = y_t.detach()
                             y_tau_eval = y_tau.detach()
                             y_t_c = y_t_eval - torch.mean(y_t_eval, dim=0, keepdim=True)
-                            y_tau_c = y_tau_eval - torch.mean(y_tau_eval, dim=0, keepdim=True)
+                            y_tau_c = y_tau_eval - torch.mean(
+                                y_tau_eval, dim=0, keepdim=True
+                            )
                             n = max(1, y_t_eval.shape[0] - 1)
                             C0 = (y_t_c.T @ y_t_c) / float(n)
                             Ctt = (y_tau_c.T @ y_tau_c) / float(n)
                             Ctau = (y_t_c.T @ y_tau_c) / float(n)
                             evals, evecs = torch.linalg.eigh((C0 + C0.T) * 0.5)
-                            eps = torch.tensor(1e-8, dtype=evals.dtype, device=evals.device)
+                            eps = torch.tensor(
+                                1e-8, dtype=evals.dtype, device=evals.device
+                            )
                             inv_sqrt = torch.diag(
                                 torch.rsqrt(torch.clamp(evals, min=float(eps)))
                             )
@@ -1100,13 +1194,24 @@ def train_deeptica(
                                 )
                             var_z0 = torch.var(y_t, dim=0, unbiased=True)
                             var_zt = torch.var(y_tau, dim=0, unbiased=True)
-                            self._val_var_z0_accum.append(var_z0.detach().cpu().tolist())
-                            self._val_var_zt_accum.append(var_zt.detach().cpu().tolist())
+                            self._val_var_z0_accum.append(
+                                var_z0.detach().cpu().tolist()
+                            )
+                            self._val_var_zt_accum.append(
+                                var_zt.detach().cpu().tolist()
+                            )
                             evals_c0 = torch.clamp(evals, min=1e-12)
-                            cond_c0 = float((evals_c0.max() / evals_c0.min()).detach().cpu().item())
+                            cond_c0 = float(
+                                (evals_c0.max() / evals_c0.min()).detach().cpu().item()
+                            )
                             evals_ctt, _ = torch.linalg.eigh((Ctt + Ctt.T) * 0.5)
                             evals_ctt = torch.clamp(evals_ctt, min=1e-12)
-                            cond_ctt = float((evals_ctt.max() / evals_ctt.min()).detach().cpu().item())
+                            cond_ctt = float(
+                                (evals_ctt.max() / evals_ctt.min())
+                                .detach()
+                                .cpu()
+                                .item()
+                            )
                             self._cond_c0_accum.append(cond_c0)
                             self._cond_ctt_accum.append(cond_ctt)
                             var_t = torch.diag(C0)
@@ -1135,29 +1240,45 @@ def train_deeptica(
                                     if getattr(self, "history_file", None) is not None:
                                         rec = {
                                             "epoch": int(self.current_epoch),
-                                            "val_loss": float(loss.detach().cpu().item()),
-                                            "val_score": float(score.detach().cpu().item()),
-                                            "val_vamp2": float(score.detach().cpu().item()),
+                                            "val_loss": float(
+                                                loss.detach().cpu().item()
+                                            ),
+                                            "val_score": float(
+                                                score.detach().cpu().item()
+                                            ),
+                                            "val_vamp2": float(
+                                                score.detach().cpu().item()
+                                            ),
                                             "val_eigs": [
                                                 float(vals[i].detach().cpu().item())
                                                 for i in range(k)
                                             ],
                                             "val_corr": [
                                                 float(corr[i].detach().cpu().item())
-                                                for i in range(min(int(corr.shape[0]), 4))
+                                                for i in range(
+                                                    min(int(corr.shape[0]), 4)
+                                                )
                                             ],
                                             "val_whiten_norm": float(
                                                 whiten_norm.detach().cpu().item()
                                             ),
-                                            "var_z0": [float(x) for x in var_z0.detach().cpu().tolist()],
-                                            "var_zt": [float(x) for x in var_zt.detach().cpu().tolist()],
+                                            "var_z0": [
+                                                float(x)
+                                                for x in var_z0.detach().cpu().tolist()
+                                            ],
+                                            "var_zt": [
+                                                float(x)
+                                                for x in var_zt.detach().cpu().tolist()
+                                            ],
                                             "cond_C00": float(cond_c0),
                                             "cond_Ctt": float(cond_ctt),
                                         }
                                         with open(
                                             self.history_file, "a", encoding="utf-8"
                                         ) as fh:
-                                            fh.write(json.dumps(rec, sort_keys=True) + "\n")
+                                            fh.write(
+                                                json.dumps(rec, sort_keys=True) + "\n"
+                                            )
                                 except Exception:
                                     pass
                     except Exception:
@@ -1165,20 +1286,33 @@ def train_deeptica(
                         pass
                     return loss
 
-
                 def on_train_epoch_start(self):  # type: ignore[override]
                     self._train_loss_accum.clear()
                     self._grad_norm_accum.clear()
 
                 def on_train_epoch_end(self):  # type: ignore[override]
                     if self._train_loss_accum:
-                        avg = float(sum(self._train_loss_accum) / len(self._train_loss_accum))
+                        avg = float(
+                            sum(self._train_loss_accum) / len(self._train_loss_accum)
+                        )
                         self.train_loss_curve.append(avg)
-                        self.log("train_loss_epoch", torch.tensor(avg, device=self.device, dtype=torch.float32), prog_bar=False)
+                        self.log(
+                            "train_loss_epoch",
+                            torch.tensor(avg, device=self.device, dtype=torch.float32),
+                            prog_bar=False,
+                        )
                     if self._grad_norm_accum:
-                        avg_grad = float(sum(self._grad_norm_accum) / len(self._grad_norm_accum))
+                        avg_grad = float(
+                            sum(self._grad_norm_accum) / len(self._grad_norm_accum)
+                        )
                         self.grad_norm_curve.append(avg_grad)
-                        self.log("grad_norm_epoch", torch.tensor(avg_grad, device=self.device, dtype=torch.float32), prog_bar=False)
+                        self.log(
+                            "grad_norm_epoch",
+                            torch.tensor(
+                                avg_grad, device=self.device, dtype=torch.float32
+                            ),
+                            prog_bar=False,
+                        )
                     self._train_loss_accum.clear()
                     self._grad_norm_accum.clear()
 
@@ -1194,32 +1328,76 @@ def train_deeptica(
                     avg_loss = None
                     avg_score = None
                     if self._val_loss_accum:
-                        avg_loss = float(sum(self._val_loss_accum) / len(self._val_loss_accum))
+                        avg_loss = float(
+                            sum(self._val_loss_accum) / len(self._val_loss_accum)
+                        )
                         self.val_loss_curve.append(avg_loss)
-                        self.log("val_loss_epoch", torch.tensor(avg_loss, device=self.device, dtype=torch.float32), prog_bar=False)
+                        self.log(
+                            "val_loss_epoch",
+                            torch.tensor(
+                                avg_loss, device=self.device, dtype=torch.float32
+                            ),
+                            prog_bar=False,
+                        )
                     if self._val_score_accum:
-                        avg_score = float(sum(self._val_score_accum) / len(self._val_score_accum))
+                        avg_score = float(
+                            sum(self._val_score_accum) / len(self._val_score_accum)
+                        )
                         self.val_score_curve.append(avg_score)
-                        score_tensor = torch.tensor(avg_score, device=self.device, dtype=torch.float32)
+                        score_tensor = torch.tensor(
+                            avg_score, device=self.device, dtype=torch.float32
+                        )
                         self.log("val_score", score_tensor, prog_bar=True)
                     if self._val_var_z0_accum:
                         arr = np.asarray(self._val_var_z0_accum, dtype=float)
                         avg_var_z0 = np.mean(arr, axis=0).tolist()
                         self.var_z0_curve.append([float(x) for x in avg_var_z0])
-                        self.log("val_var_z0", torch.tensor(float(np.mean(avg_var_z0)), device=self.device, dtype=torch.float32), prog_bar=False)
+                        self.log(
+                            "val_var_z0",
+                            torch.tensor(
+                                float(np.mean(avg_var_z0)),
+                                device=self.device,
+                                dtype=torch.float32,
+                            ),
+                            prog_bar=False,
+                        )
                     if self._val_var_zt_accum:
                         arr = np.asarray(self._val_var_zt_accum, dtype=float)
                         avg_var_zt = np.mean(arr, axis=0).tolist()
                         self.var_zt_curve.append([float(x) for x in avg_var_zt])
-                        self.log("val_var_zt", torch.tensor(float(np.mean(avg_var_zt)), device=self.device, dtype=torch.float32), prog_bar=False)
+                        self.log(
+                            "val_var_zt",
+                            torch.tensor(
+                                float(np.mean(avg_var_zt)),
+                                device=self.device,
+                                dtype=torch.float32,
+                            ),
+                            prog_bar=False,
+                        )
                     if self._cond_c0_accum:
-                        avg_cond_c0 = float(sum(self._cond_c0_accum) / len(self._cond_c0_accum))
+                        avg_cond_c0 = float(
+                            sum(self._cond_c0_accum) / len(self._cond_c0_accum)
+                        )
                         self.cond_c0_curve.append(avg_cond_c0)
-                        self.log("cond_C00", torch.tensor(avg_cond_c0, device=self.device, dtype=torch.float32), prog_bar=False)
+                        self.log(
+                            "cond_C00",
+                            torch.tensor(
+                                avg_cond_c0, device=self.device, dtype=torch.float32
+                            ),
+                            prog_bar=False,
+                        )
                     if self._cond_ctt_accum:
-                        avg_cond_ctt = float(sum(self._cond_ctt_accum) / len(self._cond_ctt_accum))
+                        avg_cond_ctt = float(
+                            sum(self._cond_ctt_accum) / len(self._cond_ctt_accum)
+                        )
                         self.cond_ctt_curve.append(avg_cond_ctt)
-                        self.log("cond_Ctt", torch.tensor(avg_cond_ctt, device=self.device, dtype=torch.float32), prog_bar=False)
+                        self.log(
+                            "cond_Ctt",
+                            torch.tensor(
+                                avg_cond_ctt, device=self.device, dtype=torch.float32
+                            ),
+                            prog_bar=False,
+                        )
                     self._val_loss_accum.clear()
                     self._val_score_accum.clear()
                     self._val_var_z0_accum.clear()
@@ -1426,22 +1604,38 @@ def train_deeptica(
     grad_norm_curve: list[float] | None = None
     try:
         if lightning_available:
-            if hasattr(wrapped, "train_loss_curve") and getattr(wrapped, "train_loss_curve"):
+            if hasattr(wrapped, "train_loss_curve") and getattr(
+                wrapped, "train_loss_curve"
+            ):
                 train_curve = [float(x) for x in getattr(wrapped, "train_loss_curve")]
-            if hasattr(wrapped, "val_loss_curve") and getattr(wrapped, "val_loss_curve"):
+            if hasattr(wrapped, "val_loss_curve") and getattr(
+                wrapped, "val_loss_curve"
+            ):
                 val_curve = [float(x) for x in getattr(wrapped, "val_loss_curve")]
-            if hasattr(wrapped, "val_score_curve") and getattr(wrapped, "val_score_curve"):
+            if hasattr(wrapped, "val_score_curve") and getattr(
+                wrapped, "val_score_curve"
+            ):
                 score_curve = [float(x) for x in getattr(wrapped, "val_score_curve")]
             if hasattr(wrapped, "var_z0_curve") and getattr(wrapped, "var_z0_curve"):
-                var_z0_curve = [[float(v) for v in arr] for arr in getattr(wrapped, "var_z0_curve")]
+                var_z0_curve = [
+                    [float(v) for v in arr] for arr in getattr(wrapped, "var_z0_curve")
+                ]
             if hasattr(wrapped, "var_zt_curve") and getattr(wrapped, "var_zt_curve"):
-                var_zt_curve = [[float(v) for v in arr] for arr in getattr(wrapped, "var_zt_curve")]
+                var_zt_curve = [
+                    [float(v) for v in arr] for arr in getattr(wrapped, "var_zt_curve")
+                ]
             if hasattr(wrapped, "cond_c0_curve") and getattr(wrapped, "cond_c0_curve"):
                 cond_c0_curve = [float(x) for x in getattr(wrapped, "cond_c0_curve")]
-            if hasattr(wrapped, "cond_ctt_curve") and getattr(wrapped, "cond_ctt_curve"):
+            if hasattr(wrapped, "cond_ctt_curve") and getattr(
+                wrapped, "cond_ctt_curve"
+            ):
                 cond_ctt_curve = [float(x) for x in getattr(wrapped, "cond_ctt_curve")]
-            if hasattr(wrapped, "grad_norm_curve") and getattr(wrapped, "grad_norm_curve"):
-                grad_norm_curve = [float(x) for x in getattr(wrapped, "grad_norm_curve")]
+            if hasattr(wrapped, "grad_norm_curve") and getattr(
+                wrapped, "grad_norm_curve"
+            ):
+                grad_norm_curve = [
+                    float(x) for x in getattr(wrapped, "grad_norm_curve")
+                ]
             if hist_cb.losses and not train_curve:
                 train_curve = [float(x) for x in hist_cb.losses]
             if hist_cb.val_losses and not val_curve:
@@ -1581,7 +1775,6 @@ def train_deeptica(
                 "config": asdict(cfg),
                 "final_metrics": {
                     "output_variance": output_variance,
-
                     "train_loss_last": (
                         (history.get("loss_curve") or [None])[-1]
                         if isinstance(history.get("loss_curve"), list)
@@ -1644,6 +1837,3 @@ def train_deeptica(
 
     device = "cuda" if (hasattr(torch, "cuda") and torch.cuda.is_available()) else "cpu"
     return DeepTICAModel(cfg, scaler, net, device=device, training_history=history)
-
-
-

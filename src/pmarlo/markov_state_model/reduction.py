@@ -102,9 +102,7 @@ def tica_reduce(
     try:
         import pyemma
 
-        tica = pyemma.coordinates.tica(
-            [X_prep], lag=lag, dim=n_components
-        )
+        tica = pyemma.coordinates.tica([X_prep], lag=lag, dim=n_components)
         return tica.get_output()[0]
     except ImportError:
         pass

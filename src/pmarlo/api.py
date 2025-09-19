@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 import mdtraj as md  # type: ignore
 import numpy as np
 
+from .config import JOINT_USE_REWEIGHT
 from .data.aggregate import aggregate_and_build as _aggregate_and_build
 from .features import get_feature
 from .features.base import parse_feature_spec
@@ -40,14 +41,13 @@ from .reporting.plots import (
     save_pmf_line,
     save_transition_matrix_heatmap,
 )
-from .config import JOINT_USE_REWEIGHT
-from .workflow.joint import JointWorkflow, WorkflowConfig as JointWorkflowConfig
-
 from .transform.build import AppliedOpts as _AppliedOpts
 from .transform.build import BuildOpts as _BuildOpts
 from .transform.plan import TransformPlan as _TransformPlan
 from .transform.plan import TransformStep as _TransformStep
 from .transform.progress import coerce_progress_callback
+from .workflow.joint import JointWorkflow
+from .workflow.joint import WorkflowConfig as JointWorkflowConfig
 
 logger = logging.getLogger("pmarlo")
 
@@ -1464,6 +1464,7 @@ def build_from_shards(
     temperature: float,
     learn_cv: bool = False,
     deeptica_params: dict | None = None,
+    n_macrostates: int | None = None,
     notes: dict | None = None,
     progress_callback=None,
 ):
@@ -1529,10 +1530,16 @@ def build_from_shards(
     )
     all_notes = dict(notes or {})
     all_notes.setdefault("cv_bin_edges", {k: v.tolist() for k, v in edges.items()})
+    # Determine number of macrostates
+    if n_macrostates is not None:
+        n_states = int(n_macrostates)
+    else:
+        n_states = int((deeptica_params or {}).get("n_states", 5))
+
     applied = _AppliedOpts(
         bins=bins,
         lag=int(lag),
-        macrostates=int((deeptica_params or {}).get("n_states", 5)),
+        macrostates=n_states,
         notes=all_notes,
     )
 
@@ -1725,6 +1732,7 @@ def extract_random_highT_frame_to_pdb(
     frame.save_pdb(str(out_p))
     return out_p
 
+
 def build_joint_workflow(
     shards_root: Path,
     temperature_ref_K: float,
@@ -1746,4 +1754,3 @@ def build_joint_workflow(
         use_reweight=bool(use_reweight),
     )
     return JointWorkflow(cfg)
-

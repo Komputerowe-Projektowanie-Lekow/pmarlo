@@ -74,7 +74,7 @@ def _slugify(label: Optional[str]) -> Optional[str]:
 def choose_sim_seed(mode: str, *, fixed: Optional[int] = None) -> Optional[int]:
     """Choose simulation seed based on mode."""
     import random
-    
+
     if mode == "none":
         return None
     elif mode == "fixed":
@@ -107,7 +107,7 @@ def run_short_sim(
         state_path=workspace / "output" / "state.json",
     )
     layout.ensure()
-    
+
     backend = WorkflowBackend(layout)
     config = SimulationConfig(
         pdb_path=pdb_path,
@@ -431,6 +431,9 @@ class WorkflowBackend:
                 "bins": dict(config.bins),
                 "seed": int(config.seed),
                 "temperature": float(config.temperature),
+                "hidden": [int(h) for h in config.hidden],
+                "max_epochs": int(config.max_epochs),
+                "early_stopping": int(config.early_stopping),
                 "created_at": stamp,
                 "metrics": _sanitize_artifacts(br.artifacts.get("mlcv_deeptica", {})),
             }
@@ -477,6 +480,7 @@ class WorkflowBackend:
                 "seed": int(config.seed),
                 "temperature": float(config.temperature),
                 "learn_cv": bool(config.learn_cv),
+                "deeptica_params": _sanitize_artifacts(config.deeptica_params) if config.deeptica_params else None,
                 "created_at": stamp,
                 "flags": _sanitize_artifacts(br.flags),
                 "mlcv": _sanitize_artifacts(br.artifacts.get("mlcv_deeptica", {})),
@@ -552,6 +556,128 @@ class WorkflowBackend:
             created_at=created_at,
         )
 
+    def load_model(self, index: int) -> Optional[TrainingResult]:
+        if index < 0 or index >= len(self.state.models):
+            return None
+        entry = dict(self.state.models[index])
+        return self._load_model_from_entry(entry)
+
+    def load_analysis_bundle(self, index: int) -> Optional[BuildArtifact]:
+        if index < 0 or index >= len(self.state.builds):
+            return None
+        entry = dict(self.state.builds[index])
+        return self._load_analysis_from_entry(entry)
+
+    def build_config_from_entry(self, entry: Dict[str, Any]) -> BuildConfig:
+        bins_raw = entry.get("bins")
+        bins = dict(bins_raw) if isinstance(bins_raw, dict) else {"Rg": 64, "RMSD_ref": 64}
+        deeptica_params = self._coerce_deeptica_params(entry.get("deeptica_params"))
+        notes = {}
+        entry_notes = entry.get("notes")
+        if isinstance(entry_notes, dict):
+            notes.update(entry_notes)
+        return BuildConfig(
+            lag=int(entry.get("lag", 10)),
+            bins=bins,
+            seed=int(entry.get("seed", 2025)),
+            temperature=float(entry.get("temperature", 300.0)),
+            learn_cv=bool(entry.get("learn_cv", False)),
+            deeptica_params=deeptica_params,
+            notes=notes,
+        )
+
+    def training_config_from_entry(self, entry: Dict[str, Any]) -> TrainingConfig:
+        bins_raw = entry.get("bins")
+        bins = dict(bins_raw) if isinstance(bins_raw, dict) else {"Rg": 64, "RMSD_ref": 64}
+        hidden = self._coerce_hidden_layers(entry.get("hidden"))
+        return TrainingConfig(
+            lag=int(entry.get("lag", 5)),
+            bins=bins,
+            seed=int(entry.get("seed", 1337)),
+            temperature=float(entry.get("temperature", 300.0)),
+            hidden=hidden,
+            max_epochs=int(entry.get("max_epochs", 200)),
+            early_stopping=int(entry.get("early_stopping", 25)),
+        )
+
+    def _coerce_deeptica_params(self, raw: Any) -> Optional[Dict[str, Any]]:
+        if raw is None:
+            return None
+        if isinstance(raw, dict):
+            return {str(k): v for k, v in raw.items()}
+        return None
+
+    @staticmethod
+    def _coerce_hidden_layers(raw: Any) -> tuple[int, ...]:
+        layers: List[int] = []
+        if isinstance(raw, (list, tuple)):
+            for item in raw:
+                try:
+                    layers.append(int(item))
+                except (TypeError, ValueError):
+                    continue
+        elif isinstance(raw, str):
+            for token in raw.split(","):
+                token = token.strip()
+                if not token:
+                    continue
+                try:
+                    layers.append(int(token))
+                except ValueError:
+                    continue
+        if layers:
+            return tuple(layers)
+        return (128, 128)
+
+    @staticmethod
+    def _load_build_result_from_path(path: Path) -> Optional[BuildResult]:
+        try:
+            bundle_path = Path(path)
+        except TypeError:
+            return None
+        if not bundle_path.exists():
+            return None
+        try:
+            text = bundle_path.read_text(encoding="utf-8")
+        except Exception:
+            return None
+        try:
+            return BuildResult.from_json(text)
+        except Exception:
+            return None
+
+    def _load_model_from_entry(self, entry: Dict[str, Any]) -> Optional[TrainingResult]:
+        bundle_path = Path(entry.get("bundle", ""))
+        br = self._load_build_result_from_path(bundle_path)
+        if br is None:
+            return None
+        dataset_hash = str(entry.get("dataset_hash", "")) or (
+            str(getattr(br.metadata, "dataset_hash", "")) if br.metadata else ""
+        )
+        created_at = str(entry.get("created_at", "")) or _timestamp()
+        return TrainingResult(
+            bundle_path=bundle_path.resolve(),
+            dataset_hash=dataset_hash,
+            build_result=br,
+            created_at=created_at,
+        )
+
+    def _load_analysis_from_entry(self, entry: Dict[str, Any]) -> Optional[BuildArtifact]:
+        bundle_path = Path(entry.get("bundle", ""))
+        br = self._load_build_result_from_path(bundle_path)
+        if br is None:
+            return None
+        dataset_hash = str(entry.get("dataset_hash", "")) or (
+            str(getattr(br.metadata, "dataset_hash", "")) if br.metadata else ""
+        )
+        created_at = str(entry.get("created_at", "")) or _timestamp()
+        return BuildArtifact(
+            bundle_path=bundle_path.resolve(),
+            dataset_hash=dataset_hash,
+            build_result=br,
+            created_at=created_at,
+        )
+
     # ------------------------------------------------------------------
     # Asset deletion methods
     # ------------------------------------------------------------------
@@ -560,13 +686,13 @@ class WorkflowBackend:
         entry = self.state.remove_run(index)
         if entry is None:
             return False
-        
+
         try:
             # Delete simulation directory
             run_dir = Path(entry.get("run_dir", ""))
             if run_dir.exists() and run_dir.is_dir():
                 shutil.rmtree(run_dir)
-            
+
             # Also remove any associated shards
             run_id = entry.get("run_id", "")
             if run_id:
@@ -575,11 +701,11 @@ class WorkflowBackend:
                 for i, shard_entry in enumerate(self.state.shards):
                     if shard_entry.get("run_id") == run_id:
                         shards_to_remove.append(i)
-                
+
                 # Remove in reverse order to maintain indices
                 for i in reversed(shards_to_remove):
                     self.delete_shard_batch(i)
-            
+
             return True
         except Exception:
             return False
@@ -589,7 +715,7 @@ class WorkflowBackend:
         entry = self.state.remove_shards(index)
         if entry is None:
             return False
-        
+
         try:
             # Delete individual shard files
             paths = entry.get("paths", [])
@@ -601,7 +727,7 @@ class WorkflowBackend:
                     npz_path = path.with_suffix('.npz')
                     if npz_path.exists():
                         npz_path.unlink()
-            
+
             # Delete shard directory if empty
             directory = Path(entry.get("directory", ""))
             if directory.exists() and directory.is_dir():
@@ -609,7 +735,7 @@ class WorkflowBackend:
                     directory.rmdir()  # Only removes if empty
                 except OSError:
                     pass  # Directory not empty, that's OK
-            
+
             return True
         except Exception:
             return False
@@ -619,19 +745,19 @@ class WorkflowBackend:
         entry = self.state.remove_model(index)
         if entry is None:
             return False
-        
+
         try:
             # Delete model bundle file and associated files
             bundle_path = Path(entry.get("bundle", ""))
             if bundle_path.exists():
                 base_name = bundle_path.stem
                 model_dir = bundle_path.parent
-                
+
                 # Find and delete related files (history, json, pt files)
                 for file_path in model_dir.glob(f"{base_name}.*"):
                     if file_path.is_file():
                         file_path.unlink()
-            
+
             return True
         except Exception:
             return False
@@ -641,13 +767,13 @@ class WorkflowBackend:
         entry = self.state.remove_build(index)
         if entry is None:
             return False
-        
+
         try:
             # Delete bundle file
             bundle_path = Path(entry.get("bundle", ""))
             if bundle_path.exists():
                 bundle_path.unlink()
-            
+
             return True
         except Exception:
             return False

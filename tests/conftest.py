@@ -67,7 +67,9 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
-def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
     focus = _parse_focus_option(config.getoption("--focus"))
     deselected: list[pytest.Item] = []
     selected: list[pytest.Item] = []

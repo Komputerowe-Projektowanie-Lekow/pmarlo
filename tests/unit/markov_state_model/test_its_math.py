@@ -4,8 +4,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from pmarlo.markov_state_model import MarkovStateModel
-from pmarlo.markov_state_model.utils import safe_timescales
 from pmarlo.markov_state_model.results import ITSResult
+from pmarlo.markov_state_model.utils import safe_timescales
 
 
 def test_safe_timescales_handles_invalid_eigenvalues():

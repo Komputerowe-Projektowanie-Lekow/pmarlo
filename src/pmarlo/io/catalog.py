@@ -48,9 +48,7 @@ class ShardCatalog:
         shard_id = ShardId.from_meta(meta, json_path, dataset_hash)
         self.add_shard(shard_id)
 
-    def add_from_paths(
-        self, paths: Iterable[Path], dataset_hash: str = ""
-    ) -> None:
+    def add_from_paths(self, paths: Iterable[Path], dataset_hash: str = "") -> None:
         for entry in paths:
             path = Path(entry)
             if path.is_dir():
@@ -65,7 +63,9 @@ class ShardCatalog:
                 try:
                     self.add_from_path(candidate, dataset_hash)
                 except Exception as exc:
-                    logger.warning("Failed to load shard metadata %s: %s", candidate, exc)
+                    logger.warning(
+                        "Failed to load shard metadata %s: %s", candidate, exc
+                    )
 
     def add_from_roots(self, roots: Sequence[Path]) -> None:
         self.add_from_paths(roots)
@@ -73,7 +73,9 @@ class ShardCatalog:
     def get_canonical_ids(self) -> List[str]:
         return sorted(self.shards.keys())
 
-    def validate_against_used(self, used_canonical_ids: Set[str]) -> Dict[str, List[str]]:
+    def validate_against_used(
+        self, used_canonical_ids: Set[str]
+    ) -> Dict[str, List[str]]:
         catalog_ids = set(self.shards.keys())
         missing = sorted(set(used_canonical_ids) - catalog_ids)
         extras = sorted(catalog_ids - set(used_canonical_ids))
@@ -122,7 +124,8 @@ class ShardCatalog:
             missing = expected - set(temps)
             if missing:
                 warnings.append(
-                    "Missing temperatures detected: " + ", ".join(f"{t:.1f}" for t in sorted(missing))
+                    "Missing temperatures detected: "
+                    + ", ".join(f"{t:.1f}" for t in sorted(missing))
                 )
         return warnings
 

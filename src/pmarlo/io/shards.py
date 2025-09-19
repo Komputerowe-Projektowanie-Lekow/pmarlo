@@ -157,11 +157,7 @@ class ShardRegistry:
             "replica_id": meta.replica_id,
             "segment_id": meta.segment_id,
         }
-        entries = [
-            e
-            for e in data.get("entries", [])
-            if e.get("path") != entry["path"]
-        ]
+        entries = [e for e in data.get("entries", []) if e.get("path") != entry["path"]]
         entries.append(entry)
         entries.sort(key=lambda e: e["canonical_id"])
         data["entries"] = entries
@@ -171,9 +167,7 @@ class ShardRegistry:
     def remove(self, shard_json: Path) -> None:
         data = self.load()
         path_str = str(Path(shard_json).resolve())
-        entries = [
-            e for e in data.get("entries", []) if e.get("path") != path_str
-        ]
+        entries = [e for e in data.get("entries", []) if e.get("path") != path_str]
         data["entries"] = entries
         data["count"] = len(entries)
         self.save(data)

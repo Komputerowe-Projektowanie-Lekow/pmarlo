@@ -25,7 +25,9 @@ class MSMResult:
 class MSMBuilder:
     """Placeholder MSM builder; hooks into full stack in subsequent iterations."""
 
-    def __init__(self, tau_steps: int, n_clusters: int, *, random_state: int | None = None):
+    def __init__(
+        self, tau_steps: int, n_clusters: int, *, random_state: int | None = None
+    ):
         if tau_steps <= 0:
             raise ValueError("tau_steps must be positive")
         if n_clusters <= 0:
@@ -56,7 +58,9 @@ class MSMBuilder:
             if weights_list is not None:
                 w = np.asarray(weights_list[idx], dtype=np.float64)
                 if w.ndim != 1 or w.shape[0] != arr.shape[0]:
-                    raise ValueError("weights_list entries must match trajectory length")
+                    raise ValueError(
+                        "weights_list entries must match trajectory length"
+                    )
                 weights_coll.append(w)
 
         if not features:
