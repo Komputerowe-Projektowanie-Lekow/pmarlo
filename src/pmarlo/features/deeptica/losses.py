@@ -33,6 +33,7 @@ class VAMP2Loss(nn.Module):
         self.max_cholesky_retries = int(max(1, max_cholesky_retries))
         self.target_dtype = dtype
         self.register_buffer("_eye", torch.empty(0, dtype=dtype), persistent=False)
+        self._latest_metrics: dict[str, float | list[float]] = {}
 
     def forward(
         self,
@@ -71,6 +72,9 @@ class VAMP2Loss(nn.Module):
         Ctt = zt_c.T @ (zt_c * w)
         C0t = z0_c.T @ (zt_c * w)
 
+        diag_c00 = torch.diagonal(C00, dim1=-2, dim2=-1)
+        diag_ctt = torch.diagonal(Ctt, dim1=-2, dim2=-1)
+
         eye = self._identity_like(C00, device)
         dim = C00.shape[-1]
         trace_floor = torch.tensor(1e-12, device=device, dtype=dtype)
@@ -87,6 +91,16 @@ class VAMP2Loss(nn.Module):
         Ctt = (1.0 - alpha) * Ctt + (alpha * mut + ridget) * eye
         C00 = (C00 + C00.T) * 0.5
         Ctt = (Ctt + Ctt.T) * 0.5
+
+        eig0 = torch.linalg.eigvalsh(C00)
+        eigt = torch.linalg.eigvalsh(Ctt)
+
+        min0 = torch.clamp(eig0.min(), min=trace_floor)
+        mint = torch.clamp(eigt.min(), min=trace_floor)
+        max0 = torch.clamp(eig0.max(), min=trace_floor)
+        maxt = torch.clamp(eigt.max(), min=trace_floor)
+        cond_c00 = max0 / min0
+        cond_ctt = maxt / mint
 
         L0, C00 = self._stable_cholesky(C00, eye)
         Lt, Ctt = self._stable_cholesky(Ctt, eye)
@@ -105,17 +119,29 @@ class VAMP2Loss(nn.Module):
 
         penalty = torch.tensor(0.0, device=device, dtype=dtype)
         if self.cond_reg > 0.0:
-            eig0 = torch.linalg.eigvalsh(C00)
-            eigt = torch.linalg.eigvalsh(Ctt)
-            cond_c00 = eig0.max() / torch.clamp(eig0.min(), min=trace_floor)
-            cond_ctt = eigt.max() / torch.clamp(eigt.min(), min=trace_floor)
             cond_term = torch.log(torch.clamp(cond_c00, min=1.0)) + torch.log(
                 torch.clamp(cond_ctt, min=1.0)
             )
             penalty = penalty + self.cond_reg * cond_term
 
         loss = -score + penalty
+        self._latest_metrics = {
+            "cond_C00": float(cond_c00.detach().cpu().item()),
+            "cond_Ctt": float(cond_ctt.detach().cpu().item()),
+            "var_z0": [float(x) for x in diag_c00.detach().cpu().tolist()],
+            "var_zt": [float(x) for x in diag_ctt.detach().cpu().tolist()],
+            "mean_z0": [float(x) for x in mean0.detach().cpu().reshape(-1).tolist()],
+            "mean_zt": [float(x) for x in meant.detach().cpu().reshape(-1).tolist()],
+            "eig_C00_min": float(min0.detach().cpu().item()),
+            "eig_C00_max": float(max0.detach().cpu().item()),
+            "eig_Ctt_min": float(mint.detach().cpu().item()),
+            "eig_Ctt_max": float(maxt.detach().cpu().item()),
+        }
         return loss, score.detach()
+
+    @property
+    def latest_metrics(self) -> dict[str, float | list[float]]:
+        return dict(self._latest_metrics)
 
     def _identity_like(self, mat: Tensor, device: torch.device) -> Tensor:
         dim = mat.shape[-1]
