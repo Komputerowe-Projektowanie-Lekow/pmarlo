@@ -22,16 +22,23 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class TrainerConfig:
     tau_steps: int
-    learning_rate: float = 1e-3
+    learning_rate: float = 3e-4
     weight_decay: float = 0.0
     use_weights: bool = True
     tau_schedule: Tuple[int, ...] = ()
-    grad_clip_norm: Optional[float] = 2.0
+    grad_clip_norm: Optional[float] = 1.0
     log_every: int = 25
     checkpoint_dir: Optional[Path] = None
     checkpoint_metric: str = "vamp2"
     device: str = "auto"
     scheduler: str = "none"  # "none" | "cosine"
+    scheduler_warmup_steps: int = 0
+    scheduler_total_steps: Optional[int] = None
+    max_steps: Optional[int] = None
+    vamp_eps: float = 1e-3
+    vamp_eps_abs: float = 1e-6
+    vamp_alpha: float = 0.15
+    vamp_cond_reg: float = 1e-4
 
 
 class DeepTICATrainer:
@@ -47,7 +54,12 @@ class DeepTICATrainer:
         self.device = torch.device(device_str)
         self.model.net.to(self.device)
         self.model.net.train()
-        self.loss_module = VAMP2Loss(eps=1e-5).to(self.device)
+        self.loss_module = VAMP2Loss(
+            eps=float(max(1e-9, cfg.vamp_eps)),
+            eps_abs=float(max(0.0, cfg.vamp_eps_abs)),
+            alpha=float(min(max(cfg.vamp_alpha, 0.0), 1.0)),
+            cond_reg=float(max(0.0, cfg.vamp_cond_reg)),
+        ).to(self.device)
 
         weight_decay = float(cfg.weight_decay)
         if weight_decay <= 0.0:
@@ -159,8 +171,41 @@ class DeepTICATrainer:
     def _make_scheduler(self):
         if self.cfg.scheduler.lower() != "cosine":
             return None
-        t_max = max(1, int(1000))
-        return torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=t_max)
+        try:
+            from torch.optim.lr_scheduler import (  # type: ignore[attr-defined]
+                CosineAnnealingLR,
+                LambdaLR,
+                SequentialLR,
+            )
+        except Exception:
+            return None
+
+        warmup_steps = max(0, int(getattr(self.cfg, "scheduler_warmup_steps", 0)))
+        total_steps = getattr(self.cfg, "scheduler_total_steps", None)
+        if total_steps is None or int(total_steps) <= 0:
+            total_steps = getattr(self.cfg, "max_steps", None)
+        if total_steps is None or int(total_steps) <= 0:
+            total_steps = getattr(self.cfg, "log_every", 0) * 10
+        if total_steps is None or int(total_steps) <= 0:
+            total_steps = self.cfg.tau_steps
+        total_steps = max(1, int(total_steps))
+
+        schedulers = []
+        milestones: List[int] = []
+        if warmup_steps > 0:
+
+            def _lr_lambda(step: int) -> float:
+                return min(1.0, float(step + 1) / float(max(1, warmup_steps)))
+
+            schedulers.append(LambdaLR(self.optimizer, lr_lambda=_lr_lambda))
+            milestones.append(int(warmup_steps))
+
+        t_max = max(1, total_steps - warmup_steps)
+        schedulers.append(CosineAnnealingLR(self.optimizer, T_max=t_max))
+
+        if len(schedulers) == 1:
+            return schedulers[0]
+        return SequentialLR(self.optimizer, schedulers, milestones=milestones)
 
     def _prepare_batch(
         self,

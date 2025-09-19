@@ -1364,6 +1364,172 @@ def find_conformations_with_msm(
 # ------------------------------ App-friendly wrappers ------------------------------
 
 
+def emit_shards_rg_rmsd_windowed(
+    pdb_file: str | Path,
+    traj_files: list[str | Path],
+    out_dir: str | Path,
+    *,
+    reference: str | Path | None = None,
+    stride: int = 1,
+    temperature: float = 300.0,
+    seed_start: int = 0,
+    frames_per_shard: int = 5000,
+    hop_frames: int | None = None,
+    progress_callback=None,
+    provenance: dict | None = None,
+) -> list[Path]:
+    """Emit many overlapping shards per trajectory via a sliding window."""
+
+    import mdtraj as md  # type: ignore
+    import numpy as np
+
+    from pmarlo.data.shard import write_shard  # type: ignore
+    from pmarlo.io import trajectory as _traj_io  # type: ignore
+    from pmarlo.transform.progress import ProgressReporter  # type: ignore
+
+    pdb_file = Path(pdb_file)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    top0 = md.load(str(pdb_file))
+    ref = (
+        md.load(str(reference), top=str(pdb_file))[0]
+        if reference is not None and Path(reference).exists()
+        else top0[0]
+    )
+    ca_sel = top0.topology.select("name CA")
+    ca_sel = ca_sel if ca_sel.size else None
+
+    existing: list[int] = []
+    for shard_file in sorted(out_dir.glob("shard_*.json")):
+        try:
+            existing.append(int(shard_file.stem.split("_")[1]))
+        except Exception:
+            continue
+    next_idx = (max(existing) + 1) if existing else 0
+    start_idx = next_idx
+    seed_base = int(seed_start) + start_idx
+
+    reporter = ProgressReporter(progress_callback)
+
+    def _emit(event: str, data: dict) -> None:
+        try:
+            reporter.emit(event, data)
+        except Exception:
+            pass
+
+    shard_paths: list[Path] = []
+    files = [Path(p) for p in traj_files]
+    files.sort()
+    _emit(
+        "emit_begin",
+        {
+            "n_inputs": len(files),
+            "out_dir": str(out_dir),
+            "temperature": float(temperature),
+            "current": 0,
+            "total": len(files),
+        },
+    )
+
+    window = max(1, int(frames_per_shard))
+    hop = max(1, int(hop_frames) if hop_frames is not None else window)
+
+    for index, traj_path in enumerate(files):
+        _emit(
+            "emit_one_begin",
+            {
+                "index": int(index),
+                "traj": str(traj_path),
+                "current": int(index + 1),
+                "total": int(len(files)),
+            },
+        )
+
+        rg_parts: list[np.ndarray] = []
+        rmsd_parts: list[np.ndarray] = []
+        total_frames = 0
+        for chunk in _traj_io.iterload(
+            str(traj_path),
+            top=str(pdb_file),
+            stride=int(max(1, stride)),
+            chunk=1000,
+        ):
+            try:
+                chunk = chunk.superpose(ref, atom_indices=ca_sel)
+            except Exception:
+                pass
+            rg_parts.append(md.compute_rg(chunk).astype(np.float64))
+            rmsd_parts.append(
+                md.rmsd(chunk, ref, atom_indices=ca_sel).astype(np.float64)
+            )
+            total_frames += int(chunk.n_frames)
+
+        if rg_parts:
+            rg = np.concatenate(rg_parts)
+        else:
+            rg = np.zeros((0,), dtype=np.float64)
+        if rmsd_parts:
+            rmsd = np.concatenate(rmsd_parts)
+        else:
+            rmsd = np.zeros((0,), dtype=np.float64)
+
+        n_frames = int(rg.shape[0])
+        if n_frames >= window:
+            for start in range(0, n_frames - window + 1, hop):
+                stop = start + window
+                shard_id = f"shard_{next_idx:04d}"
+                cvs = {
+                    "Rg": rg[start:stop],
+                    "RMSD_ref": rmsd[start:stop],
+                }
+                source: dict[str, object] = {
+                    "traj": str(traj_path),
+                    "range": [int(start), int(stop)],
+                    "n_frames": int(stop - start),
+                }
+                if provenance:
+                    try:
+                        merged = dict(provenance)
+                        merged.update(source)
+                        source = merged
+                    except Exception:
+                        pass
+                shard_path = write_shard(
+                    out_dir=out_dir,
+                    shard_id=shard_id,
+                    cvs=cvs,
+                    dtraj=None,
+                    periodic={"Rg": False, "RMSD_ref": False},
+                    seed=int(seed_base + (next_idx - start_idx)),
+                    temperature=float(temperature),
+                    source=source,
+                )
+                shard_paths.append(shard_path.resolve())
+                next_idx += 1
+
+        _emit(
+            "emit_one_end",
+            {
+                "index": int(index),
+                "traj": str(traj_path),
+                "frames": int(total_frames),
+                "current": int(index + 1),
+                "total": int(len(files)),
+            },
+        )
+
+    _emit(
+        "emit_end",
+        {
+            "n_shards": len(shard_paths),
+            "current": int(len(files)),
+            "total": int(len(files)),
+        },
+    )
+    return shard_paths
+
+
 def emit_shards_rg_rmsd(
     pdb_file: str | Path,
     traj_files: list[str | Path],

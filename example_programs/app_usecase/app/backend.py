@@ -25,7 +25,11 @@ from pathlib import Path
 import shutil
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from pmarlo.api import build_from_shards, emit_shards_rg_rmsd, run_replica_exchange
+from pmarlo.api import (
+    build_from_shards,
+    emit_shards_rg_rmsd_windowed,
+    run_replica_exchange,
+)
 from pmarlo.data.shard import read_shard
 from pmarlo.transform.build import BuildResult, _sanitize_artifacts
 
@@ -194,6 +198,8 @@ class ShardRequest:
     temperature: float = 300.0
     reference: Optional[Path] = None
     seed_start: int = 0
+    frames_per_shard: int = 5000
+    hop_frames: Optional[int] = None
 
 
 @dataclass
@@ -205,6 +211,8 @@ class ShardResult:
     n_shards: int
     temperature: float
     stride: int
+    frames_per_shard: int
+    hop_frames: Optional[int]
     created_at: str
 
 
@@ -329,7 +337,7 @@ class WorkflowBackend:
         }
         if provenance:
             note.update(provenance)
-        shard_paths = emit_shards_rg_rmsd(
+        shard_paths = emit_shards_rg_rmsd_windowed(
             pdb_file=simulation.pdb_path,
             traj_files=[str(p) for p in simulation.traj_files],
             out_dir=str(shard_dir),
@@ -337,6 +345,12 @@ class WorkflowBackend:
             stride=int(max(1, request.stride)),
             temperature=float(request.temperature),
             seed_start=int(max(0, request.seed_start)),
+            frames_per_shard=int(max(1, request.frames_per_shard)),
+            hop_frames=(
+                int(request.hop_frames)
+                if request.hop_frames is not None and request.hop_frames > 0
+                else None
+            ),
             provenance=note,
         )
         shard_paths = _coerce_path_list(shard_paths)
@@ -356,6 +370,12 @@ class WorkflowBackend:
             n_shards=len(shard_paths),
             temperature=float(request.temperature),
             stride=int(max(1, request.stride)),
+            frames_per_shard=int(max(1, request.frames_per_shard)),
+            hop_frames=(
+                int(request.hop_frames)
+                if request.hop_frames is not None and request.hop_frames > 0
+                else None
+            ),
             created_at=created,
         )
         self.state.append_shards(
@@ -367,6 +387,12 @@ class WorkflowBackend:
                 "stride": int(max(1, request.stride)),
                 "n_shards": len(shard_paths),
                 "n_frames": int(n_frames),
+                "frames_per_shard": int(max(1, request.frames_per_shard)),
+                "hop_frames": (
+                    int(request.hop_frames)
+                    if request.hop_frames is not None and request.hop_frames > 0
+                    else None
+                ),
                 "created_at": created,
             }
         )
