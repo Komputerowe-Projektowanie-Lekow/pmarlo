@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Any, Dict, List, Sequence
 
 import pandas as pd
 import streamlit as st
@@ -18,6 +18,11 @@ try:  # Prefer package-relative imports when launched via `streamlit run -m`
         WorkspaceLayout,
     )
     from .plots import plot_fes, plot_msm
+    from .plots.diagnostics import (
+        format_warnings,
+        plot_autocorrelation_curves,
+        plot_canonical_correlations,
+    )
     from pmarlo.transform.build import _sanitize_artifacts
 except ImportError:  # Fallback for `streamlit run app.py`
     import sys
@@ -36,6 +41,11 @@ except ImportError:  # Fallback for `streamlit run app.py`
         WorkspaceLayout,
     )
     from plots import plot_fes, plot_msm  # type: ignore
+    from plots.diagnostics import (  # type: ignore
+        format_warnings,
+        plot_autocorrelation_curves,
+        plot_canonical_correlations,
+    )
     from pmarlo.transform.build import _sanitize_artifacts
 
 
@@ -85,6 +95,79 @@ def _metrics_table(flags: Dict[str, object]) -> pd.DataFrame:
     return pd.DataFrame(rows) if rows else pd.DataFrame({"metric": [], "value": []})
 
 
+def _format_tau_schedule(values: Sequence[int]) -> str:
+    if not values:
+        return ""
+    return ", ".join(str(int(v)) for v in values)
+
+
+def _parse_tau_schedule(raw: str) -> List[int]:
+    cleaned = raw.replace(";", ",")
+    values: List[int] = []
+    for token in cleaned.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            val = int(token)
+        except ValueError as exc:  # pragma: no cover - defensive parsing
+            raise ValueError(f"Invalid tau value '{token}'") from exc
+        if val <= 0:
+            raise ValueError("Tau values must be positive integers.")
+        values.append(val)
+    if not values:
+        raise ValueError("Provide at least one tau value.")
+    return sorted(set(values))
+
+
+def _update_state(**kwargs: Any) -> None:
+    for key, value in kwargs.items():
+        st.session_state[key] = value
+
+
+def _apply_training_config_to_state(cfg: TrainingConfig) -> None:
+    bins = dict(cfg.bins or {})
+    hidden_str = ", ".join(str(int(h)) for h in cfg.hidden)
+    _update_state(
+        train_lag=int(cfg.lag),
+        train_bins_rg=int(bins.get("Rg", 64)),
+        train_bins_rmsd=int(bins.get("RMSD_ref", 64)),
+        train_seed=int(cfg.seed),
+        train_max_epochs=int(cfg.max_epochs),
+        train_patience=int(cfg.early_stopping),
+        train_temperature=float(cfg.temperature),
+        train_hidden_layers=hidden_str or "128,128",
+        train_tau_schedule=_format_tau_schedule(cfg.tau_schedule),
+        train_val_tau=int(cfg.val_tau),
+        train_epochs_per_tau=int(cfg.epochs_per_tau),
+    )
+
+
+def _apply_analysis_config_to_state(cfg: BuildConfig) -> None:
+    bins = dict(cfg.bins or {})
+    if isinstance(cfg.fes_bandwidth, (int, float)):
+        bw_value = f"{float(cfg.fes_bandwidth):g}"
+    else:
+        bw_value = str(cfg.fes_bandwidth)
+    mode = str(cfg.reweight_mode)
+    mode_norm = mode.upper() if mode.upper() in {"MBAR", "TRAM"} else mode.lower()
+    _update_state(
+        analysis_lag=int(cfg.lag),
+        analysis_bins_rg=int(bins.get("Rg", 72)),
+        analysis_bins_rmsd=int(bins.get("RMSD_ref", 72)),
+        analysis_seed=int(cfg.seed),
+        analysis_temperature=float(cfg.temperature),
+        analysis_learn_cv=bool(cfg.learn_cv),
+        analysis_apply_whitening=bool(cfg.apply_cv_whitening),
+        analysis_cluster_mode=str(cfg.cluster_mode),
+        analysis_n_microstates=int(cfg.n_microstates),
+        analysis_reweight_mode=mode_norm,
+        analysis_fes_method=str(cfg.fes_method),
+        analysis_fes_bandwidth=bw_value,
+        analysis_min_count_per_bin=int(cfg.fes_min_count_per_bin),
+    )
+
+
 def _show_build_outputs(artifact: BuildArtifact | TrainingResult) -> None:
     br = artifact.build_result
     col1, col2 = st.columns(2)
@@ -106,6 +189,23 @@ def _show_build_outputs(artifact: BuildArtifact | TrainingResult) -> None:
         st.write("Messages:")
         for msg in br.messages:
             st.write(f"- {msg}")
+    diagnostics = getattr(br, "diagnostics", None)
+    if isinstance(diagnostics, dict) and diagnostics:
+        st.subheader("Diagnostics")
+        diag_cols = st.columns(2)
+        with diag_cols[0]:
+            fig_diag = plot_canonical_correlations(diagnostics)
+            st.pyplot(fig_diag, clear_figure=True, width="stretch")
+        with diag_cols[1]:
+            fig_auto = plot_autocorrelation_curves(diagnostics)
+            st.pyplot(fig_auto, clear_figure=True, width="stretch")
+        diag_mass = diagnostics.get("diag_mass")
+        if isinstance(diag_mass, (int, float)):
+            st.metric("MSM diagonal mass", f"{float(diag_mass):.3f}")
+        warnings = format_warnings(diagnostics)
+        if warnings:
+            for msg in warnings:
+                st.warning(msg)
 
 
 def _render_deeptica_summary(summary: Dict[str, object]) -> None:
@@ -154,6 +254,16 @@ def _ensure_session_defaults() -> None:
     ):
         st.session_state.setdefault(key, None)
     st.session_state.setdefault(_RUN_PENDING, False)
+    st.session_state.setdefault("train_hidden_layers", "128,128")
+    st.session_state.setdefault("train_tau_schedule", "2,5,10,20")
+    st.session_state.setdefault("train_val_tau", 20)
+    st.session_state.setdefault("train_epochs_per_tau", 15)
+    st.session_state.setdefault("analysis_cluster_mode", "kmeans")
+    st.session_state.setdefault("analysis_n_microstates", 150)
+    st.session_state.setdefault("analysis_reweight_mode", "MBAR")
+    st.session_state.setdefault("analysis_fes_method", "kde")
+    st.session_state.setdefault("analysis_fes_bandwidth", "scott")
+    st.session_state.setdefault("analysis_min_count_per_bin", 1)
 
 
 def main() -> None:
@@ -453,35 +563,64 @@ def main() -> None:
             )
             hidden = st.text_input(
                 "Hidden layer widths",
-                value="128,128",
+                value=st.session_state.get("train_hidden_layers", "128,128"),
                 help="Comma-separated integers for the Deep-TICA network.",
                 key="train_hidden_layers",
+            )
+            col_tau, col_val, col_ep = st.columns(3)
+            tau_raw = col_tau.text_input(
+                "Tau schedule (steps)",
+                value=st.session_state.get("train_tau_schedule", "2,5,10,20"),
+                key="train_tau_schedule",
+            )
+            val_tau = col_val.number_input(
+                "Validation tau (steps)",
+                min_value=1,
+                value=int(st.session_state.get("train_val_tau", 20)),
+                step=1,
+                key="train_val_tau",
+            )
+            epochs_per_tau = col_ep.number_input(
+                "Epochs per tau",
+                min_value=1,
+                value=int(st.session_state.get("train_epochs_per_tau", 15)),
+                step=1,
+                key="train_epochs_per_tau",
             )
             hidden_layers = tuple(int(v.strip()) for v in hidden.split(",") if v.strip()) or (128, 128)
             disabled = len(selected_paths) == 0
             if st.button("Train Deep-TICA model", type="primary", disabled=disabled, key="train_button"):
                 try:
-                    train_cfg = TrainingConfig(
-                        lag=int(lag),
-                        bins={"Rg": int(bins_rg), "RMSD_ref": int(bins_rmsd)},
-                        seed=int(seed),
-                        temperature=float(temperature),
-                        max_epochs=int(max_epochs),
-                        early_stopping=int(patience),
-                        hidden=hidden_layers,
-                    )
-                    result = backend.train_model(selected_paths, train_cfg)
-                    st.session_state[_LAST_TRAIN] = result
-                    st.session_state[_LAST_TRAIN_CONFIG] = train_cfg
-                    st.success(
-                        f"Model stored at {result.bundle_path.name} (hash {result.dataset_hash})."
-                    )
-                    _show_build_outputs(result)
-                    summary = result.build_result.artifacts.get("mlcv_deeptica") if result.build_result else None
-                    if summary:
-                        _render_deeptica_summary(summary)
-                except Exception as exc:
-                    st.error(f"Training failed: {exc}")
+                    tau_values = _parse_tau_schedule(tau_raw)
+                except ValueError as exc:
+                    st.error(f"Tau schedule error: {exc}")
+                else:
+                    try:
+                        train_cfg = TrainingConfig(
+                            lag=int(lag),
+                            bins={"Rg": int(bins_rg), "RMSD_ref": int(bins_rmsd)},
+                            seed=int(seed),
+                            temperature=float(temperature),
+                            max_epochs=int(max_epochs),
+                            early_stopping=int(patience),
+                            hidden=hidden_layers,
+                            tau_schedule=tuple(tau_values),
+                            val_tau=int(val_tau),
+                            epochs_per_tau=int(epochs_per_tau),
+                        )
+                        result = backend.train_model(selected_paths, train_cfg)
+                        st.session_state[_LAST_TRAIN] = result
+                        st.session_state[_LAST_TRAIN_CONFIG] = train_cfg
+                        _apply_training_config_to_state(train_cfg)
+                        st.success(
+                            f"Model stored at {result.bundle_path.name} (hash {result.dataset_hash})."
+                        )
+                        _show_build_outputs(result)
+                        summary = result.build_result.artifacts.get("mlcv_deeptica") if result.build_result else None
+                        if summary:
+                            _render_deeptica_summary(summary)
+                    except Exception as exc:
+                        st.error(f"Training failed: {exc}")
 
         models = backend.list_models()
         if models:
@@ -506,7 +645,9 @@ def main() -> None:
                     if loaded is not None:
                         st.session_state[_LAST_TRAIN] = loaded
                         try:
-                            st.session_state[_LAST_TRAIN_CONFIG] = backend.training_config_from_entry(models[int(selected_idx)])
+                            cfg_loaded = backend.training_config_from_entry(models[int(selected_idx)])
+                            st.session_state[_LAST_TRAIN_CONFIG] = cfg_loaded
+                            _apply_training_config_to_state(cfg_loaded)
                         except Exception:
                             pass
                         st.success(f"Loaded model {loaded.bundle_path.name}.")
@@ -547,6 +688,11 @@ def main() -> None:
                     loaded = backend.load_analysis_bundle(int(selected_idx))
                     if loaded is not None:
                         st.session_state[_LAST_BUILD] = loaded
+                        try:
+                            cfg_loaded = backend.build_config_from_entry(builds[int(selected_idx)])
+                            _apply_analysis_config_to_state(cfg_loaded)
+                        except Exception:
+                            pass
                         st.success(f"Loaded bundle {loaded.bundle_path.name}.")
                         _show_build_outputs(loaded)
                         summary = loaded.build_result.artifacts.get("mlcv_deeptica") if loaded.build_result else None
@@ -589,6 +735,52 @@ def main() -> None:
                 value=True,
                 key="analysis_apply_whitening",
             )
+            col_cluster, col_micro = st.columns(2)
+            cluster_mode = col_cluster.selectbox(
+                "Discretization mode",
+                options=["kmeans", "grid"],
+                index=(0 if str(st.session_state.get("analysis_cluster_mode", "kmeans")).lower() != "grid" else 1),
+                key="analysis_cluster_mode",
+            )
+            n_microstates = col_micro.number_input(
+                "Number of microstates",
+                min_value=2,
+                value=int(st.session_state.get("analysis_n_microstates", 150)),
+                step=1,
+                key="analysis_n_microstates",
+            )
+            reweight_default = str(st.session_state.get("analysis_reweight_mode", "MBAR"))
+            reweight_index = 0
+            if reweight_default.upper() == "TRAM":
+                reweight_index = 1
+            elif reweight_default.lower() == "none":
+                reweight_index = 2
+            reweight_mode = st.selectbox(
+                "Reweighting mode",
+                options=["MBAR", "TRAM", "none"],
+                index=reweight_index,
+                key="analysis_reweight_mode",
+            )
+            col_fes_method, col_bw, col_min = st.columns(3)
+            fes_method = col_fes_method.selectbox(
+                "FES method",
+                options=["kde", "grid"],
+                index=(0 if str(st.session_state.get("analysis_fes_method", "kde")).lower() != "grid" else 1),
+                key="analysis_fes_method",
+            )
+            fes_bandwidth = col_bw.text_input(
+                "FES bandwidth",
+                value=str(st.session_state.get("analysis_fes_bandwidth", "scott")),
+                help="Use 'scott', 'silverman', or a positive float (only for KDE).",
+                key="analysis_fes_bandwidth",
+            )
+            min_count_per_bin = col_min.number_input(
+                "Min count per bin",
+                min_value=0,
+                value=int(st.session_state.get("analysis_min_count_per_bin", 1)),
+                step=1,
+                key="analysis_min_count_per_bin",
+            )
             deeptica_params = None
             if learn_cv:
                 reuse = st.checkbox(
@@ -620,6 +812,16 @@ def main() -> None:
             disabled = len(selected_paths) == 0
             if st.button("Build MSM/FES bundle", type="primary", disabled=disabled, key="analysis_build_button"):
                 try:
+                    bw_clean = fes_bandwidth.strip()
+                    try:
+                        bandwidth_val: str | float = float(bw_clean) if bw_clean else "scott"
+                    except ValueError:
+                        bandwidth_val = bw_clean or "scott"
+                    reweight_norm = str(reweight_mode)
+                    if reweight_norm.upper() in {"MBAR", "TRAM"}:
+                        reweight_final = reweight_norm.upper()
+                    else:
+                        reweight_final = "none"
                     build_cfg = BuildConfig(
                         lag=int(lag),
                         bins={"Rg": int(bins_rg), "RMSD_ref": int(bins_rmsd)},
@@ -629,9 +831,16 @@ def main() -> None:
                         deeptica_params=deeptica_params,
                         notes={"source": "app_usecase"},
                         apply_cv_whitening=bool(apply_whitening),
+                        cluster_mode=str(cluster_mode),
+                        n_microstates=int(n_microstates),
+                        reweight_mode=reweight_final,
+                        fes_method=str(fes_method),
+                        fes_bandwidth=bandwidth_val,
+                        fes_min_count_per_bin=int(min_count_per_bin),
                     )
                     artifact = backend.build_analysis(selected_paths, build_cfg)
                     st.session_state[_LAST_BUILD] = artifact
+                    _apply_analysis_config_to_state(build_cfg)
                     st.success(
                         f"Bundle {artifact.bundle_path.name} written (hash {artifact.dataset_hash})."
                     )

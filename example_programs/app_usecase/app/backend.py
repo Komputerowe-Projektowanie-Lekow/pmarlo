@@ -225,6 +225,9 @@ class TrainingConfig:
     hidden: Sequence[int] = (128, 128)
     max_epochs: int = 200
     early_stopping: int = 25
+    tau_schedule: Sequence[int] = (2, 5, 10, 20)
+    val_tau: int = 20
+    epochs_per_tau: int = 15
 
     def deeptica_params(self) -> Dict[str, Any]:
         return {
@@ -233,6 +236,9 @@ class TrainingConfig:
             "hidden": tuple(int(h) for h in self.hidden),
             "max_epochs": int(self.max_epochs),
             "early_stopping": int(self.early_stopping),
+            "tau_schedule": tuple(int(t) for t in self.tau_schedule),
+            "val_tau": int(self.val_tau),
+            "epochs_per_tau": int(self.epochs_per_tau),
             "reweight_mode": "scaled_time",
         }
 
@@ -255,6 +261,12 @@ class BuildConfig:
     deeptica_params: Optional[Dict[str, Any]] = None
     notes: Dict[str, Any] = field(default_factory=dict)
     apply_cv_whitening: bool = True
+    cluster_mode: str = "kmeans"
+    n_microstates: int = 150
+    reweight_mode: str = "MBAR"
+    fes_method: str = "kde"
+    fes_bandwidth: str | float = "scott"
+    fes_min_count_per_bin: int = 1
 
 
 @dataclass
@@ -469,6 +481,9 @@ class WorkflowBackend:
                 "hidden": [int(h) for h in config.hidden],
                 "max_epochs": int(config.max_epochs),
                 "early_stopping": int(config.early_stopping),
+                "tau_schedule": [int(t) for t in config.tau_schedule],
+                "val_tau": int(config.val_tau),
+                "epochs_per_tau": int(config.epochs_per_tau),
                 "created_at": stamp,
                 "metrics": _sanitize_artifacts(br.artifacts.get("mlcv_deeptica", {})),
             }
@@ -492,6 +507,14 @@ class WorkflowBackend:
             config.apply_cv_whitening
         )
         analysis_notes["apply_cv_whitening_enforced"] = True
+        analysis_notes["analysis_overrides"] = {
+            "cluster_mode": str(config.cluster_mode),
+            "n_microstates": int(config.n_microstates),
+            "reweight_mode": str(config.reweight_mode),
+            "fes_method": str(config.fes_method),
+            "fes_bandwidth": config.fes_bandwidth,
+            "fes_min_count_per_bin": int(config.fes_min_count_per_bin),
+        }
 
         br, ds_hash = build_from_shards(
             shard_jsons=shards,
@@ -504,6 +527,24 @@ class WorkflowBackend:
             deeptica_params=config.deeptica_params,
             notes=analysis_notes,
         )
+        try:
+            flags = dict(br.flags or {})
+        except Exception:
+            flags = {}
+        overrides = {
+            "cluster_mode": str(config.cluster_mode),
+            "n_microstates": int(config.n_microstates),
+            "reweight_mode": str(config.reweight_mode),
+            "fes_method": str(config.fes_method),
+            "fes_bandwidth": config.fes_bandwidth,
+            "fes_min_count_per_bin": int(config.fes_min_count_per_bin),
+            "apply_whitening": bool(config.apply_cv_whitening),
+        }
+        flags.setdefault("analysis_overrides", overrides)
+        flags.setdefault("analysis_reweight_mode", str(config.reweight_mode))
+        flags.setdefault("analysis_apply_whitening", bool(config.apply_cv_whitening))
+        br.flags = flags  # type: ignore[assignment]
+
         artifact = BuildArtifact(
             bundle_path=bundle_path.resolve(),
             dataset_hash=ds_hash,
@@ -524,6 +565,12 @@ class WorkflowBackend:
                 "flags": _sanitize_artifacts(br.flags),
                 "mlcv": _sanitize_artifacts(br.artifacts.get("mlcv_deeptica", {})),
                 "apply_cv_whitening": bool(config.apply_cv_whitening),
+                "cluster_mode": str(config.cluster_mode),
+                "n_microstates": int(config.n_microstates),
+                "reweight_mode": str(config.reweight_mode),
+                "fes_method": str(config.fes_method),
+                "fes_bandwidth": config.fes_bandwidth,
+                "fes_min_count_per_bin": int(config.fes_min_count_per_bin),
             }
         )
         return artifact
@@ -650,6 +697,17 @@ class WorkflowBackend:
         entry_notes = entry.get("notes")
         if isinstance(entry_notes, dict):
             notes.update(entry_notes)
+        apply_whitening = bool(entry.get("apply_cv_whitening", True))
+        cluster_mode = str(entry.get("cluster_mode", "kmeans"))
+        n_microstates = int(entry.get("n_microstates", 150))
+        reweight_mode = str(entry.get("reweight_mode", "MBAR"))
+        fes_method = str(entry.get("fes_method", "kde"))
+        bw_raw = entry.get("fes_bandwidth", "scott")
+        try:
+            fes_bandwidth = float(bw_raw)
+        except (TypeError, ValueError):
+            fes_bandwidth = bw_raw if bw_raw is not None else "scott"
+        min_count = int(entry.get("fes_min_count_per_bin", 1))
         return BuildConfig(
             lag=int(entry.get("lag", 10)),
             bins=bins,
@@ -658,12 +716,26 @@ class WorkflowBackend:
             learn_cv=bool(entry.get("learn_cv", False)),
             deeptica_params=deeptica_params,
             notes=notes,
+            apply_cv_whitening=apply_whitening,
+            cluster_mode=cluster_mode,
+            n_microstates=n_microstates,
+            reweight_mode=reweight_mode,
+            fes_method=fes_method,
+            fes_bandwidth=fes_bandwidth,
+            fes_min_count_per_bin=min_count,
         )
 
     def training_config_from_entry(self, entry: Dict[str, Any]) -> TrainingConfig:
         bins_raw = entry.get("bins")
         bins = dict(bins_raw) if isinstance(bins_raw, dict) else {"Rg": 64, "RMSD_ref": 64}
         hidden = self._coerce_hidden_layers(entry.get("hidden"))
+        tau_raw = entry.get("tau_schedule")
+        tau_schedule = self._coerce_tau_schedule(tau_raw)
+        if not tau_schedule:
+            tau_schedule = (int(entry.get("lag", 5)),)
+        val_tau_entry = entry.get("val_tau")
+        val_tau = int(val_tau_entry) if val_tau_entry is not None else (tau_schedule[-1] if tau_schedule else int(entry.get("lag", 5)))
+        epochs_per_tau = int(entry.get("epochs_per_tau", 15))
         return TrainingConfig(
             lag=int(entry.get("lag", 5)),
             bins=bins,
@@ -672,6 +744,9 @@ class WorkflowBackend:
             hidden=hidden,
             max_epochs=int(entry.get("max_epochs", 200)),
             early_stopping=int(entry.get("early_stopping", 25)),
+            tau_schedule=tau_schedule,
+            val_tau=val_tau,
+            epochs_per_tau=epochs_per_tau,
         )
 
     def _coerce_deeptica_params(self, raw: Any) -> Optional[Dict[str, Any]]:
@@ -702,6 +777,33 @@ class WorkflowBackend:
         if layers:
             return tuple(layers)
         return (128, 128)
+
+    @staticmethod
+    def _coerce_tau_schedule(raw: Any) -> tuple[int, ...]:
+        values: List[int] = []
+        if isinstance(raw, (list, tuple)):
+            for item in raw:
+                try:
+                    v = int(item)
+                    if v > 0:
+                        values.append(v)
+                except (TypeError, ValueError):
+                    continue
+        elif isinstance(raw, str):
+            tokens = raw.replace(";", ",").split(",")
+            for token in tokens:
+                token = token.strip()
+                if not token:
+                    continue
+                try:
+                    v = int(token)
+                    if v > 0:
+                        values.append(v)
+                except ValueError:
+                    continue
+        if not values:
+            return ()
+        return tuple(sorted(set(values)))
 
     @staticmethod
     def _load_build_result_from_path(path: Path) -> Optional[BuildResult]:
