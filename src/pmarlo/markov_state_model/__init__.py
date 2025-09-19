@@ -17,6 +17,8 @@ from .free_energy import (
     generate_2d_fes,
     periodic_kde_2d,
 )
+from .msm_builder import MSMBuilder
+from .msm_builder import MSMResult as BuilderMSMResult
 from .reduction import (
     get_available_methods,
     pca_reduce,
@@ -34,7 +36,6 @@ from .results import (
     REMDResult,
 )
 from .reweighter import Reweighter
-from .msm_builder import MSMBuilder, MSMResult as BuilderMSMResult
 
 __all__ = [
     "MarkovStateModel",

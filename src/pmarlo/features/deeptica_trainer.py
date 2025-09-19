@@ -179,11 +179,17 @@ class DeepTICATrainer:
 
             if self.cfg.use_weights:
                 if weights is None:
-                    w = torch.ones(x_arr.shape[0], dtype=torch.float32, device=self.device)
+                    w = torch.ones(
+                        x_arr.shape[0], dtype=torch.float32, device=self.device
+                    )
                 else:
-                    w = torch.as_tensor(weights, dtype=torch.float32, device=self.device)
+                    w = torch.as_tensor(
+                        weights, dtype=torch.float32, device=self.device
+                    )
                     if w.ndim != 1 or w.shape[0] != x_arr.shape[0]:
-                        raise ValueError("weights must be 1-D and align with batch length")
+                        raise ValueError(
+                            "weights must be 1-D and align with batch length"
+                        )
                 w_parts.append(w)
 
         if not x_parts:

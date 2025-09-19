@@ -108,6 +108,42 @@ def _show_build_outputs(artifact: BuildArtifact | TrainingResult) -> None:
             st.write(f"- {msg}")
 
 
+def _render_deeptica_summary(summary: Dict[str, object]) -> None:
+    cleaned = _sanitize_artifacts(summary)
+    st.caption("Deep-TICA summary")
+    if not isinstance(cleaned, dict):
+        st.json(cleaned)
+        return
+    st.json(cleaned)
+    with st.expander("Training diagnostics", expanded=False):
+        epochs = list(range(1, len(cleaned.get("val_score_curve", [])) + 1))
+        if epochs:
+            df_score = pd.DataFrame({"val_score": cleaned.get("val_score_curve", [])}, index=epochs)
+            st.line_chart(df_score, height=200)
+        var_z0 = cleaned.get("var_z0_curve") or []
+        if var_z0:
+            df_var_z0 = pd.DataFrame(var_z0)
+            df_var_z0.index = list(range(1, len(df_var_z0) + 1))
+            df_var_z0.columns = [f"z0_{i+1}" for i in range(df_var_z0.shape[1])]
+            st.line_chart(df_var_z0, height=200)
+        var_zt = cleaned.get("var_zt_curve") or []
+        if var_zt:
+            df_var_zt = pd.DataFrame(var_zt)
+            df_var_zt.index = list(range(1, len(df_var_zt) + 1))
+            df_var_zt.columns = [f"zt_{i+1}" for i in range(df_var_zt.shape[1])]
+            st.line_chart(df_var_zt, height=200)
+        cond_data: Dict[str, object] = {}
+        if cleaned.get("cond_c00_curve"):
+            cond_data["cond_C00"] = cleaned.get("cond_c00_curve")
+        if cleaned.get("cond_ctt_curve"):
+            cond_data["cond_Ctt"] = cleaned.get("cond_ctt_curve")
+        if cond_data:
+            df_cond = pd.DataFrame(cond_data)
+            st.line_chart(df_cond, height=200)
+        if cleaned.get("grad_norm_curve"):
+            df_grad = pd.DataFrame({"grad_norm": cleaned.get("grad_norm_curve")})
+            st.line_chart(df_grad, height=200)
+
 def _ensure_session_defaults() -> None:
     for key in (
         _LAST_SIM,
@@ -427,39 +463,43 @@ def main() -> None:
                     _show_build_outputs(result)
                     summary = result.build_result.artifacts.get("mlcv_deeptica") if result.build_result else None
                     if summary:
-                        st.caption("Deep-TICA summary")
-                        summary = _sanitize_artifacts(summary)
-                        st.json(summary)
-                        with st.expander("Training diagnostics", expanded=False):
-                            epochs = list(range(1, len(summary.get("val_score_curve", [])) + 1))
-                            if epochs:
-                                df_score = pd.DataFrame({"val_score": summary.get("val_score_curve", [])}, index=epochs)
-                                st.line_chart(df_score, height=200)
-                            var_z0 = summary.get("var_z0_curve") or []
-                            if var_z0:
-                                df_var_z0 = pd.DataFrame(var_z0)
-                                df_var_z0.index = list(range(1, len(df_var_z0) + 1))
-                                df_var_z0.columns = [f"z0_{i+1}" for i in range(df_var_z0.shape[1])]
-                                st.line_chart(df_var_z0, height=200)
-                            var_zt = summary.get("var_zt_curve") or []
-                            if var_zt:
-                                df_var_zt = pd.DataFrame(var_zt)
-                                df_var_zt.index = list(range(1, len(df_var_zt) + 1))
-                                df_var_zt.columns = [f"zt_{i+1}" for i in range(df_var_zt.shape[1])]
-                                st.line_chart(df_var_zt, height=200)
-                            cond_data = {}
-                            if summary.get("cond_c00_curve"):
-                                cond_data["cond_C00"] = summary.get("cond_c00_curve")
-                            if summary.get("cond_ctt_curve"):
-                                cond_data["cond_Ctt"] = summary.get("cond_ctt_curve")
-                            if cond_data:
-                                df_cond = pd.DataFrame(cond_data)
-                                st.line_chart(df_cond, height=200)
-                            if summary.get("grad_norm_curve"):
-                                df_grad = pd.DataFrame({"grad_norm": summary.get("grad_norm_curve")})
-                                st.line_chart(df_grad, height=200)
+                        _render_deeptica_summary(summary)
                 except Exception as exc:
                     st.error(f"Training failed: {exc}")
+
+        models = backend.list_models()
+        if models:
+            with st.expander("Load recorded model", expanded=st.session_state.get(_LAST_TRAIN) is None):
+                indices = list(range(len(models)))
+
+                def _model_label(idx: int) -> str:
+                    entry = models[idx]
+                    bundle_raw = entry.get("bundle", "")
+                    bundle_name = Path(bundle_raw).name if bundle_raw else f"model-{idx}"
+                    created = entry.get("created_at", "unknown")
+                    return f"{bundle_name} (created {created})"
+
+                selected_idx = st.selectbox(
+                    "Stored models",
+                    options=indices,
+                    format_func=_model_label,
+                    key="load_model_select",
+                )
+                if st.button("Show model", key="load_model_button"):
+                    loaded = backend.load_model(int(selected_idx))
+                    if loaded is not None:
+                        st.session_state[_LAST_TRAIN] = loaded
+                        try:
+                            st.session_state[_LAST_TRAIN_CONFIG] = backend.training_config_from_entry(models[int(selected_idx)])
+                        except Exception:
+                            pass
+                        st.success(f"Loaded model {loaded.bundle_path.name}.")
+                        _show_build_outputs(loaded)
+                        summary = loaded.build_result.artifacts.get("mlcv_deeptica") if loaded.build_result else None
+                        if summary:
+                            _render_deeptica_summary(summary)
+                    else:
+                        st.error("Could not load the selected model from disk.")
 
         last_model_path = backend.latest_model_path()
         if last_model_path is not None:
@@ -468,6 +508,37 @@ def main() -> None:
     with tab_analysis:
         st.header("Build MSM and FES")
         shard_groups = backend.shard_summaries()
+
+        builds = backend.list_builds()
+        if builds:
+            with st.expander("Load recorded analysis bundle", expanded=st.session_state.get(_LAST_BUILD) is None):
+                indices = list(range(len(builds)))
+
+                def _build_label(idx: int) -> str:
+                    entry = builds[idx]
+                    bundle_raw = entry.get("bundle", "")
+                    bundle_name = Path(bundle_raw).name if bundle_raw else f"bundle-{idx}"
+                    created = entry.get("created_at", "unknown")
+                    return f"{bundle_name} (created {created})"
+
+                selected_idx = st.selectbox(
+                    "Stored analysis bundles",
+                    options=indices,
+                    format_func=_build_label,
+                    key="load_build_select",
+                )
+                if st.button("Show bundle", key="load_build_button"):
+                    loaded = backend.load_analysis_bundle(int(selected_idx))
+                    if loaded is not None:
+                        st.session_state[_LAST_BUILD] = loaded
+                        st.success(f"Loaded bundle {loaded.bundle_path.name}.")
+                        _show_build_outputs(loaded)
+                        summary = loaded.build_result.artifacts.get("mlcv_deeptica") if loaded.build_result else None
+                        if summary:
+                            _render_deeptica_summary(summary)
+                    else:
+                        st.error("Could not load the selected analysis bundle from disk.")
+
         if not shard_groups:
             st.info("Emit shards to build an MSM/FES bundle.")
         else:
@@ -543,12 +614,15 @@ def main() -> None:
                         f"Bundle {artifact.bundle_path.name} written (hash {artifact.dataset_hash})."
                     )
                     _show_build_outputs(artifact)
+                    summary = artifact.build_result.artifacts.get("mlcv_deeptica") if artifact.build_result else None
+                    if summary:
+                        _render_deeptica_summary(summary)
                 except Exception as exc:
                     st.error(f"Analysis failed: {exc}")
 
     with tab_assets:
         st.header("Recorded assets")
-        
+
         # Simulations section
         st.subheader("Simulations")
         runs = backend.state.runs
@@ -568,8 +642,8 @@ def main() -> None:
                 st.divider()
         else:
             st.info("No simulations recorded yet.")
-        
-        # Shard batches section  
+
+        # Shard batches section
         st.subheader("Shard batches")
         shards = backend.state.shards
         if shards:
@@ -588,9 +662,9 @@ def main() -> None:
                 st.divider()
         else:
             st.info("No shard batches recorded yet.")
-        
+
         # Models section
-        st.subheader("Models") 
+        st.subheader("Models")
         models = backend.list_models()
         if models:
             for i, model in enumerate(models):
@@ -609,7 +683,7 @@ def main() -> None:
                 st.divider()
         else:
             st.info("No models recorded yet.")
-        
+
         # Analysis bundles section
         st.subheader("Analysis bundles")
         builds = backend.list_builds()

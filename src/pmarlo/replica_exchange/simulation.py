@@ -19,6 +19,7 @@ import openmm.unit as unit
 from openmm.app.metadynamics import BiasVariable, Metadynamics
 
 from pmarlo import api
+
 from .bias_hook import BiasHook
 
 # Compatibility shim for OpenMM XML deserialization API changes
@@ -295,7 +296,13 @@ class Simulation:
         print("Equilibration complete.")
         return self
 
-    def production_run(self, steps=100000, report_interval=1000, save_trajectory=True, bias_hook: Optional[BiasHook] = None):
+    def production_run(
+        self,
+        steps=100000,
+        report_interval=1000,
+        save_trajectory=True,
+        bias_hook: Optional[BiasHook] = None,
+    ):
         """
         Run production molecular dynamics simulation.
 
@@ -631,7 +638,9 @@ def prepare_system(pdb_file, forcefield_files=None, water_model="tip3p"):
     return sim
 
 
-def production_run(sim, steps=100000, report_interval=1000, bias_hook: Optional[BiasHook] = None):
+def production_run(
+    sim, steps=100000, report_interval=1000, bias_hook: Optional[BiasHook] = None
+):
     """
     Run a production simulation.
 
@@ -651,7 +660,9 @@ def production_run(sim, steps=100000, report_interval=1000, bias_hook: Optional[
     Simulation
         Simulation object after production run
     """
-    return sim.production_run(steps=steps, report_interval=report_interval, bias_hook=bias_hook)
+    return sim.production_run(
+        steps=steps, report_interval=report_interval, bias_hook=bias_hook
+    )
 
 
 def feature_extraction(sim, feature_specs=None):
@@ -775,20 +786,3 @@ def plot_DG(features, save_path=None):
     except ImportError:
         print("Warning: matplotlib not available for plotting")
         return None
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

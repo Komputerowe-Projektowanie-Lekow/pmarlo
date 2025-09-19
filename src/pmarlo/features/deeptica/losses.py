@@ -36,7 +36,9 @@ class VAMP2Loss(nn.Module):
         zt = zt.to(dtype=dtype)
 
         if weights is None:
-            w = torch.full((z0.shape[0], 1), 1.0 / float(z0.shape[0]), device=device, dtype=dtype)
+            w = torch.full(
+                (z0.shape[0], 1), 1.0 / float(z0.shape[0]), device=device, dtype=dtype
+            )
         else:
             w = weights.reshape(-1, 1).to(device=device, dtype=dtype)
             w = torch.clamp(w, min=0.0)
@@ -61,7 +63,9 @@ class VAMP2Loss(nn.Module):
 
         try:
             left = torch.linalg.solve_triangular(L0, C0t, upper=False)
-            right = torch.linalg.solve_triangular(Lt, left.transpose(-1, -2), upper=False)
+            right = torch.linalg.solve_triangular(
+                Lt, left.transpose(-1, -2), upper=False
+            )
         except AttributeError:  # pragma: no cover - legacy torch fallback
             left = torch.triangular_solve(C0t, L0, upper=False)[0]
             right = torch.triangular_solve(left.transpose(-1, -2), Lt, upper=False)[0]

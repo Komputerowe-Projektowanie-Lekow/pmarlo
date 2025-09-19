@@ -18,7 +18,7 @@ from pmarlo.shards.assemble import load_shards, select_shards
 from pmarlo.shards.pair_builder import PairBuilder
 from pmarlo.shards.schema import Shard
 
-from .metrics import Metrics, GuardrailReport
+from .metrics import GuardrailReport, Metrics
 
 __all__ = ["WorkflowConfig", "JointWorkflow"]
 
@@ -186,18 +186,16 @@ class JointWorkflow:
             )
             T_actual = self._normalize_counts(counts_k)
             T_pred = np.linalg.matrix_power(T, multiplier)
-            ck_errors[multiplier] = float(
-                np.linalg.norm(T_pred - T_actual, ord="fro")
-            )
+            ck_errors[multiplier] = float(np.linalg.norm(T_pred - T_actual, ord="fro"))
 
         fes_artifact = self._build_fes(concatenated, concatenated_weights)
 
         meta: Dict[str, Any] = {
             "n_clusters": clustering.n_states,
             "rationale": clustering.rationale,
-            "centers": clustering.centers.tolist()
-            if clustering.centers is not None
-            else None,
+            "centers": (
+                clustering.centers.tolist() if clustering.centers is not None else None
+            ),
             "lag_time_ps": lag_time_ps,
             "ck_errors": ck_errors,
             "fes": fes_artifact,
@@ -253,9 +251,9 @@ class JointWorkflow:
         weights_per_shard: Sequence[np.ndarray],
     ) -> BiasHook:
         if self.cv_model is None or not hasattr(self.cv_model, "transform"):
-            return lambda cv_values: np.zeros((
-                np.asarray(cv_values).shape[0]
-            ), dtype=np.float64)
+            return lambda cv_values: np.zeros(
+                (np.asarray(cv_values).shape[0]), dtype=np.float64
+            )
 
         cv_values: List[np.ndarray] = []
         cv_weights: List[np.ndarray] = []
@@ -263,20 +261,27 @@ class JointWorkflow:
             try:
                 vals = np.asarray(self.cv_model.transform(shard.X), dtype=np.float64)
             except Exception as exc:
-                logger.debug("CV transform failed for shard %s: %s", shard.meta.shard_id, exc)
-                return lambda cv_values: np.zeros((
-                    np.asarray(cv_values).shape[0]
-                ), dtype=np.float64)
+                logger.debug(
+                    "CV transform failed for shard %s: %s", shard.meta.shard_id, exc
+                )
+                return lambda cv_values: np.zeros(
+                    (np.asarray(cv_values).shape[0]), dtype=np.float64
+                )
             if vals.shape[0] != shard.meta.n_frames:
-                logger.debug("CV transform produced mismatched shape for shard %s", shard.meta.shard_id)
-                return lambda cv_values: np.zeros((
-                    np.asarray(cv_values).shape[0]
-                ), dtype=np.float64)
+                logger.debug(
+                    "CV transform produced mismatched shape for shard %s",
+                    shard.meta.shard_id,
+                )
+                return lambda cv_values: np.zeros(
+                    (np.asarray(cv_values).shape[0]), dtype=np.float64
+                )
             cv_values.append(vals)
             cv_weights.append(np.asarray(weights, dtype=np.float64))
 
         if not cv_values:
-            return lambda cv_values: np.zeros((np.asarray(cv_values).shape[0]), dtype=np.float64)
+            return lambda cv_values: np.zeros(
+                (np.asarray(cv_values).shape[0]), dtype=np.float64
+            )
 
         concat_cv = np.concatenate(cv_values, axis=0)
         concat_w = np.concatenate(cv_weights)
@@ -377,7 +382,10 @@ class JointWorkflow:
         return history
 
     def _extract_its_array(self) -> np.ndarray:
-        if self.last_result is not None and getattr(self.last_result, "its", None) is not None:
+        if (
+            self.last_result is not None
+            and getattr(self.last_result, "its", None) is not None
+        ):
             arr = np.asarray(self.last_result.its, dtype=np.float64)
             return arr[np.isfinite(arr)]
         if self.last_artifacts is not None:

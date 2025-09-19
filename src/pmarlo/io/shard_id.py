@@ -2,10 +2,10 @@ from __future__ import annotations
 
 """Lightweight compatibility shims around the new shards metadata APIs."""
 
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-import warnings
 
 from pmarlo.shards.id import canonical_shard_id
 from pmarlo.shards.meta import load_shard_meta
