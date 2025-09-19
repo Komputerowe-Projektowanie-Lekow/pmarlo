@@ -186,6 +186,16 @@ class DeepTICACurriculumTrainer:
         self._best_tau: int = -1
         self._best_score: float = float("-inf")
         self._best_checkpoint_path: Optional[Path] = None
+        self.cond_c00_curve: List[float] = []
+        self.cond_ctt_curve: List[float] = []
+        self.var_z0_curve: List[List[float]] = []
+        self.var_zt_curve: List[List[float]] = []
+        self.mean_z0_curve: List[List[float]] = []
+        self.mean_zt_curve: List[List[float]] = []
+        self.c0_eig_min_curve: List[float] = []
+        self.c0_eig_max_curve: List[float] = []
+        self.ctt_eig_min_curve: List[float] = []
+        self.ctt_eig_max_curve: List[float] = []
 
     # ------------------------------------------------------------------
     # Public API
@@ -275,6 +285,34 @@ class DeepTICACurriculumTrainer:
                 overall_learning_rate.append(current_lr)
                 overall_grad_norm_mean.append(train_metrics["grad_norm_mean"])
                 overall_grad_norm_max.append(train_metrics["grad_norm_max"])
+                cond_c00 = float(train_metrics.get("cond_c00", 0.0))
+                cond_ctt = float(train_metrics.get("cond_ctt", 0.0))
+                self.cond_c00_curve.append(cond_c00)
+                self.cond_ctt_curve.append(cond_ctt)
+                var_z0 = train_metrics.get("var_z0")
+                var_zt = train_metrics.get("var_zt")
+                mean_z0 = train_metrics.get("mean_z0")
+                mean_zt = train_metrics.get("mean_zt")
+                eig0_min = float(train_metrics.get("eig_c00_min", float("nan")))
+                eig0_max = float(train_metrics.get("eig_c00_max", float("nan")))
+                eigt_min = float(train_metrics.get("eig_ctt_min", float("nan")))
+                eigt_max = float(train_metrics.get("eig_ctt_max", float("nan")))
+                self.c0_eig_min_curve.append(eig0_min)
+                self.c0_eig_max_curve.append(eig0_max)
+                self.ctt_eig_min_curve.append(eigt_min)
+                self.ctt_eig_max_curve.append(eigt_max)
+                self.var_z0_curve.append([float(x) for x in var_z0] if isinstance(var_z0, list) else [])
+                self.var_zt_curve.append([float(x) for x in var_zt] if isinstance(var_zt, list) else [])
+                self.mean_z0_curve.append([float(x) for x in mean_z0] if isinstance(mean_z0, list) else [])
+                self.mean_zt_curve.append([float(x) for x in mean_zt] if isinstance(mean_zt, list) else [])
+                if cond_c00 > 1e6:
+                    logger.warning(
+                        "Condition number cond(C00)=%.3e exceeds stability threshold", cond_c00
+                    )
+                if cond_ctt > 1e6:
+                    logger.warning(
+                        "Condition number cond(Ctt)=%.3e exceeds stability threshold", cond_ctt
+                    )
                 block["epochs"].append(overall_epoch)
                 block["train_loss_curve"].append(train_metrics["loss"])
                 block["train_score_curve"].append(train_metrics["score"])
@@ -339,11 +377,24 @@ class DeepTICACurriculumTrainer:
             "pair_diagnostics": {
                 int(block["tau"]): block["diagnostics"] for block in per_tau_blocks
             },
+            "cond_c00_curve": [float(x) for x in self.cond_c00_curve],
+            "cond_ctt_curve": [float(x) for x in self.cond_ctt_curve],
+            "var_z0_curve": [list(row) for row in self.var_z0_curve],
+            "var_zt_curve": [list(row) for row in self.var_zt_curve],
+            "mean_z0_curve": [list(row) for row in self.mean_z0_curve],
+            "mean_zt_curve": [list(row) for row in self.mean_zt_curve],
+            "c0_eig_min_curve": [float(x) for x in self.c0_eig_min_curve],
+            "c0_eig_max_curve": [float(x) for x in self.c0_eig_max_curve],
+            "ctt_eig_min_curve": [float(x) for x in self.ctt_eig_min_curve],
+            "ctt_eig_max_curve": [float(x) for x in self.ctt_eig_max_curve],
+            "grad_norm_curve": list(overall_grad_norm_mean),
             "best_val_score": float(self._best_score) if self._best_score > float("-inf") else 0.0,
             "best_epoch": int(self._best_epoch) if self._best_epoch >= 0 else None,
             "best_tau": int(self._best_tau) if self._best_tau >= 0 else None,
             "wall_time_s": float(max(0.0, time.time() - start_time)),
         }
+
+        self.grad_norm_curve = overall_grad_norm_mean
 
         csv_path = self._write_metrics_csv(history)
         if csv_path is not None:
@@ -425,6 +476,17 @@ class DeepTICACurriculumTrainer:
         total_score = 0.0
         total_weight = 0
         grad_norms: List[float] = []
+        cond_c00_sum = 0.0
+        cond_ctt_sum = 0.0
+        cond_weight = 0.0
+        var_z0_sum: np.ndarray | None = None
+        var_zt_sum: np.ndarray | None = None
+        mean_z0_sum: np.ndarray | None = None
+        mean_zt_sum: np.ndarray | None = None
+        eig0_min = float("inf")
+        eig0_max = 0.0
+        eigt_min = float("inf")
+        eigt_max = 0.0
         max_batches = (
             int(self.cfg.max_batches_per_epoch)
             if self.cfg.max_batches_per_epoch is not None
@@ -459,16 +521,62 @@ class DeepTICACurriculumTrainer:
             total_loss += float(loss.item()) * batch_size
             total_score += float(score.item()) * batch_size
             total_weight += batch_size
+            metrics = getattr(self.loss_fn, "latest_metrics", {})
+            cond_c00 = float(metrics.get("cond_C00", 0.0))
+            cond_ctt = float(metrics.get("cond_Ctt", 0.0))
+            cond_c00_sum += cond_c00 * batch_size
+            cond_ctt_sum += cond_ctt * batch_size
+            cond_weight += batch_size
+            var_z0 = metrics.get("var_z0")
+            if isinstance(var_z0, list) and var_z0:
+                arr = np.asarray(var_z0, dtype=np.float64)
+                var_z0_sum = arr * batch_size if var_z0_sum is None else var_z0_sum + arr * batch_size
+            var_zt = metrics.get("var_zt")
+            if isinstance(var_zt, list) and var_zt:
+                arr = np.asarray(var_zt, dtype=np.float64)
+                var_zt_sum = arr * batch_size if var_zt_sum is None else var_zt_sum + arr * batch_size
+            mean_z0 = metrics.get("mean_z0")
+            if isinstance(mean_z0, list) and mean_z0:
+                arr = np.asarray(mean_z0, dtype=np.float64)
+                mean_z0_sum = arr * batch_size if mean_z0_sum is None else mean_z0_sum + arr * batch_size
+            mean_zt = metrics.get("mean_zt")
+            if isinstance(mean_zt, list) and mean_zt:
+                arr = np.asarray(mean_zt, dtype=np.float64)
+                mean_zt_sum = arr * batch_size if mean_zt_sum is None else mean_zt_sum + arr * batch_size
+            eig0_min = min(eig0_min, float(metrics.get("eig_C00_min", eig0_min)))
+            eig0_max = max(eig0_max, float(metrics.get("eig_C00_max", eig0_max)))
+            eigt_min = min(eigt_min, float(metrics.get("eig_Ctt_min", eigt_min)))
+            eigt_max = max(eigt_max, float(metrics.get("eig_Ctt_max", eigt_max)))
         if total_weight == 0:
             return {"loss": 0.0, "score": 0.0, "grad_norm_mean": 0.0, "grad_norm_max": 0.0}
         grad_norm_mean = float(np.mean(grad_norms)) if grad_norms else 0.0
         grad_norm_max = float(np.max(grad_norms)) if grad_norms else 0.0
-        return {
+        agg: Dict[str, float | List[float]] = {
             "loss": total_loss / float(total_weight),
             "score": total_score / float(total_weight),
             "grad_norm_mean": grad_norm_mean,
             "grad_norm_max": grad_norm_max,
         }
+        if cond_weight > 0:
+            agg["cond_c00"] = cond_c00_sum / cond_weight
+            agg["cond_ctt"] = cond_ctt_sum / cond_weight
+        if var_z0_sum is not None and cond_weight > 0:
+            agg["var_z0"] = (var_z0_sum / cond_weight).tolist()
+        if var_zt_sum is not None and cond_weight > 0:
+            agg["var_zt"] = (var_zt_sum / cond_weight).tolist()
+        if mean_z0_sum is not None and cond_weight > 0:
+            agg["mean_z0"] = (mean_z0_sum / cond_weight).tolist()
+        if mean_zt_sum is not None and cond_weight > 0:
+            agg["mean_zt"] = (mean_zt_sum / cond_weight).tolist()
+        if eig0_min != float("inf"):
+            agg["eig_c00_min"] = eig0_min
+        if eig0_max != 0.0:
+            agg["eig_c00_max"] = eig0_max
+        if eigt_min != float("inf"):
+            agg["eig_ctt_min"] = eigt_min
+        if eigt_max != 0.0:
+            agg["eig_ctt_max"] = eigt_max
+        return agg  # type: ignore[return-value]
 
     def _evaluate(
         self, loader: DataLoader[tuple[torch.Tensor, torch.Tensor]]

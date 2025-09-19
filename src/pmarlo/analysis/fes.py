@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping, MutableMapping
+from typing import Any, Mapping, MutableMapping, Sequence
 
 import numpy as np
 
@@ -10,6 +10,192 @@ from .project_cv import apply_whitening_from_metadata
 
 
 DatasetLike = MutableMapping[str, Any]
+
+_KB_KJ_PER_MOL = 0.00831446261815324
+
+
+def _normalise_weights(n_frames: int, weights: np.ndarray | None) -> tuple[np.ndarray, float, float]:
+    if weights is None:
+        if n_frames <= 0:
+            raise ValueError("Cannot normalise weights with zero frames")
+        w = np.full((n_frames,), 1.0 / float(n_frames), dtype=np.float64)
+        return w, float(n_frames), float(n_frames)
+
+    w = np.asarray(weights, dtype=np.float64).reshape(-1)
+    if w.ndim != 1:
+        raise ValueError("Frame weights must be one-dimensional")
+    if w.shape[0] != n_frames:
+        raise ValueError("Frame weights must match number of frames")
+    if np.any(w < 0.0) or not np.all(np.isfinite(w)):
+        raise ValueError("Frame weights must be finite and non-negative")
+
+    total = float(np.sum(w))
+    if total <= 0.0:
+        raise ValueError("Frame weights must sum to a positive value")
+
+    norm = w / total
+    ess = total**2 / float(np.sum(w**2)) if np.sum(w**2) > 0 else total
+    return norm, total, ess
+
+
+def _resolve_kde_bins(bins: int | Sequence[int]) -> tuple[int, int]:
+    if np.isscalar(bins):
+        count = int(bins)
+        if count < 2:
+            raise ValueError("KDE FES requires at least two bins per dimension")
+        return count, count
+    if isinstance(bins, Sequence):
+        if len(bins) != 2:
+            raise ValueError("KDE FES expects a sequence of two bin counts")
+        x = int(bins[0])
+        y = int(bins[1])
+        if x < 2 or y < 2:
+            raise ValueError("KDE FES requires at least two bins per dimension")
+        return x, y
+    raise TypeError("Unsupported bins specification for KDE FES")
+
+
+def _compute_bandwidth(
+    coord: np.ndarray,
+    weights: np.ndarray,
+    ess: float,
+    selector: str | float,
+) -> float:
+    if isinstance(selector, (float, int)):
+        value = float(selector)
+        if value <= 0:
+            raise ValueError("Bandwidth must be positive")
+        return value
+
+    selector_norm = str(selector).lower()
+    mean = float(np.sum(weights * coord))
+    var = float(np.sum(weights * (coord - mean) ** 2))
+    std = np.sqrt(var) if var > 0 else 1.0
+    d = 2.0
+    n_eff = max(ess, 1.0)
+
+    if selector_norm == "scott":
+        factor = n_eff ** (-1.0 / (d + 4.0))
+    elif selector_norm == "silverman":
+        factor = (n_eff * (d + 2.0) / 4.0) ** (-1.0 / (d + 4.0))
+    else:
+        raise ValueError("Bandwidth must be 'scott', 'silverman', or a positive float")
+
+    bandwidth = std * factor
+    if not np.isfinite(bandwidth) or bandwidth <= 0.0:
+        bandwidth = 1.0
+    return float(bandwidth)
+
+
+def _compute_kde_surface(
+    coord_x: np.ndarray,
+    coord_y: np.ndarray,
+    weights: np.ndarray | None,
+    *,
+    bins: int | Sequence[int],
+    bandwidth: str | float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
+    n_frames = coord_x.shape[0]
+    w_norm, total_weight, ess = _normalise_weights(n_frames, None if weights is None else weights)
+
+    nx, ny = _resolve_kde_bins(bins)
+    bw_x = _compute_bandwidth(coord_x, w_norm, ess, bandwidth)
+    bw_y = _compute_bandwidth(coord_y, w_norm, ess, bandwidth)
+
+    pad_x = 3.0 * bw_x
+    pad_y = 3.0 * bw_y
+    x_min = float(np.min(coord_x)) - pad_x
+    x_max = float(np.max(coord_x)) + pad_x
+    y_min = float(np.min(coord_y)) - pad_y
+    y_max = float(np.max(coord_y)) + pad_y
+
+    if not np.isfinite(x_min) or not np.isfinite(x_max) or x_min == x_max:
+        x_min, x_max = -1.0, 1.0
+    if not np.isfinite(y_min) or not np.isfinite(y_max) or y_min == y_max:
+        y_min, y_max = -1.0, 1.0
+
+    xedges = np.linspace(x_min, x_max, num=nx + 1, dtype=np.float64)
+    yedges = np.linspace(y_min, y_max, num=ny + 1, dtype=np.float64)
+    xcenters = 0.5 * (xedges[:-1] + xedges[1:])
+    ycenters = 0.5 * (yedges[:-1] + yedges[1:])
+
+    diff_x = (xcenters[:, None] - coord_x[None, :]) / bw_x
+    diff_y = (ycenters[:, None] - coord_y[None, :]) / bw_y
+
+    np.square(diff_x, out=diff_x)
+    np.square(diff_y, out=diff_y)
+    np.multiply(diff_x, -0.5, out=diff_x)
+    np.multiply(diff_y, -0.5, out=diff_y)
+    np.exp(diff_x, out=diff_x)
+    np.exp(diff_y, out=diff_y)
+
+    density = np.einsum("ik,jk,k->ij", diff_x, diff_y, w_norm)
+    normaliser = 1.0 / (2.0 * np.pi * bw_x * bw_y)
+    density *= normaliser
+
+    metadata = {
+        "bandwidth": {
+            "selector": bandwidth,
+            "x": bw_x,
+            "y": bw_y,
+            "effective_sample_size": ess,
+            "total_weight": total_weight,
+        },
+    }
+    return density, xedges, yedges, metadata
+
+
+def _compute_histogram_surface(
+    coord_x: np.ndarray,
+    coord_y: np.ndarray,
+    weights: np.ndarray | None,
+    *,
+    bins: int | Sequence[int],
+    min_count_per_bin: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
+    hist, xedges, yedges = np.histogram2d(coord_x, coord_y, bins=bins, weights=weights)
+    hist = hist.astype(np.float64, copy=False)
+    raw_total = float(np.sum(hist))
+
+    smoothed_bins = 0
+    if min_count_per_bin > 0:
+        hist, smoothed_bins = _smooth_sparse_bins(hist, min_count_per_bin)
+        if smoothed_bins > 0 and raw_total > 0:
+            current_total = float(np.sum(hist))
+            if current_total > 0:
+                hist *= raw_total / current_total
+
+    metadata = {
+        "min_count_per_bin": int(min_count_per_bin),
+        "smoothed_bins": int(smoothed_bins),
+    }
+    if smoothed_bins > 0:
+        metadata["smoothing"] = "neighbor_average"
+    return hist, xedges, yedges, metadata
+
+
+def _smooth_sparse_bins(hist: np.ndarray, min_count: int) -> tuple[np.ndarray, int]:
+    mask = hist < float(min_count)
+    if not np.any(mask):
+        return hist, 0
+
+    smoothed = hist.copy()
+    padded = np.pad(hist, 1, mode="edge")
+    coords = np.argwhere(mask)
+    smoothed_bins = 0
+    for i, j in coords:
+        patch = padded[i : i + 3, j : j + 3]
+        neighborhood = patch.reshape(-1)
+        center_idx = neighborhood.size // 2
+        neighborhood = np.delete(neighborhood, center_idx)
+        neighbor_mean = float(np.mean(neighborhood)) if neighborhood.size else 0.0
+        if neighbor_mean <= 0.0:
+            continue
+        target = max(neighbor_mean, float(min_count))
+        if target > smoothed[i, j]:
+            smoothed[i, j] = target
+            smoothed_bins += 1
+    return smoothed, smoothed_bins
 
 
 def ensure_fes_inputs_whitened(dataset: DatasetLike | Mapping[str, Any]) -> bool:
@@ -33,3 +219,124 @@ def ensure_fes_inputs_whitened(dataset: DatasetLike | Mapping[str, Any]) -> bool
     if applied:
         dataset["X"] = whitened  # type: ignore[index]
     return applied
+
+
+def _select_split(dataset: Mapping[str, Any], split: str | None) -> tuple[str, Mapping[str, Any]]:
+    splits = dataset.get("splits")
+    if isinstance(splits, Mapping) and splits:
+        if split is not None and split in splits:
+            return str(split), splits[split]  # type: ignore[index]
+        if "train" in splits:
+            return "train", splits["train"]  # type: ignore[index]
+        first_key = next(iter(splits))
+        return str(first_key), splits[first_key]  # type: ignore[index]
+    raise ValueError("Dataset must provide a 'splits' mapping for FES computation")
+
+
+def _coerce_array(obj: Mapping[str, Any], key: str) -> np.ndarray:
+    arr = obj.get(key)
+    if arr is None:
+        raise ValueError(f"Split is missing '{key}' array")
+    out = np.asarray(arr, dtype=np.float64)
+    if out.ndim != 2:
+        raise ValueError(f"Expected 2D CV array for '{key}', got shape {out.shape}")
+    if out.shape[0] == 0 or out.shape[1] < 2:
+        raise ValueError("FES computation requires at least two CV dimensions")
+    return out
+
+
+def compute_weighted_fes(
+    dataset: DatasetLike | Mapping[str, Any],
+    *,
+    split: str | None = None,
+    weights: Sequence[float] | np.ndarray | None = None,
+    bins: int | Sequence[int] = 64,
+    temperature_K: float = 300.0,
+    method: str = "kde",
+    bandwidth: str | float = "scott",
+    min_count_per_bin: int = 1,
+    apply_whitening: bool = True,
+) -> dict[str, Any]:
+    """Compute a weighted free energy surface via KDE or grid histogram."""
+
+    if not isinstance(dataset, (MutableMapping, dict)):
+        raise ValueError("Dataset must be a mapping with 'splits'")
+
+    if apply_whitening:
+        try:
+            ensure_fes_inputs_whitened(dataset)
+        except Exception:
+            # Whitening is best-effort; continue with raw coordinates when missing
+            pass
+
+    split_name, split_data = _select_split(dataset, split)
+    X = _coerce_array(split_data, "X")
+
+    if weights is None:
+        candidate = None
+        if isinstance(split_data, Mapping):
+            candidate = split_data.get("weights")
+        if candidate is None and isinstance(dataset, Mapping):
+            fw = dataset.get("frame_weights")
+            if isinstance(fw, Mapping):
+                candidate = fw.get(split_name)
+        weights_arr = None if candidate is None else np.asarray(candidate, dtype=np.float64).reshape(-1)
+    else:
+        weights_arr = np.asarray(weights, dtype=np.float64).reshape(-1)
+
+    if weights_arr is not None and weights_arr.shape[0] != X.shape[0]:
+        raise ValueError("Frame weights must match the number of frames in the split")
+
+    coord_x = X[:, 0]
+    coord_y = X[:, 1]
+    method_norm = str(method or "kde").lower()
+    metadata: dict[str, Any] = {
+        "temperature_K": float(temperature_K),
+        "split": split_name,
+        "weighted": weights_arr is not None,
+        "method": method_norm,
+    }
+
+    if method_norm not in {"kde", "grid"}:
+        raise ValueError("FES method must be either 'kde' or 'grid'")
+
+    if method_norm == "kde":
+        surface, xedges, yedges, extra_meta = _compute_kde_surface(
+            coord_x,
+            coord_y,
+            weights_arr,
+            bins=bins,
+            bandwidth=bandwidth,
+        )
+        metadata.update(extra_meta)
+        hist = surface
+    else:
+        hist, xedges, yedges, extra_meta = _compute_histogram_surface(
+            coord_x,
+            coord_y,
+            weights_arr,
+            bins=bins,
+            min_count_per_bin=int(min_count_per_bin),
+        )
+        metadata.update(extra_meta)
+
+    total = float(np.sum(hist))
+    if not np.isfinite(total) or total <= 0:
+        hist = np.ones_like(hist, dtype=np.float64)
+        total = float(np.sum(hist))
+
+    with np.errstate(divide="ignore"):
+        prob = hist / total
+        free_energy = -(_KB_KJ_PER_MOL * float(temperature_K)) * np.log(prob + 1e-12)
+
+    finite = np.isfinite(free_energy)
+    if finite.any():
+        free_energy = free_energy - np.min(free_energy[finite])
+
+    return {
+        "histogram": hist,
+        "xedges": xedges,
+        "yedges": yedges,
+        "free_energy": free_energy,
+        "metadata": metadata,
+    }
