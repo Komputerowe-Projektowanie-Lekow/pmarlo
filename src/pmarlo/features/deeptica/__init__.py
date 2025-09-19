@@ -5,7 +5,7 @@ import os as _os
 import random
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, Iterable, List, Optional, Tuple
 
 import numpy as np
 
@@ -72,9 +72,86 @@ def _resolve_activation_module(name: str):
     return _nn.Tanh()
 
 
-def _override_core_mlp(core, layers, activation_name: str, linear_head: bool) -> None:
-    """Override core MLP configuration."""
-    pass
+def _normalize_hidden_dropout(spec: Any, num_hidden: int) -> List[float]:
+    """Expand a dropout specification to match the number of hidden transitions."""
+
+    if num_hidden <= 0:
+        return []
+
+    values: List[float]
+    if spec is None:
+        values = [0.0] * num_hidden
+    elif isinstance(spec, (int, float)) and not isinstance(spec, bool):
+        values = [float(spec)] * num_hidden
+    elif isinstance(spec, str):
+        try:
+            scalar = float(spec)
+        except ValueError:
+            scalar = 0.0
+        values = [scalar] * num_hidden
+    else:
+        values = []
+        if isinstance(spec, Iterable) and not isinstance(spec, (bytes, str)):
+            for item in spec:
+                try:
+                    values.append(float(item))
+                except Exception:
+                    values.append(0.0)
+        else:
+            try:
+                scalar = float(spec)
+            except Exception:
+                scalar = 0.0
+            values = [scalar] * num_hidden
+
+    if not values:
+        values = [0.0] * num_hidden
+
+    if len(values) < num_hidden:
+        last = values[-1]
+        values = values + [last] * (num_hidden - len(values))
+    elif len(values) > num_hidden:
+        values = values[:num_hidden]
+
+    return [float(max(0.0, min(1.0, v))) for v in values]
+
+
+def _override_core_mlp(
+    core,
+    layers,
+    activation_name: str,
+    linear_head: bool,
+    *,
+    hidden_dropout: Any = None,
+    layer_norm_hidden: bool = False,
+) -> None:
+    """Override core MLP configuration with custom activations/dropout."""
+
+    if linear_head or len(layers) <= 2:
+        return
+    try:
+        import torch.nn as _nn  # type: ignore
+    except Exception:
+        return
+
+    hidden_transitions = max(0, len(layers) - 2)
+    dropout_values = _normalize_hidden_dropout(hidden_dropout, hidden_transitions)
+
+    modules: list[_nn.Module] = []
+    for idx in range(len(layers) - 1):
+        in_features = int(layers[idx])
+        out_features = int(layers[idx + 1])
+        modules.append(_nn.Linear(in_features, out_features))
+        if idx < len(layers) - 2:
+            if layer_norm_hidden:
+                modules.append(_nn.LayerNorm(out_features))
+            modules.append(_resolve_activation_module(activation_name))
+            drop_p = dropout_values[idx] if idx < len(dropout_values) else 0.0
+            if drop_p > 0.0:
+                modules.append(_nn.Dropout(p=float(drop_p)))
+
+    if modules:
+        core.nn = _nn.Sequential(*modules)  # type: ignore[attr-defined]
 
 
 def _apply_output_whitening(
@@ -157,22 +234,6 @@ def _apply_output_whitening(
     }
     return wrapped, info
 
-    if linear_head or len(layers) <= 2:
-        return
-    try:
-        import torch.nn as _nn  # type: ignore
-    except Exception:
-        return
-    modules: list[_nn.Module] = []
-    for idx in range(len(layers) - 1):
-        in_features = int(layers[idx])
-        out_features = int(layers[idx + 1])
-        modules.append(_nn.Linear(in_features, out_features))
-        if idx < len(layers) - 2:
-            modules.append(_resolve_activation_module(activation_name))
-    if modules:
-        core.nn = _nn.Sequential(*modules)  # type: ignore[attr-defined]
-
 
 # Provide a module-level whitening wrapper so helper functions can reference it
 try:
@@ -209,7 +270,7 @@ class DeepTICAConfig:
     n_out: int = 2
     hidden: Tuple[int, ...] = (32, 16)
     activation: str = "gelu"
-    learning_rate: float = 1e-3
+    learning_rate: float = 3e-4
     batch_size: int = 1024
     max_epochs: int = 200
     early_stopping: int = 25
@@ -223,12 +284,22 @@ class DeepTICAConfig:
     # Optimization and regularization knobs
     lr_schedule: str = "cosine"  # "none" | "cosine"
     warmup_epochs: int = 5
-    dropout: float = 0.1
-    layer_norm_in: bool = True
+    dropout: float = 0.0
+    dropout_input: Optional[float] = None
+    hidden_dropout: Tuple[float, ...] = ()
+    layer_norm_in: bool = False
+    layer_norm_hidden: bool = False
     linear_head: bool = False
     # Dataset splitting/loader control
     val_split: str = "by_shard"  # "by_shard" | "random"
     batches_per_epoch: int = 200
+    gradient_clip_val: float = 1.0
+    gradient_clip_algorithm: str = "norm"
+    tau_schedule: Tuple[int, ...] = ()
+    vamp_eps: float = 1e-3
+    vamp_eps_abs: float = 1e-6
+    vamp_alpha: float = 0.15
+    vamp_cond_reg: float = 1e-4
 
 
 class DeepTICAModel:
@@ -330,6 +401,8 @@ class DeepTICAModel:
         activation_name = (
             str(getattr(cfg, "activation", "gelu")).lower().strip() or "gelu"
         )
+        hidden_dropout_cfg: Any = getattr(cfg, "hidden_dropout", ())
+        layer_norm_hidden = bool(getattr(cfg, "layer_norm_hidden", False))
         try:
             core = DeepTICA(
                 layers=layers,
@@ -344,11 +417,21 @@ class DeepTICAModel:
                 options={"norm_in": False},
             )
             _override_core_mlp(
-                core, layers, activation_name, bool(getattr(cfg, "linear_head", False))
+                core,
+                layers,
+                activation_name,
+                bool(getattr(cfg, "linear_head", False)),
+                hidden_dropout=hidden_dropout_cfg,
+                layer_norm_hidden=layer_norm_hidden,
             )
         else:
             _override_core_mlp(
-                core, layers, activation_name, bool(getattr(cfg, "linear_head", False))
+                core,
+                layers,
+                activation_name,
+                bool(getattr(cfg, "linear_head", False)),
+                hidden_dropout=hidden_dropout_cfg,
+                layer_norm_hidden=layer_norm_hidden,
             )
         import torch.nn as _nn  # type: ignore
 
@@ -363,7 +446,7 @@ class DeepTICAModel:
             def __init__(self, inner, in_features: int, *, ln_in: bool, p_drop: float):
                 super().__init__()
                 self.ln = _nn.LayerNorm(in_features) if ln_in else _nn.Identity()
-                p = float(max(0.0, min(0.1, p_drop)))
+                p = float(max(0.0, min(1.0, p_drop)))
                 self.drop_in = _nn.Dropout(p=p) if p > 0 else _nn.Identity()
                 self.inner = inner
                 self.drop_out = _nn.Identity()
@@ -374,11 +457,14 @@ class DeepTICAModel:
                 return self.inner(x)
 
         _strip_batch_norm(core)
+        dropout_in = getattr(cfg, "dropout_input", None)
+        if dropout_in is None:
+            dropout_in = getattr(cfg, "dropout", 0.1)
         net = _PrePostWrapper(
             core,
             in_dim,
             ln_in=bool(getattr(cfg, "layer_norm_in", True)),
-            p_drop=float(getattr(cfg, "dropout", 0.1)),
+            p_drop=float(dropout_in),
         )
         state = torch.load(path.with_suffix(".pt"), map_location="cpu")
         net.load_state_dict(state["state_dict"])  # type: ignore[index]
@@ -476,6 +562,8 @@ def train_deeptica(
         hidden_layers = hidden_cfg if hidden_cfg else (32, 16)
     layers = [in_dim, *hidden_layers, int(cfg.n_out)]
     activation_name = str(getattr(cfg, "activation", "gelu")).lower().strip() or "gelu"
+    hidden_dropout_cfg: Any = getattr(cfg, "hidden_dropout", ())
+    layer_norm_hidden = bool(getattr(cfg, "layer_norm_hidden", False))
     try:
         core = DeepTICA(
             layers=layers,
@@ -490,11 +578,21 @@ def train_deeptica(
             options={"norm_in": False},
         )
         _override_core_mlp(
-            core, layers, activation_name, bool(getattr(cfg, "linear_head", False))
+            core,
+            layers,
+            activation_name,
+            bool(getattr(cfg, "linear_head", False)),
+            hidden_dropout=hidden_dropout_cfg,
+            layer_norm_hidden=layer_norm_hidden,
         )
     else:
         _override_core_mlp(
-            core, layers, activation_name, bool(getattr(cfg, "linear_head", False))
+            core,
+            layers,
+            activation_name,
+            bool(getattr(cfg, "linear_head", False)),
+            hidden_dropout=hidden_dropout_cfg,
+            layer_norm_hidden=layer_norm_hidden,
         )
     # Wrap with input LayerNorm and light dropout for stability on tiny nets
     import torch.nn as _nn  # type: ignore
@@ -510,7 +608,7 @@ def train_deeptica(
         def __init__(self, inner, in_features: int, *, ln_in: bool, p_drop: float):
             super().__init__()
             self.ln = _nn.LayerNorm(in_features) if ln_in else _nn.Identity()
-            p = float(max(0.0, min(0.1, p_drop)))
+            p = float(max(0.0, min(1.0, p_drop)))
             self.drop_in = _nn.Dropout(p=p) if p > 0 else _nn.Identity()
             self.inner = inner
             self.drop_out = _nn.Identity()
@@ -520,33 +618,26 @@ def train_deeptica(
             x = self.drop_in(x)
             return self.inner(x)
 
-    class _WhitenWrapper(_nn.Module):  # type: ignore[misc]
-        def __init__(
-            self,
-            inner,
-            mean: np.ndarray | torch.Tensor,
-            transform: np.ndarray | torch.Tensor,
-        ):
-            super().__init__()
-            self.inner = inner
-            self.register_buffer("mean", torch.as_tensor(mean, dtype=torch.float32))
-            self.register_buffer(
-                "transform", torch.as_tensor(transform, dtype=torch.float32)
-            )
-
-        def forward(self, x):  # type: ignore[override]
-            y = self.inner(x)
-            y = y - self.mean
-            return torch.matmul(y, self.transform.T)
-
     _strip_batch_norm(core)
+    dropout_in = getattr(cfg, "dropout_input", None)
+    if dropout_in is None:
+        dropout_in = getattr(cfg, "dropout", 0.0)
+    dropout_in = float(max(0.0, min(1.0, float(dropout_in))))
     net = _PrePostWrapper(
         core,
         in_dim,
-        ln_in=bool(getattr(cfg, "layer_norm_in", True)),
-        p_drop=float(getattr(cfg, "dropout", 0.1)),
+        ln_in=bool(getattr(cfg, "layer_norm_in", False)),
+        p_drop=dropout_in,
     )
     torch.manual_seed(int(cfg.seed))
+
+    tau_schedule = tuple(
+        int(x)
+        for x in (getattr(cfg, "tau_schedule", ()) or ())
+        if int(x) > 0
+    )
+    if not tau_schedule:
+        tau_schedule = (int(cfg.lag),)
 
     idx_t, idx_tlag = pairs
 
@@ -586,8 +677,28 @@ def train_deeptica(
         except Exception:
             return True
 
-    if _needs_repair(idx_t, idx_tlag):
-        idx_t, idx_tlag = _build_uniform_pairs_per_shard(X_list, int(cfg.lag))
+    if len(tau_schedule) > 1:
+        idx_parts: List[np.ndarray] = []
+        j_parts: List[np.ndarray] = []
+        for tau_val in tau_schedule:
+            i_tau, j_tau = _build_uniform_pairs_per_shard(X_list, int(tau_val))
+            if i_tau.size and j_tau.size:
+                idx_parts.append(i_tau)
+                j_parts.append(j_tau)
+        if idx_parts:
+            idx_t = np.concatenate(idx_parts).astype(np.int64, copy=False)
+            idx_tlag = np.concatenate(j_parts).astype(np.int64, copy=False)
+        else:
+            idx_t = np.asarray([], dtype=np.int64)
+            idx_tlag = np.asarray([], dtype=np.int64)
+    else:
+        if _needs_repair(idx_t, idx_tlag):
+            idx_t, idx_tlag = _build_uniform_pairs_per_shard(
+                X_list, int(tau_schedule[0])
+            )
+
+    idx_t = np.asarray(idx_t, dtype=np.int64)
+    idx_tlag = np.asarray(idx_tlag, dtype=np.int64)
 
     # Simple telemetry: evaluate a proxy objective before and after training.
     def _vamp2_proxy(Y: np.ndarray, i: np.ndarray, j: np.ndarray) -> float:
@@ -628,7 +739,7 @@ def train_deeptica(
         # Normalize index arrays and construct default weights (ones) when not provided
         if idx_t is None or idx_tlag is None or (len(idx_t) == 0 or len(idx_tlag) == 0):
             n = int(Z.shape[0])
-            L = int(cfg.lag)
+            L = int(tau_schedule[-1])
             if L < n:
                 idx_t = np.arange(0, n - L, dtype=int)
                 idx_tlag = idx_t + L
@@ -641,6 +752,16 @@ def train_deeptica(
             weights_arr = np.ones((int(idx_t.shape[0]),), dtype=np.float32)
         else:
             weights_arr = np.asarray(weights, dtype=np.float32).reshape(-1)
+            if weights_arr.size == 1 and int(idx_t.shape[0]) > 1:
+                weights_arr = np.full(
+                    (int(idx_t.shape[0]),),
+                    float(weights_arr[0]),
+                    dtype=np.float32,
+                )
+            elif int(idx_t.shape[0]) != int(weights_arr.shape[0]):
+                raise ValueError(
+                    "weights must have the same length as the number of lagged pairs"
+                )
 
         # Ensure explicit float32 tensors for lagged pairs
         # If you use a scaler, after scaler.fit, cast outputs to float32
@@ -1029,6 +1150,15 @@ def train_deeptica(
             except Exception:
                 import lightning.pytorch as pl  # type: ignore
 
+            vamp_kwargs = {
+                "eps": float(max(1e-9, getattr(cfg, "vamp_eps", 1e-3))),
+                "eps_abs": float(max(0.0, getattr(cfg, "vamp_eps_abs", 1e-6))),
+                "alpha": float(
+                    min(max(getattr(cfg, "vamp_alpha", 0.15), 0.0), 1.0)
+                ),
+                "cond_reg": float(max(0.0, getattr(cfg, "vamp_cond_reg", 1e-4))),
+            }
+
             class DeepTICALightningWrapper(pl.LightningModule):  # type: ignore
                 def __init__(
                     self,
@@ -1043,7 +1173,7 @@ def train_deeptica(
                 ):
                     super().__init__()
                     self.inner = inner
-                    self.vamp_loss = VAMP2Loss(eps=1e-5)
+                    self.vamp_loss = VAMP2Loss(**vamp_kwargs)
                     self._train_loss_accum: list[float] = []
                     self._val_loss_accum: list[float] = []
                     self._val_score_accum: list[float] = []
@@ -1460,11 +1590,11 @@ def train_deeptica(
                     self._cond_ctt_accum.clear()
 
                 def configure_optimizers(self):  # type: ignore[override]
-                    # Adam with mild weight decay for stability
+                    # AdamW with mild weight decay for stability
                     weight_decay = float(self.hparams.weight_decay)
                     if weight_decay <= 0.0:
                         weight_decay = 1e-4
-                    opt = torch.optim.Adam(
+                    opt = torch.optim.AdamW(
                         self.parameters(),
                         lr=float(self.hparams.lr),
                         weight_decay=weight_decay,
@@ -1556,17 +1686,25 @@ def train_deeptica(
         # Enforce minimum training duration to avoid early flat-zero stalls
         _max_epochs = int(getattr(cfg, "max_epochs", 200))
         _min_epochs = max(1, min(50, _max_epochs // 4))
-        trainer = Trainer(
-            max_epochs=_max_epochs,
-            min_epochs=_min_epochs,
-            enable_progress_bar=_pb,
-            logger=loggers if loggers else False,
-            callbacks=callbacks,
-            deterministic=True,
-            log_every_n_steps=1,
-            enable_checkpointing=True,
-            gradient_clip_val=2.0,
-        )
+        clip_val = float(max(0.0, getattr(cfg, "gradient_clip_val", 0.0)))
+        clip_alg = str(getattr(cfg, "gradient_clip_algorithm", "norm"))
+        trainer_kwargs = {
+            "max_epochs": _max_epochs,
+            "min_epochs": _min_epochs,
+            "enable_progress_bar": _pb,
+            "logger": loggers if loggers else False,
+            "callbacks": callbacks,
+            "deterministic": True,
+            "log_every_n_steps": 1,
+            "enable_checkpointing": True,
+            "gradient_clip_val": clip_val,
+            "gradient_clip_algorithm": clip_alg,
+        }
+        try:
+            trainer = Trainer(**trainer_kwargs)
+        except TypeError:
+            trainer_kwargs.pop("gradient_clip_algorithm", None)
+            trainer = Trainer(**trainer_kwargs)
 
         if dm is not None:
             trainer.fit(model=wrapped, datamodule=dm)
@@ -1611,7 +1749,7 @@ def train_deeptica(
                 _w = weights_arr
                 getattr(net, "fit")(
                     Z,
-                    lagtime=int(cfg.lag),
+                    lagtime=int(tau_schedule[-1]),
                     idx_t=np.asarray(idx_t, dtype=int),
                     idx_tlag=np.asarray(idx_tlag, dtype=int),
                     weights=_w,
@@ -1745,6 +1883,7 @@ def train_deeptica(
         "epochs": history_epochs,
         "log_every": int(cfg.log_every),
         "wall_time_s": float(max(0.0, _time.time() - t0)),
+        "tau_schedule": [int(x) for x in tau_schedule],
     }
 
     history["output_variance"] = whitening_info.get("output_variance")

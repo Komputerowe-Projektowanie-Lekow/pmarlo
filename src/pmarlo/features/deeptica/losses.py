@@ -11,9 +11,26 @@ from torch import Tensor, nn
 class VAMP2Loss(nn.Module):
     """Compute a scale-invariant, regularised VAMP-2 score."""
 
-    def __init__(self, eps: float = 1e-6, dtype: torch.dtype = torch.float64) -> None:
+    def __init__(
+        self,
+        eps: float = 1e-3,
+        *,
+        eps_abs: float = 1e-6,
+        alpha: float = 0.15,
+        cond_reg: float = 1e-4,
+        jitter: float = 1e-8,
+        max_cholesky_retries: int = 5,
+        jitter_growth: float = 10.0,
+        dtype: torch.dtype = torch.float64,
+    ) -> None:
         super().__init__()
         self.eps = float(eps)
+        self.eps_abs = float(max(eps_abs, 0.0))
+        self.alpha = float(min(max(alpha, 0.0), 1.0))
+        self.cond_reg = float(max(cond_reg, 0.0))
+        self.jitter = float(max(jitter, 0.0))
+        self.jitter_growth = float(max(jitter_growth, 1.0))
+        self.max_cholesky_retries = int(max(1, max_cholesky_retries))
         self.target_dtype = dtype
         self.register_buffer("_eye", torch.empty(0, dtype=dtype), persistent=False)
 
@@ -61,16 +78,18 @@ class VAMP2Loss(nn.Module):
         trt = torch.clamp(torch.trace(Ctt), min=trace_floor)
         mu0 = tr0 / float(max(1, dim))
         mut = trt / float(max(1, dim))
-        ridge0 = mu0 * self.eps
-        ridget = mut * self.eps
-        alpha = 0.02
+        diag_mean0 = torch.clamp(torch.diagonal(C00, dim1=-2, dim2=-1).mean(), min=trace_floor)
+        diag_meant = torch.clamp(torch.diagonal(Ctt, dim1=-2, dim2=-1).mean(), min=trace_floor)
+        ridge0 = torch.maximum(mu0 * self.eps, diag_mean0 * self.eps_abs)
+        ridget = torch.maximum(mut * self.eps, diag_meant * self.eps_abs)
+        alpha = self.alpha
         C00 = (1.0 - alpha) * C00 + (alpha * mu0 + ridge0) * eye
         Ctt = (1.0 - alpha) * Ctt + (alpha * mut + ridget) * eye
         C00 = (C00 + C00.T) * 0.5
         Ctt = (Ctt + Ctt.T) * 0.5
 
-        L0 = torch.linalg.cholesky(C00, upper=False)
-        Lt = torch.linalg.cholesky(Ctt, upper=False)
+        L0, C00 = self._stable_cholesky(C00, eye)
+        Lt, Ctt = self._stable_cholesky(Ctt, eye)
 
         try:
             left = torch.linalg.solve_triangular(L0, C0t, upper=False)
@@ -83,7 +102,19 @@ class VAMP2Loss(nn.Module):
         K = right.transpose(-1, -2)
 
         score = torch.sum(K * K)
-        loss = -score
+
+        penalty = torch.tensor(0.0, device=device, dtype=dtype)
+        if self.cond_reg > 0.0:
+            eig0 = torch.linalg.eigvalsh(C00)
+            eigt = torch.linalg.eigvalsh(Ctt)
+            cond_c00 = eig0.max() / torch.clamp(eig0.min(), min=trace_floor)
+            cond_ctt = eigt.max() / torch.clamp(eigt.min(), min=trace_floor)
+            cond_term = torch.log(torch.clamp(cond_c00, min=1.0)) + torch.log(
+                torch.clamp(cond_ctt, min=1.0)
+            )
+            penalty = penalty + self.cond_reg * cond_term
+
+        loss = -score + penalty
         return loss, score.detach()
 
     def _identity_like(self, mat: Tensor, device: torch.device) -> Tensor:
@@ -93,3 +124,19 @@ class VAMP2Loss(nn.Module):
             eye = torch.eye(dim, device=device, dtype=self.target_dtype)
             self._eye = eye
         return eye
+
+    def _stable_cholesky(self, mat: Tensor, eye: Tensor) -> Tuple[Tensor, Tensor]:
+        """Compute a Cholesky factor with adaptive jitter for stability."""
+
+        updated = mat
+        jitter = self.jitter
+        for attempt in range(self.max_cholesky_retries):
+            try:
+                return torch.linalg.cholesky(updated, upper=False), updated
+            except RuntimeError:
+                if attempt + 1 >= self.max_cholesky_retries:
+                    raise
+                jitter = jitter if jitter > 0.0 else 1e-12
+                updated = updated + eye * jitter
+                jitter *= self.jitter_growth
+        raise RuntimeError("Cholesky decomposition failed after retries")

@@ -350,6 +350,20 @@ def main() -> None:
                     step=1,
                     key="emit_stride",
                 )
+                frames_per_shard = st.number_input(
+                    "Frames per shard",
+                    min_value=500,
+                    value=5000,
+                    step=500,
+                    key="frames_per_shard",
+                )
+                hop_frames = st.number_input(
+                    "Hop (overlap step)",
+                    min_value=0,
+                    value=5000,
+                    step=500,
+                    key="hop_frames",
+                )
                 temp_default = sim.analysis_temperatures[0] if sim.analysis_temperatures else 300.0
                 shard_temp = st.number_input(
                     "Shard metadata temperature (K)",
@@ -377,6 +391,8 @@ def main() -> None:
                             stride=int(stride),
                             temperature=float(shard_temp),
                             seed_start=int(seed_start),
+                            frames_per_shard=int(frames_per_shard),
+                            hop_frames=int(hop_frames) if hop_frames > 0 else None,
                             reference=Path(reference_path).expanduser().resolve()
                             if reference_path.strip()
                             else None,
