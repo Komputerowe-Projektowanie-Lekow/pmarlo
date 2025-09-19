@@ -85,13 +85,33 @@ def _select_shard_paths(groups: Sequence[Dict[str, object]], run_ids: Sequence[s
 
 
 def _metrics_table(flags: Dict[str, object]) -> pd.DataFrame:
+    def _to_serializable(val: object) -> object:
+        # Keep simple scalars as-is
+        if isinstance(val, (str, int, float, bool)) or val is None:
+            return val
+        # Coerce NumPy scalars
+        try:
+            import numpy as np  # type: ignore
+
+            if isinstance(val, np.generic):
+                return val.item()
+        except Exception:
+            pass
+        # For sequences, mappings, arrays, and other objects, stringify to avoid Arrow type issues
+        try:
+            import json
+
+            return json.dumps(val, default=str)
+        except Exception:
+            return str(val)
+
     rows = []
     for key, value in flags.items():
         if isinstance(value, dict):
             for sub_key, sub_val in value.items():
-                rows.append({"metric": f"{key}.{sub_key}", "value": sub_val})
+                rows.append({"metric": f"{key}.{sub_key}", "value": _to_serializable(sub_val)})
         else:
-            rows.append({"metric": key, "value": value})
+            rows.append({"metric": key, "value": _to_serializable(value)})
     return pd.DataFrame(rows) if rows else pd.DataFrame({"metric": [], "value": []})
 
 
@@ -840,7 +860,6 @@ def main() -> None:
                     )
                     artifact = backend.build_analysis(selected_paths, build_cfg)
                     st.session_state[_LAST_BUILD] = artifact
-                    _apply_analysis_config_to_state(build_cfg)
                     st.success(
                         f"Bundle {artifact.bundle_path.name} written (hash {artifact.dataset_hash})."
                     )
