@@ -26,7 +26,7 @@ class TrainerConfig:
     weight_decay: float = 0.0
     use_weights: bool = True
     tau_schedule: Tuple[int, ...] = ()
-    grad_clip_norm: Optional[float] = 5.0
+    grad_clip_norm: Optional[float] = 2.0
     log_every: int = 25
     checkpoint_dir: Optional[Path] = None
     checkpoint_metric: str = "vamp2"
@@ -47,12 +47,15 @@ class DeepTICATrainer:
         self.device = torch.device(device_str)
         self.model.net.to(self.device)
         self.model.net.train()
-        self.loss_module = VAMP2Loss().to(self.device)
+        self.loss_module = VAMP2Loss(eps=1e-5).to(self.device)
 
+        weight_decay = float(cfg.weight_decay)
+        if weight_decay <= 0.0:
+            weight_decay = 1e-4
         self.optimizer = torch.optim.AdamW(
             self.model.net.parameters(),
             lr=float(cfg.learning_rate),
-            weight_decay=float(cfg.weight_decay),
+            weight_decay=weight_decay,
         )
 
         self.scheduler = self._make_scheduler()

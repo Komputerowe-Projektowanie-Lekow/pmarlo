@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import os as _os
@@ -77,7 +77,9 @@ def _override_core_mlp(core, layers, activation_name: str, linear_head: bool) ->
     pass
 
 
-def _apply_output_whitening(net, Z, idx_tau):
+def _apply_output_whitening(
+    net, Z, idx_tau, *, apply: bool = False, eig_floor: float = 1e-4
+):
     import torch
 
     tensor = torch.as_tensor(Z, dtype=torch.float32)
@@ -85,18 +87,43 @@ def _apply_output_whitening(net, Z, idx_tau):
         outputs = net(tensor)
         if isinstance(outputs, torch.Tensor):
             outputs = outputs.detach().cpu().numpy()
+    if outputs is None or outputs.size == 0:
+        info = {
+            "output_variance": [],
+            "var_zt": [],
+            "cond_c00": None,
+            "cond_ctt": None,
+            "mean": [],
+            "transform": [],
+            "transform_applied": bool(apply),
+        }
+        return net, info
+
     mean = np.mean(outputs, axis=0)
     centered = outputs - mean
     n = max(1, centered.shape[0] - 1)
     C0 = (centered.T @ centered) / float(n)
-    eigvals, eigvecs = np.linalg.eigh((C0 + C0.T) * 0.5)
-    eigvals = np.clip(eigvals, 1e-8, None)
-    inv_sqrt = eigvecs @ np.diag(1.0 / np.sqrt(eigvals)) @ eigvecs.T
-    outputs_white = centered @ inv_sqrt
-    output_var = outputs_white.var(axis=0, ddof=1).astype(float).tolist()
 
-    var_zt = output_var
-    cond_ctt = 1.0
+    def _regularize(mat: np.ndarray) -> np.ndarray:
+        sym = 0.5 * (mat + mat.T)
+        dim = sym.shape[0]
+        eye = np.eye(dim, dtype=np.float64)
+        trace = float(np.trace(sym))
+        trace = max(trace, 1e-12)
+        mu = trace / float(max(1, dim))
+        ridge = mu * 1e-5
+        alpha = 0.02
+        return (1.0 - alpha) * sym + (alpha * mu + ridge) * eye
+
+    C0_reg = _regularize(C0)
+    eigvals, eigvecs = np.linalg.eigh(C0_reg)
+    eigvals = np.clip(eigvals, max(eig_floor, 1e-8), None)
+    inv_sqrt = eigvecs @ np.diag(1.0 / np.sqrt(eigvals)) @ eigvecs.T
+    output_var = centered.var(axis=0, ddof=1).astype(float).tolist()
+    cond_c00 = float(eigvals.max() / eigvals.min())
+
+    var_zt = None
+    cond_ctt = None
     if idx_tau is not None and len(Z) > 0:
         tau_tensor = torch.as_tensor(Z[idx_tau], dtype=torch.float32)
         with torch.no_grad():
@@ -105,22 +132,28 @@ def _apply_output_whitening(net, Z, idx_tau):
             if isinstance(tau_out, torch.Tensor):
                 tau_out = tau_out.detach().cpu().numpy()
         tau_center = tau_out - mean
-        tau_white = tau_center @ inv_sqrt
-        var_zt = tau_white.var(axis=0, ddof=1).astype(float).tolist()
-        n_tau = max(1, tau_white.shape[0] - 1)
-        Ct = (tau_white.T @ tau_white) / float(n_tau)
-        eig_ct = np.linalg.eigvalsh((Ct + Ct.T) * 0.5)
-        eig_ct = np.clip(eig_ct, 1e-8, None)
+        var_zt = tau_center.var(axis=0, ddof=1).astype(float).tolist()
+        n_tau = max(1, tau_center.shape[0] - 1)
+        Ct = (tau_center.T @ tau_center) / float(n_tau)
+        Ct_reg = _regularize(Ct)
+        eig_ct = np.linalg.eigvalsh(Ct_reg)
+        eig_ct = np.clip(eig_ct, max(eig_floor, 1e-8), None)
         cond_ctt = float(eig_ct.max() / eig_ct.min())
 
-    wrapped = _WhitenWrapper(net, mean, inv_sqrt)
+    if var_zt is None:
+        var_zt = output_var
+
+    transform = inv_sqrt if apply else np.eye(inv_sqrt.shape[0], dtype=np.float64)
+    wrapped = _WhitenWrapper(net, mean, transform) if apply else net
+
     info = {
         "output_variance": output_var,
         "var_zt": var_zt,
-        "cond_c00": 1.0,
+        "cond_c00": cond_c00,
         "cond_ctt": cond_ctt,
         "mean": mean.astype(float).tolist(),
         "transform": inv_sqrt.astype(float).tolist(),
+        "transform_applied": bool(apply),
     }
     return wrapped, info
 
@@ -517,7 +550,7 @@ def train_deeptica(
 
     idx_t, idx_tlag = pairs
 
-    # Validate or construct perâ€‘shard pairs to ensure x_t != x_{t+tau}
+    # Validate or construct per-shard pairs to ensure x_t != x_{t+tau}
     def _build_uniform_pairs_per_shard(
         blocks: List[np.ndarray], lag: int
     ) -> tuple[np.ndarray, np.ndarray]:
@@ -589,7 +622,7 @@ def train_deeptica(
         Y0, np.asarray(idx_t, dtype=int), np.asarray(idx_tlag, dtype=int)
     )
 
-    # Build timeâ€‘lagged dataset for training
+    # Build time-lagged dataset for training
     ds = None
     try:
         # Normalize index arrays and construct default weights (ones) when not provided
@@ -1010,7 +1043,7 @@ def train_deeptica(
                 ):
                     super().__init__()
                     self.inner = inner
-                    self.vamp_loss = VAMP2Loss()
+                    self.vamp_loss = VAMP2Loss(eps=1e-5)
                     self._train_loss_accum: list[float] = []
                     self._val_loss_accum: list[float] = []
                     self._val_score_accum: list[float] = []
@@ -1163,6 +1196,24 @@ def train_deeptica(
                         with torch.no_grad():
                             y_t_eval = y_t.detach()
                             y_tau_eval = y_tau.detach()
+
+                            def _regularize_cov(cov: torch.Tensor) -> torch.Tensor:
+                                cov_sym = (cov + cov.transpose(-1, -2)) * 0.5
+                                dim = cov_sym.shape[-1]
+                                eye = torch.eye(
+                                    dim, device=cov_sym.device, dtype=cov_sym.dtype
+                                )
+                                trace_floor = torch.tensor(
+                                    1e-12, dtype=cov_sym.dtype, device=cov_sym.device
+                                )
+                                tr = torch.clamp(torch.trace(cov_sym), min=trace_floor)
+                                mu = tr / float(max(1, dim))
+                                ridge = mu * float(self.vamp_loss.eps)
+                                alpha = 0.02
+                                return (1.0 - alpha) * cov_sym + (
+                                    alpha * mu + ridge
+                                ) * eye
+
                             y_t_c = y_t_eval - torch.mean(y_t_eval, dim=0, keepdim=True)
                             y_tau_c = y_tau_eval - torch.mean(
                                 y_tau_eval, dim=0, keepdim=True
@@ -1171,12 +1222,15 @@ def train_deeptica(
                             C0 = (y_t_c.T @ y_t_c) / float(n)
                             Ctt = (y_tau_c.T @ y_tau_c) / float(n)
                             Ctau = (y_t_c.T @ y_tau_c) / float(n)
-                            evals, evecs = torch.linalg.eigh((C0 + C0.T) * 0.5)
-                            eps = torch.tensor(
-                                1e-8, dtype=evals.dtype, device=evals.device
+
+                            C0_reg = _regularize_cov(C0)
+                            Ctt_reg = _regularize_cov(Ctt)
+                            evals, evecs = torch.linalg.eigh(C0_reg)
+                            eps_floor = torch.tensor(
+                                1e-12, dtype=evals.dtype, device=evals.device
                             )
                             inv_sqrt = torch.diag(
-                                torch.rsqrt(torch.clamp(evals, min=float(eps)))
+                                torch.rsqrt(torch.clamp(evals, min=eps_floor))
                             )
                             W = evecs @ inv_sqrt @ evecs.T
                             M = W @ Ctau @ W.T
@@ -1200,12 +1254,12 @@ def train_deeptica(
                             self._val_var_zt_accum.append(
                                 var_zt.detach().cpu().tolist()
                             )
-                            evals_c0 = torch.clamp(evals, min=1e-12)
+                            evals_c0 = torch.clamp(evals, min=eps_floor)
                             cond_c0 = float(
                                 (evals_c0.max() / evals_c0.min()).detach().cpu().item()
                             )
-                            evals_ctt, _ = torch.linalg.eigh((Ctt + Ctt.T) * 0.5)
-                            evals_ctt = torch.clamp(evals_ctt, min=1e-12)
+                            evals_ctt = torch.linalg.eigvalsh(Ctt_reg)
+                            evals_ctt = torch.clamp(evals_ctt, min=eps_floor)
                             cond_ctt = float(
                                 (evals_ctt.max() / evals_ctt.min())
                                 .detach()
@@ -1214,10 +1268,10 @@ def train_deeptica(
                             )
                             self._cond_c0_accum.append(cond_c0)
                             self._cond_ctt_accum.append(cond_ctt)
-                            var_t = torch.diag(C0)
-                            var_tau = torch.diag(Ctt)
+                            var_t = torch.diag(C0_reg)
+                            var_tau = torch.diag(Ctt_reg)
                             corr = torch.diag(Ctau) / torch.sqrt(
-                                torch.clamp(var_t * var_tau, min=1e-12)
+                                torch.clamp(var_t * var_tau, min=eps_floor)
                             )
                             for i in range(min(int(corr.shape[0]), 4)):
                                 self.log(
@@ -1407,10 +1461,13 @@ def train_deeptica(
 
                 def configure_optimizers(self):  # type: ignore[override]
                     # Adam with mild weight decay for stability
+                    weight_decay = float(self.hparams.weight_decay)
+                    if weight_decay <= 0.0:
+                        weight_decay = 1e-4
                     opt = torch.optim.Adam(
                         self.parameters(),
                         lr=float(self.hparams.lr),
-                        weight_decay=float(self.hparams.weight_decay),
+                        weight_decay=weight_decay,
                     )
                     sched_name = (
                         str(getattr(self.hparams, "lr_schedule", "cosine"))
@@ -1508,7 +1565,7 @@ def train_deeptica(
             deterministic=True,
             log_every_n_steps=1,
             enable_checkpointing=True,
-            gradient_clip_val=5.0,
+            gradient_clip_val=2.0,
         )
 
         if dm is not None:
@@ -1570,7 +1627,7 @@ def train_deeptica(
             raise ImportError(
                 "Lightning (lightning or pytorch_lightning) is required for Deep-TICA training"
             )
-    net, whitening_info = _apply_output_whitening(net, Z, idx_tlag)
+    net, whitening_info = _apply_output_whitening(net, Z, idx_tlag, apply=False)
     net.eval()
     with torch.no_grad():
         try:
@@ -1693,6 +1750,7 @@ def train_deeptica(
     history["output_variance"] = whitening_info.get("output_variance")
     history["output_mean"] = whitening_info.get("mean")
     history["output_transform"] = whitening_info.get("transform")
+    history["output_transform_applied"] = whitening_info.get("transform_applied")
 
     if history.get("var_z0_curve"):
         history["var_z0_curve"][-1] = whitening_info.get("output_variance")
