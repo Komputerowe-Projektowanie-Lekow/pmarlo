@@ -407,9 +407,17 @@ class WorkflowBackend:
         return sorted(self.layout.shards_dir.rglob("*.json"))
 
     def shard_summaries(self) -> List[Dict[str, Any]]:
+        # Return only shard batches that have existing files; trim missing paths.
         info: List[Dict[str, Any]] = []
         for entry in self.state.shards:
-            info.append(dict(entry))
+            paths = [str(p) for p in entry.get("paths", []) if Path(p).exists()]
+            if not paths:
+                # Skip batches that no longer have files on disk
+                continue
+            e = dict(entry)
+            e["paths"] = paths
+            e["n_shards"] = len(paths)
+            info.append(e)
         return info
 
     # ------------------------------------------------------------------
@@ -531,7 +539,41 @@ class WorkflowBackend:
         return [dict(entry) for entry in self.state.builds]
 
     def sidebar_summary(self) -> Dict[str, int]:
-        return self.state.summary()
+        # Reconcile stale shard entries first
+        self._reconcile_shard_state()
+
+        # Count shard files on disk for accuracy
+        try:
+            shard_files = len(self.discover_shards())
+        except Exception:
+            shard_files = len(self.state.shards)
+
+        return {
+            "runs": len(self.state.runs),
+            "shards": int(shard_files),
+            "models": len(self.state.models),
+            "builds": len(self.state.builds),
+        }
+
+    def _reconcile_shard_state(self) -> None:
+        """Remove shard batches from state if all referenced files are missing."""
+        try:
+            to_delete: List[int] = []
+            for i, entry in enumerate(list(self.state.shards)):
+                paths = [Path(p) for p in entry.get("paths", [])]
+                existing = [p for p in paths if p.exists()]
+                if len(existing) == 0:
+                    to_delete.append(i)
+            for i in reversed(to_delete):
+                # Best-effort removal (also attempts to clean empty dirs)
+                if not self.delete_shard_batch(i):
+                    try:
+                        self.state.remove_shards(i)
+                    except Exception:
+                        pass
+        except Exception:
+            # Non-fatal; leave state as-is
+            pass
 
     # ------------------------------------------------------------------
     # Rehydrate existing assets

@@ -5,11 +5,11 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
-from torch.nn.utils import clip_grad_norm_
+from torch.nn.utils import clip_grad_norm_, clip_grad_value_
 
 from .deeptica.losses import VAMP2Loss
 
@@ -27,6 +27,9 @@ class TrainerConfig:
     use_weights: bool = True
     tau_schedule: Tuple[int, ...] = ()
     grad_clip_norm: Optional[float] = 1.0
+    grad_clip_mode: str = "norm"
+    grad_clip_value: Optional[float] = None
+    grad_norm_warn: Optional[float] = None
     log_every: int = 25
     checkpoint_dir: Optional[Path] = None
     checkpoint_metric: str = "vamp2"
@@ -115,10 +118,33 @@ class DeepTICATrainer:
         self.optimizer.zero_grad()
         loss, score = self._compute_loss_and_score(x_t, x_tau, weights)
         loss.backward()
-        if self.cfg.grad_clip_norm is not None:
-            clip_grad_norm_(
-                self.model.net.parameters(), max_norm=float(self.cfg.grad_clip_norm)
-            )
+
+        grad_norm = self._compute_grad_norm(self.model.net.parameters())
+
+        clip_mode = str(getattr(self.cfg, "grad_clip_mode", "norm")).lower()
+        if clip_mode == "value":
+            clip_value = getattr(self.cfg, "grad_clip_value", None)
+            if clip_value is not None:
+                clip_grad_value_(
+                    self.model.net.parameters(), float(clip_value)
+                )
+        else:
+            if self.cfg.grad_clip_norm is not None:
+                grad_norm = float(
+                    clip_grad_norm_(
+                        self.model.net.parameters(),
+                        max_norm=float(self.cfg.grad_clip_norm),
+                    )
+                )
+
+        warn_thresh = getattr(self.cfg, "grad_norm_warn", None)
+        if warn_thresh is not None and grad_norm is not None:
+            if float(grad_norm) > float(warn_thresh):
+                logger.warning(
+                    "Gradient norm %.3f exceeded warning threshold %.3f",
+                    float(grad_norm),
+                    float(warn_thresh),
+                )
         self.optimizer.step()
         if self.scheduler is not None:
             self.scheduler.step()
@@ -129,6 +155,8 @@ class DeepTICATrainer:
             "tau": float(self.current_tau()),
             "lr": float(self.optimizer.param_groups[0]["lr"]),
         }
+        if grad_norm is not None:
+            metrics["grad_norm"] = float(grad_norm)
         self._record_metrics(metrics)
         self._maybe_checkpoint(metrics)
         self.global_step += 1
@@ -291,3 +319,21 @@ class DeepTICATrainer:
             self.best_checkpoint_path,
             self.best_score,
         )
+
+    @staticmethod
+    def _compute_grad_norm(params: Iterable[torch.nn.Parameter]) -> Optional[float]:
+        total = None
+        for p in params:
+            if p.grad is None:
+                continue
+            grad = p.grad.detach()
+            if grad.is_sparse:
+                grad = grad.coalesce().values()
+            norm_sq = torch.sum(grad.to(torch.float64) ** 2)
+            if total is None:
+                total = norm_sq
+            else:
+                total = total + norm_sq
+        if total is None:
+            return None
+        return float(torch.sqrt(total).cpu().item())
