@@ -56,6 +56,8 @@ except Exception as e:  # pragma: no cover - optional extra
 # External scaling via scikit-learn (avoid internal normalization)
 from sklearn.preprocessing import StandardScaler  # type: ignore
 
+from pmarlo.ml.deeptica.whitening import apply_output_transform
+
 from .losses import VAMP2Loss
 
 
@@ -300,6 +302,8 @@ class DeepTICAConfig:
     gradient_clip_val: float = 1.0
     gradient_clip_algorithm: str = "norm"
     tau_schedule: Tuple[int, ...] = ()
+    val_tau: Optional[int] = None
+    epochs_per_tau: int = 15
     vamp_eps: float = 1e-3
     vamp_eps_abs: float = 1e-6
     vamp_alpha: float = 0.15
@@ -385,7 +389,18 @@ class DeepTICAModel:
                 y = self.net(torch.as_tensor(Z, dtype=torch.float32))
             if isinstance(y, torch.Tensor):
                 y = y.detach().cpu().numpy()
-        return np.asarray(y, dtype=np.float64)
+        outputs = np.asarray(y, dtype=np.float64)
+        history = getattr(self, "training_history", {}) or {}
+        mean = history.get("output_mean") if isinstance(history, dict) else None
+        transform = history.get("output_transform") if isinstance(history, dict) else None
+        applied_flag = history.get("output_transform_applied") if isinstance(history, dict) else None
+        if mean is not None and transform is not None:
+            try:
+                outputs = apply_output_transform(outputs, mean, transform, applied_flag)
+            except Exception:
+                # Best-effort: fall back to raw outputs if metadata is inconsistent
+                pass
+        return outputs
 
     def save(self, path: Path) -> None:
         path = Path(path)
@@ -525,7 +540,14 @@ class DeepTICAModel:
         state = torch.load(path.with_suffix(".pt"), map_location="cpu")
         net.load_state_dict(state["state_dict"])  # type: ignore[index]
         net.eval()
-        return cls(cfg, scaler, net)
+        history: dict | None = None
+        history_path = path.with_suffix(".history.json")
+        if history_path.exists():
+            try:
+                history = json.loads(history_path.read_text(encoding="utf-8"))
+            except Exception:
+                history = None
+        return cls(cfg, scaler, net, training_history=history)
 
     def to_torchscript(self, path: Path) -> Path:
         path = Path(path)
