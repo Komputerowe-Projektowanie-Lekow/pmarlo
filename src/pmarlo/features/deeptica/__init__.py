@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os as _os
 import random
 from dataclasses import asdict, dataclass
@@ -14,6 +15,9 @@ import torch  # type: ignore
 
 torch.set_float32_matmul_precision("high")
 torch.set_default_dtype(torch.float32)
+
+
+logger = logging.getLogger(__name__)
 
 
 def set_all_seeds(seed: int = 2024) -> None:
@@ -300,6 +304,58 @@ class DeepTICAConfig:
     vamp_eps_abs: float = 1e-6
     vamp_alpha: float = 0.15
     vamp_cond_reg: float = 1e-4
+    grad_norm_warn: Optional[float] = None
+    variance_warn_threshold: float = 1e-6
+    mean_warn_threshold: float = 5.0
+
+    @classmethod
+    def small_data(
+        cls,
+        *,
+        lag: int,
+        n_out: int = 2,
+        hidden: Tuple[int, ...] | None = None,
+        dropout_input: Optional[float] = None,
+        hidden_dropout: Iterable[float] | None = None,
+        **overrides: Any,
+    ) -> "DeepTICAConfig":
+        """Preset tuned for scarce data with stronger regularization.
+
+        Parameters
+        ----------
+        lag
+            Required lag time for the curriculum.
+        n_out
+            Number of collective variables to learn.
+        hidden
+            Optional explicit hidden layer sizes. Defaults to a single modest layer.
+        dropout_input
+            Override the preset input dropout rate.
+        hidden_dropout
+            Override the hidden-layer dropout schedule.
+        overrides
+            Additional configuration overrides forwarded to ``DeepTICAConfig``.
+        """
+
+        base_hidden = hidden if hidden is not None else (32,)
+        drop_in = 0.15 if dropout_input is None else float(dropout_input)
+        if hidden_dropout is None:
+            drop_hidden_seq = tuple(0.15 for _ in range(max(0, len(base_hidden))))
+        else:
+            drop_hidden_seq = tuple(float(v) for v in hidden_dropout)
+        defaults = dict(
+            lag=int(lag),
+            n_out=int(n_out),
+            hidden=tuple(int(h) for h in base_hidden),
+            dropout_input=float(max(0.0, min(1.0, drop_in))),
+            hidden_dropout=tuple(
+                float(max(0.0, min(1.0, v))) for v in drop_hidden_seq
+            ),
+            layer_norm_in=True,
+            layer_norm_hidden=True,
+        )
+        defaults.update(overrides)
+        return cls(**defaults)
 
 
 class DeepTICAModel:
@@ -699,6 +755,57 @@ def train_deeptica(
 
     idx_t = np.asarray(idx_t, dtype=np.int64)
     idx_tlag = np.asarray(idx_tlag, dtype=np.int64)
+
+    shard_lengths = [int(np.asarray(b).shape[0]) for b in X_list]
+    max_tau = int(max(tau_schedule)) if tau_schedule else int(cfg.lag)
+    min_required = max_tau + 1
+    short_shards = [
+        idx for idx, length in enumerate(shard_lengths) if length < min_required
+    ]
+    total_possible = sum(max(0, length - max_tau) for length in shard_lengths)
+    usable_pairs = int(min(idx_t.shape[0], idx_tlag.shape[0]))
+    coverage = float(usable_pairs / total_possible) if total_possible else 0.0
+    offsets = np.cumsum([0, *shard_lengths])
+    pairs_by_shard = []
+    for start, end in zip(offsets[:-1], offsets[1:]):
+        mask = (idx_t >= start) & (idx_t < end)
+        pairs_by_shard.append(int(np.count_nonzero(mask)))
+
+    pair_diagnostics = {
+        "usable_pairs": usable_pairs,
+        "pairs_by_shard": pairs_by_shard,
+        "short_shards": short_shards,
+        "pair_coverage": coverage,
+        "total_possible_pairs": int(total_possible),
+        "lag_used": int(max_tau),
+    }
+
+    if short_shards:
+        logger.warning(
+            "%d/%d shards too short for lag %d",
+            len(short_shards),
+            len(shard_lengths),
+            int(max_tau),
+        )
+    if usable_pairs == 0:
+        logger.warning(
+            "No usable lagged pairs remain after constructing curriculum with lag %d",
+            int(max_tau),
+        )
+    elif coverage < 0.5:
+        logger.warning(
+            "Lagged pair coverage low: %.1f%% (%d/%d possible pairs)",
+            coverage * 100.0,
+            usable_pairs,
+            int(total_possible),
+        )
+    else:
+        logger.info(
+            "Lagged pair diagnostics: usable=%d coverage=%.1f%% short_shards=%s",
+            usable_pairs,
+            coverage * 100.0,
+            short_shards,
+        )
 
     # Simple telemetry: evaluate a proxy objective before and after training.
     def _vamp2_proxy(Y: np.ndarray, i: np.ndarray, j: np.ndarray) -> float:
@@ -1170,6 +1277,9 @@ def train_deeptica(
                     lr_schedule: str = "cosine",
                     warmup_epochs: int = 5,
                     max_epochs: int = 200,
+                    grad_norm_warn: float | None = None,
+                    variance_warn_threshold: float = 1e-6,
+                    mean_warn_threshold: float = 5.0,
                 ):
                     super().__init__()
                     self.inner = inner
@@ -1180,16 +1290,38 @@ def train_deeptica(
                     self._grad_norm_accum: list[float] = []
                     self._val_var_z0_accum: list[list[float]] = []
                     self._val_var_zt_accum: list[list[float]] = []
+                    self._val_mean_z0_accum: list[list[float]] = []
+                    self._val_mean_zt_accum: list[list[float]] = []
                     self._cond_c0_accum: list[float] = []
                     self._cond_ctt_accum: list[float] = []
+                    self._c0_eig_min_accum: list[float] = []
+                    self._c0_eig_max_accum: list[float] = []
+                    self._ctt_eig_min_accum: list[float] = []
+                    self._ctt_eig_max_accum: list[float] = []
                     self.train_loss_curve: list[float] = []
                     self.val_loss_curve: list[float] = []
                     self.val_score_curve: list[float] = []
                     self.var_z0_curve: list[list[float]] = []
                     self.var_zt_curve: list[list[float]] = []
+                    self.var_z0_curve_components: list[list[float]] = []
+                    self.var_zt_curve_components: list[list[float]] = []
+                    self.mean_z0_curve: list[list[float]] = []
+                    self.mean_zt_curve: list[list[float]] = []
                     self.cond_c0_curve: list[float] = []
                     self.cond_ctt_curve: list[float] = []
                     self.grad_norm_curve: list[float] = []
+                    self.c0_eig_min_curve: list[float] = []
+                    self.c0_eig_max_curve: list[float] = []
+                    self.ctt_eig_min_curve: list[float] = []
+                    self.ctt_eig_max_curve: list[float] = []
+                    self.grad_norm_warn = (
+                        float(grad_norm_warn) if grad_norm_warn is not None else None
+                    )
+                    self.variance_warn_threshold = float(variance_warn_threshold)
+                    self.mean_warn_threshold = float(mean_warn_threshold)
+                    self._last_grad_warning_step: int | None = None
+                    self._grad_warning_pending = False
+                    self._last_grad_norm: float | None = None
                     self._train_loss_accum: list[float] = []
                     self._val_loss_accum: list[float] = []
                     self._val_score_accum: list[float] = []
@@ -1294,6 +1426,21 @@ def train_deeptica(
                         on_epoch=True,
                         prog_bar=False,
                     )
+                    if self._grad_warning_pending and self._last_grad_norm is not None:
+                        try:
+                            self.log(
+                                "grad_norm_exceeded",
+                                torch.tensor(
+                                    float(self._last_grad_norm),
+                                    device=loss.device if hasattr(loss, "device") else None,
+                                    dtype=torch.float32,
+                                ),
+                                prog_bar=False,
+                                logger=True,
+                            )
+                        except Exception:
+                            pass
+                        self._grad_warning_pending = False
                     return loss
 
                 def on_after_backward(self):  # type: ignore[override]
@@ -1310,6 +1457,32 @@ def train_deeptica(
                     else:
                         grad_norm = 0.0
                     self._grad_norm_accum.append(float(grad_norm))
+                    self._last_grad_norm = float(grad_norm)
+                    if (
+                        self.grad_norm_warn is not None
+                        and float(grad_norm) > float(self.grad_norm_warn)
+                    ):
+                        step_idx = None
+                        try:
+                            step_idx = int(getattr(self.trainer, "global_step", 0))
+                        except Exception:
+                            step_idx = None
+                        if step_idx is not None:
+                            if self._last_grad_warning_step != step_idx:
+                                logger.warning(
+                                    "Gradient norm %.3f exceeded warning threshold %.3f at step %d",
+                                    float(grad_norm),
+                                    float(self.grad_norm_warn),
+                                    int(step_idx),
+                                )
+                                self._last_grad_warning_step = step_idx
+                        else:
+                            logger.warning(
+                                "Gradient norm %.3f exceeded warning threshold %.3f",
+                                float(grad_norm),
+                                float(self.grad_norm_warn),
+                            )
+                        self._grad_warning_pending = True
 
                 def validation_step(self, batch, batch_idx):  # type: ignore[override]
                     b = self._norm_batch(batch)
@@ -1384,6 +1557,14 @@ def train_deeptica(
                             self._val_var_zt_accum.append(
                                 var_zt.detach().cpu().tolist()
                             )
+                            mean_z0 = torch.mean(y_t, dim=0)
+                            mean_zt = torch.mean(y_tau, dim=0)
+                            self._val_mean_z0_accum.append(
+                                mean_z0.detach().cpu().tolist()
+                            )
+                            self._val_mean_zt_accum.append(
+                                mean_zt.detach().cpu().tolist()
+                            )
                             evals_c0 = torch.clamp(evals, min=eps_floor)
                             cond_c0 = float(
                                 (evals_c0.max() / evals_c0.min()).detach().cpu().item()
@@ -1395,6 +1576,18 @@ def train_deeptica(
                                 .detach()
                                 .cpu()
                                 .item()
+                            )
+                            self._c0_eig_min_accum.append(
+                                float(evals_c0.min().detach().cpu().item())
+                            )
+                            self._c0_eig_max_accum.append(
+                                float(evals_c0.max().detach().cpu().item())
+                            )
+                            self._ctt_eig_min_accum.append(
+                                float(evals_ctt.min().detach().cpu().item())
+                            )
+                            self._ctt_eig_max_accum.append(
+                                float(evals_ctt.max().detach().cpu().item())
                             )
                             self._cond_c0_accum.append(cond_c0)
                             self._cond_ctt_accum.append(cond_ctt)
@@ -1473,6 +1666,8 @@ def train_deeptica(
                 def on_train_epoch_start(self):  # type: ignore[override]
                     self._train_loss_accum.clear()
                     self._grad_norm_accum.clear()
+                    self._grad_warning_pending = False
+                    self._last_grad_norm = None
 
                 def on_train_epoch_end(self):  # type: ignore[override]
                     if self._train_loss_accum:
@@ -1505,8 +1700,14 @@ def train_deeptica(
                     self._val_score_accum.clear()
                     self._val_var_z0_accum.clear()
                     self._val_var_zt_accum.clear()
+                    self._val_mean_z0_accum.clear()
+                    self._val_mean_zt_accum.clear()
                     self._cond_c0_accum.clear()
                     self._cond_ctt_accum.clear()
+                    self._c0_eig_min_accum.clear()
+                    self._c0_eig_max_accum.clear()
+                    self._ctt_eig_min_accum.clear()
+                    self._ctt_eig_max_accum.clear()
 
                 def on_validation_epoch_end(self):  # type: ignore[override]
                     avg_loss = None
@@ -1535,7 +1736,9 @@ def train_deeptica(
                     if self._val_var_z0_accum:
                         arr = np.asarray(self._val_var_z0_accum, dtype=float)
                         avg_var_z0 = np.mean(arr, axis=0).tolist()
-                        self.var_z0_curve.append([float(x) for x in avg_var_z0])
+                        comp = [float(x) for x in avg_var_z0]
+                        self.var_z0_curve.append(comp)
+                        self.var_z0_curve_components.append(comp)
                         self.log(
                             "val_var_z0",
                             torch.tensor(
@@ -1545,10 +1748,31 @@ def train_deeptica(
                             ),
                             prog_bar=False,
                         )
+                        for idx, value in enumerate(comp):
+                            try:
+                                self.log(
+                                    f"val_var_z0_{idx}",
+                                    torch.tensor(
+                                        float(value),
+                                        device=self.device,
+                                        dtype=torch.float32,
+                                    ),
+                                    prog_bar=False,
+                                )
+                            except Exception:
+                                continue
+                        if comp and float(min(comp)) < self.variance_warn_threshold:
+                            logger.warning(
+                                "Validation variance for some CV dropped below %.2e (min %.2e)",
+                                float(self.variance_warn_threshold),
+                                float(min(comp)),
+                            )
                     if self._val_var_zt_accum:
                         arr = np.asarray(self._val_var_zt_accum, dtype=float)
                         avg_var_zt = np.mean(arr, axis=0).tolist()
-                        self.var_zt_curve.append([float(x) for x in avg_var_zt])
+                        comp_tau = [float(x) for x in avg_var_zt]
+                        self.var_zt_curve.append(comp_tau)
+                        self.var_zt_curve_components.append(comp_tau)
                         self.log(
                             "val_var_zt",
                             torch.tensor(
@@ -1558,6 +1782,77 @@ def train_deeptica(
                             ),
                             prog_bar=False,
                         )
+                        for idx, value in enumerate(comp_tau):
+                            try:
+                                self.log(
+                                    f"val_var_zt_{idx}",
+                                    torch.tensor(
+                                        float(value),
+                                        device=self.device,
+                                        dtype=torch.float32,
+                                    ),
+                                    prog_bar=False,
+                                )
+                            except Exception:
+                                continue
+                        if comp_tau and float(min(comp_tau)) < self.variance_warn_threshold:
+                            logger.warning(
+                                "Validation lagged variance for some CV dropped below %.2e (min %.2e)",
+                                float(self.variance_warn_threshold),
+                                float(min(comp_tau)),
+                            )
+                    if self._val_mean_z0_accum:
+                        arr = np.asarray(self._val_mean_z0_accum, dtype=float)
+                        avg_mean_z0 = np.mean(arr, axis=0).tolist()
+                        comp_mean_z0 = [float(x) for x in avg_mean_z0]
+                        self.mean_z0_curve.append(comp_mean_z0)
+                        for idx, value in enumerate(comp_mean_z0):
+                            try:
+                                self.log(
+                                    f"val_mean_z0_{idx}",
+                                    torch.tensor(
+                                        float(value),
+                                        device=self.device,
+                                        dtype=torch.float32,
+                                    ),
+                                    prog_bar=False,
+                                )
+                            except Exception:
+                                continue
+                        if comp_mean_z0:
+                            drift = max(abs(v) for v in comp_mean_z0)
+                            if drift > self.mean_warn_threshold:
+                                logger.warning(
+                                    "Validation CV mean drift %.3f exceeds threshold %.3f",
+                                    float(drift),
+                                    float(self.mean_warn_threshold),
+                                )
+                    if self._val_mean_zt_accum:
+                        arr = np.asarray(self._val_mean_zt_accum, dtype=float)
+                        avg_mean_zt = np.mean(arr, axis=0).tolist()
+                        comp_mean_zt = [float(x) for x in avg_mean_zt]
+                        self.mean_zt_curve.append(comp_mean_zt)
+                        for idx, value in enumerate(comp_mean_zt):
+                            try:
+                                self.log(
+                                    f"val_mean_zt_{idx}",
+                                    torch.tensor(
+                                        float(value),
+                                        device=self.device,
+                                        dtype=torch.float32,
+                                    ),
+                                    prog_bar=False,
+                                )
+                            except Exception:
+                                continue
+                        if comp_mean_zt:
+                            drift = max(abs(v) for v in comp_mean_zt)
+                            if drift > self.mean_warn_threshold:
+                                logger.warning(
+                                    "Validation lagged CV mean drift %.3f exceeds threshold %.3f",
+                                    float(drift),
+                                    float(self.mean_warn_threshold),
+                                )
                     if self._cond_c0_accum:
                         avg_cond_c0 = float(
                             sum(self._cond_c0_accum) / len(self._cond_c0_accum)
@@ -1582,12 +1877,68 @@ def train_deeptica(
                             ),
                             prog_bar=False,
                         )
+                    if self._c0_eig_min_accum:
+                        avg_c0_min = float(
+                            sum(self._c0_eig_min_accum) / len(self._c0_eig_min_accum)
+                        )
+                        self.c0_eig_min_curve.append(avg_c0_min)
+                        self.log(
+                            "c0_eig_min",
+                            torch.tensor(
+                                avg_c0_min, device=self.device, dtype=torch.float32
+                            ),
+                            prog_bar=False,
+                        )
+                    if self._c0_eig_max_accum:
+                        avg_c0_max = float(
+                            sum(self._c0_eig_max_accum) / len(self._c0_eig_max_accum)
+                        )
+                        self.c0_eig_max_curve.append(avg_c0_max)
+                        self.log(
+                            "c0_eig_max",
+                            torch.tensor(
+                                avg_c0_max, device=self.device, dtype=torch.float32
+                            ),
+                            prog_bar=False,
+                        )
+                    if self._ctt_eig_min_accum:
+                        avg_ctt_min = float(
+                            sum(self._ctt_eig_min_accum)
+                            / len(self._ctt_eig_min_accum)
+                        )
+                        self.ctt_eig_min_curve.append(avg_ctt_min)
+                        self.log(
+                            "ctt_eig_min",
+                            torch.tensor(
+                                avg_ctt_min, device=self.device, dtype=torch.float32
+                            ),
+                            prog_bar=False,
+                        )
+                    if self._ctt_eig_max_accum:
+                        avg_ctt_max = float(
+                            sum(self._ctt_eig_max_accum)
+                            / len(self._ctt_eig_max_accum)
+                        )
+                        self.ctt_eig_max_curve.append(avg_ctt_max)
+                        self.log(
+                            "ctt_eig_max",
+                            torch.tensor(
+                                avg_ctt_max, device=self.device, dtype=torch.float32
+                            ),
+                            prog_bar=False,
+                        )
                     self._val_loss_accum.clear()
                     self._val_score_accum.clear()
                     self._val_var_z0_accum.clear()
                     self._val_var_zt_accum.clear()
+                    self._val_mean_z0_accum.clear()
+                    self._val_mean_zt_accum.clear()
                     self._cond_c0_accum.clear()
                     self._cond_ctt_accum.clear()
+                    self._c0_eig_min_accum.clear()
+                    self._c0_eig_max_accum.clear()
+                    self._ctt_eig_min_accum.clear()
+                    self._ctt_eig_max_accum.clear()
 
                 def configure_optimizers(self):  # type: ignore[override]
                     # AdamW with mild weight decay for stability
@@ -1678,6 +2029,17 @@ def train_deeptica(
                 lr_schedule=str(getattr(cfg, "lr_schedule", "cosine")),
                 warmup_epochs=int(getattr(cfg, "warmup_epochs", 5)),
                 max_epochs=int(getattr(cfg, "max_epochs", 200)),
+                grad_norm_warn=(
+                    float(getattr(cfg, "grad_norm_warn", 0.0))
+                    if getattr(cfg, "grad_norm_warn", None) is not None
+                    else None
+                ),
+                variance_warn_threshold=float(
+                    getattr(cfg, "variance_warn_threshold", 1e-6)
+                ),
+                mean_warn_threshold=float(
+                    getattr(cfg, "mean_warn_threshold", 5.0)
+                ),
             )
         except Exception:
             # If Lightning is completely unavailable, fall back to model.fit (handled below)
@@ -1797,6 +2159,14 @@ def train_deeptica(
     cond_c0_curve: list[float] | None = None
     cond_ctt_curve: list[float] | None = None
     grad_norm_curve: list[float] | None = None
+    var_z0_components: list[list[float]] | None = None
+    var_zt_components: list[list[float]] | None = None
+    mean_z0_curve: list[list[float]] | None = None
+    mean_zt_curve: list[list[float]] | None = None
+    c0_eig_min_curve: list[float] | None = None
+    c0_eig_max_curve: list[float] | None = None
+    ctt_eig_min_curve: list[float] | None = None
+    ctt_eig_max_curve: list[float] | None = None
     try:
         if lightning_available:
             if hasattr(wrapped, "train_loss_curve") and getattr(
@@ -1819,6 +2189,34 @@ def train_deeptica(
                 var_zt_curve = [
                     [float(v) for v in arr] for arr in getattr(wrapped, "var_zt_curve")
                 ]
+            if hasattr(wrapped, "var_z0_curve_components") and getattr(
+                wrapped, "var_z0_curve_components"
+            ):
+                var_z0_components = [
+                    [float(v) for v in arr]
+                    for arr in getattr(wrapped, "var_z0_curve_components")
+                ]
+            if hasattr(wrapped, "var_zt_curve_components") and getattr(
+                wrapped, "var_zt_curve_components"
+            ):
+                var_zt_components = [
+                    [float(v) for v in arr]
+                    for arr in getattr(wrapped, "var_zt_curve_components")
+                ]
+            if hasattr(wrapped, "mean_z0_curve") and getattr(
+                wrapped, "mean_z0_curve"
+            ):
+                mean_z0_curve = [
+                    [float(v) for v in arr]
+                    for arr in getattr(wrapped, "mean_z0_curve")
+                ]
+            if hasattr(wrapped, "mean_zt_curve") and getattr(
+                wrapped, "mean_zt_curve"
+            ):
+                mean_zt_curve = [
+                    [float(v) for v in arr]
+                    for arr in getattr(wrapped, "mean_zt_curve")
+                ]
             if hasattr(wrapped, "cond_c0_curve") and getattr(wrapped, "cond_c0_curve"):
                 cond_c0_curve = [float(x) for x in getattr(wrapped, "cond_c0_curve")]
             if hasattr(wrapped, "cond_ctt_curve") and getattr(
@@ -1830,6 +2228,30 @@ def train_deeptica(
             ):
                 grad_norm_curve = [
                     float(x) for x in getattr(wrapped, "grad_norm_curve")
+                ]
+            if hasattr(wrapped, "c0_eig_min_curve") and getattr(
+                wrapped, "c0_eig_min_curve"
+            ):
+                c0_eig_min_curve = [
+                    float(x) for x in getattr(wrapped, "c0_eig_min_curve")
+                ]
+            if hasattr(wrapped, "c0_eig_max_curve") and getattr(
+                wrapped, "c0_eig_max_curve"
+            ):
+                c0_eig_max_curve = [
+                    float(x) for x in getattr(wrapped, "c0_eig_max_curve")
+                ]
+            if hasattr(wrapped, "ctt_eig_min_curve") and getattr(
+                wrapped, "ctt_eig_min_curve"
+            ):
+                ctt_eig_min_curve = [
+                    float(x) for x in getattr(wrapped, "ctt_eig_min_curve")
+                ]
+            if hasattr(wrapped, "ctt_eig_max_curve") and getattr(
+                wrapped, "ctt_eig_max_curve"
+            ):
+                ctt_eig_max_curve = [
+                    float(x) for x in getattr(wrapped, "ctt_eig_max_curve")
                 ]
             if hist_cb.losses and not train_curve:
                 train_curve = [float(x) for x in hist_cb.losses]
@@ -1867,6 +2289,22 @@ def train_deeptica(
         cond_ctt_curve = []
     if grad_norm_curve is None:
         grad_norm_curve = []
+    if var_z0_components is None:
+        var_z0_components = var_z0_curve
+    if var_zt_components is None:
+        var_zt_components = var_zt_curve
+    if mean_z0_curve is None:
+        mean_z0_curve = []
+    if mean_zt_curve is None:
+        mean_zt_curve = []
+    if c0_eig_min_curve is None:
+        c0_eig_min_curve = []
+    if c0_eig_max_curve is None:
+        c0_eig_max_curve = []
+    if ctt_eig_min_curve is None:
+        ctt_eig_min_curve = []
+    if ctt_eig_max_curve is None:
+        ctt_eig_max_curve = []
 
     history = {
         "loss_curve": train_curve,
@@ -1876,14 +2314,27 @@ def train_deeptica(
         "val_score": score_curve,
         "var_z0_curve": var_z0_curve,
         "var_zt_curve": var_zt_curve,
+        "var_z0_curve_components": var_z0_components,
+        "var_zt_curve_components": var_zt_components,
+        "mean_z0_curve": mean_z0_curve,
+        "mean_zt_curve": mean_zt_curve,
         "cond_c00_curve": cond_c0_curve,
         "cond_ctt_curve": cond_ctt_curve,
         "grad_norm_curve": grad_norm_curve,
+        "c0_eig_min_curve": c0_eig_min_curve,
+        "c0_eig_max_curve": c0_eig_max_curve,
+        "ctt_eig_min_curve": ctt_eig_min_curve,
+        "ctt_eig_max_curve": ctt_eig_max_curve,
         "initial_objective": float(obj_before),
         "epochs": history_epochs,
         "log_every": int(cfg.log_every),
         "wall_time_s": float(max(0.0, _time.time() - t0)),
         "tau_schedule": [int(x) for x in tau_schedule],
+        "pair_diagnostics": pair_diagnostics,
+        "usable_pairs": pair_diagnostics.get("usable_pairs"),
+        "pair_coverage": pair_diagnostics.get("pair_coverage"),
+        "pairs_by_shard": pair_diagnostics.get("pairs_by_shard"),
+        "short_shards": pair_diagnostics.get("short_shards"),
     }
 
     history["output_variance"] = whitening_info.get("output_variance")
@@ -1896,10 +2347,22 @@ def train_deeptica(
     else:
         history["var_z0_curve"] = [whitening_info.get("output_variance")]
 
+    if history.get("var_z0_curve_components"):
+        history["var_z0_curve_components"][-1] = whitening_info.get("output_variance")
+    else:
+        history["var_z0_curve_components"] = [
+            whitening_info.get("output_variance")
+        ]
+
     if history.get("var_zt_curve"):
         history["var_zt_curve"][-1] = whitening_info.get("var_zt")
     else:
         history["var_zt_curve"] = [whitening_info.get("var_zt")]
+
+    if history.get("var_zt_curve_components"):
+        history["var_zt_curve_components"][-1] = whitening_info.get("var_zt")
+    else:
+        history["var_zt_curve_components"] = [whitening_info.get("var_zt")]
 
     if history.get("cond_c00_curve"):
         history["cond_c00_curve"][-1] = whitening_info.get("cond_c00")
