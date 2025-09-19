@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
+from ..analysis import compute_diagnostics
 from ..analysis.fes import ensure_fes_inputs_whitened
 from ..analysis.msm import ensure_msm_inputs_whitened
 from ..markov_state_model._msm_utils import build_simple_msm
@@ -337,6 +338,7 @@ class BuildResult:
     artifacts: Dict[str, Any] = field(default_factory=dict)
     messages: List[str] = field(default_factory=list)
     flags: Dict[str, Any] = field(default_factory=dict)
+    diagnostics: Optional[Dict[str, Any]] = None
 
     def to_json(self) -> str:
         def _serialize_array(arr: Optional[np.ndarray]) -> Optional[Dict[str, Any]]:
@@ -398,6 +400,7 @@ class BuildResult:
             "artifacts": _sanitize_artifacts(self.artifacts),
             "messages": list(self.messages),
             "flags": _sanitize_artifacts(dict(self.flags)),
+            "diagnostics": _sanitize_artifacts(self.diagnostics),
         }
 
         return json.dumps(data, sort_keys=True, separators=(",", ":"), allow_nan=False)
@@ -457,6 +460,7 @@ class BuildResult:
             artifacts=data.get("artifacts", {}),
             messages=list(data.get("messages", [])),
             flags=data.get("flags", {}),
+            diagnostics=data.get("diagnostics"),
         )
 
 
@@ -658,6 +662,18 @@ def build_result(
             summary = artifacts["mlcv_deeptica"]
             flags["mlcv_deeptica_applied"] = bool(summary.get("applied"))
 
+        diagnostics: Optional[Dict[str, Any]] = None
+        try:
+            diag_mass_val = None
+            if transition_matrix is not None and transition_matrix.size > 0:
+                diag_mass_val = float(np.trace(transition_matrix) / transition_matrix.shape[0])
+            diagnostics = compute_diagnostics(working_dataset, diag_mass=diag_mass_val)
+            if diagnostics.get("warnings"):
+                flags.setdefault("diagnostic_warnings", diagnostics["warnings"])
+        except Exception:
+            logger.debug("Failed to compute diagnostics", exc_info=True)
+            diagnostics = None
+
         return BuildResult(
             transition_matrix=transition_matrix,
             stationary_distribution=stationary_distribution,
@@ -671,6 +687,7 @@ def build_result(
             feature_names=feature_names,
             artifacts=artifacts,
             flags=flags,
+            diagnostics=diagnostics,
         )
 
     except Exception as exc:

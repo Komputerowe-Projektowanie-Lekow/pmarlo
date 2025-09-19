@@ -1,21 +1,17 @@
-from __future__ import annotations
-
-"""Matplotlib helpers to visualize MSM and FES results.
-
-Only matplotlib is used (no seaborn). Functions return figures.
-"""
+"""Matplotlib helpers to visualize MSM and FES results."""
 
 from typing import Any
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
+
+
+__all__ = ["plot_msm", "plot_fes"]
 
 
 def plot_msm(T: np.ndarray | None, pi: np.ndarray | None) -> plt.Figure:
-    """Render a transition matrix heatmap with a stationary distribution bar.
+    """Render a transition matrix heatmap with a stationary distribution bar."""
 
-    If inputs are missing/empty, returns a small figure with a message.
-    """
     if T is None or pi is None or T.size == 0 or pi.size == 0:
         fig, ax = plt.subplots(figsize=(5, 3))
         ax.axis("off")
@@ -46,17 +42,14 @@ def plot_msm(T: np.ndarray | None, pi: np.ndarray | None) -> plt.Figure:
 
 
 def plot_fes(fes: Any | None) -> plt.Figure:
-    """Render a 2D FES contour if present.
+    """Render a 2D FES contour if present."""
 
-    Accepts a pmarlo.markov_state_model.free_energy.FESResult or a dict with the same fields.
-    """
     if fes is None:
         fig, ax = plt.subplots(figsize=(5, 3))
         ax.axis("off")
         ax.text(0.5, 0.5, "No FES available", ha="center", va="center")
         return fig
 
-    # Support dataclass or dict
     try:
         F = np.asarray(getattr(fes, "F"))
         xedges = np.asarray(getattr(fes, "xedges"))
@@ -73,6 +66,7 @@ def plot_fes(fes: Any | None) -> plt.Figure:
     Yc = 0.5 * (yedges[:-1] + yedges[1:])
     cs = ax.contourf(Xc, Yc, F.T, levels=20, cmap="magma")
     fig.colorbar(cs, ax=ax, label="F (kJ/mol)")
+
     names = None
     try:
         names = meta.get("names") or ()
@@ -84,9 +78,8 @@ def plot_fes(fes: Any | None) -> plt.Figure:
     else:
         ax.set_xlabel("cv1")
         ax.set_ylabel("cv2")
-    # Quality annotation if sparse sampling
+
     try:
-        frac = None
         frac = meta.get("empty_bins_fraction") if isinstance(meta, dict) else None
         if frac is not None and float(frac) > 0.30:
             ax.text(
@@ -100,7 +93,6 @@ def plot_fes(fes: Any | None) -> plt.Figure:
                 fontsize=10,
                 fontweight="bold",
             )
-        # Show adaptive smoothing banner when present
         if isinstance(meta, dict) and meta.get("sparse_banner"):
             ax.text(
                 0.5,
@@ -115,5 +107,6 @@ def plot_fes(fes: Any | None) -> plt.Figure:
             )
     except Exception:
         pass
+
     ax.set_title("Free Energy Surface")
     return fig
