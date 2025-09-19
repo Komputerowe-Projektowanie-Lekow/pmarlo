@@ -44,6 +44,11 @@ def test_learn_cv_step_records_provenance_and_edges():
         "cv2",
     }
 
+    summary = res.artifacts.get("mlcv_deeptica", {})
+    assert summary.get("output_transform_applied") is True
+    assert summary.get("output_mean") is not None
+    assert summary.get("output_transform") is not None
+
     # FES likely present in learned CV space
     # (skipped if any internal condition prevented FES generation)
     assert res.fes is None or hasattr(res.fes, "F")

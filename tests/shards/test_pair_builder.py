@@ -40,3 +40,12 @@ def test_pairs_do_not_cross_shard_boundary():
     pairs = builder.make_pairs(shard)
     assert pairs.tolist() == [[0, 2], [1, 3], [2, 4]]
     assert np.all(pairs[:, 1] - pairs[:, 0] == 2)
+
+
+def test_pair_builder_updates_tau_dynamically():
+    shard = make_shard(n_frames=6)
+    builder = PairBuilder(tau_steps=1)
+    builder.set_tau(3)
+    pairs = builder.make_pairs(shard)
+    assert builder.tau == 3
+    assert pairs.tolist() == [[0, 3], [1, 4], [2, 5]]
