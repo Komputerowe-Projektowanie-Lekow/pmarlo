@@ -584,6 +584,11 @@ def main() -> None:
                 value=False,
                 key="analysis_learn_cv",
             )
+            apply_whitening = st.checkbox(
+                "Apply CV whitening",
+                value=True,
+                key="analysis_apply_whitening",
+            )
             deeptica_params = None
             if learn_cv:
                 reuse = st.checkbox(
@@ -623,6 +628,7 @@ def main() -> None:
                         learn_cv=bool(learn_cv),
                         deeptica_params=deeptica_params,
                         notes={"source": "app_usecase"},
+                        apply_cv_whitening=bool(apply_whitening),
                     )
                     artifact = backend.build_analysis(selected_paths, build_cfg)
                     st.session_state[_LAST_BUILD] = artifact

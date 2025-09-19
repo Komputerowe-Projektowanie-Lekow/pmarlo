@@ -135,7 +135,17 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
     dataset["periodic"] = tuple(False for _ in range(n_out))
 
     # Summarise results for downstream consumers
-    history = getattr(model, "training_history", {}) or {}
+    history = dict(getattr(model, "training_history", {}) or {})
+    setattr(model, "training_history", history)
+    output_mean = history.get("output_mean") if isinstance(history, dict) else None
+    output_transform = (
+        history.get("output_transform") if isinstance(history, dict) else None
+    )
+    history_flag = bool(history.get("output_transform_applied")) if isinstance(
+        history, dict
+    ) else False
+    export_transform_applied = bool(output_mean is not None and output_transform is not None)
+    transform_applied_flag = history_flag or export_transform_applied
     summary = {
         "applied": True,
         "method": "deeptica",
@@ -196,7 +206,25 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
             and history.get("grad_norm_curve")
             else None
         ),
+        "output_mean": output_mean,
+        "output_transform": output_transform,
+        "output_transform_applied": transform_applied_flag,
     }
+
+    if summary.get("output_mean") is not None:
+        try:
+            summary["output_mean"] = (
+                np.asarray(summary["output_mean"], dtype=np.float64).tolist()
+            )
+        except Exception:
+            pass
+    if summary.get("output_transform") is not None:
+        try:
+            summary["output_transform"] = (
+                np.asarray(summary["output_transform"], dtype=np.float64).tolist()
+            )
+        except Exception:
+            pass
 
     # Include full curves if available (will be sanitized during JSON serialization)
     if isinstance(history.get("loss_curve"), list) and history.get("loss_curve"):
