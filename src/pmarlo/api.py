@@ -1475,9 +1475,12 @@ def emit_shards_rg_rmsd_windowed(
             rmsd = np.zeros((0,), dtype=np.float64)
 
         n_frames = int(rg.shape[0])
-        if n_frames >= window:
-            for start in range(0, n_frames - window + 1, hop):
-                stop = start + window
+        # Adapt window/hop to ensure at least one shard if frames exist
+        if n_frames > 0:
+            eff_window = min(window, n_frames)
+            eff_hop = min(hop, eff_window)
+            for start in range(0, n_frames - eff_window + 1, eff_hop):
+                stop = start + eff_window
                 shard_id = f"shard_{next_idx:04d}"
                 cvs = {
                     "Rg": rg[start:stop],
