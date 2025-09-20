@@ -1,1390 +1,165 @@
-diff --git a/src/pmarlo/features/deeptica/__init__.py b/src/pmarlo/features/deeptica/__init__.py
-index 9b14bb6a72e0f123b94e594b8136489104ba86f7..27e712144b163fe7fa7f467b5a4465a5f1e0b675 100644
---- a/src/pmarlo/features/deeptica/__init__.py
-+++ b/src/pmarlo/features/deeptica/__init__.py
-@@ -1,43 +1,47 @@
- from __future__ import annotations
- 
- import json
-+import logging
- import os as _os
- import random
- from dataclasses import asdict, dataclass
- from pathlib import Path
- from typing import Any, Iterable, List, Optional, Tuple
- 
- import numpy as np
- 
- # Standardize math defaults to float32 end-to-end
- import torch  # type: ignore
- 
- torch.set_float32_matmul_precision("high")
- torch.set_default_dtype(torch.float32)
+diff --git a/example_programs/app_usecase/app/app.py b/example_programs/app_usecase/app/app.py
+index d47a125d41fd9d859afa03c2f848fd5fb466e598..679b41ff4ce6434149c4882252cd8c9f66905ee5 100644
+--- a/example_programs/app_usecase/app/app.py
++++ b/example_programs/app_usecase/app/app.py
+@@ -63,78 +63,136 @@ def _parse_temperature_ladder(raw: str) -> List[float]:
+     temps: List[float] = []
+     for token in cleaned.split(","):
+         token = token.strip()
+         if not token:
+             continue
+         temps.append(float(token))
+     if not temps:
+         raise ValueError("Provide at least one temperature in Kelvin.")
+     return temps
  
  
-+logger = logging.getLogger(__name__)
-+
-+
- def set_all_seeds(seed: int = 2024) -> None:
-     """Set RNG seeds across Python, NumPy, and Torch (CPU/GPU)."""
-     random.seed(int(seed))
-     np.random.seed(int(seed))
-     torch.manual_seed(int(seed))
-     if (
-         hasattr(torch, "cuda") and torch.cuda.is_available()
-     ):  # pragma: no cover - optional
-         try:
-             torch.cuda.manual_seed_all(int(seed))
-         except Exception:
-             pass
- 
- 
- class PmarloApiIncompatibilityError(RuntimeError):
-     """Raised when mlcolvar API layout does not expose expected classes."""
- 
- 
- # Official DeepTICA import and helpers (mlcolvar>=1.2)
- try:  # pragma: no cover - optional extra
-     import mlcolvar as _mlc  # type: ignore
- except Exception as e:  # pragma: no cover - optional extra
-     raise ImportError("Install optional extra pmarlo[mlcv] to use Deep-TICA") from e
- try:  # pragma: no cover - optional extra
-     from mlcolvar.cvs import DeepTICA  # type: ignore
-@@ -278,50 +282,102 @@ class DeepTICAConfig:
-     log_every: int = 1
-     seed: int = 0
-     reweight_mode: str = "scaled_time"  # or "none"
-     # New knobs for loaders and validation split
-     val_frac: float = 0.1
-     num_workers: int = 2
-     # Optimization and regularization knobs
-     lr_schedule: str = "cosine"  # "none" | "cosine"
-     warmup_epochs: int = 5
-     dropout: float = 0.0
-     dropout_input: Optional[float] = None
-     hidden_dropout: Tuple[float, ...] = ()
-     layer_norm_in: bool = False
-     layer_norm_hidden: bool = False
-     linear_head: bool = False
-     # Dataset splitting/loader control
-     val_split: str = "by_shard"  # "by_shard" | "random"
-     batches_per_epoch: int = 200
-     gradient_clip_val: float = 1.0
-     gradient_clip_algorithm: str = "norm"
-     tau_schedule: Tuple[int, ...] = ()
-     vamp_eps: float = 1e-3
-     vamp_eps_abs: float = 1e-6
-     vamp_alpha: float = 0.15
-     vamp_cond_reg: float = 1e-4
-+    grad_norm_warn: Optional[float] = None
-+    variance_warn_threshold: float = 1e-6
-+    mean_warn_threshold: float = 5.0
-+
-+    @classmethod
-+    def small_data(
-+        cls,
-+        *,
-+        lag: int,
-+        n_out: int = 2,
-+        hidden: Tuple[int, ...] | None = None,
-+        dropout_input: Optional[float] = None,
-+        hidden_dropout: Iterable[float] | None = None,
-+        **overrides: Any,
-+    ) -> "DeepTICAConfig":
-+        """Preset tuned for scarce data with stronger regularization.
-+
-+        Parameters
-+        ----------
-+        lag
-+            Required lag time for the curriculum.
-+        n_out
-+            Number of collective variables to learn.
-+        hidden
-+            Optional explicit hidden layer sizes. Defaults to a single modest layer.
-+        dropout_input
-+            Override the preset input dropout rate.
-+        hidden_dropout
-+            Override the hidden-layer dropout schedule.
-+        overrides
-+            Additional configuration overrides forwarded to ``DeepTICAConfig``.
-+        """
-+
-+        base_hidden = hidden if hidden is not None else (32,)
-+        drop_in = 0.15 if dropout_input is None else float(dropout_input)
-+        if hidden_dropout is None:
-+            drop_hidden_seq = tuple(0.15 for _ in range(max(0, len(base_hidden))))
-+        else:
-+            drop_hidden_seq = tuple(float(v) for v in hidden_dropout)
-+        defaults = dict(
-+            lag=int(lag),
-+            n_out=int(n_out),
-+            hidden=tuple(int(h) for h in base_hidden),
-+            dropout_input=float(max(0.0, min(1.0, drop_in))),
-+            hidden_dropout=tuple(
-+                float(max(0.0, min(1.0, v))) for v in drop_hidden_seq
-+            ),
-+            layer_norm_in=True,
-+            layer_norm_hidden=True,
-+        )
-+        defaults.update(overrides)
-+        return cls(**defaults)
- 
- 
- class DeepTICAModel:
-     """Thin wrapper exposing a stable API around mlcolvar DeepTICA."""
- 
-     def __init__(
-         self,
-         cfg: DeepTICAConfig,
-         scaler: Any,
-         net: Any,
-         *,
-         device: str = "cpu",
-         training_history: dict | None = None,
-     ):
-         self.cfg = cfg
-         self.scaler = scaler
-         self.net = net  # mlcolvar.cvs.DeepTICA
-         self.device = str(device)
-         self.training_history = dict(training_history or {})
- 
-     def transform(self, X: np.ndarray) -> np.ndarray:
-         Z = self.scaler.transform(np.asarray(X, dtype=np.float64))
-         with torch.no_grad():
-             try:
-                 y = self.net(Z)  # type: ignore[misc]
-@@ -678,50 +734,101 @@ def train_deeptica(
-             return True
- 
-     if len(tau_schedule) > 1:
-         idx_parts: List[np.ndarray] = []
-         j_parts: List[np.ndarray] = []
-         for tau_val in tau_schedule:
-             i_tau, j_tau = _build_uniform_pairs_per_shard(X_list, int(tau_val))
-             if i_tau.size and j_tau.size:
-                 idx_parts.append(i_tau)
-                 j_parts.append(j_tau)
-         if idx_parts:
-             idx_t = np.concatenate(idx_parts).astype(np.int64, copy=False)
-             idx_tlag = np.concatenate(j_parts).astype(np.int64, copy=False)
-         else:
-             idx_t = np.asarray([], dtype=np.int64)
-             idx_tlag = np.asarray([], dtype=np.int64)
-     else:
-         if _needs_repair(idx_t, idx_tlag):
-             idx_t, idx_tlag = _build_uniform_pairs_per_shard(
-                 X_list, int(tau_schedule[0])
-             )
- 
-     idx_t = np.asarray(idx_t, dtype=np.int64)
-     idx_tlag = np.asarray(idx_tlag, dtype=np.int64)
- 
-+    shard_lengths = [int(np.asarray(b).shape[0]) for b in X_list]
-+    max_tau = int(max(tau_schedule)) if tau_schedule else int(cfg.lag)
-+    min_required = max_tau + 1
-+    short_shards = [
-+        idx for idx, length in enumerate(shard_lengths) if length < min_required
-+    ]
-+    total_possible = sum(max(0, length - max_tau) for length in shard_lengths)
-+    usable_pairs = int(min(idx_t.shape[0], idx_tlag.shape[0]))
-+    coverage = float(usable_pairs / total_possible) if total_possible else 0.0
-+    offsets = np.cumsum([0, *shard_lengths])
-+    pairs_by_shard = []
-+    for start, end in zip(offsets[:-1], offsets[1:]):
-+        mask = (idx_t >= start) & (idx_t < end)
-+        pairs_by_shard.append(int(np.count_nonzero(mask)))
-+
-+    pair_diagnostics = {
-+        "usable_pairs": usable_pairs,
-+        "pairs_by_shard": pairs_by_shard,
-+        "short_shards": short_shards,
-+        "pair_coverage": coverage,
-+        "total_possible_pairs": int(total_possible),
-+        "lag_used": int(max_tau),
-+    }
-+
-+    if short_shards:
-+        logger.warning(
-+            "%d/%d shards too short for lag %d",
-+            len(short_shards),
-+            len(shard_lengths),
-+            int(max_tau),
-+        )
-+    if usable_pairs == 0:
-+        logger.warning(
-+            "No usable lagged pairs remain after constructing curriculum with lag %d",
-+            int(max_tau),
-+        )
-+    elif coverage < 0.5:
-+        logger.warning(
-+            "Lagged pair coverage low: %.1f%% (%d/%d possible pairs)",
-+            coverage * 100.0,
-+            usable_pairs,
-+            int(total_possible),
-+        )
-+    else:
-+        logger.info(
-+            "Lagged pair diagnostics: usable=%d coverage=%.1f%% short_shards=%s",
-+            usable_pairs,
-+            coverage * 100.0,
-+            short_shards,
-+        )
-+
-     # Simple telemetry: evaluate a proxy objective before and after training.
-     def _vamp2_proxy(Y: np.ndarray, i: np.ndarray, j: np.ndarray) -> float:
-         if Y.size == 0 or i.size == 0:
-             return 0.0
-         A = Y[i]
-         B = Y[j]
-         # Mean-center
-         A = A - np.mean(A, axis=0, keepdims=True)
-         B = B - np.mean(B, axis=0, keepdims=True)
-         # Normalize columns
-         A_std = np.std(A, axis=0, ddof=1) + 1e-12
-         B_std = np.std(B, axis=0, ddof=1) + 1e-12
-         A = A / A_std
-         B = B / B_std
-         # Component-wise Pearson r, squared, averaged across outputs
-         num = np.sum(A * B, axis=0)
-         den = A.shape[0] - 1
-         r = num / max(1.0, den)
-         return float(np.mean(r * r))
- 
-     # Objective before training using current net init
-     with torch.no_grad():
-         try:
-             Y0 = net(Z)  # type: ignore[misc]
-         except Exception:
-@@ -1148,70 +1255,95 @@ def train_deeptica(
-             try:
-                 import pytorch_lightning as pl  # type: ignore
-             except Exception:
-                 import lightning.pytorch as pl  # type: ignore
- 
-             vamp_kwargs = {
-                 "eps": float(max(1e-9, getattr(cfg, "vamp_eps", 1e-3))),
-                 "eps_abs": float(max(0.0, getattr(cfg, "vamp_eps_abs", 1e-6))),
-                 "alpha": float(
-                     min(max(getattr(cfg, "vamp_alpha", 0.15), 0.0), 1.0)
-                 ),
-                 "cond_reg": float(max(0.0, getattr(cfg, "vamp_cond_reg", 1e-4))),
-             }
- 
-             class DeepTICALightningWrapper(pl.LightningModule):  # type: ignore
-                 def __init__(
-                     self,
-                     inner,
-                     lr: float,
-                     weight_decay: float,
-                     history_dir: str | None = None,
-                     *,
-                     lr_schedule: str = "cosine",
-                     warmup_epochs: int = 5,
-                     max_epochs: int = 200,
-+                    grad_norm_warn: float | None = None,
-+                    variance_warn_threshold: float = 1e-6,
-+                    mean_warn_threshold: float = 5.0,
-                 ):
-                     super().__init__()
-                     self.inner = inner
-                     self.vamp_loss = VAMP2Loss(**vamp_kwargs)
-                     self._train_loss_accum: list[float] = []
-                     self._val_loss_accum: list[float] = []
-                     self._val_score_accum: list[float] = []
-                     self._grad_norm_accum: list[float] = []
-                     self._val_var_z0_accum: list[list[float]] = []
-                     self._val_var_zt_accum: list[list[float]] = []
-+                    self._val_mean_z0_accum: list[list[float]] = []
-+                    self._val_mean_zt_accum: list[list[float]] = []
-                     self._cond_c0_accum: list[float] = []
-                     self._cond_ctt_accum: list[float] = []
-+                    self._c0_eig_min_accum: list[float] = []
-+                    self._c0_eig_max_accum: list[float] = []
-+                    self._ctt_eig_min_accum: list[float] = []
-+                    self._ctt_eig_max_accum: list[float] = []
-                     self.train_loss_curve: list[float] = []
-                     self.val_loss_curve: list[float] = []
-                     self.val_score_curve: list[float] = []
-                     self.var_z0_curve: list[list[float]] = []
-                     self.var_zt_curve: list[list[float]] = []
-+                    self.var_z0_curve_components: list[list[float]] = []
-+                    self.var_zt_curve_components: list[list[float]] = []
-+                    self.mean_z0_curve: list[list[float]] = []
-+                    self.mean_zt_curve: list[list[float]] = []
-                     self.cond_c0_curve: list[float] = []
-                     self.cond_ctt_curve: list[float] = []
-                     self.grad_norm_curve: list[float] = []
-+                    self.c0_eig_min_curve: list[float] = []
-+                    self.c0_eig_max_curve: list[float] = []
-+                    self.ctt_eig_min_curve: list[float] = []
-+                    self.ctt_eig_max_curve: list[float] = []
-+                    self.grad_norm_warn = (
-+                        float(grad_norm_warn) if grad_norm_warn is not None else None
-+                    )
-+                    self.variance_warn_threshold = float(variance_warn_threshold)
-+                    self.mean_warn_threshold = float(mean_warn_threshold)
-+                    self._last_grad_warning_step: int | None = None
-+                    self._grad_warning_pending = False
-+                    self._last_grad_norm: float | None = None
-                     self._train_loss_accum: list[float] = []
-                     self._val_loss_accum: list[float] = []
-                     self._val_score_accum: list[float] = []
-                     self.train_loss_curve: list[float] = []
-                     self.val_loss_curve: list[float] = []
-                     self.val_score_curve: list[float] = []
-                     # keep hparams for checkpointing/logging
-                     self.save_hyperparameters(
-                         {
-                             "lr": float(lr),
-                             "weight_decay": float(weight_decay),
-                             "lr_schedule": str(lr_schedule),
-                             "warmup_epochs": int(max(0, warmup_epochs)),
-                             "max_epochs": int(max_epochs),
-                         }
-                     )
-                     # Expose inner DeepTICA submodules at the LightningModule level for summary
-                     try:
-                         import torch.nn as _nn  # type: ignore
- 
-                         # Resolve DeepTICA core even if wrapped in a pre/post module
-                         _core = getattr(inner, "inner", inner)
-                         # Attach known submodules when present (do not create new modules)
-                         _nn_mod = getattr(_core, "nn", None)
-                         if isinstance(_nn_mod, _nn.Module):
-@@ -1272,66 +1404,107 @@ def train_deeptica(
-                         )
-                         return {
-                             "data": x_t,
-                             "data_lag": x_tau,
-                             "weights": w,
-                             "weights_lag": w,
-                         }
-                     return batch
- 
-                 def training_step(self, batch, batch_idx):  # type: ignore[override]
-                     b = self._norm_batch(batch)
-                     y_t = self.inner(b["data"])  # type: ignore[index]
-                     y_tau = self.inner(b["data_lag"])  # type: ignore[index]
-                     loss, score = self.vamp_loss(y_t, y_tau, weights=b.get("weights"))
-                     self._train_loss_accum.append(float(loss.detach().cpu().item()))
-                     self.log(
-                         "train_loss", loss, on_step=False, on_epoch=True, prog_bar=True
-                     )
-                     self.log(
-                         "train_vamp2",
-                         score,
-                         on_step=False,
-                         on_epoch=True,
-                         prog_bar=False,
-                     )
-+                    if self._grad_warning_pending and self._last_grad_norm is not None:
-+                        try:
-+                            self.log(
-+                                "grad_norm_exceeded",
-+                                torch.tensor(
-+                                    float(self._last_grad_norm),
-+                                    device=loss.device if hasattr(loss, "device") else None,
-+                                    dtype=torch.float32,
-+                                ),
-+                                prog_bar=False,
-+                                logger=True,
-+                            )
-+                        except Exception:
-+                            pass
-+                        self._grad_warning_pending = False
-                     return loss
- 
-                 def on_after_backward(self):  # type: ignore[override]
-                     grad_sq = []
-                     for param in self.parameters():
-                         if param.grad is not None:
-                             grad_sq.append(
-                                 torch.sum(param.grad.detach().to(torch.float64) ** 2)
-                             )
-                     if grad_sq:
-                         grad_norm = float(
-                             torch.sqrt(torch.stack(grad_sq).sum()).cpu().item()
-                         )
-                     else:
-                         grad_norm = 0.0
-                     self._grad_norm_accum.append(float(grad_norm))
-+                    self._last_grad_norm = float(grad_norm)
-+                    if (
-+                        self.grad_norm_warn is not None
-+                        and float(grad_norm) > float(self.grad_norm_warn)
-+                    ):
-+                        step_idx = None
-+                        try:
-+                            step_idx = int(getattr(self.trainer, "global_step", 0))
-+                        except Exception:
-+                            step_idx = None
-+                        if step_idx is not None:
-+                            if self._last_grad_warning_step != step_idx:
-+                                logger.warning(
-+                                    "Gradient norm %.3f exceeded warning threshold %.3f at step %d",
-+                                    float(grad_norm),
-+                                    float(self.grad_norm_warn),
-+                                    int(step_idx),
-+                                )
-+                                self._last_grad_warning_step = step_idx
-+                        else:
-+                            logger.warning(
-+                                "Gradient norm %.3f exceeded warning threshold %.3f",
-+                                float(grad_norm),
-+                                float(self.grad_norm_warn),
-+                            )
-+                        self._grad_warning_pending = True
- 
-                 def validation_step(self, batch, batch_idx):  # type: ignore[override]
-                     b = self._norm_batch(batch)
-                     y_t = self.inner(b["data"])  # type: ignore[index]
-                     y_tau = self.inner(b["data_lag"])  # type: ignore[index]
-                     loss, score = self.vamp_loss(y_t, y_tau, weights=b.get("weights"))
-                     self._val_loss_accum.append(float(loss.detach().cpu().item()))
-                     self._val_score_accum.append(float(score.detach().cpu().item()))
-                     self.log(
-                         "val_loss", loss, on_step=False, on_epoch=True, prog_bar=True
-                     )
-                     # Diagnostics: generalized eigenvalues, per-CV autocorr, whitening norm
-                     try:
-                         with torch.no_grad():
-                             y_t_eval = y_t.detach()
-                             y_tau_eval = y_tau.detach()
- 
-                             def _regularize_cov(cov: torch.Tensor) -> torch.Tensor:
-                                 cov_sym = (cov + cov.transpose(-1, -2)) * 0.5
-                                 dim = cov_sym.shape[-1]
-                                 eye = torch.eye(
-                                     dim, device=cov_sym.device, dtype=cov_sym.dtype
-                                 )
-                                 trace_floor = torch.tensor(
-                                     1e-12, dtype=cov_sym.dtype, device=cov_sym.device
-@@ -1362,62 +1535,82 @@ def train_deeptica(
-                             inv_sqrt = torch.diag(
-                                 torch.rsqrt(torch.clamp(evals, min=eps_floor))
-                             )
-                             W = evecs @ inv_sqrt @ evecs.T
-                             M = W @ Ctau @ W.T
-                             Ms = (M + M.T) * 0.5
-                             vals = torch.linalg.eigvalsh(Ms)
-                             vals, _ = torch.sort(vals, descending=True)
-                             k = min(int(y_t_eval.shape[1]), 4)
-                             for i in range(k):
-                                 self.log(
-                                     f"val_eig_{i}",
-                                     vals[i].float(),
-                                     on_step=False,
-                                     on_epoch=True,
-                                     prog_bar=False,
-                                 )
-                             var_z0 = torch.var(y_t, dim=0, unbiased=True)
-                             var_zt = torch.var(y_tau, dim=0, unbiased=True)
-                             self._val_var_z0_accum.append(
-                                 var_z0.detach().cpu().tolist()
-                             )
-                             self._val_var_zt_accum.append(
-                                 var_zt.detach().cpu().tolist()
-                             )
-+                            mean_z0 = torch.mean(y_t, dim=0)
-+                            mean_zt = torch.mean(y_tau, dim=0)
-+                            self._val_mean_z0_accum.append(
-+                                mean_z0.detach().cpu().tolist()
-+                            )
-+                            self._val_mean_zt_accum.append(
-+                                mean_zt.detach().cpu().tolist()
-+                            )
-                             evals_c0 = torch.clamp(evals, min=eps_floor)
-                             cond_c0 = float(
-                                 (evals_c0.max() / evals_c0.min()).detach().cpu().item()
-                             )
-                             evals_ctt = torch.linalg.eigvalsh(Ctt_reg)
-                             evals_ctt = torch.clamp(evals_ctt, min=eps_floor)
-                             cond_ctt = float(
-                                 (evals_ctt.max() / evals_ctt.min())
-                                 .detach()
-                                 .cpu()
-                                 .item()
-                             )
-+                            self._c0_eig_min_accum.append(
-+                                float(evals_c0.min().detach().cpu().item())
-+                            )
-+                            self._c0_eig_max_accum.append(
-+                                float(evals_c0.max().detach().cpu().item())
-+                            )
-+                            self._ctt_eig_min_accum.append(
-+                                float(evals_ctt.min().detach().cpu().item())
-+                            )
-+                            self._ctt_eig_max_accum.append(
-+                                float(evals_ctt.max().detach().cpu().item())
-+                            )
-                             self._cond_c0_accum.append(cond_c0)
-                             self._cond_ctt_accum.append(cond_ctt)
-                             var_t = torch.diag(C0_reg)
-                             var_tau = torch.diag(Ctt_reg)
-                             corr = torch.diag(Ctau) / torch.sqrt(
-                                 torch.clamp(var_t * var_tau, min=eps_floor)
-                             )
-                             for i in range(min(int(corr.shape[0]), 4)):
-                                 self.log(
-                                     f"val_corr_{i}",
-                                     corr[i].float(),
-                                     on_step=False,
-                                     on_epoch=True,
-                                     prog_bar=False,
-                                 )
-                             whiten_norm = torch.linalg.norm(W, ord="fro")
-                             self.log(
-                                 "val_whiten_norm",
-                                 whiten_norm.float(),
-                                 on_step=False,
-                                 on_epoch=True,
-                                 prog_bar=False,
-                             )
-                             if int(batch_idx) == 0:
-                                 try:
-@@ -1451,165 +1644,323 @@ def train_deeptica(
-                                                 for x in var_z0.detach().cpu().tolist()
-                                             ],
-                                             "var_zt": [
-                                                 float(x)
-                                                 for x in var_zt.detach().cpu().tolist()
-                                             ],
-                                             "cond_C00": float(cond_c0),
-                                             "cond_Ctt": float(cond_ctt),
-                                         }
-                                         with open(
-                                             self.history_file, "a", encoding="utf-8"
-                                         ) as fh:
-                                             fh.write(
-                                                 json.dumps(rec, sort_keys=True) + "\n"
-                                             )
-                                 except Exception:
-                                     pass
-                     except Exception:
-                         # Diagnostics are best-effort; do not fail validation if they error
-                         pass
-                     return loss
- 
-                 def on_train_epoch_start(self):  # type: ignore[override]
-                     self._train_loss_accum.clear()
-                     self._grad_norm_accum.clear()
-+                    self._grad_warning_pending = False
-+                    self._last_grad_norm = None
- 
-                 def on_train_epoch_end(self):  # type: ignore[override]
-                     if self._train_loss_accum:
-                         avg = float(
-                             sum(self._train_loss_accum) / len(self._train_loss_accum)
-                         )
-                         self.train_loss_curve.append(avg)
-                         self.log(
-                             "train_loss_epoch",
-                             torch.tensor(avg, device=self.device, dtype=torch.float32),
-                             prog_bar=False,
-                         )
-                     if self._grad_norm_accum:
-                         avg_grad = float(
-                             sum(self._grad_norm_accum) / len(self._grad_norm_accum)
-                         )
-                         self.grad_norm_curve.append(avg_grad)
-                         self.log(
-                             "grad_norm_epoch",
-                             torch.tensor(
-                                 avg_grad, device=self.device, dtype=torch.float32
-                             ),
-                             prog_bar=False,
-                         )
-                     self._train_loss_accum.clear()
-                     self._grad_norm_accum.clear()
- 
-                 def on_validation_epoch_start(self):  # type: ignore[override]
-                     self._val_loss_accum.clear()
-                     self._val_score_accum.clear()
-                     self._val_var_z0_accum.clear()
-                     self._val_var_zt_accum.clear()
-+                    self._val_mean_z0_accum.clear()
-+                    self._val_mean_zt_accum.clear()
-                     self._cond_c0_accum.clear()
-                     self._cond_ctt_accum.clear()
-+                    self._c0_eig_min_accum.clear()
-+                    self._c0_eig_max_accum.clear()
-+                    self._ctt_eig_min_accum.clear()
-+                    self._ctt_eig_max_accum.clear()
- 
-                 def on_validation_epoch_end(self):  # type: ignore[override]
-                     avg_loss = None
-                     avg_score = None
-                     if self._val_loss_accum:
-                         avg_loss = float(
-                             sum(self._val_loss_accum) / len(self._val_loss_accum)
-                         )
-                         self.val_loss_curve.append(avg_loss)
-                         self.log(
-                             "val_loss_epoch",
-                             torch.tensor(
-                                 avg_loss, device=self.device, dtype=torch.float32
-                             ),
-                             prog_bar=False,
-                         )
-                     if self._val_score_accum:
-                         avg_score = float(
-                             sum(self._val_score_accum) / len(self._val_score_accum)
-                         )
-                         self.val_score_curve.append(avg_score)
-                         score_tensor = torch.tensor(
-                             avg_score, device=self.device, dtype=torch.float32
-                         )
-                         self.log("val_score", score_tensor, prog_bar=True)
-                     if self._val_var_z0_accum:
-                         arr = np.asarray(self._val_var_z0_accum, dtype=float)
-                         avg_var_z0 = np.mean(arr, axis=0).tolist()
--                        self.var_z0_curve.append([float(x) for x in avg_var_z0])
-+                        comp = [float(x) for x in avg_var_z0]
-+                        self.var_z0_curve.append(comp)
-+                        self.var_z0_curve_components.append(comp)
-                         self.log(
-                             "val_var_z0",
-                             torch.tensor(
-                                 float(np.mean(avg_var_z0)),
-                                 device=self.device,
-                                 dtype=torch.float32,
-                             ),
-                             prog_bar=False,
-                         )
-+                        for idx, value in enumerate(comp):
-+                            try:
-+                                self.log(
-+                                    f"val_var_z0_{idx}",
-+                                    torch.tensor(
-+                                        float(value),
-+                                        device=self.device,
-+                                        dtype=torch.float32,
-+                                    ),
-+                                    prog_bar=False,
-+                                )
-+                            except Exception:
-+                                continue
-+                        if comp and float(min(comp)) < self.variance_warn_threshold:
-+                            logger.warning(
-+                                "Validation variance for some CV dropped below %.2e (min %.2e)",
-+                                float(self.variance_warn_threshold),
-+                                float(min(comp)),
-+                            )
-                     if self._val_var_zt_accum:
-                         arr = np.asarray(self._val_var_zt_accum, dtype=float)
-                         avg_var_zt = np.mean(arr, axis=0).tolist()
--                        self.var_zt_curve.append([float(x) for x in avg_var_zt])
-+                        comp_tau = [float(x) for x in avg_var_zt]
-+                        self.var_zt_curve.append(comp_tau)
-+                        self.var_zt_curve_components.append(comp_tau)
-                         self.log(
-                             "val_var_zt",
-                             torch.tensor(
-                                 float(np.mean(avg_var_zt)),
-                                 device=self.device,
-                                 dtype=torch.float32,
-                             ),
-                             prog_bar=False,
-                         )
-+                        for idx, value in enumerate(comp_tau):
-+                            try:
-+                                self.log(
-+                                    f"val_var_zt_{idx}",
-+                                    torch.tensor(
-+                                        float(value),
-+                                        device=self.device,
-+                                        dtype=torch.float32,
-+                                    ),
-+                                    prog_bar=False,
-+                                )
-+                            except Exception:
-+                                continue
-+                        if comp_tau and float(min(comp_tau)) < self.variance_warn_threshold:
-+                            logger.warning(
-+                                "Validation lagged variance for some CV dropped below %.2e (min %.2e)",
-+                                float(self.variance_warn_threshold),
-+                                float(min(comp_tau)),
-+                            )
-+                    if self._val_mean_z0_accum:
-+                        arr = np.asarray(self._val_mean_z0_accum, dtype=float)
-+                        avg_mean_z0 = np.mean(arr, axis=0).tolist()
-+                        comp_mean_z0 = [float(x) for x in avg_mean_z0]
-+                        self.mean_z0_curve.append(comp_mean_z0)
-+                        for idx, value in enumerate(comp_mean_z0):
-+                            try:
-+                                self.log(
-+                                    f"val_mean_z0_{idx}",
-+                                    torch.tensor(
-+                                        float(value),
-+                                        device=self.device,
-+                                        dtype=torch.float32,
-+                                    ),
-+                                    prog_bar=False,
-+                                )
-+                            except Exception:
-+                                continue
-+                        if comp_mean_z0:
-+                            drift = max(abs(v) for v in comp_mean_z0)
-+                            if drift > self.mean_warn_threshold:
-+                                logger.warning(
-+                                    "Validation CV mean drift %.3f exceeds threshold %.3f",
-+                                    float(drift),
-+                                    float(self.mean_warn_threshold),
-+                                )
-+                    if self._val_mean_zt_accum:
-+                        arr = np.asarray(self._val_mean_zt_accum, dtype=float)
-+                        avg_mean_zt = np.mean(arr, axis=0).tolist()
-+                        comp_mean_zt = [float(x) for x in avg_mean_zt]
-+                        self.mean_zt_curve.append(comp_mean_zt)
-+                        for idx, value in enumerate(comp_mean_zt):
-+                            try:
-+                                self.log(
-+                                    f"val_mean_zt_{idx}",
-+                                    torch.tensor(
-+                                        float(value),
-+                                        device=self.device,
-+                                        dtype=torch.float32,
-+                                    ),
-+                                    prog_bar=False,
-+                                )
-+                            except Exception:
-+                                continue
-+                        if comp_mean_zt:
-+                            drift = max(abs(v) for v in comp_mean_zt)
-+                            if drift > self.mean_warn_threshold:
-+                                logger.warning(
-+                                    "Validation lagged CV mean drift %.3f exceeds threshold %.3f",
-+                                    float(drift),
-+                                    float(self.mean_warn_threshold),
-+                                )
-                     if self._cond_c0_accum:
-                         avg_cond_c0 = float(
-                             sum(self._cond_c0_accum) / len(self._cond_c0_accum)
-                         )
-                         self.cond_c0_curve.append(avg_cond_c0)
-                         self.log(
-                             "cond_C00",
-                             torch.tensor(
-                                 avg_cond_c0, device=self.device, dtype=torch.float32
-                             ),
-                             prog_bar=False,
-                         )
-                     if self._cond_ctt_accum:
-                         avg_cond_ctt = float(
-                             sum(self._cond_ctt_accum) / len(self._cond_ctt_accum)
-                         )
-                         self.cond_ctt_curve.append(avg_cond_ctt)
-                         self.log(
-                             "cond_Ctt",
-                             torch.tensor(
-                                 avg_cond_ctt, device=self.device, dtype=torch.float32
-                             ),
-                             prog_bar=False,
-                         )
-+                    if self._c0_eig_min_accum:
-+                        avg_c0_min = float(
-+                            sum(self._c0_eig_min_accum) / len(self._c0_eig_min_accum)
-+                        )
-+                        self.c0_eig_min_curve.append(avg_c0_min)
-+                        self.log(
-+                            "c0_eig_min",
-+                            torch.tensor(
-+                                avg_c0_min, device=self.device, dtype=torch.float32
-+                            ),
-+                            prog_bar=False,
-+                        )
-+                    if self._c0_eig_max_accum:
-+                        avg_c0_max = float(
-+                            sum(self._c0_eig_max_accum) / len(self._c0_eig_max_accum)
-+                        )
-+                        self.c0_eig_max_curve.append(avg_c0_max)
-+                        self.log(
-+                            "c0_eig_max",
-+                            torch.tensor(
-+                                avg_c0_max, device=self.device, dtype=torch.float32
-+                            ),
-+                            prog_bar=False,
-+                        )
-+                    if self._ctt_eig_min_accum:
-+                        avg_ctt_min = float(
-+                            sum(self._ctt_eig_min_accum)
-+                            / len(self._ctt_eig_min_accum)
-+                        )
-+                        self.ctt_eig_min_curve.append(avg_ctt_min)
-+                        self.log(
-+                            "ctt_eig_min",
-+                            torch.tensor(
-+                                avg_ctt_min, device=self.device, dtype=torch.float32
-+                            ),
-+                            prog_bar=False,
-+                        )
-+                    if self._ctt_eig_max_accum:
-+                        avg_ctt_max = float(
-+                            sum(self._ctt_eig_max_accum)
-+                            / len(self._ctt_eig_max_accum)
-+                        )
-+                        self.ctt_eig_max_curve.append(avg_ctt_max)
-+                        self.log(
-+                            "ctt_eig_max",
-+                            torch.tensor(
-+                                avg_ctt_max, device=self.device, dtype=torch.float32
-+                            ),
-+                            prog_bar=False,
-+                        )
-                     self._val_loss_accum.clear()
-                     self._val_score_accum.clear()
-                     self._val_var_z0_accum.clear()
-                     self._val_var_zt_accum.clear()
-+                    self._val_mean_z0_accum.clear()
-+                    self._val_mean_zt_accum.clear()
-                     self._cond_c0_accum.clear()
-                     self._cond_ctt_accum.clear()
-+                    self._c0_eig_min_accum.clear()
-+                    self._c0_eig_max_accum.clear()
-+                    self._ctt_eig_min_accum.clear()
-+                    self._ctt_eig_max_accum.clear()
- 
-                 def configure_optimizers(self):  # type: ignore[override]
-                     # AdamW with mild weight decay for stability
-                     weight_decay = float(self.hparams.weight_decay)
-                     if weight_decay <= 0.0:
-                         weight_decay = 1e-4
-                     opt = torch.optim.AdamW(
-                         self.parameters(),
-                         lr=float(self.hparams.lr),
-                         weight_decay=weight_decay,
-                     )
-                     sched_name = (
-                         str(getattr(self.hparams, "lr_schedule", "cosine"))
-                         if hasattr(self, "hparams")
-                         else "cosine"
-                     )
-                     warmup = (
-                         int(getattr(self.hparams, "warmup_epochs", 5))
-                         if hasattr(self, "hparams")
-                         else 5
-                     )
-                     maxe = (
-                         int(getattr(self.hparams, "max_epochs", 200))
-                         if hasattr(self, "hparams")
-                         else 200
-@@ -1656,50 +2007,61 @@ def train_deeptica(
-                                     "scheduler": sch,
-                                     "monitor": "val_loss",
-                                 },
-                             }
-                     else:
-                         # No scheduler
-                         return opt
- 
-             # Choose a persistent directory for per-epoch JSONL logging
-             try:
-                 hist_dir = (
-                     ckpt_dir
-                     if "ckpt_dir" in locals() and ckpt_dir is not None
-                     else (Path.cwd() / "runs" / "deeptica" / str(int(t0)))
-                 )
-             except Exception:
-                 hist_dir = None
-             wrapped = DeepTICALightningWrapper(
-                 net,
-                 lr=float(cfg.learning_rate),
-                 weight_decay=float(cfg.weight_decay),
-                 history_dir=str(hist_dir) if hist_dir is not None else None,
-                 lr_schedule=str(getattr(cfg, "lr_schedule", "cosine")),
-                 warmup_epochs=int(getattr(cfg, "warmup_epochs", 5)),
-                 max_epochs=int(getattr(cfg, "max_epochs", 200)),
-+                grad_norm_warn=(
-+                    float(getattr(cfg, "grad_norm_warn", 0.0))
-+                    if getattr(cfg, "grad_norm_warn", None) is not None
-+                    else None
-+                ),
-+                variance_warn_threshold=float(
-+                    getattr(cfg, "variance_warn_threshold", 1e-6)
-+                ),
-+                mean_warn_threshold=float(
-+                    getattr(cfg, "mean_warn_threshold", 5.0)
-+                ),
-             )
-         except Exception:
-             # If Lightning is completely unavailable, fall back to model.fit (handled below)
-             wrapped = net
- 
-         # Enforce minimum training duration to avoid early flat-zero stalls
-         _max_epochs = int(getattr(cfg, "max_epochs", 200))
-         _min_epochs = max(1, min(50, _max_epochs // 4))
-         clip_val = float(max(0.0, getattr(cfg, "gradient_clip_val", 0.0)))
-         clip_alg = str(getattr(cfg, "gradient_clip_algorithm", "norm"))
-         trainer_kwargs = {
-             "max_epochs": _max_epochs,
-             "min_epochs": _min_epochs,
-             "enable_progress_bar": _pb,
-             "logger": loggers if loggers else False,
-             "callbacks": callbacks,
-             "deterministic": True,
-             "log_every_n_steps": 1,
-             "enable_checkpointing": True,
-             "gradient_clip_val": clip_val,
-             "gradient_clip_algorithm": clip_alg,
-         }
-         try:
-             trainer = Trainer(**trainer_kwargs)
-         except TypeError:
-@@ -1775,154 +2137,255 @@ def train_deeptica(
-         if isinstance(Y1, torch.Tensor):
-             Y1 = Y1.detach().cpu().numpy()
-     obj_after = _vamp2_proxy(
-         Y1, np.asarray(idx_t, dtype=int), np.asarray(idx_tlag, dtype=int)
-     )
-     try:
-         arr = np.asarray(Y1, dtype=np.float64)
-         if arr.shape[0] > 1:
-             var_arr = np.var(arr, axis=0, ddof=1)
-         else:
-             var_arr = np.var(arr, axis=0, ddof=0)
-         output_variance = var_arr.astype(float).tolist()
-         logger.info("DeepTICA output variance: %s", output_variance)
-     except Exception:
-         output_variance = None
- 
-     # Prefer losses collected during training if available; otherwise proxy objective
-     train_curve: list[float] | None = None
-     val_curve: list[float] | None = None
-     score_curve: list[float] | None = None
-     var_z0_curve: list[list[float]] | None = None
-     var_zt_curve: list[list[float]] | None = None
-     cond_c0_curve: list[float] | None = None
-     cond_ctt_curve: list[float] | None = None
-     grad_norm_curve: list[float] | None = None
-+    var_z0_components: list[list[float]] | None = None
-+    var_zt_components: list[list[float]] | None = None
-+    mean_z0_curve: list[list[float]] | None = None
-+    mean_zt_curve: list[list[float]] | None = None
-+    c0_eig_min_curve: list[float] | None = None
-+    c0_eig_max_curve: list[float] | None = None
-+    ctt_eig_min_curve: list[float] | None = None
-+    ctt_eig_max_curve: list[float] | None = None
-     try:
-         if lightning_available:
-             if hasattr(wrapped, "train_loss_curve") and getattr(
-                 wrapped, "train_loss_curve"
-             ):
-                 train_curve = [float(x) for x in getattr(wrapped, "train_loss_curve")]
-             if hasattr(wrapped, "val_loss_curve") and getattr(
-                 wrapped, "val_loss_curve"
-             ):
-                 val_curve = [float(x) for x in getattr(wrapped, "val_loss_curve")]
-             if hasattr(wrapped, "val_score_curve") and getattr(
-                 wrapped, "val_score_curve"
-             ):
-                 score_curve = [float(x) for x in getattr(wrapped, "val_score_curve")]
-             if hasattr(wrapped, "var_z0_curve") and getattr(wrapped, "var_z0_curve"):
-                 var_z0_curve = [
-                     [float(v) for v in arr] for arr in getattr(wrapped, "var_z0_curve")
-                 ]
-             if hasattr(wrapped, "var_zt_curve") and getattr(wrapped, "var_zt_curve"):
-                 var_zt_curve = [
-                     [float(v) for v in arr] for arr in getattr(wrapped, "var_zt_curve")
-                 ]
-+            if hasattr(wrapped, "var_z0_curve_components") and getattr(
-+                wrapped, "var_z0_curve_components"
-+            ):
-+                var_z0_components = [
-+                    [float(v) for v in arr]
-+                    for arr in getattr(wrapped, "var_z0_curve_components")
-+                ]
-+            if hasattr(wrapped, "var_zt_curve_components") and getattr(
-+                wrapped, "var_zt_curve_components"
-+            ):
-+                var_zt_components = [
-+                    [float(v) for v in arr]
-+                    for arr in getattr(wrapped, "var_zt_curve_components")
-+                ]
-+            if hasattr(wrapped, "mean_z0_curve") and getattr(
-+                wrapped, "mean_z0_curve"
-+            ):
-+                mean_z0_curve = [
-+                    [float(v) for v in arr]
-+                    for arr in getattr(wrapped, "mean_z0_curve")
-+                ]
-+            if hasattr(wrapped, "mean_zt_curve") and getattr(
-+                wrapped, "mean_zt_curve"
-+            ):
-+                mean_zt_curve = [
-+                    [float(v) for v in arr]
-+                    for arr in getattr(wrapped, "mean_zt_curve")
-+                ]
-             if hasattr(wrapped, "cond_c0_curve") and getattr(wrapped, "cond_c0_curve"):
-                 cond_c0_curve = [float(x) for x in getattr(wrapped, "cond_c0_curve")]
-             if hasattr(wrapped, "cond_ctt_curve") and getattr(
-                 wrapped, "cond_ctt_curve"
-             ):
-                 cond_ctt_curve = [float(x) for x in getattr(wrapped, "cond_ctt_curve")]
-             if hasattr(wrapped, "grad_norm_curve") and getattr(
-                 wrapped, "grad_norm_curve"
-             ):
-                 grad_norm_curve = [
-                     float(x) for x in getattr(wrapped, "grad_norm_curve")
-                 ]
-+            if hasattr(wrapped, "c0_eig_min_curve") and getattr(
-+                wrapped, "c0_eig_min_curve"
-+            ):
-+                c0_eig_min_curve = [
-+                    float(x) for x in getattr(wrapped, "c0_eig_min_curve")
-+                ]
-+            if hasattr(wrapped, "c0_eig_max_curve") and getattr(
-+                wrapped, "c0_eig_max_curve"
-+            ):
-+                c0_eig_max_curve = [
-+                    float(x) for x in getattr(wrapped, "c0_eig_max_curve")
-+                ]
-+            if hasattr(wrapped, "ctt_eig_min_curve") and getattr(
-+                wrapped, "ctt_eig_min_curve"
-+            ):
-+                ctt_eig_min_curve = [
-+                    float(x) for x in getattr(wrapped, "ctt_eig_min_curve")
-+                ]
-+            if hasattr(wrapped, "ctt_eig_max_curve") and getattr(
-+                wrapped, "ctt_eig_max_curve"
-+            ):
-+                ctt_eig_max_curve = [
-+                    float(x) for x in getattr(wrapped, "ctt_eig_max_curve")
-+                ]
-             if hist_cb.losses and not train_curve:
-                 train_curve = [float(x) for x in hist_cb.losses]
-             if hist_cb.val_losses and not val_curve:
-                 val_curve = [float(x) for x in hist_cb.val_losses]
-             if getattr(hist_cb, "val_scores", None) and not score_curve:
-                 score_curve = [float(x) for x in hist_cb.val_scores]
-     except Exception:
-         train_curve = None
-         val_curve = None
-         score_curve = None
-         var_z0_curve = None
-         var_zt_curve = None
-         cond_c0_curve = None
-         cond_ctt_curve = None
-         grad_norm_curve = None
- 
-     if train_curve is None:
-         train_curve = [float(1.0 - obj_before), float(1.0 - obj_after)]
-     history_epochs = list(range(1, len(train_curve) + 1))
-     if score_curve is None:
-         score_curve = [float(obj_before), float(obj_after)]
-         if len(history_epochs) < len(score_curve):
-             history_epochs = list(range(len(score_curve)))
-     else:
-         if len(history_epochs) < len(score_curve):
-             history_epochs = list(range(1, len(score_curve) + 1))
-     if var_z0_curve is None:
-         var_z0_curve = []
-     if var_zt_curve is None:
-         var_zt_curve = []
-     if cond_c0_curve is None:
-         cond_c0_curve = []
-     if cond_ctt_curve is None:
-         cond_ctt_curve = []
-     if grad_norm_curve is None:
-         grad_norm_curve = []
-+    if var_z0_components is None:
-+        var_z0_components = var_z0_curve
-+    if var_zt_components is None:
-+        var_zt_components = var_zt_curve
-+    if mean_z0_curve is None:
-+        mean_z0_curve = []
-+    if mean_zt_curve is None:
-+        mean_zt_curve = []
-+    if c0_eig_min_curve is None:
-+        c0_eig_min_curve = []
-+    if c0_eig_max_curve is None:
-+        c0_eig_max_curve = []
-+    if ctt_eig_min_curve is None:
-+        ctt_eig_min_curve = []
-+    if ctt_eig_max_curve is None:
-+        ctt_eig_max_curve = []
- 
-     history = {
-         "loss_curve": train_curve,
-         "val_loss_curve": val_curve,
-         "objective_curve": score_curve,
-         "val_score_curve": score_curve,
-         "val_score": score_curve,
-         "var_z0_curve": var_z0_curve,
-         "var_zt_curve": var_zt_curve,
-+        "var_z0_curve_components": var_z0_components,
-+        "var_zt_curve_components": var_zt_components,
-+        "mean_z0_curve": mean_z0_curve,
-+        "mean_zt_curve": mean_zt_curve,
-         "cond_c00_curve": cond_c0_curve,
-         "cond_ctt_curve": cond_ctt_curve,
-         "grad_norm_curve": grad_norm_curve,
-+        "c0_eig_min_curve": c0_eig_min_curve,
-+        "c0_eig_max_curve": c0_eig_max_curve,
-+        "ctt_eig_min_curve": ctt_eig_min_curve,
-+        "ctt_eig_max_curve": ctt_eig_max_curve,
-         "initial_objective": float(obj_before),
-         "epochs": history_epochs,
-         "log_every": int(cfg.log_every),
-         "wall_time_s": float(max(0.0, _time.time() - t0)),
-         "tau_schedule": [int(x) for x in tau_schedule],
-+        "pair_diagnostics": pair_diagnostics,
-+        "usable_pairs": pair_diagnostics.get("usable_pairs"),
-+        "pair_coverage": pair_diagnostics.get("pair_coverage"),
-+        "pairs_by_shard": pair_diagnostics.get("pairs_by_shard"),
-+        "short_shards": pair_diagnostics.get("short_shards"),
+ def _select_shard_paths(groups: Sequence[Dict[str, object]], run_ids: Sequence[str]) -> List[Path]:
+     lookup: Dict[str, Sequence[str]] = {
+         str(entry.get("run_id")): entry.get("paths", [])  # type: ignore[dict-item]
+         for entry in groups
      }
+     selected: List[Path] = []
+     for run_id in run_ids:
+         paths = lookup.get(run_id, [])
+         for p in paths:
+             selected.append(Path(p))
+     return selected
  
-     history["output_variance"] = whitening_info.get("output_variance")
-     history["output_mean"] = whitening_info.get("mean")
-     history["output_transform"] = whitening_info.get("transform")
-     history["output_transform_applied"] = whitening_info.get("transform_applied")
  
-     if history.get("var_z0_curve"):
-         history["var_z0_curve"][-1] = whitening_info.get("output_variance")
-     else:
-         history["var_z0_curve"] = [whitening_info.get("output_variance")]
+ def _metrics_table(flags: Dict[str, object]) -> pd.DataFrame:
+-    def _to_serializable(val: object) -> object:
+-        # Keep simple scalars as-is
+-        if isinstance(val, (str, int, float, bool)) or val is None:
+-            return val
+-        # Coerce NumPy scalars
+-        try:
+-            import numpy as np  # type: ignore
++    """Render build flags in a tabular, Arrow-friendly representation.
  
-+    if history.get("var_z0_curve_components"):
-+        history["var_z0_curve_components"][-1] = whitening_info.get("output_variance")
-+    else:
-+        history["var_z0_curve_components"] = [
-+            whitening_info.get("output_variance")
-+        ]
+-            if isinstance(val, np.generic):
+-                return val.item()
+-        except Exception:
+-            pass
+-        # For sequences, mappings, arrays, and other objects, stringify to avoid Arrow type issues
+-        try:
+-            import json
++    Streamlit converts the returned DataFrame into an Arrow table. Mixed dtypes
++    within a column (for example booleans alongside strings) lead Arrow to infer
++    an incompatible schema which subsequently raises an ``ArrowInvalid``. The
++    build flags frequently contain boolean toggles together with nested
++    structures such as diagnostic warning lists, so we normalise them into a
++    flat table that stores display strings alongside their original type.
++    """
 +
-     if history.get("var_zt_curve"):
-         history["var_zt_curve"][-1] = whitening_info.get("var_zt")
-     else:
-         history["var_zt_curve"] = [whitening_info.get("var_zt")]
- 
-+    if history.get("var_zt_curve_components"):
-+        history["var_zt_curve_components"][-1] = whitening_info.get("var_zt")
-+    else:
-+        history["var_zt_curve_components"] = [whitening_info.get("var_zt")]
++    from collections.abc import Mapping, Sequence as _SequenceABC
 +
-     if history.get("cond_c00_curve"):
-         history["cond_c00_curve"][-1] = whitening_info.get("cond_c00")
-     else:
-         history["cond_c00_curve"] = [whitening_info.get("cond_c00")]
++    try:  # Local import to avoid an unconditional dependency at module import
++        import numpy as np  # type: ignore
++    except Exception:  # pragma: no cover - NumPy is always available in practice
++        np = None  # type: ignore
  
-     if history.get("cond_ctt_curve"):
-         history["cond_ctt_curve"][-1] = whitening_info.get("cond_ctt")
-     else:
-         history["cond_ctt_curve"] = [whitening_info.get("cond_ctt")]
+-            return json.dumps(val, default=str)
+-        except Exception:
+-            return str(val)
++    def _coerce_scalar(val: object) -> object:
++        if np is not None and isinstance(val, np.generic):
++            return val.item()
++        return val
  
-     # Attach logger paths and best checkpoint if available
-     try:
-         if lightning_available:
-             if "metrics_csv_path" in locals() and metrics_csv_path:
-                 history["metrics_csv"] = str(metrics_csv_path)
-             if "best_path" in locals() and best_path:
-                 history["best_ckpt_path"] = str(best_path)
-             if "best_path_corr" in locals() and best_path_corr:
-                 history["best_ckpt_path_corr"] = str(best_path_corr)
-     except Exception:
-         pass
- 
-     # Compute top eigenvalues at the end for summary (whitened generalized eigenvalues)
-     try:
-         with torch.no_grad():
-diff --git a/src/pmarlo/features/deeptica_trainer.py b/src/pmarlo/features/deeptica_trainer.py
-index 13549f78b112ff776bed6a01be084c53c638a7bb..ab572dafd7099c823d7c315c4daa327b40a5a2da 100644
---- a/src/pmarlo/features/deeptica_trainer.py
-+++ b/src/pmarlo/features/deeptica_trainer.py
-@@ -1,54 +1,57 @@
- from __future__ import annotations
- 
- """DeepTICA trainer integrating VAMP-2 optimisation and curriculum support."""
- 
- import logging
- from dataclasses import dataclass
- from pathlib import Path
--from typing import Dict, List, Optional, Sequence, Tuple
-+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
- 
- import numpy as np
- import torch
--from torch.nn.utils import clip_grad_norm_
-+from torch.nn.utils import clip_grad_norm_, clip_grad_value_
- 
- from .deeptica.losses import VAMP2Loss
- 
- __all__ = ["TrainerConfig", "DeepTICATrainer"]
- 
- 
- logger = logging.getLogger(__name__)
- 
- 
- @dataclass(frozen=True)
- class TrainerConfig:
-     tau_steps: int
-     learning_rate: float = 3e-4
-     weight_decay: float = 0.0
-     use_weights: bool = True
-     tau_schedule: Tuple[int, ...] = ()
-     grad_clip_norm: Optional[float] = 1.0
-+    grad_clip_mode: str = "norm"
-+    grad_clip_value: Optional[float] = None
-+    grad_norm_warn: Optional[float] = None
-     log_every: int = 25
-     checkpoint_dir: Optional[Path] = None
-     checkpoint_metric: str = "vamp2"
-     device: str = "auto"
-     scheduler: str = "none"  # "none" | "cosine"
-     scheduler_warmup_steps: int = 0
-     scheduler_total_steps: Optional[int] = None
-     max_steps: Optional[int] = None
-     vamp_eps: float = 1e-3
-     vamp_eps_abs: float = 1e-6
-     vamp_alpha: float = 0.15
-     vamp_cond_reg: float = 1e-4
- 
- 
- class DeepTICATrainer:
-     """Optimises a DeepTICA model using a tau-curriculum and VAMP-2 loss."""
- 
-     def __init__(self, model, cfg: TrainerConfig) -> None:
-         if cfg.tau_steps <= 0:
-             raise ValueError("tau_steps must be positive")
-         self.model = model
-         self.cfg = cfg
- 
-         device_str = self._resolve_device(cfg.device)
-         self.device = torch.device(device_str)
-@@ -93,64 +96,89 @@ class DeepTICATrainer:
-     def current_tau(self) -> int:
-         return int(self.curriculum[self.curriculum_index])
- 
-     def advance_tau(self) -> bool:
-         if self.curriculum_index + 1 >= len(self.curriculum):
-             return False
-         self.curriculum_index += 1
-         self.best_score = float("-inf")
-         logger.info("Advanced tau curriculum to %s", self.current_tau())
-         return True
- 
-     def step(
-         self,
-         batch: List[Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]],
-     ) -> Dict[str, float]:
-         tensors = self._prepare_batch(batch)
-         if tensors is None:
-             logger.debug("Received empty batch; skipping optimisation step")
-             return {"loss": 0.0, "vamp2": 0.0, "tau": float(self.current_tau())}
-         x_t, x_tau, weights = tensors
- 
-         self.model.net.train()
-         self.optimizer.zero_grad()
-         loss, score = self._compute_loss_and_score(x_t, x_tau, weights)
-         loss.backward()
--        if self.cfg.grad_clip_norm is not None:
--            clip_grad_norm_(
--                self.model.net.parameters(), max_norm=float(self.cfg.grad_clip_norm)
--            )
+-    rows = []
+-    for key, value in flags.items():
+-        if isinstance(value, dict):
++    def _is_sequence(val: object) -> bool:
++        return isinstance(val, _SequenceABC) and not isinstance(val, (str, bytes, bytearray))
 +
-+        grad_norm = self._compute_grad_norm(self.model.net.parameters())
++    def _iter_items(prefix: str, value: object):
++        value = _coerce_scalar(value)
 +
-+        clip_mode = str(getattr(self.cfg, "grad_clip_mode", "norm")).lower()
-+        if clip_mode == "value":
-+            clip_value = getattr(self.cfg, "grad_clip_value", None)
-+            if clip_value is not None:
-+                clip_grad_value_(
-+                    self.model.net.parameters(), float(clip_value)
-+                )
-+        else:
-+            if self.cfg.grad_clip_norm is not None:
-+                grad_norm = float(
-+                    clip_grad_norm_(
-+                        self.model.net.parameters(),
-+                        max_norm=float(self.cfg.grad_clip_norm),
-+                    )
-+                )
++        if isinstance(value, Mapping):
+             for sub_key, sub_val in value.items():
+-                rows.append({"metric": f"{key}.{sub_key}", "value": _to_serializable(sub_val)})
+-        else:
+-            rows.append({"metric": key, "value": _to_serializable(value)})
+-    return pd.DataFrame(rows) if rows else pd.DataFrame({"metric": [], "value": []})
++                next_prefix = f"{prefix}.{sub_key}" if prefix else str(sub_key)
++                yield from _iter_items(next_prefix, sub_val)
++            return
 +
-+        warn_thresh = getattr(self.cfg, "grad_norm_warn", None)
-+        if warn_thresh is not None and grad_norm is not None:
-+            if float(grad_norm) > float(warn_thresh):
-+                logger.warning(
-+                    "Gradient norm %.3f exceeded warning threshold %.3f",
-+                    float(grad_norm),
-+                    float(warn_thresh),
-+                )
-         self.optimizer.step()
-         if self.scheduler is not None:
-             self.scheduler.step()
- 
-         metrics = {
-             "loss": float(loss.item()),
-             "vamp2": float(score.item()),
-             "tau": float(self.current_tau()),
-             "lr": float(self.optimizer.param_groups[0]["lr"]),
-         }
-+        if grad_norm is not None:
-+            metrics["grad_norm"] = float(grad_norm)
-         self._record_metrics(metrics)
-         self._maybe_checkpoint(metrics)
-         self.global_step += 1
- 
-         if self.global_step % max(1, self.cfg.log_every) == 0:
-             logger.info(
-                 "DeepTICA step=%d tau=%s loss=%.6f vamp2=%.6f",
-                 self.global_step,
-                 self.current_tau(),
-                 metrics["loss"],
-                 metrics["vamp2"],
-             )
-         return metrics
- 
-     def evaluate(
-         self,
-         batch: List[Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]],
-     ) -> Dict[str, float]:
-         tensors = self._prepare_batch(batch)
-         if tensors is None:
-             return {"loss": 0.0, "vamp2": 0.0, "tau": float(self.current_tau())}
-         x_t, x_tau, weights = tensors
-         self.model.net.eval()
-         with torch.no_grad():
-             loss, score = self._compute_loss_and_score(x_t, x_tau, weights)
-@@ -269,25 +297,43 @@ class DeepTICATrainer:
-     def _record_metrics(self, metrics: Dict[str, float]) -> None:
-         self.history.append(metrics)
-         hist = self.model.training_history
-         hist.setdefault("steps", []).append(metrics)
- 
-     def _maybe_checkpoint(self, metrics: Dict[str, float]) -> None:
-         score = metrics.get(self.cfg.checkpoint_metric)
-         if score is None or score <= self.best_score:
-             return
-         self.best_score = float(score)
-         if not self.best_checkpoint_path:
-             return
-         ckpt = {
-             "model_state": self.model.net.state_dict(),
-             "optimizer_state": self.optimizer.state_dict(),
-             "step": self.global_step,
-             "tau": self.current_tau(),
-             "score": self.best_score,
-         }
-         torch.save(ckpt, self.best_checkpoint_path)
-         logger.info(
-             "Saved DeepTICA checkpoint to %s (score %.6f)",
-             self.best_checkpoint_path,
-             self.best_score,
-         )
++        if np is not None and hasattr(value, "tolist") and not isinstance(value, (str, bytes, bytearray)):
++            try:
++                value = value.tolist()
++            except Exception:
++                pass
 +
-+    @staticmethod
-+    def _compute_grad_norm(params: Iterable[torch.nn.Parameter]) -> Optional[float]:
-+        total = None
-+        for p in params:
-+            if p.grad is None:
-+                continue
-+            grad = p.grad.detach()
-+            if grad.is_sparse:
-+                grad = grad.coalesce().values()
-+            norm_sq = torch.sum(grad.to(torch.float64) ** 2)
-+            if total is None:
-+                total = norm_sq
-+            else:
-+                total = total + norm_sq
-+        if total is None:
-+            return None
-+        return float(torch.sqrt(total).cpu().item())
++        if _is_sequence(value):
++            seq = list(value)
++            if not seq:
++                yield (prefix, "[]")
++                return
++            for idx, item in enumerate(seq, start=1):
++                suffix = f"[{idx}]"
++                next_prefix = f"{prefix}{suffix}" if prefix else suffix
++                yield from _iter_items(next_prefix, item)
++            return
++
++        yield (prefix, value)
++
++    def _format_value(val: object) -> tuple[str, str]:
++        val = _coerce_scalar(val)
++        if val is None:
++            return "", "NoneType"
++        if isinstance(val, bool):
++            return ("True" if val else "False"), "bool"
++        if isinstance(val, (int, float)):
++            return f"{val}", type(val).__name__
++        if isinstance(val, bytes):
++            try:
++                decoded = val.decode("utf-8")
++            except Exception:
++                decoded = val.decode("utf-8", errors="replace")
++            return decoded, "bytes"
++        return str(val), type(val).__name__
++
++    rows: List[Dict[str, object]] = []
++    for key, raw_value in flags.items():
++        for metric_key, metric_value in _iter_items(key, raw_value):
++            display, dtype_name = _format_value(metric_value)
++            rows.append({
++                "metric": metric_key,
++                "value": display,
++                "value_type": dtype_name,
++            })
++
++    if not rows:
++        return pd.DataFrame({"metric": [], "value": [], "value_type": []})
++
++    df = pd.DataFrame(rows)
++    df["value"] = pd.Series(df["value"], dtype="string")
++    df["value_type"] = pd.Series(df["value_type"], dtype="string")
++    return df
+ 
+ 
+ def _format_tau_schedule(values: Sequence[int]) -> str:
+     if not values:
+         return ""
+     return ", ".join(str(int(v)) for v in values)
+ 
+ 
+ def _parse_tau_schedule(raw: str) -> List[int]:
+     cleaned = raw.replace(";", ",")
+     values: List[int] = []
+     for token in cleaned.split(","):
+         token = token.strip()
+         if not token:
+             continue
+         try:
+             val = int(token)
+         except ValueError as exc:  # pragma: no cover - defensive parsing
+             raise ValueError(f"Invalid tau value '{token}'") from exc
+         if val <= 0:
+             raise ValueError("Tau values must be positive integers.")
+         values.append(val)
+     if not values:
+         raise ValueError("Provide at least one tau value.")
+     return sorted(set(values))
