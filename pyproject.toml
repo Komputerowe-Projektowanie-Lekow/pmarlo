@@ -83,7 +83,7 @@ where = ["src"]
 # ────────────────────────── Dev-tooling groups ────────────────────────
 [tool.poetry]
 packages = [{include = "pmarlo", from = "src"}]
-# Note: version is dynamic via setuptools_scm; no static version needed
+version = "0.0.0"  # placeholder for Poetry; real version comes from setuptools-scm
 
 [[tool.poetry.source]]
 name = "pytorch-cpu"
