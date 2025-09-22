@@ -21,17 +21,10 @@ while keeping the logic reusable for non-UI automation in the future.
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 import shutil
-from typing import Any, Dict, Iterable, List, Optional, Sequence
-
-from pmarlo.api import (
-    build_from_shards,
-    emit_shards_rg_rmsd_windowed,
-    run_replica_exchange,
-)
-from pmarlo.data.shard import read_shard
-from pmarlo.transform.build import BuildResult, _sanitize_artifacts
+from typing import Any, Dict, Iterable, List, Optional, Sequence, TYPE_CHECKING, cast
 
 try:  # Package-relative when imported as module
     from .state import StateManager
@@ -57,6 +50,59 @@ __all__ = [
     "choose_sim_seed",
     "run_short_sim",
 ]
+
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from pmarlo.transform.build import BuildResult as _BuildResult
+
+
+@lru_cache(maxsize=1)
+def _pmarlo_handles() -> Dict[str, Any]:
+    """Import heavyweight PMARLO helpers on demand."""
+
+    from pmarlo.api import (
+        build_from_shards as _build_from_shards,
+        emit_shards_rg_rmsd_windowed as _emit_shards,
+        run_replica_exchange as _run_replica_exchange,
+    )
+    from pmarlo.data.shard import read_shard as _read_shard
+    from pmarlo.transform.build import (
+        BuildResult as _BuildResultRuntime,
+        _sanitize_artifacts as _sanitize,
+    )
+
+    return {
+        "build_from_shards": _build_from_shards,
+        "emit_shards_rg_rmsd_windowed": _emit_shards,
+        "run_replica_exchange": _run_replica_exchange,
+        "read_shard": _read_shard,
+        "BuildResult": _BuildResultRuntime,
+        "_sanitize_artifacts": _sanitize,
+    }
+
+
+def _build_result_cls() -> "_BuildResult":
+    return cast("_BuildResult", _pmarlo_handles()["BuildResult"])
+
+
+def _sanitize_artifacts(data: Any) -> Any:
+    return _pmarlo_handles()["_sanitize_artifacts"](data)
+
+
+def build_from_shards(*args: Any, **kwargs: Any) -> Any:
+    return _pmarlo_handles()["build_from_shards"](*args, **kwargs)
+
+
+def emit_shards_rg_rmsd_windowed(*args: Any, **kwargs: Any) -> Any:
+    return _pmarlo_handles()["emit_shards_rg_rmsd_windowed"](*args, **kwargs)
+
+
+def run_replica_exchange(*args: Any, **kwargs: Any) -> Any:
+    return _pmarlo_handles()["run_replica_exchange"](*args, **kwargs)
+
+
+def read_shard(*args: Any, **kwargs: Any) -> Any:
+    return _pmarlo_handles()["read_shard"](*args, **kwargs)
 
 
 def _timestamp() -> str:
@@ -806,7 +852,7 @@ class WorkflowBackend:
         return tuple(sorted(set(values)))
 
     @staticmethod
-    def _load_build_result_from_path(path: Path) -> Optional[BuildResult]:
+    def _load_build_result_from_path(path: Path) -> Optional["_BuildResult"]:
         try:
             bundle_path = Path(path)
         except TypeError:
@@ -818,7 +864,7 @@ class WorkflowBackend:
         except Exception:
             return None
         try:
-            return BuildResult.from_json(text)
+            return _build_result_cls().from_json(text)
         except Exception:
             return None
 

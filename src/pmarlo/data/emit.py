@@ -17,9 +17,25 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 import numpy as np
 
-from pmarlo.transform.progress import ProgressCB, ProgressReporter
-
 from .shard import write_shard
+
+ProgressCB = Callable[[str, Mapping[str, Any]], None]
+
+
+class ProgressReporter:
+    """Minimal progress reporter used when the full transform stack is unavailable."""
+
+    def __init__(self, cb: Optional[ProgressCB]) -> None:
+        self._cb = cb
+
+    def emit(self, event: str, data: Mapping[str, Any]) -> None:
+        if self._cb is None:
+            return
+        try:
+            self._cb(event, dict(data))
+        except Exception:
+            pass
+
 
 # Type alias for CV extractor callable
 ExtractCVs = Callable[[Path], Tuple[Dict[str, np.ndarray], np.ndarray | None, Dict]]

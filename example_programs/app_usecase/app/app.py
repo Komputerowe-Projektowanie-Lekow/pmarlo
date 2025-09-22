@@ -49,6 +49,11 @@ except ImportError:  # Fallback for `streamlit run app.py`
     from pmarlo.transform.build import _sanitize_artifacts
 
 
+# Banner shown when Deep-TICA training is gated off by missing extras
+DEEPTICA_SKIP_MESSAGE = (
+    "Deep-TICA CV learning was skipped because optional dependencies are not installed."
+)
+
 # Keys used inside st.session_state
 _LAST_SIM = "__pmarlo_last_simulation"
 _LAST_SHARDS = "__pmarlo_last_shards"
@@ -697,6 +702,11 @@ def main() -> None:
                         summary = result.build_result.artifacts.get("mlcv_deeptica") if result.build_result else None
                         if summary:
                             _render_deeptica_summary(summary)
+                    except RuntimeError as exc:
+                        if "Deep-TICA optional dependencies missing" in str(exc):
+                            st.warning(DEEPTICA_SKIP_MESSAGE)
+                        else:
+                            st.error(f"Training failed: {exc}")
                     except Exception as exc:
                         st.error(f"Training failed: {exc}")
 

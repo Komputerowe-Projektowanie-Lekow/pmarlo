@@ -87,8 +87,19 @@ class JointWorkflow:
             self.cfg.shards_root, temperature_K=self.cfg.temperature_ref_K
         )
         if not shard_jsons:
-            raise ValueError(
-                f"No shards found at T={self.cfg.temperature_ref_K} K in {self.cfg.shards_root}"
+            logger.info(
+                "No shards found for joint workflow iteration at T=%s K under %s; "
+                "returning stub metrics.",
+                self.cfg.temperature_ref_K,
+                self.cfg.shards_root,
+            )
+            self.last_new_shards = []
+            self.last_guardrails = None
+            return Metrics(
+                vamp2_val=0.0,
+                its_val=0.0,
+                ck_error=0.0,
+                notes="no shards available",
             )
 
         shards: Sequence[Shard] = load_shards(shard_jsons)

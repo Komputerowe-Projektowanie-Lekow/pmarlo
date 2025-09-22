@@ -1,12 +1,12 @@
+import importlib
 import json
 import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, TYPE_CHECKING
 
 import numpy as np
 
-from ..pipeline import Pipeline
 from .benchmark_utils import (
     build_baseline_object,
     compute_threshold_comparison,
@@ -32,6 +32,72 @@ from .utils import default_output_root, set_seed, timestamp_dir
 
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:  # pragma: no cover - imported for type checking only
+    from ..transform.pipeline import Pipeline as PipelineType
+else:  # pragma: no cover - runtime fallback when optional deps missing
+    PipelineType = object
+
+
+class _PipelineProxy:
+    """Lazy loader for :class:`pmarlo.transform.pipeline.Pipeline`.
+
+    The real Pipeline pulls in heavy scientific dependencies (OpenMM, scikit-
+    learn, etc.).  Importing it eagerly breaks lightweight environments used by
+    the unit test suite.  This proxy defers the import until the first
+    invocation, mirroring the lazy-loading shims added elsewhere in the
+    refactor.  When the import ultimately fails, we raise a helpful error that
+    points to the optional extra.
+    """
+
+    def __init__(self) -> None:
+        self._pipeline_cls: type[PipelineType] | None = None
+        self._import_error: Exception | None = None
+
+    def _load_pipeline(self) -> type[PipelineType]:
+        if self._pipeline_cls is not None:
+            return self._pipeline_cls
+        if self._import_error is not None:
+            raise self._import_error
+
+        try:
+            module = importlib.import_module("pmarlo.transform.pipeline")
+            pipeline_cls = getattr(module, "Pipeline")
+        except Exception as exc:  # pragma: no cover - optional dependency path
+            self._import_error = exc
+            raise
+
+        self._pipeline_cls = pipeline_cls
+        return pipeline_cls
+
+    def __call__(self, *args, **kwargs):  # noqa: D401 - behave like factory
+        try:
+            pipeline_cls = self._load_pipeline()
+        except Exception as exc:  # pragma: no cover - optional dependency path
+            raise ImportError(
+                "pmarlo Pipeline requires optional dependencies."
+                " Install with `pip install 'pmarlo[full]'` to enable it."
+            ) from exc
+        return pipeline_cls(*args, **kwargs)
+
+    def __getattr__(self, name: str):
+        try:
+            pipeline_cls = self._load_pipeline()
+        except Exception as exc:  # pragma: no cover - optional dependency path
+            raise AttributeError(
+                "Pipeline attribute access requires optional dependencies."
+            ) from exc
+        return getattr(pipeline_cls, name)
+
+
+try:  # Prefer existing compatibility module if available
+    from ..pipeline import Pipeline as _Pipeline  # type: ignore[attr-defined]
+except ModuleNotFoundError:
+    Pipeline = _PipelineProxy()
+except ImportError:
+    Pipeline = _PipelineProxy()
+else:
+    Pipeline = _Pipeline
+
 
 @dataclass
 class SimulationConfig:
@@ -49,7 +115,9 @@ def _create_run_dir(output_root: str) -> Path:
     return timestamp_dir(output_root)
 
 
-def _configure_pipeline(config: SimulationConfig, run_dir: Path) -> Pipeline:
+def _configure_pipeline(
+    config: SimulationConfig, run_dir: Path
+) -> "PipelineType":
     """Instantiate a single-temperature simulation pipeline."""
     return Pipeline(
         pdb_file=config.pdb_file,
