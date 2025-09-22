@@ -12,20 +12,53 @@ recorded into RunMetadata (when available) for end-to-end reproducibility.
 """
 
 from dataclasses import replace
+from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
-from typing import List, Sequence
+from typing import TYPE_CHECKING, Any, Callable, List, Mapping, Optional, Sequence
 
 import numpy as np
 
 from pmarlo.data.shard import read_shard
 from pmarlo.io.shard_id import parse_shard_id
-from pmarlo.transform.build import AppliedOpts, BuildOpts, BuildResult, build_result
 from pmarlo.transform.plan import TransformPlan
-from pmarlo.transform.progress import coerce_progress_callback
 from pmarlo.utils.errors import TemperatureConsistencyError
 
 from .shard_io import load_shard_meta
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from pmarlo.transform.build import AppliedOpts, BuildOpts, BuildResult
+
+
+@lru_cache(maxsize=1)
+def _transform_build_handles():
+    from pmarlo.transform.build import AppliedOpts as _AppliedOpts
+    from pmarlo.transform.build import BuildOpts as _BuildOpts
+    from pmarlo.transform.build import BuildResult as _BuildResult
+    from pmarlo.transform.build import build_result as _build_result
+
+    return _AppliedOpts, _BuildOpts, _BuildResult, _build_result
+
+
+_PROGRESS_ALIAS_KEYS = (
+    "progress_callback",
+    "callback",
+    "on_event",
+    "progress",
+    "reporter",
+)
+
+
+def coerce_progress_callback(kwargs: dict[str, Any]) -> Optional[Callable[[str, Mapping[str, Any]], None]]:
+    cb: Optional[Callable[[str, Mapping[str, Any]], None]] = None
+    for key in _PROGRESS_ALIAS_KEYS:
+        value = kwargs.get(key)
+        if value is not None:
+            cb = value
+            break
+    if cb is not None:
+        kwargs.setdefault("progress_callback", cb)
+    return cb
 
 
 def _unique_shard_uid(meta, p: Path) -> str:
@@ -102,6 +135,28 @@ def load_shards_as_dataset(shard_jsons: Sequence[Path]) -> dict:
             # Fallback: use legacy meta but we cannot relax rules below
             pass
         meta, X, dtraj = read_shard(p)
+        meta_kind = getattr(meta, "kind", None)
+        if meta_kind:
+            kinds.append(str(meta_kind))
+        else:
+            source_info = getattr(meta, "source", {})
+            if isinstance(source_info, dict):
+                raw_path = (
+                    source_info.get("traj")
+                    or source_info.get("path")
+                    or source_info.get("file")
+                    or source_info.get("source_path")
+                    or ""
+                )
+                lower = str(raw_path).lower()
+                if "demux" in lower:
+                    kinds.append("demux")
+                elif lower:
+                    kinds.append("replica")
+        try:
+            temps.append(float(getattr(meta, "temperature")))
+        except Exception:
+            pass
         cv_names_ref, periodic_ref = _validate_or_set_refs(
             meta, cv_names_ref, periodic_ref
         )
@@ -231,12 +286,12 @@ def _dataset_hash(
 def aggregate_and_build(
     shard_jsons: Sequence[Path],
     *,
-    opts: BuildOpts,
+    opts: "BuildOpts",
     plan: TransformPlan,
-    applied: AppliedOpts,
+    applied: "AppliedOpts",
     out_bundle: Path,
     **kwargs,
-) -> tuple[BuildResult, str]:
+) -> tuple["BuildResult", str]:
     """Load shards, aggregate a dataset, build with the transform pipeline, and archive.
 
     Returns (BuildResult, dataset_hash_hex).
@@ -265,6 +320,28 @@ def aggregate_and_build(
         except Exception:
             pass
         meta, X, dtraj = read_shard(p)
+        meta_kind = getattr(meta, "kind", None)
+        if meta_kind:
+            kinds.append(str(meta_kind))
+        else:
+            source_info = getattr(meta, "source", {})
+            if isinstance(source_info, dict):
+                raw_path = (
+                    source_info.get("traj")
+                    or source_info.get("path")
+                    or source_info.get("file")
+                    or source_info.get("source_path")
+                    or ""
+                )
+                lower = str(raw_path).lower()
+                if "demux" in lower:
+                    kinds.append("demux")
+                elif lower:
+                    kinds.append("replica")
+        try:
+            temps.append(float(getattr(meta, "temperature")))
+        except Exception:
+            pass
         cv_names_ref, periodic_ref = _validate_or_set_refs(
             meta, cv_names_ref, periodic_ref
         )
@@ -328,6 +405,8 @@ def aggregate_and_build(
 
     # Optional unified progress callback forwarding (aliases accepted)
     cb = coerce_progress_callback(kwargs)
+    _, _, _, build_result = _transform_build_handles()
+
     res = build_result(
         dataset, opts=opts, plan=plan, applied=applied, progress_callback=cb
     )

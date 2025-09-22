@@ -1,10 +1,12 @@
 import logging
+import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from ..experiments.benchmark_utils import get_environment_info
 from .plan import TransformPlan
 
 logger = logging.getLogger(__name__)
@@ -44,15 +46,138 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
     if "X" not in dataset:
         raise RuntimeError("LEARN_CV expects dataset['X'] containing CV features")
 
+    def _capture_env_payload() -> Dict[str, Any]:
+        """Return environment metadata with defensive fallbacks."""
+
+        try:
+            info = dict(get_environment_info())
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            logger.debug("Failed to capture environment info: %s", exc)
+            info = {}
+        info.setdefault("python_exe", sys.executable)
+        return info
+
+    def _extract_missing_modules(exc: BaseException) -> List[str]:
+        names: set[str] = set()
+        seen: set[int] = set()
+
+        def _recurse(err: BaseException | None) -> None:
+            if err is None:
+                return
+            key = id(err)
+            if key in seen:
+                return
+            seen.add(key)
+            if isinstance(err, ModuleNotFoundError):
+                name = getattr(err, "name", None)
+                if name:
+                    names.add(str(name).split(".")[0])
+            msg = str(err) if err else ""
+            for token in ("lightning", "pytorch_lightning", "torch", "mlcolvar", "sklearn"):
+                if token in msg:
+                    names.add(token)
+            _recurse(getattr(err, "__cause__", None))
+            if not getattr(err, "__suppress_context__", False):
+                _recurse(getattr(err, "__context__", None))
+
+        _recurse(exc)
+        return sorted(names)
+
+    def _format_missing_reason(mods: List[str]) -> str:
+        payload = ",".join(sorted(set(mods))) if mods else "unknown"
+        return f"missing_dependency:{payload}"
+
+    def _compute_pairs_metadata(lag_value: int) -> Tuple[List[Dict[str, Any]], int, List[str]]:
+        per: List[Dict[str, Any]] = []
+        warnings: List[str] = []
+        for idx, entry in enumerate(shards_meta):
+            start = shard_ranges[idx][0]
+            stop = shard_ranges[idx][1]
+            frames = max(0, stop - start)
+            pairs = max(0, frames - lag_value)
+            shard_id = str(entry.get("id", f"shard_{idx:04d}"))
+            per.append(
+                {
+                    "id": shard_id,
+                    "start": int(start),
+                    "stop": int(stop),
+                    "frames": int(frames),
+                    "pairs": int(pairs),
+                }
+            )
+            if pairs <= 0:
+                warnings.append(f"shard_no_pairs:{shard_id}")
+        total_pairs = int(sum(item["pairs"] for item in per))
+        if total_pairs <= 0:
+            warnings.append("pairs_total=0")
+        if total_frames < max(16, lag_value * 2):
+            warnings.append("low_frame_count")
+        return per, total_pairs, warnings
+
+    def _probe_optional_modules(names: Sequence[str]) -> List[str]:
+        import importlib
+
+        discovered: List[str] = []
+        for module_name in names:
+            try:
+                importlib.import_module(module_name)
+            except Exception as exc:
+                extracted = _extract_missing_modules(exc)
+                if extracted:
+                    discovered.extend(extracted)
+                else:
+                    discovered.append(module_name)
+        return sorted({str(name).split(".")[0] for name in discovered})
+
+    def _finalize_summary(
+        summary: Dict[str, Any],
+        *,
+        per_shard: List[Dict[str, Any]],
+        warnings: List[str],
+        pairs_total_value: int,
+    ) -> Dict[str, Any]:
+        summary.setdefault("method", "deeptica")
+        summary["lag"] = int(summary.get("lag", tau_requested))
+        summary.setdefault("lag_used", summary["lag"] if summary.get("applied") else None)
+        summary.setdefault("n_out", 0)
+        summary.setdefault("skipped", not summary.get("applied", False))
+        cleaned_per = [
+            {
+                "id": item.get("id"),
+                "start": int(item.get("start", 0)),
+                "stop": int(item.get("stop", 0)),
+                "frames": int(item.get("frames", 0)),
+                "pairs": int(item.get("pairs", 0)),
+            }
+            for item in per_shard
+        ]
+        summary["per_shard"] = cleaned_per
+        summary["n_shards"] = len(cleaned_per)
+        summary["frames_total"] = total_frames
+        summary.setdefault("pairs_total", int(pairs_total_value))
+        warnings_clean = sorted({str(w) for w in warnings if w})
+        if "warnings" in summary:
+            warnings_clean.extend(str(w) for w in summary["warnings"] if w)
+        summary["warnings"] = sorted({str(w) for w in warnings_clean})
+        if isinstance(summary.get("missing"), list):
+            summary["missing"] = sorted({str(m) for m in summary["missing"] if m})
+        summary["env"] = _capture_env_payload()
+        artifacts = dataset.setdefault("__artifacts__", {})
+        artifacts["mlcv_deeptica"] = summary
+        if uses_data_key:
+            context["data"] = dataset
+        return context
+
     X_all = np.asarray(dataset.get("X"), dtype=np.float64)
     if X_all.ndim != 2 or X_all.shape[0] == 0:
         raise RuntimeError("LEARN_CV requires a non-empty 2D feature matrix")
 
+    total_frames = int(X_all.shape[0])
+
     shards_meta = dataset.get("__shards__")
     if not isinstance(shards_meta, list) or not shards_meta:
-        shards_meta = [{"start": 0, "stop": X_all.shape[0]}]
+        shards_meta = [{"id": "shard_0000", "start": 0, "stop": X_all.shape[0]}]
 
-    # Build per-shard slices
     shard_ranges: List[Tuple[int, int]] = []
     X_list: List[np.ndarray] = []
     for entry in shards_meta:
@@ -71,28 +196,168 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
     if not X_list:
         raise RuntimeError("LEARN_CV requires at least one shard with frames")
 
+    tau_requested = int(max(1, params.get("lag", 5)))
+    per_shard_info, pairs_estimate, warnings = _compute_pairs_metadata(tau_requested)
+
+    missing_modules: List[str] = []
     try:
-        from pmarlo.features.deeptica import DeepTICAConfig, train_deeptica
+        import pmarlo.features.deeptica as deeptica_mod
     except ImportError as exc:
-        raise RuntimeError(
-            "Deep-TICA optional dependencies missing. Install pmarlo[mlcv] to enable LEARN_CV."
-        ) from exc
+        missing_modules = _extract_missing_modules(exc)
+        reason = _format_missing_reason(missing_modules)
+        summary = {
+            "applied": False,
+            "skipped": True,
+            "reason": reason,
+            "lag": tau_requested,
+            "lag_used": None,
+            "n_out": 0,
+            "missing": missing_modules,
+        }
+        warnings_with_missing = warnings + ["missing_dependencies"]
+        return _finalize_summary(
+            summary,
+            per_shard=per_shard_info,
+            warnings=warnings_with_missing,
+            pairs_total_value=pairs_estimate,
+        )
+
+    missing_exc = getattr(deeptica_mod, "_IMPORT_ERROR", None)
+    if missing_exc is not None:
+        missing_modules = _extract_missing_modules(missing_exc)
+        reason = _format_missing_reason(missing_modules)
+        summary = {
+            "applied": False,
+            "skipped": True,
+            "reason": reason,
+            "lag": tau_requested,
+            "lag_used": None,
+            "n_out": 0,
+            "missing": missing_modules,
+        }
+        warnings_with_missing = warnings + ["missing_dependencies"]
+        return _finalize_summary(
+            summary,
+            per_shard=per_shard_info,
+            warnings=warnings_with_missing,
+            pairs_total_value=pairs_estimate,
+        )
+
+    probe_missing = _probe_optional_modules(["lightning", "pytorch_lightning"])
+    if probe_missing:
+        reason = _format_missing_reason(probe_missing)
+        summary = {
+            "applied": False,
+            "skipped": True,
+            "reason": reason,
+            "lag": tau_requested,
+            "lag_used": None,
+            "n_out": 0,
+            "missing": probe_missing,
+        }
+        warnings_with_missing = warnings + ["missing_dependencies"]
+        return _finalize_summary(
+            summary,
+            per_shard=per_shard_info,
+            warnings=warnings_with_missing,
+            pairs_total_value=pairs_estimate,
+        )
+
+    DeepTICAConfig = deeptica_mod.DeepTICAConfig
+    train_deeptica = getattr(deeptica_mod, "train_deeptica")
 
     cfg_fields = getattr(DeepTICAConfig, "__annotations__", {}).keys()
-    cfg_kwargs = {k: params[k] for k in params if k in cfg_fields}
+    cfg_kwargs_base = {k: params[k] for k in params if k in cfg_fields and k != "lag"}
+    if int(cfg_kwargs_base.get("n_out", params.get("n_out", 2))) < 2:
+        cfg_kwargs_base["n_out"] = 2
 
-    lag_param = int(params.get("lag", cfg_kwargs.get("lag", 5)))
-    cfg_kwargs["lag"] = int(max(1, lag_param))
-    if int(cfg_kwargs.get("n_out", 2)) < 2:
-        cfg_kwargs["n_out"] = 2
+    candidate_sequence: List[int] = []
+    primary_lag = params.get("lag", cfg_kwargs_base.get("lag", tau_requested))
+    try:
+        candidate_sequence.append(int(primary_lag))
+    except Exception:
+        candidate_sequence.append(tau_requested)
+    fallback_raw = params.get("lag_fallback")
+    if isinstance(fallback_raw, (list, tuple)):
+        for value in fallback_raw:
+            try:
+                candidate_sequence.append(int(value))
+            except Exception:
+                continue
+    elif fallback_raw is not None:
+        try:
+            candidate_sequence.append(int(fallback_raw))
+        except Exception:
+            pass
+    if not candidate_sequence:
+        candidate_sequence = [tau_requested]
 
-    cfg = DeepTICAConfig(**cfg_kwargs)
-    tau = int(max(1, cfg.lag))
+    seen_lags: List[int] = []
+    attempt_details: List[Dict[str, Any]] = []
+    cfg = None
+    tau = tau_requested
+    per_shard_info = []
+    pairs_estimate = 0
+    warnings = []
+    for candidate in candidate_sequence:
+        lag_value = int(max(1, candidate))
+        if lag_value in seen_lags:
+            continue
+        seen_lags.append(lag_value)
+        attempt_kwargs = dict(cfg_kwargs_base)
+        attempt_kwargs["lag"] = lag_value
+        cfg_attempt = DeepTICAConfig(**attempt_kwargs)
+        tau_attempt = int(max(1, getattr(cfg_attempt, "lag", lag_value)))
+        per_shard_attempt, pairs_attempt, warnings_attempt = _compute_pairs_metadata(
+            tau_attempt
+        )
+        attempt_details.append(
+            {
+                "lag": int(lag_value),
+                "pairs_total": int(pairs_attempt),
+                "status": "ok" if pairs_attempt > 0 else "no_pairs",
+                "per_shard_pairs": [int(item["pairs"]) for item in per_shard_attempt],
+                "warnings": [str(w) for w in warnings_attempt],
+            }
+        )
+        cfg = cfg_attempt
+        tau = tau_attempt
+        per_shard_info = per_shard_attempt
+        pairs_estimate = pairs_attempt
+        warnings = warnings_attempt
+        if pairs_estimate > 0:
+            break
+
+    if cfg is None:
+        raise RuntimeError("Failed to instantiate DeepTICA configuration")
+
+    if pairs_estimate <= 0:
+        summary = {
+            "applied": False,
+            "skipped": True,
+            "reason": "no_pairs",
+            "lag": int(cfg.lag),
+            "lag_used": None,
+            "n_out": 0,
+            "lag_candidates": [int(v) for v in seen_lags],
+            "lag_fallback": [int(v) for v in seen_lags],
+            "attempts": attempt_details,
+        }
+        warnings_with_reason = warnings + ["no_pairs"]
+        return _finalize_summary(
+            summary,
+            per_shard=per_shard_info,
+            warnings=warnings_with_reason,
+            pairs_total_value=pairs_estimate,
+        )
+
+    if seen_lags and int(cfg.lag) != int(seen_lags[0]):
+        warnings.append(f"lag_fallback_used:{int(cfg.lag)}")
 
     # Construct contiguous pairs per shard respecting the selected lag
     i_parts: List[np.ndarray] = []
     j_parts: List[np.ndarray] = []
-    for start, stop in shard_ranges:
+    for (start, stop) in shard_ranges:
         length = stop - start
         if length <= tau:
             continue
@@ -103,17 +368,94 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
         j_parts.append(idx + tau)
 
     if not i_parts:
-        raise RuntimeError(
-            f"LEARN_CV could not build lagged pairs for lag={cfg.lag}; check shard lengths."
+        summary = {
+            "applied": False,
+            "skipped": True,
+            "reason": "no_pairs",
+            "lag": int(cfg.lag),
+            "lag_used": None,
+            "n_out": 0,
+        }
+        warnings_with_reason = warnings + ["no_pairs"]
+        return _finalize_summary(
+            summary,
+            per_shard=per_shard_info,
+            warnings=warnings_with_reason,
+            pairs_total_value=pairs_estimate,
         )
 
     idx_t = np.concatenate(i_parts)
     idx_tau = np.concatenate(j_parts)
 
+    model_dir = params.get("model_dir")
     try:
-        model = train_deeptica(X_list, (idx_t, idx_tau), cfg, weights=None)
-    except Exception as exc:
-        raise RuntimeError(f"Deep-TICA training failed: {exc}") from exc
+        from . import build as build_mod  # Local import to avoid circular dependency
+
+        load_model = getattr(build_mod, "_load_or_train_model", None)
+    except Exception:
+        load_model = None
+
+    if load_model is None:
+
+        def load_model(
+            X_seq: Sequence[np.ndarray],
+            lagged_pairs: Tuple[np.ndarray, np.ndarray],
+            cfg_obj: Any,
+            *,
+            weights: Optional[np.ndarray] = None,
+            train_fn: Optional[Any] = None,
+            **_: Any,
+        ) -> Any:
+            fn = train_fn or train_deeptica
+            return fn(X_seq, lagged_pairs, cfg_obj, weights=weights)
+
+    def _classify_training_failure(exc: BaseException) -> Tuple[str, Dict[str, Any]]:
+        import traceback as _traceback
+
+        payload: Dict[str, Any] = {
+            "error": str(exc),
+            "traceback": _traceback.format_exc(),
+        }
+        missing = _extract_missing_modules(exc)
+        if missing:
+            payload["missing"] = missing
+            return _format_missing_reason(missing), payload
+        name = exc.__class__.__name__
+        if "PmarloApiIncompatibilityError" in name:
+            return "api_incompatibility", payload
+        return "exception", payload
+
+    try:
+        model = load_model(
+            X_list,
+            (idx_t, idx_tau),
+            cfg,
+            weights=None,
+            model_dir=model_dir,
+            model_prefix=params.get("model_prefix"),
+            train_fn=train_deeptica,
+        )
+    except Exception as exc:  # pragma: no cover - exercised via tests
+        reason, extra = _classify_training_failure(exc)
+        summary = {
+            "applied": False,
+            "skipped": True,
+            "reason": reason,
+            "lag": int(cfg.lag),
+            "lag_used": None,
+            "n_out": 0,
+        }
+        missing_extra = extra.pop("missing", None)
+        if missing_extra:
+            summary["missing"] = missing_extra
+        summary.update(extra)
+        warnings_with_error = warnings + [reason]
+        return _finalize_summary(
+            summary,
+            per_shard=per_shard_info,
+            warnings=warnings_with_error,
+            pairs_total_value=pairs_estimate,
+        )
 
     try:
         Y = model.transform(X_all).astype(np.float64, copy=False)
@@ -129,12 +471,10 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
     if n_out < 2:
         raise RuntimeError("Deep-TICA produced fewer than two components; expected >=2")
 
-    # Replace feature matrix and metadata
     dataset["X"] = Y
     dataset["cv_names"] = tuple(f"DeepTICA_{i+1}" for i in range(n_out))
     dataset["periodic"] = tuple(False for _ in range(n_out))
 
-    # Summarise results for downstream consumers
     history = dict(getattr(model, "training_history", {}) or {})
     setattr(model, "training_history", history)
     output_mean = history.get("output_mean") if isinstance(history, dict) else None
@@ -144,14 +484,22 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
     history_flag = bool(history.get("output_transform_applied")) if isinstance(
         history, dict
     ) else False
-    export_transform_applied = bool(output_mean is not None and output_transform is not None)
+    export_transform_applied = bool(
+        output_mean is not None and output_transform is not None
+    )
     transform_applied_flag = history_flag or export_transform_applied
     summary = {
         "applied": True,
+        "skipped": False,
+        "reason": "ok",
         "method": "deeptica",
         "lag": int(cfg.lag),
+        "lag_used": int(cfg.lag),
         "n_out": n_out,
         "pairs_total": int(idx_t.shape[0]),
+        "lag_candidates": [int(v) for v in seen_lags],
+        "lag_fallback": [int(v) for v in seen_lags],
+        "attempts": attempt_details,
         "wall_time_s": float(history.get("wall_time_s", 0.0)),
         "initial_objective": (
             float(history.get("initial_objective"))
@@ -226,7 +574,6 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
         except Exception:
             pass
 
-    # Include full curves if available (will be sanitized during JSON serialization)
     if isinstance(history.get("loss_curve"), list) and history.get("loss_curve"):
         summary["loss_curve"] = history["loss_curve"]
     if isinstance(history.get("objective_curve"), list) and history.get(
@@ -256,7 +603,6 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
     if isinstance(history.get("val_score"), list) and history.get("val_score"):
         summary["val_score"] = history["val_score"]
 
-    model_dir = params.get("model_dir")
     saved_prefix = None
     saved_files: List[str] = []
     if model_dir:
@@ -287,14 +633,14 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
         summary["model_prefix"] = saved_prefix
     if saved_files:
         summary["model_files"] = saved_files
+        summary["files"] = list(saved_files)
 
-    artifacts = dataset.setdefault("__artifacts__", {})
-    artifacts["mlcv_deeptica"] = summary
-
-    if uses_data_key:
-        context["data"] = dataset
-
-    return context
+    return _finalize_summary(
+        summary,
+        per_shard=per_shard_info,
+        warnings=warnings,
+        pairs_total_value=int(idx_t.shape[0]),
+    )
 
 
 # Pipeline stage adapters

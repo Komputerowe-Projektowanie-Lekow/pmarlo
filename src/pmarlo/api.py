@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
@@ -24,30 +26,110 @@ from .markov_state_model._msm_utils import (
     lump_micro_to_macro_T as _lump_micro_to_macro_T,
 )
 from .markov_state_model._msm_utils import pcca_like_macrostates as _pcca_like
-from .markov_state_model.ck_runner import run_ck as _run_ck
-from .markov_state_model.clustering import cluster_microstates as _cluster_microstates
-from .markov_state_model.enhanced_msm import EnhancedMSM as MarkovStateModel
-from .markov_state_model.free_energy import FESResult
-from .markov_state_model.free_energy import generate_2d_fes as _generate_2d_fes
-from .markov_state_model.picker import (
-    pick_frames_around_minima as _pick_frames_around_minima,
-)
-from .markov_state_model.reduction import pca_reduce, tica_reduce, vamp_reduce
-from .replica_exchange.config import RemdConfig
-from .replica_exchange.replica_exchange import ReplicaExchange
-from .reporting.export import write_conformations_csv_json
-from .reporting.plots import (
-    save_fes_contour,
-    save_pmf_line,
-    save_transition_matrix_heatmap,
-)
-from .transform.build import AppliedOpts as _AppliedOpts
-from .transform.build import BuildOpts as _BuildOpts
-from .transform.plan import TransformPlan as _TransformPlan
-from .transform.plan import TransformStep as _TransformStep
-from .transform.progress import coerce_progress_callback
-from .workflow.joint import JointWorkflow
-from .workflow.joint import WorkflowConfig as JointWorkflowConfig
+try:  # pragma: no cover - optional plotting dependency
+    from .markov_state_model.ck_runner import run_ck as _run_ck
+except Exception:  # pragma: no cover - executed without matplotlib
+    _run_ck = None
+
+try:  # pragma: no cover - optional sklearn dependency
+    from .markov_state_model.clustering import cluster_microstates as _cluster_microstates
+except Exception:  # pragma: no cover - executed without sklearn
+    def _cluster_microstates(*_args: object, **_kwargs: object):  # type: ignore
+        raise ImportError(
+            "cluster_microstates requires scikit-learn. Install with `pip install 'pmarlo[analysis]'`."
+        )
+
+try:  # pragma: no cover - optional ML stack
+    from .markov_state_model.enhanced_msm import EnhancedMSM as MarkovStateModel
+except Exception:  # pragma: no cover - executed without sklearn/torch
+    class MarkovStateModel:  # type: ignore[override]
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            raise ImportError(
+                "EnhancedMSM requires optional dependencies. Install with `pip install 'pmarlo[analysis]'`."
+            )
+
+try:  # pragma: no cover - optional plotting dependency
+    from .markov_state_model.free_energy import FESResult
+    from .markov_state_model.free_energy import generate_2d_fes as _generate_2d_fes
+except Exception:  # pragma: no cover - executed without analysis extras
+    FESResult = Any  # type: ignore
+
+    def _generate_2d_fes(*_args: object, **_kwargs: object) -> Any:  # type: ignore
+        raise ImportError(
+            "generate_2d_fes requires optional analysis dependencies."
+        )
+
+try:  # pragma: no cover - optional matplotlib dependency
+    from .markov_state_model.picker import (
+        pick_frames_around_minima as _pick_frames_around_minima,
+    )
+except Exception:  # pragma: no cover - executed without plotting
+    def _pick_frames_around_minima(*_args: object, **_kwargs: object) -> list[str]:
+        raise ImportError(
+            "pick_frames_around_minima requires optional plotting dependencies."
+        )
+
+try:  # pragma: no cover - optional sklearn dependency
+    from .markov_state_model.reduction import pca_reduce, tica_reduce, vamp_reduce
+except Exception:  # pragma: no cover - executed without sklearn
+    def _missing_reduction(*_args: object, **_kwargs: object) -> np.ndarray:
+        raise ImportError(
+            "Dimensionality reduction requires scikit-learn. Install with `pip install 'pmarlo[analysis]'`."
+        )
+
+    pca_reduce = tica_reduce = vamp_reduce = _missing_reduction  # type: ignore
+
+try:  # pragma: no cover - optional OpenMM dependency
+    from .replica_exchange.config import RemdConfig
+    from .replica_exchange.replica_exchange import ReplicaExchange
+except Exception:  # pragma: no cover - executed without OpenMM stack
+    RemdConfig = Any  # type: ignore
+
+    class ReplicaExchange:  # type: ignore[override]
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            raise ImportError(
+                "ReplicaExchange requires OpenMM and optional extras."
+            )
+
+try:  # pragma: no cover - optional pandas/matplotlib dependency
+    from .reporting.export import write_conformations_csv_json
+except Exception:  # pragma: no cover - executed without reporting extras
+    def write_conformations_csv_json(*_args: object, **_kwargs: object) -> None:
+        raise ImportError(
+            "Reporting export helpers require optional dependencies."
+        )
+
+try:  # pragma: no cover - optional matplotlib dependency
+    from .reporting.plots import (
+        save_fes_contour,
+        save_pmf_line,
+        save_transition_matrix_heatmap,
+    )
+except Exception:  # pragma: no cover - executed without plotting
+    def save_fes_contour(*_args: object, **_kwargs: object) -> None:
+        raise ImportError("Plotting helpers require matplotlib.")
+
+    save_pmf_line = save_transition_matrix_heatmap = save_fes_contour  # type: ignore
+try:  # pragma: no cover - optional workflow dependency chain
+    from .transform.build import AppliedOpts as _AppliedOpts
+    from .transform.build import BuildOpts as _BuildOpts
+    from .transform.plan import TransformPlan as _TransformPlan
+    from .transform.plan import TransformStep as _TransformStep
+    from .transform.progress import coerce_progress_callback
+    from .workflow.joint import JointWorkflow
+    from .workflow.joint import WorkflowConfig as JointWorkflowConfig
+except Exception:  # pragma: no cover - executed without transform extras
+    _AppliedOpts = _BuildOpts = _TransformPlan = _TransformStep = None  # type: ignore
+
+    def coerce_progress_callback(*_args: object, **_kwargs: object):  # type: ignore
+        raise ImportError("Transform workflow requires optional dependencies.")
+
+    class JointWorkflow:  # type: ignore[override]
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            raise ImportError("Joint workflow requires optional dependencies.")
+
+    class JointWorkflowConfig:  # type: ignore[override]
+        pass
 
 logger = logging.getLogger("pmarlo")
 
@@ -1751,54 +1833,142 @@ def demultiplex_run(
         stacklevel=2,
     )
 
-    # For backward compatibility, try to use the streaming demux
+    from pathlib import Path
+
+    from .io.trajectory_reader import MDTrajReader
+    from .io.trajectory_writer import MDTrajDCDWriter
+    from .replica_exchange.demux_compat import (
+        parse_exchange_log,
+        parse_temperature_ladder,
+    )
+
+    out_dir_path = Path(out_dir)
+    out_dir_path.mkdir(parents=True, exist_ok=True)
+    topo_path = Path(topology_path)
+    replica_paths = [Path(p) for p in replica_traj_paths]
+
     try:
-        from pathlib import Path
-
-        from .demultiplexing.demux_engine import demux_streaming
-        from .demultiplexing.demux_plan import build_demux_plan
-        from .io.trajectory_reader import get_reader
-        from .io.trajectory_writer import get_writer
-        from .replica_exchange.demux_compat import (
-            parse_exchange_log,
-            parse_temperature_ladder,
-        )
-
-        # Parse inputs
         temperatures = parse_temperature_ladder(ladder_K)
+    except Exception as exc:  # pragma: no cover - defensive
+        raise ValueError("Failed to parse temperature ladder") from exc
+
+    if len(temperatures) != len(replica_paths):
+        raise ValueError(
+            "Temperature ladder length does not match number of replica trajectories"
+        )
+
+    try:
         exchange_records = parse_exchange_log(str(exchange_log_path))
+    except FileNotFoundError as exc:
+        raise ValueError(f"Exchange log not found: {exchange_log_path}") from exc
+    except ValueError:
+        raise
+    except Exception as exc:  # pragma: no cover - defensive
+        raise ValueError("Failed to parse exchange log") from exc
 
-        # Build demux plan
-        plan = build_demux_plan(
-            trajectory_paths=[str(p) for p in replica_traj_paths],
-            temperatures=temperatures,
-            exchange_records=exchange_records,
-            target_temperature=temperatures[0],  # Default to first temperature
-            equilibration_steps=0,  # Could be made configurable
-        )
-
-        # Set up reader/writer
-        reader = get_reader("mdtraj")
-        writer = get_writer("mdtraj")
-
-        # Create output path
-        out_path = Path(out_dir) / f"demux_{run_id}_T{temperatures[0]:.0f}K.{fmt}"
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Execute demux
-        result = demux_streaming(
-            plan=plan,
-            topology_path=str(topology_path),
-            reader=reader,
-            writer=writer,
-            chunk_size=chunk_size,
-        )
-
-        return [str(out_path)] if result.total_frames_written > 0 else []
-
-    except Exception:
-        # Fallback: return empty list if anything fails
+    if not exchange_records:
         return []
+
+    exchange_records = sorted(exchange_records, key=lambda rec: rec.step_index)
+    n_temps = len(temperatures)
+    if any(len(rec.temp_to_replica) != n_temps for rec in exchange_records):
+        raise ValueError("Exchange log column count does not match temperature ladder")
+
+    reader = MDTrajReader(topology_path=str(topo_path))
+    replica_frames: list[list[np.ndarray]] = []
+    for path in replica_paths:
+        count = reader.probe_length(str(path))
+        frames = list(reader.iter_frames(str(path), start=0, stop=count, stride=1))
+        replica_frames.append(frames)
+    writers: list[MDTrajDCDWriter] = []
+    dcd_paths: list[Path] = []
+    for temp in temperatures:
+        demux_path = out_dir_path / f"demux_T{float(temp):.0f}K.{fmt}"
+        writer = MDTrajDCDWriter()
+        writer.open(str(demux_path), topology_path=str(topo_path), overwrite=True)
+        writers.append(writer)
+        dcd_paths.append(demux_path)
+
+    segments_per_temp: list[list[Dict[str, Any]]] = [list() for _ in range(n_temps)]
+    dst_positions = [0] * n_temps
+    segments_consumed = [0] * len(replica_paths)
+
+    try:
+        for seg_index, record in enumerate(exchange_records):
+            mapping = list(record.temp_to_replica)
+            if sorted(mapping) != list(range(len(replica_paths))):
+                raise ValueError("Exchange log rows must be permutations")
+
+            frame_index = seg_index // max(1, len(replica_paths))
+            for temp_index, rep_idx in enumerate(mapping):
+                if rep_idx < 0 or rep_idx >= len(replica_paths):
+                    raise ValueError(
+                        f"Replica index {rep_idx} out of range for segment {seg_index}"
+                    )
+
+                frames_for_replica = replica_frames[rep_idx]
+                if frame_index >= len(frames_for_replica):
+                    raise ValueError(
+                        f"Replica {rep_idx} exhausted after {frame_index} frames"
+                    )
+
+                segments_consumed[rep_idx] += 1
+                if segments_consumed[rep_idx] > len(frames_for_replica):
+                    raise ValueError(
+                        f"Replica {rep_idx} consumed more segments than available frames"
+                    )
+
+                frame = frames_for_replica[frame_index]
+                frame_array = frame[np.newaxis, :, :]
+                writers[temp_index].write_frames(frame_array)
+
+                src_start = frame_index
+                src_stop = src_start + 1
+                dst_start = dst_positions[temp_index]
+                dst_stop = dst_start + 1
+
+                segments_per_temp[temp_index].append(
+                    {
+                        "segment_index": int(seg_index),
+                        "slice_index": int(record.step_index),
+                        "source_replica": int(rep_idx),
+                        "src_frame_start": int(src_start),
+                        "src_frame_stop": int(src_stop),
+                        "dst_frame_start": int(dst_start),
+                        "dst_frame_stop": int(dst_stop),
+                    }
+                )
+
+                dst_positions[temp_index] = dst_stop
+    finally:
+        for writer in writers:
+            try:
+                writer.close()
+            except Exception:  # pragma: no cover - defensive
+                pass
+
+    json_paths: list[str] = []
+    run_id_str = str(run_id)
+    dt_ps_value = float(dt_ps)
+    for temp_index, temp in enumerate(temperatures):
+        dcd_path = dcd_paths[temp_index]
+        digest = hashlib.sha256(dcd_path.read_bytes()).hexdigest()
+        metadata = {
+            "schema_version": "2.0",
+            "kind": "demux",
+            "run_id": run_id_str,
+            "temperature_K": float(temp),
+            "n_frames": int(dst_positions[temp_index]),
+            "dt_ps": dt_ps_value,
+            "trajectory": dcd_path.name,
+            "segments": segments_per_temp[temp_index],
+            "integrity": {"traj_sha256": digest},
+        }
+        json_path = dcd_path.with_suffix(".json")
+        json_path.write_text(json.dumps(metadata, sort_keys=True))
+        json_paths.append(str(json_path))
+
+    return json_paths
 
 
 def extract_last_frame_to_pdb(

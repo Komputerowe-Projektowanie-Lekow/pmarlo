@@ -1,12 +1,15 @@
+"""Replica exchange experiment runner with optional lightweight fallback."""
+
+from __future__ import annotations
+
+import importlib.util
 import json
 import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from types import SimpleNamespace
+from typing import Dict, List, Optional, TYPE_CHECKING
 
-# CheckpointManager moved to transform system
-from ..replica_exchange.config import RemdConfig
-from ..replica_exchange.replica_exchange import ReplicaExchange, setup_bias_variables
 from .benchmark_utils import (
     build_remd_baseline_object,
     compute_threshold_comparison,
@@ -26,6 +29,57 @@ from .utils import default_output_root, set_seed, timestamp_dir
 
 logger = logging.getLogger(__name__)
 
+_HAS_SKLEARN = importlib.util.find_spec("sklearn") is not None
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from ..replica_exchange.config import RemdConfig
+
+if _HAS_SKLEARN:  # pragma: no cover - depends on optional ML stack
+    from ..replica_exchange.config import RemdConfig as _RemdConfig
+    from ..replica_exchange.replica_exchange import (
+        ReplicaExchange as _ReplicaExchange,
+        setup_bias_variables as _setup_bias_variables,
+    )
+else:  # pragma: no cover - executed in minimal environments
+    @dataclass
+    class _RemdConfig:
+        pdb_file: str
+        temperatures: Optional[List[float]]
+        output_dir: str
+        exchange_frequency: int
+        dcd_stride: int
+        auto_setup: bool
+        random_seed: int | None
+
+    class _ReplicaExchange:  # type: ignore[override]
+        def __init__(self, *args: object, **kwargs: object) -> None:  # noqa: D401
+            raise ImportError(
+                "ReplicaExchange requires optional dependencies (install pmarlo[full])"
+            )
+
+        @classmethod
+        def from_config(cls, *_args: object, **_kwargs: object) -> "_ReplicaExchange":
+            return cls()
+
+        def setup_replicas(self, **_: object) -> None:
+            raise ImportError(
+                "ReplicaExchange requires optional dependencies (install pmarlo[full])"
+            )
+
+        def run_simulation(self, **_: object) -> None:
+            raise ImportError(
+                "ReplicaExchange requires optional dependencies (install pmarlo[full])"
+            )
+
+        def get_exchange_statistics(self) -> Dict[str, object]:
+            return {}
+
+    def _setup_bias_variables(*_args: object, **_kwargs: object):
+        return None
+
+ReplicaExchange = _ReplicaExchange
+setup_bias_variables = _setup_bias_variables
+
 
 @dataclass
 class ReplicaExchangeConfig:
@@ -43,19 +97,12 @@ class ReplicaExchangeConfig:
 
 
 def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
-    """
-    Runs Stage 2: REMD with multi-temperature replicas from a prepared PDB.
-    Returns a dict with exchange statistics and artifact paths.
-    """
+    """Run the REMD benchmark experiment and collect KPI metrics."""
+
     set_seed(config.seed)
     run_dir = timestamp_dir(config.output_dir)
+    cm = SimpleNamespace(setup_run_directory=lambda: None)
 
-    # Minimal checkpointing confined to this experiment run dir
-    # cm = CheckpointManager(output_base_dir=str(run_dir), auto_continue=False)  # Now handled by Pipeline
-    cm.setup_run_directory()
-
-    # Build temperatures if not provided:
-    # prefer more replicas and better spacing for acceptance rates
     temps: Optional[List[float]]
     if config.temperatures is None:
         try:
@@ -65,7 +112,6 @@ def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
                 config.tmin, config.tmax, config.nreplicas
             )
         except Exception:
-            # Fallback to simple exponential spacing
             import numpy as _np
 
             temps = list(
@@ -78,20 +124,19 @@ def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
     else:
         temps = config.temperatures
 
+    remd_config = _RemdConfig(
+        pdb_file=config.pdb_file,
+        temperatures=temps,
+        output_dir=str(run_dir / "remd"),
+        exchange_frequency=config.exchange_frequency,
+        dcd_stride=2000,
+        auto_setup=False,
+        random_seed=config.seed,
+    )
+
     if hasattr(ReplicaExchange, "from_config"):
-        remd = ReplicaExchange.from_config(
-            RemdConfig(
-                pdb_file=config.pdb_file,
-                temperatures=temps,
-                output_dir=str(run_dir / "remd"),
-                exchange_frequency=config.exchange_frequency,
-                dcd_stride=2000,
-                auto_setup=False,
-                random_seed=config.seed,
-            )
-        )
+        remd = ReplicaExchange.from_config(remd_config)
     else:
-        # Backward-compatibility for tests that patch ReplicaExchange with a dummy
         remd = ReplicaExchange(
             pdb_file=config.pdb_file,
             temperatures=temps,
@@ -104,7 +149,7 @@ def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
     bias_vars = (
         setup_bias_variables(config.pdb_file) if config.use_metadynamics else None
     )
-    # Plan stride before reporters are created
+
     if hasattr(remd, "plan_reporter_stride"):
         remd.plan_reporter_stride(
             total_steps=config.total_steps,
@@ -113,7 +158,6 @@ def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
         )
     remd.setup_replicas(bias_variables=bias_vars)
 
-    # Run with KPI tracking
     with RuntimeMemoryTracker() as tracker:
         remd.run_simulation(
             total_steps=config.total_steps,
@@ -123,21 +167,21 @@ def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
 
     stats = remd.get_exchange_statistics()
 
-    # Persist config and stats
-    with open(run_dir / "config.json", "w") as f:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "remd").mkdir(exist_ok=True)
+
+    with open(run_dir / "config.json", "w", encoding="utf-8") as f:
         json.dump(asdict(config), f, indent=2)
-    with open(run_dir / "stats.json", "w") as f:
+    with open(run_dir / "stats.json", "w", encoding="utf-8") as f:
         json.dump(stats, f, indent=2)
 
-    # Write standardized input description
     input_desc = {
         "parameters": asdict(config),
         "description": "Replica exchange experiment input",
     }
-    with open(run_dir / "input.json", "w") as f:
+    with open(run_dir / "input.json", "w", encoding="utf-8") as f:
         json.dump(input_desc, f, indent=2)
 
-    # KPI benchmark JSON
     kpis = default_kpi_metrics(
         conformational_coverage=None,
         transition_matrix_accuracy=None,
@@ -145,12 +189,12 @@ def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
         runtime_seconds=tracker.runtime_seconds,
         memory_mb=tracker.max_rss_mb,
     )
-    # Enrich input with environment and REMD specifics
+
     enriched_input = {
         **asdict(config),
         **get_environment_info(),
-        "seconds_per_step": (
-            compute_wall_clock_per_step(tracker.runtime_seconds, config.total_steps)
+        "seconds_per_step": compute_wall_clock_per_step(
+            tracker.runtime_seconds, config.total_steps
         ),
         "num_exchange_attempts": (
             stats.get("total_exchange_attempts") if isinstance(stats, dict) else None
@@ -158,12 +202,7 @@ def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
         "overall_acceptance_rate": (
             stats.get("overall_acceptance_rate") if isinstance(stats, dict) else None
         ),
-        # Not applicable in REMD benchmark
-        "frames_per_second": None,
-        "spectral_gap": None,
-        "row_stochasticity_mad": None,
         "seed": config.seed,
-        "num_frames": None,
     }
 
     record = build_benchmark_record(
@@ -176,7 +215,6 @@ def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
     )
     write_benchmark_json(run_dir, record)
 
-    # Baseline and trend at REMD root
     root_dir = Path(config.output_dir)
     baseline_object = build_remd_baseline_object(
         input_parameters=enriched_input,
@@ -185,7 +223,6 @@ def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
     initialize_baseline_if_missing(root_dir, baseline_object)
     update_trend(root_dir, baseline_object)
 
-    # Comparison against previous trend entry
     try:
         trend_path = root_dir / "trend.json"
         if trend_path.exists():
@@ -200,7 +237,7 @@ def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
     except Exception:
         pass
 
-    logger.info(f"Replica exchange experiment complete: {run_dir}")
+    logger.info("Replica exchange experiment complete: %s", run_dir)
     return {
         "run_dir": str(run_dir),
         "stats": stats,

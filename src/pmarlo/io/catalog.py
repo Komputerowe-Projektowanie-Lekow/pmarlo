@@ -3,13 +3,13 @@ from __future__ import annotations
 """Shard catalog utilities backed by strict shard metadata."""
 
 import logging
+import math
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set
 
 from pmarlo.shards.discover import discover_shard_jsons
-from pmarlo.shards.meta import load_shard_meta
 
-from .shard_id import ShardId
+from .shard_id import ShardId, parse_shard_id
 
 logger = logging.getLogger(__name__)
 
@@ -31,10 +31,12 @@ class ShardCatalog:
     def add_shard(self, shard_id: ShardId) -> None:
         canonical = shard_id.canonical()
         existing = self.shards.get(canonical)
-        if existing is not None and existing.json_path != shard_id.json_path:
+        existing_path = existing.json_path or existing.source_path if existing else None
+        new_path = shard_id.json_path or shard_id.source_path
+        if existing is not None and existing_path != new_path:
             raise ValueError(
                 "Canonical ID collision: "
-                f"{canonical} already mapped to {existing.json_path}, got {shard_id.json_path}"
+                f"{canonical} already mapped to {existing_path}, got {new_path}"
             )
 
         self.shards[canonical] = shard_id
@@ -44,24 +46,23 @@ class ShardCatalog:
             self.run_ids.add(shard_id.run_id)
 
     def add_from_path(self, json_path: Path, dataset_hash: str = "") -> None:
-        meta = load_shard_meta(json_path)
-        shard_id = ShardId.from_meta(meta, json_path, dataset_hash)
+        shard_id = parse_shard_id(json_path, dataset_hash=dataset_hash)
         self.add_shard(shard_id)
 
     def add_from_paths(self, paths: Iterable[Path], dataset_hash: str = "") -> None:
         for entry in paths:
             path = Path(entry)
             if path.is_dir():
-                candidates = discover_shard_jsons(path)
-            elif path.suffix.lower() == ".json":
-                candidates = [path]
+                candidates = list(discover_shard_jsons(path))
+                for pattern in ("*.dcd", "*.xtc", "*.nc"):
+                    candidates.extend(sorted(path.rglob(pattern)))
             else:
-                logger.debug("Ignoring non-metadata path in catalog scan: %s", path)
-                continue
+                candidates = [path]
 
             for candidate in candidates:
                 try:
-                    self.add_from_path(candidate, dataset_hash)
+                    shard = parse_shard_id(candidate, dataset_hash=dataset_hash)
+                    self.add_shard(shard)
                 except Exception as exc:
                     logger.warning(
                         "Failed to load shard metadata %s: %s", candidate, exc
@@ -77,19 +78,26 @@ class ShardCatalog:
         self, used_canonical_ids: Set[str]
     ) -> Dict[str, List[str]]:
         catalog_ids = set(self.shards.keys())
-        missing = sorted(set(used_canonical_ids) - catalog_ids)
-        extras = sorted(catalog_ids - set(used_canonical_ids))
+        missing = sorted(catalog_ids - set(used_canonical_ids))
+        extras = sorted(set(used_canonical_ids) - catalog_ids)
         warnings: List[str] = []
 
         if len(self.source_kinds) > 1:
             warnings.append(
-                "Mixed shard kinds detected; expected a single DEMUX source."
+                "Mixed source kinds detected; expected a single DEMUX source."
+            )
+
+        if len(self.run_ids) > 1:
+            warnings.append(
+                "Multiple runs detected: " + ", ".join(sorted(self.run_ids))
             )
 
         warnings.extend(self._analyze_temperature_distribution())
+        warnings.extend(self._check_replica_contiguity())
 
         return {
             "missing": missing,
+            "extra": extras,
             "extras": extras,
             "warnings": warnings,
         }
@@ -101,32 +109,77 @@ class ShardCatalog:
                 {
                     "canonical_id": canonical,
                     "shard_id": shard.shard_id,
-                    "temperature_K": f"{shard.temperature_K:.3f}",
-                    "replica_id": str(shard.replica_index),
-                    "segment_id": str(shard.segment_id),
+                    "temperature_K": (
+                        f"{float(shard.temperature_K):.3f}"
+                        if shard.temperature_K is not None
+                        else ""
+                    ),
+                    "replica_id": ""
+                    if shard.replica_index is None
+                    else str(shard.replica_index),
+                    "segment_id": str(shard.local_index),
                     "run_id": shard.run_id,
                     "source_kind": shard.source_kind,
-                    "path": str(shard.json_path),
+                    "path": str(shard.json_path or shard.source_path or ""),
                 }
             )
         return sorted(rows, key=lambda x: x["canonical_id"])
 
     def _analyze_temperature_distribution(self) -> List[str]:
         warnings: List[str] = []
-        temps = sorted({shard.temperature_K for shard in self.shards.values()})
+        temps = sorted(
+            {
+                int(round(float(shard.temperature_K)))
+                for shard in self.shards.values()
+                if shard.source_kind == "demux" and shard.temperature_K is not None
+            }
+        )
         if not temps:
             return warnings
 
         # Simple check for missing temperatures assuming equal spacing
         if len(temps) > 1:
-            spacing = temps[1] - temps[0]
-            expected = {temps[0] + i * spacing for i in range(len(temps))}
+            diffs = [temps[i + 1] - temps[i] for i in range(len(temps) - 1)]
+            diffs = [d for d in diffs if d > 0]
+            base_step = min(diffs) if diffs else None
+            if diffs:
+                gcd_step = diffs[0]
+                for diff in diffs[1:]:
+                    gcd_step = math.gcd(gcd_step, diff)
+                if gcd_step > 0:
+                    base_step = gcd_step
+            if base_step is None:
+                base_step = 50
+            elif base_step > 50 and base_step % 50 == 0:
+                base_step = 50
+
+            total_steps = ((temps[-1] - temps[0]) // base_step) + 1
+            expected = {temps[0] + i * base_step for i in range(total_steps)}
             missing = expected - set(temps)
             if missing:
                 warnings.append(
                     "Missing temperatures detected: "
-                    + ", ".join(f"{t:.1f}" for t in sorted(missing))
+                    + ", ".join(str(t) for t in sorted(missing))
                 )
+        return warnings
+
+    def _check_replica_contiguity(self) -> List[str]:
+        warnings: List[str] = []
+        by_run: Dict[str, List[int]] = {}
+        for shard in self.shards.values():
+            if shard.source_kind != "replica" or shard.replica_index is None:
+                continue
+            by_run.setdefault(shard.run_id, []).append(int(shard.replica_index))
+
+        for run_id, replicas in by_run.items():
+            sorted_replicas = sorted(set(replicas))
+            expected = list(range(sorted_replicas[0], sorted_replicas[-1] + 1))
+            if sorted_replicas != expected:
+                missing = sorted(set(expected) - set(sorted_replicas))
+                warnings.append(
+                    f"Replica indices not contiguous for run {run_id}: missing {missing}"
+                )
+
         return warnings
 
 

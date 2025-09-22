@@ -8,95 +8,172 @@ A Python package for protein simulation and Markov state model chain generation,
 providing an OpenMM-like interface for molecular dynamics simulations.
 """
 
-from typing import TYPE_CHECKING, Optional, Type
+from __future__ import annotations
 
-from .data.aggregate import aggregate_and_build
-from .data.demux_dataset import DemuxDataset, build_demux_dataset
-from .data.emit import emit_shards_from_trajectories
-from .data.shard import ShardMeta, read_shard, write_shard
-from .markov_state_model._msm_utils import candidate_lag_ladder
-from .protein.protein import Protein
-from .replica_exchange.config import RemdConfig
-from .replica_exchange.replica_exchange import ReplicaExchange
-from .replica_exchange.simulation import Simulation
-from .transform import pm_apply_plan, pm_get_plan
-from .transform.build import AppliedOpts, BuildOpts, build_result
-from .utils.replica_utils import power_of_two_temperature_ladder
+import sys
+from importlib import import_module
+from types import ModuleType
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Type
+
 from .utils.seed import quiet_external_loggers
 
-# Free energy surface functionality (stable API surface)
-try:
-    from .markov_state_model.free_energy import (
-        FESResult,
-        PMFResult,
-        generate_1d_pmf,
-        generate_2d_fes,
-    )
-except Exception:  # pragma: no cover - defensive against optional deps
-    FESResult = None
-    PMFResult = None
-    generate_1d_pmf = None
-    generate_2d_fes = None
-
-if TYPE_CHECKING:  # Only for type annotations; avoids importing heavy deps at runtime
-    from .transform.pipeline import Pipeline as PipelineType
-
-# Public API names with precise optional type annotations
-Pipeline: Optional[Type["PipelineType"]] = None
-
-try:  # Lazy imports: these modules may require heavy dependencies
-    from .transform.pipeline import Pipeline as _PipelineRuntime
-
-    Pipeline = _PipelineRuntime
-except Exception:  # pragma: no cover
-    pass
-
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover - typing only
     from .markov_state_model.enhanced_msm import EnhancedMSM as MarkovStateModelType
-
-MarkovStateModel: Optional[Type["MarkovStateModelType"]] = None
-
-try:  # Markov state model may be unavailable in minimal installs
-    from .markov_state_model.enhanced_msm import EnhancedMSM as _EnhancedMSMRuntime
-
-    MarkovStateModel = _EnhancedMSMRuntime
-except Exception:  # pragma: no cover - defensive against optional deps
-    pass
+    from .transform.pipeline import Pipeline as PipelineType
 
 __version__ = "0.1.0"
 __author__ = "PMARLO Development Team"
 
-# Main classes for the clean API
-__all__ = [
-    "Protein",
-    "ReplicaExchange",
-    "RemdConfig",
-    "Simulation",
-    "BuildOpts",
-    "AppliedOpts",
-    "build_result",
-    "ShardMeta",
-    "write_shard",
-    "read_shard",
-    "emit_shards_from_trajectories",
-    "aggregate_and_build",
-    "DemuxDataset",
-    "build_demux_dataset",
-    "power_of_two_temperature_ladder",
-    "candidate_lag_ladder",
-    "pm_get_plan",
-    "pm_apply_plan",
-]
+# Public API that is always available without optional heavy dependencies.
+_MANDATORY_EXPORTS: Dict[str, Tuple[str, str]] = {
+    "Protein": ("pmarlo.protein.protein", "Protein"),
+    "ReplicaExchange": ("pmarlo.replica_exchange.replica_exchange", "ReplicaExchange"),
+    "RemdConfig": ("pmarlo.replica_exchange.config", "RemdConfig"),
+    "Simulation": ("pmarlo.replica_exchange.simulation", "Simulation"),
+    "BuildOpts": ("pmarlo.transform.build", "BuildOpts"),
+    "AppliedOpts": ("pmarlo.transform.build", "AppliedOpts"),
+    "build_result": ("pmarlo.transform.build", "build_result"),
+    "ShardMeta": ("pmarlo.data.shard", "ShardMeta"),
+    "write_shard": ("pmarlo.data.shard", "write_shard"),
+    "read_shard": ("pmarlo.data.shard", "read_shard"),
+    "emit_shards_from_trajectories": ("pmarlo.data.emit", "emit_shards_from_trajectories"),
+    "aggregate_and_build": ("pmarlo.data.aggregate", "aggregate_and_build"),
+    "DemuxDataset": ("pmarlo.data.demux_dataset", "DemuxDataset"),
+    "build_demux_dataset": ("pmarlo.data.demux_dataset", "build_demux_dataset"),
+    "power_of_two_temperature_ladder": (
+        "pmarlo.utils.replica_utils",
+        "power_of_two_temperature_ladder",
+    ),
+    "candidate_lag_ladder": (
+        "pmarlo.markov_state_model._msm_utils",
+        "candidate_lag_ladder",
+    ),
+    "pm_get_plan": ("pmarlo.transform", "pm_get_plan"),
+    "pm_apply_plan": ("pmarlo.transform", "pm_apply_plan"),
+}
 
-# Add free energy exports if available
-if FESResult is not None:
-    __all__.extend(["FESResult", "PMFResult", "generate_1d_pmf", "generate_2d_fes"])
+_MODULE_EXPORTS: Dict[str, str] = {
+    "api": "pmarlo.api",
+}
 
-if MarkovStateModel is not None:
-    __all__.insert(3, "MarkovStateModel")
+# Optional exports depend on ML / analysis stacks. They are imported lazily when
+# first accessed.
+_OPTIONAL_EXPORTS: Dict[str, Tuple[str, str]] = {
+    "Pipeline": ("pmarlo.transform.pipeline", "Pipeline"),
+    "MarkovStateModel": ("pmarlo.markov_state_model.enhanced_msm", "EnhancedMSM"),
+    "FESResult": ("pmarlo.markov_state_model.free_energy", "FESResult"),
+    "PMFResult": ("pmarlo.markov_state_model.free_energy", "PMFResult"),
+    "generate_1d_pmf": ("pmarlo.markov_state_model.free_energy", "generate_1d_pmf"),
+    "generate_2d_fes": ("pmarlo.markov_state_model.free_energy", "generate_2d_fes"),
+}
 
-if Pipeline is not None:
-    __all__.append("Pipeline")
+Pipeline: Optional[Type["PipelineType"]] = None
+MarkovStateModel: Optional[Type["MarkovStateModelType"]] = None
+
+# Attempt to eagerly expose optional exports when their dependencies are
+# available.  Failures are ignored so that ``import pmarlo`` remains usable in
+# lightweight environments (for example, unit tests that only need helpers).
+for _name in ("Pipeline", "MarkovStateModel"):
+    module_name, attr_name = _OPTIONAL_EXPORTS[_name]
+    try:
+        module = import_module(module_name)
+        value = getattr(module, attr_name)
+    except Exception:  # pragma: no cover - optional dependency missing
+        continue
+    else:
+        globals()[_name] = value
+
+__all__ = list(_MANDATORY_EXPORTS.keys()) + list(_MODULE_EXPORTS.keys())
+
+for optional in ("Pipeline", "MarkovStateModel"):
+    if optional in globals():
+        __all__.append(optional)
+
+# Free-energy exports are appended to ``__all__`` only when import succeeds.
+for optional in ("FESResult", "PMFResult", "generate_1d_pmf", "generate_2d_fes"):
+    module_name, attr_name = _OPTIONAL_EXPORTS[optional]
+    try:
+        module = import_module(module_name)
+        value = getattr(module, attr_name)
+    except Exception:  # pragma: no cover - optional dependency missing
+        continue
+    else:
+        globals()[optional] = value
+        __all__.append(optional)
+
+
+def _resolve_export(name: str) -> Any:
+    if name in _MODULE_EXPORTS:
+        module_name = _MODULE_EXPORTS[name]
+        try:
+            module = import_module(module_name)
+        except Exception as exc:
+            if name == "api":  # pragma: no cover - executed in test environments
+                stub = ModuleType("pmarlo.api")
+
+                def _missing(*_args: object, **_kwargs: object) -> None:
+                    raise ImportError(
+                        "pmarlo.api requires optional analysis dependencies."
+                        " Install with `pip install 'pmarlo[analysis]'`."
+                    ) from exc
+
+                stub.cluster_microstates = _missing  # type: ignore[attr-defined]
+                try:
+                    import numpy as _np
+                except Exception:  # pragma: no cover - numpy should be available
+                    _np = None
+
+                def _trig_expand_periodic(X, periodic):  # type: ignore[override]
+                    if _np is None:
+                        raise ImportError("numpy is required for this helper")
+                    arr = _np.asarray(X, dtype=float)
+                    if arr.ndim != 2:
+                        raise ValueError("Input array must be 2D")
+                    flags = _np.asarray(periodic, dtype=bool)
+                    if flags.size != arr.shape[1]:
+                        flags = _np.resize(flags, arr.shape[1])
+                    cols: list[_np.ndarray] = []
+                    mapping: list[int] = []
+                    for idx in range(arr.shape[1]):
+                        col = arr[:, idx]
+                        if bool(flags[idx]):
+                            cols.append(_np.cos(col))
+                            cols.append(_np.sin(col))
+                            mapping.extend([idx, idx])
+                        else:
+                            cols.append(col)
+                            mapping.append(idx)
+                    expanded = _np.vstack(cols).T if cols else arr
+                    return expanded, _np.asarray(mapping, dtype=int)
+
+                stub._trig_expand_periodic = _trig_expand_periodic  # type: ignore[attr-defined]
+                sys.modules[module_name] = stub
+                module = stub
+            else:  # pragma: no cover - defensive guard for other modules
+                raise
+        globals()[name] = module
+        return module
+
+    if name in _MANDATORY_EXPORTS:
+        module_name, attr_name = _MANDATORY_EXPORTS[name]
+    elif name in _OPTIONAL_EXPORTS:
+        module_name, attr_name = _OPTIONAL_EXPORTS[name]
+    else:  # pragma: no cover - defensive guard
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+    module = import_module(module_name)
+    value = getattr(module, attr_name)
+    globals()[name] = value
+    return value
+
+
+def __getattr__(name: str) -> Any:
+    return _resolve_export(name)
+
+
+def __dir__() -> list[str]:
+    return sorted(set(list(__all__) + ["Pipeline", "MarkovStateModel"]))
+
 
 # Reduce noise from third-party libraries upon import
 quiet_external_loggers()

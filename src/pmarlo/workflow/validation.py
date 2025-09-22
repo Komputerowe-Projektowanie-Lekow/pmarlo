@@ -200,14 +200,19 @@ def validate_fes_quality(
             if empty_bins > 0:
                 empty_ratio = empty_bins / fes_array.size
                 validation_results["metrics"]["empty_bins_ratio"] = empty_ratio
-                if empty_ratio > 0.5:
+
+                if empty_ratio >= 0.5:
                     validation_results["warnings"].append(
                         f"High fraction of empty FES bins ({empty_ratio:.1%}) - "
                         "consider increasing sampling or adjusting bin ranges"
                     )
-                elif empty_ratio > 0.1:
+                elif empty_ratio >= 0.1:
+                    validation_results["warnings"].append(
+                        f"empty FES bins detected ({empty_ratio:.1%}) - check sampling quality"
+                    )
+                else:
                     validation_results["messages"].append(
-                        f"Moderate empty bin ratio: {empty_ratio:.1%}"
+                        f"Low empty FES bin ratio detected ({empty_ratio:.1%})"
                     )
 
         # Check data range

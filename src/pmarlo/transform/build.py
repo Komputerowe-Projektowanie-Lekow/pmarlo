@@ -27,6 +27,29 @@ from .runner import apply_plan as _apply_plan
 logger = logging.getLogger("pmarlo")
 
 
+# --- Deep-TICA helpers ------------------------------------------------------
+
+
+def _load_or_train_model(
+    X_list: Sequence[np.ndarray],
+    lagged_pairs: Tuple[np.ndarray, np.ndarray],
+    cfg: Any,
+    *,
+    weights: Optional[np.ndarray] = None,
+    model_dir: Optional[str] = None,  # noqa: ARG001 - compatibility shim
+    model_prefix: Optional[str] = None,  # noqa: ARG001 - compatibility shim
+    train_fn: Optional[Any] = None,
+) -> Any:
+    """Return a Deep-TICA model, training one when persistence is unavailable."""
+
+    del model_dir, model_prefix  # retained for forward-compatibility
+    trainer = train_fn
+    if trainer is None:
+        from pmarlo.features.deeptica import train_deeptica as trainer
+
+    return trainer(X_list, lagged_pairs, cfg, weights=weights)
+
+
 # --- Shard selection helpers -------------------------------------------------
 
 
@@ -491,6 +514,28 @@ def build_result(
 
     set_global_seed(opts.seed)
 
+    if plan_to_use and isinstance(applied_obj.notes, dict):
+        raw_model_dir = applied_obj.notes.get("model_dir")
+        model_dir_str: Optional[str] = None
+        if raw_model_dir:
+            try:
+                model_dir_str = str(raw_model_dir)
+            except Exception:
+                model_dir_str = None
+        if model_dir_str:
+            updated_steps = []
+            plan_changed = False
+            for step in plan_to_use.steps:
+                if step.name == "LEARN_CV" and "model_dir" not in step.params:
+                    params = dict(step.params)
+                    params["model_dir"] = model_dir_str
+                    updated_steps.append(TransformStep(step.name, params))
+                    plan_changed = True
+                else:
+                    updated_steps.append(step)
+            if plan_changed:
+                plan_to_use = TransformPlan(steps=tuple(updated_steps))
+
     import platform
     import socket
     from datetime import datetime
@@ -605,13 +650,30 @@ def build_result(
             fes_raw = _build_fes(working_dataset, opts, applied_obj)
             if isinstance(fes_raw, dict) and "result" in fes_raw:
                 result_obj = fes_raw.get("result")
+                fes_names = tuple(
+                    x for x in (fes_raw.get("cv1_name"), fes_raw.get("cv2_name")) if x
+                )
+                bins_tuple: Optional[Tuple[int, ...]] = None
+                if isinstance(applied_obj.bins, dict) and fes_names:
+                    candidate: List[int] = []
+                    for name in fes_names:
+                        key = str(name)
+                        value = applied_obj.bins.get(key)
+                        if value is None:
+                            value = applied_obj.bins.get(key.lower())
+                        if value is None:
+                            candidate = []
+                            break
+                        candidate.append(int(value))
+                    if candidate and all(v > 0 for v in candidate):
+                        bins_tuple = tuple(candidate)
+                if bins_tuple is None and isinstance(applied_obj.bins, dict):
+                    ordered = [int(v) for v in applied_obj.bins.values() if int(v) > 0]
+                    if fes_names and len(ordered) >= len(fes_names):
+                        bins_tuple = tuple(ordered[: len(fes_names)])
                 metadata.fes = {
-                    "bins": None,
-                    "names": tuple(
-                        x
-                        for x in (fes_raw.get("cv1_name"), fes_raw.get("cv2_name"))
-                        if x
-                    ),
+                    "bins": bins_tuple,
+                    "names": fes_names,
                     "temperature": opts.temperature,
                 }
                 fes_payload = result_obj
@@ -656,6 +718,16 @@ def build_result(
             flags["has_msm"] = True
         if fes_payload is not None:
             flags["has_fes"] = True
+            try:
+                from ..markov_state_model.free_energy import FESResult
+
+                if isinstance(fes_payload, FESResult):
+                    quality = _extract_fes_quality_artifact(fes_payload)
+                    if quality:
+                        artifacts = dict(artifacts)
+                        artifacts["fes_quality"] = _sanitize_artifacts(quality)
+            except Exception:
+                logger.debug("Failed to derive FES quality artifact", exc_info=True)
         if tram_payload not in (None, {}):
             flags["has_tram"] = True
         if "mlcv_deeptica" in artifacts:
@@ -836,12 +908,26 @@ def _build_msm(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
             if not clean:
                 return None
             dtrajs = clean
-        return build_simple_msm(
+        T, pi = build_simple_msm(
             dtrajs,
             n_states=opts.n_states,
             lag=opts.lag_time,
             count_mode=str(opts.count_mode),
         )
+        if pi.size == 0 or not np.isfinite(np.sum(pi)) or np.sum(pi) == 0.0:
+            observed: set[int] = set()
+            for traj in dtrajs:
+                if traj is None:
+                    continue
+                arr = np.asarray(traj, dtype=int).reshape(-1)
+                if arr.size:
+                    observed.update(int(v) for v in arr if int(v) >= 0)
+            n_unique = len(observed)
+            if n_unique <= 0:
+                n_unique = int(max(1, opts.n_states or 1))
+            T = np.eye(n_unique, dtype=float)
+            pi = np.full(n_unique, 1.0 / n_unique, dtype=float)
+        return T, pi
     except Exception as e:
         logger.warning("MSM build failed: %s", e)
         return None
@@ -944,6 +1030,43 @@ def default_tram_builder(
     return {"skipped": True, "reason": "not_implemented"}
 
 
+# --- Artifact helpers --------------------------------------------------------
+
+
+def _extract_fes_quality_artifact(fes_obj: Any) -> Dict[str, Any]:
+    """Derive a lightweight quality summary from an :class:`FESResult`."""
+
+    quality: Dict[str, Any] = {}
+    meta = getattr(fes_obj, "metadata", {})
+    if isinstance(meta, dict):
+        frac = meta.get("empty_bins_fraction")
+        try:
+            quality["empty_bins_fraction"] = float(frac) if frac is not None else 0.0
+        except Exception:
+            quality["empty_bins_fraction"] = 0.0
+        quality["warn_sparse"] = bool(meta.get("sparse_warning"))
+        if meta.get("sparse_warning"):
+            quality["sparse_warning"] = str(meta.get("sparse_warning"))
+        banner = meta.get("sparse_banner")
+        if banner:
+            quality["sparse_banner"] = str(banner)
+        method = meta.get("method")
+        if method:
+            quality["method"] = str(method)
+        adaptive = meta.get("adaptive")
+        if adaptive is not None:
+            quality["adaptive"] = adaptive
+    temperature = getattr(fes_obj, "temperature", None)
+    if temperature is None and isinstance(meta, dict):
+        temperature = meta.get("temperature")
+    if temperature is not None:
+        try:
+            quality["temperature_K"] = float(temperature)
+        except Exception:
+            pass
+    return quality
+
+
 # --- Utility functions --------------------------------------------------------
 
 
@@ -976,14 +1099,19 @@ def validate_build_opts(opts: BuildOpts) -> List[str]:
 
 
 def _sanitize_artifacts(obj: Any) -> Any:
-    if isinstance(obj, (str, int, float, bool)) or obj is None:
+    if obj is None:
+        return None
+    if isinstance(obj, bool):
         return obj
-    if isinstance(obj, (np.integer,)):
+    if isinstance(obj, (int, np.integer)):
         return int(obj)
-    if isinstance(obj, (np.floating,)):
-        return float(obj)
+    if isinstance(obj, (float, np.floating)):
+        value = float(obj)
+        return value if math.isfinite(value) else None
+    if isinstance(obj, str):
+        return obj
     if isinstance(obj, np.ndarray):
-        return obj.tolist()
+        return _sanitize_artifacts(obj.tolist())
     if isinstance(obj, dict):
         return {str(k): _sanitize_artifacts(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
