@@ -63,6 +63,8 @@ Issues = "https://github.com/Komputerowe-Projektowanie-Lekow/pmarlo/issues"
 
 [project.scripts]
 pmarlo = "pmarlo.main:main"
+pmarlo-check-extras = "pmarlo.devtools.check_extras_parity:main"
+pmarlo-lines-report = "pmarlo.devtools.lines_report:main"
 
 # ─────────────────────────── setuptools-scm ───────────────────────────
 [tool.setuptools_scm]
@@ -181,7 +183,7 @@ ignore_errors = true
 
 # ────────────────────────── Pytest defaults ───────────────────────────
 [tool.pytest.ini_options]
-testpaths = ["tests/unit"]
+testpaths = ["tests/unit", "tests/devtools"]
 addopts = "-q -ra --strict-markers --maxfail=1"
 norecursedirs = ["_assets", "_output", "_checkpoints", ".benchmarks", ".pytest_cache"]
 markers = [

@@ -1,3 +1,37 @@
+
+<a id='changelog-0.0.69'></a>
+# 0.0.69 — 2025-09-22
+
+REMD: wire end-to-end seeding; app auto-seed per shard; record in provenance.
+
+- API `run_replica_exchange` accepts `random_seed`/`random_state` and forwards to `RemdConfig`.
+- App: Simulation Seed mode (fixed | auto | none). Auto generates a unique 32â€‘bit seed per run and logs it.
+- Run directories now include the seed (e.g., `run-YYYYMMDD-HHMMSS-seed123`).
+- Shard provenance `source` includes `sim_seed` and `seed_mode`.
+- Added unit/integration tests for seed propagation and determinism.
+
+Also:
+- Add robust resume/chaining: optional checkpoint/PDB restarts, jittered restarts, and safer checkpoint frequency.
+- Add diversified starting conditions in the app: Initial PDB, Last frame of run, Random highâ€‘T frame; optional velocity reseed.
+- Replica-exchange diagnostics (ladder suggestion, acceptance, diffusion); UI controls for exchange frequency; diagnostics panel with sparkline.
+- REMD: honor explicit temperature vectors; validate increasing >0; persist ladder in provenance.json and temps.txt; record schedule mode.
+- App: temperature schedule selector (auto-linear, auto-geometric, custom) with Apply toggle; ladder preview and validation; applied to run config.
+- Utility: stable geometric ladder generator with tests.
+
+## Added
+
+- created possibility with batch algorithm testing with kubernetes docker desktop kubeadm administrator kernel
+- done k8s for the kubernetes with local server
+
+- Optional solvation step that adds an explicit water box when none is present.
+
+## Changed
+
+- made another file for the kubernetes suite with experiment possibility
+- changed docker file
+- moved md files to the separated directory
+
+- Water molecules are now preserved during protein preparation by default.
 <a id='changelog-0.0.36'></a>
 # 0.0.36 — 2025-08-30
 
