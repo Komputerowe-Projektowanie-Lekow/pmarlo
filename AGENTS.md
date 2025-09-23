@@ -11,3 +11,4 @@
 10. Remember that for the tests I run "{path}\pmarlo>poetry run pytest" in the CMD.
 11. For the tox I run "{path}}\pmarlo>poetry run tox" in the CMD.
 12. Everytime when you make a change and you finish doing what you have done i want you to do the 
+- After you do any change use the changelog.d directory to use the scriv tool that enables to create continous changelog development. I don't want you to create the scriv nor collect them. I do all of that, but when there is a note in the changelog.d that is not AGENTS.md, append the updates, features, removals, deprecations and stuff like that. 

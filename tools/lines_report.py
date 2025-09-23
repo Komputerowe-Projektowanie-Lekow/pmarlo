@@ -262,7 +262,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Entry point used by the ``pmarlo-lines-report`` console script."""
+    """Entry point for command-line usage of the lines report tool."""
 
     args = _parse_args(argv)
     suffixes: Sequence[str] | None

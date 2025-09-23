@@ -110,7 +110,7 @@ if _RealPDBFixer is None:
     HAS_NATIVE_PDBFIXER = False
     USING_PDBFIXER_STUB = True
 else:
-    PDBFixer = _RealPDBFixer
+    PDBFixer: type[Any] = _RealPDBFixer
     HAS_PDBFIXER = True
     HAS_NATIVE_PDBFIXER = True
     USING_PDBFIXER_STUB = False
@@ -219,7 +219,7 @@ class Protein:
         # invalid paths error early.
         if not auto_prepare and not os.path.isfile(self.pdb_file):
             raise ValueError(f"Invalid PDB path: {self.pdb_file}")
-        self.fixer = None
+        self.fixer: Any = None
         self.prepared = False
         if auto_prepare:
             raise ImportError(

@@ -3,7 +3,7 @@ import json
 import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, Optional, TYPE_CHECKING
+from typing import Dict, Optional, TYPE_CHECKING, cast
 
 import numpy as np
 
@@ -32,9 +32,9 @@ from .utils import default_output_root, set_seed, timestamp_dir
 
 logger = logging.getLogger(__name__)
 
-if TYPE_CHECKING:  # pragma: no cover - imported for type checking only
-    from ..transform.pipeline import Pipeline as PipelineType
-else:  # pragma: no cover - runtime fallback when optional deps missing
+if TYPE_CHECKING:
+    from pmarlo.transform.pipeline import Pipeline as PipelineType
+else:
     PipelineType = object
 
 
@@ -61,7 +61,7 @@ class _PipelineProxy:
 
         try:
             module = importlib.import_module("pmarlo.transform.pipeline")
-            pipeline_cls = getattr(module, "Pipeline")
+            pipeline_cls = cast(type[PipelineType], getattr(module, "Pipeline"))
         except Exception as exc:  # pragma: no cover - optional dependency path
             self._import_error = exc
             raise
@@ -77,7 +77,8 @@ class _PipelineProxy:
                 "pmarlo Pipeline requires optional dependencies."
                 " Install with `pip install 'pmarlo[full]'` to enable it."
             ) from exc
-        return pipeline_cls(*args, **kwargs)
+        return cast(PipelineType, pipeline_cls(*args, **kwargs))
+
 
     def __getattr__(self, name: str):
         try:
@@ -134,7 +135,7 @@ def _configure_pipeline(
     )
 
 
-def _setup_protein_with_fallback(pipeline: Pipeline, pdb_path: str) -> None:
+def _setup_protein_with_fallback(pipeline: "PipelineType", pdb_path: str) -> None:
     """
     Attempt protein preparation; if an ImportError occurs (e.g., missing
     PDBFixer), fall back to using the provided PDB directly.
@@ -155,7 +156,7 @@ def _setup_protein_with_fallback(pipeline: Pipeline, pdb_path: str) -> None:
 
 
 def _run_simulation_and_extract_states(
-    pipeline: Pipeline,
+    pipeline: "PipelineType",
 ) -> tuple[list[int], str, float, float]:
     """
     Prepare the system, run production, and extract discrete states while

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pmarlo.devtools.check_extras_parity import check_extras_parity
+from tools.check_extras_parity import check_extras_parity
 
 
 def write_pyproject(tmp_path: Path, content: str) -> Path:

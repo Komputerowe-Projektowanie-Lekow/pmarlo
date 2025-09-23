@@ -1,3 +1,6 @@
+## Development
+Try to avoid the complexity at all cost. It's currently overbloated and in a need of the refactor after it starts working correctly. So after any changes look at the LoC changes and think if those changes are really needed and couldn't be created more compacted.
+
 1. ## General developer notes
 2. 
 3. Install Poetry & run `poetry install --with dev`.
@@ -6,10 +9,11 @@
 
 
 ## Developer utilities
-We ship a couple of helper commands via the ``pmarlo.devtools`` package.
+Helper scripts now live in the top-level ``tools`` package and are executed
+directly with Python. They are not part of the distributed ``pmarlo`` package.
 
-* ``poetry run pmarlo-check-extras`` verifies that the optional dependency
+* ``python -m tools.check_extras_parity`` verifies that the optional dependency
   groups declared in ``[project.optional-dependencies]`` stay in sync with
   ``[tool.poetry.extras]``.
-* ``poetry run pmarlo-lines-report`` generates the language statistics report
-  that previously lived in ``utilities/lines.py``.
+* ``python -m tools.lines_report`` generates the language statistics report
+  based on ``pygount`` statistics.

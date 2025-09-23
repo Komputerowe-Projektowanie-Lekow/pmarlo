@@ -9,7 +9,7 @@ system preparation.
 """
 
 from collections import defaultdict
-from typing import Optional
+from typing import Any, Optional
 
 import mdtraj as md
 import numpy as np
@@ -80,12 +80,12 @@ class Simulation:
         self.platform = None
 
         # Trajectory storage
-        self.trajectory_data = []
-        self.energies = defaultdict(list)
+        self.trajectory_data: list[Any] = []
+        self.energies: dict[str, list[Any]] = defaultdict(list)
 
         # Metadynamics setup
         self.metadynamics = None
-        self.bias_variables = []
+        self.bias_variables: list[Any] = []
         self.bias_hook: Optional[BiasHook] = None
 
     def prepare_system(self, forcefield_files=None, water_model="tip3p"):

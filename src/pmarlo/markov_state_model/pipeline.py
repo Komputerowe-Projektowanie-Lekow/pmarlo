@@ -1,8 +1,58 @@
 from __future__ import annotations
 
-from typing import List, Literal, Optional, Union
+from typing import List, Literal, Optional, Protocol, Union
 
 from .enhanced_msm import EnhancedMSM
+
+
+class SupportsMSMPipeline(Protocol):
+    def load_trajectories(
+        self,
+        *,
+        stride: int,
+        atom_selection: str | List[int] | None,
+        chunk_size: int,
+    ) -> None:
+        ...
+
+    def compute_features(self, *, feature_type: str) -> None:  # noqa: D401
+        ...
+
+    def cluster_features(self, *, n_states: int | Literal["auto"]) -> None:
+        ...
+
+    def build_msm(self, *, lag_time: int, method: str) -> None:
+        ...
+
+    def compute_implied_timescales(self) -> None:
+        ...
+
+    def generate_free_energy_surface(self, *, cv1_name: str, cv2_name: str) -> None:
+        ...
+
+    def create_state_table(self) -> None:
+        ...
+
+    def extract_representative_structures(self) -> None:
+        ...
+
+    def save_analysis_results(self) -> None:
+        ...
+
+    def plot_free_energy_surface(self, *, save_file: str) -> None:
+        ...
+
+    def plot_implied_timescales(self, *, save_file: str) -> None:
+        ...
+
+    def plot_implied_rates(self, *, save_file: str) -> None:
+        ...
+
+    def plot_free_energy_profile(self, *, save_file: str) -> None:
+        ...
+
+    def plot_ck_test(self, *, save_file: str, n_macrostates: int, factors: List[int]) -> None:
+        ...
 
 
 def run_complete_msm_analysis(
@@ -39,7 +89,7 @@ def _create_msm(
 
 
 def _load_and_featurize(
-    msm: EnhancedMSM,
+    msm: SupportsMSMPipeline,
     stride: int,
     atom_selection: str | List[int] | None,
     chunk_size: int,
@@ -54,7 +104,7 @@ def _load_and_featurize(
 
 
 def _build_and_analyze(
-    msm: EnhancedMSM,
+    msm: SupportsMSMPipeline,
     temperatures: Optional[List[float]],
     lag_time: int,
 ) -> None:
@@ -70,7 +120,7 @@ def _build_and_analyze(
     msm.save_analysis_results()
 
 
-def _emit_plots(msm: EnhancedMSM) -> None:
+def _emit_plots(msm: SupportsMSMPipeline) -> None:
     for fn in (
         lambda: msm.plot_free_energy_surface(save_file="free_energy_surface"),
         lambda: msm.plot_implied_timescales(save_file="implied_timescales"),

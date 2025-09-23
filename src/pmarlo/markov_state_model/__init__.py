@@ -77,6 +77,7 @@ def __getattr__(name: str) -> Any:
     try:
         module = import_module(module_name)
     except Exception as exc:
+        value: Any
         if name == "run_ck":  # pragma: no cover - executed without matplotlib
             def _missing_run_ck(*_args: object, original_exc=exc, **_kwargs: object) -> None:
                 raise ImportError(

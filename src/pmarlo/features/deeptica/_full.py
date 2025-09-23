@@ -171,7 +171,7 @@ def _apply_output_whitening(
         if isinstance(outputs, torch.Tensor):
             outputs = outputs.detach().cpu().numpy()
     if outputs is None or outputs.size == 0:
-        info = {
+        info: dict[str, Any] = {
             "output_variance": [],
             "var_zt": [],
             "cond_c00": None,

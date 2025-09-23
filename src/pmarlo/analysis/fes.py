@@ -40,7 +40,12 @@ def _normalise_weights(n_frames: int, weights: np.ndarray | None) -> tuple[np.nd
 
 def _resolve_kde_bins(bins: int | Sequence[int]) -> tuple[int, int]:
     if np.isscalar(bins):
-        count = int(bins)
+        if isinstance(bins, int):
+            count = bins
+        else:
+            # bins is a sequence, but we're in the scalar branch, so this shouldn't happen
+            # But if it does, we'll take the first element
+            count = int(bins[0]) if len(bins) > 0 else 10
         if count < 2:
             raise ValueError("KDE FES requires at least two bins per dimension")
         return count, count
@@ -165,7 +170,7 @@ def _compute_histogram_surface(
             if current_total > 0:
                 hist *= raw_total / current_total
 
-    metadata = {
+    metadata: dict[str, Any] = {
         "min_count_per_bin": int(min_count_per_bin),
         "smoothed_bins": int(smoothed_bins),
     }

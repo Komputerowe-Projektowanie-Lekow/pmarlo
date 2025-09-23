@@ -63,8 +63,6 @@ Issues = "https://github.com/Komputerowe-Projektowanie-Lekow/pmarlo/issues"
 
 [project.scripts]
 pmarlo = "pmarlo.main:main"
-pmarlo-check-extras = "pmarlo.devtools.check_extras_parity:main"
-pmarlo-lines-report = "pmarlo.devtools.lines_report:main"
 
 # ─────────────────────────── setuptools-scm ───────────────────────────
 [tool.setuptools_scm]

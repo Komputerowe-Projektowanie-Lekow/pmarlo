@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union, cast
 
 import numpy as np
 
@@ -38,15 +38,16 @@ def _load_or_train_model(
     weights: Optional[np.ndarray] = None,
     model_dir: Optional[str] = None,  # noqa: ARG001 - compatibility shim
     model_prefix: Optional[str] = None,  # noqa: ARG001 - compatibility shim
-    train_fn: Optional[Any] = None,
+    train_fn: Optional[Callable[... ,Any]] = None,
 ) -> Any:
     """Return a Deep-TICA model, training one when persistence is unavailable."""
 
     del model_dir, model_prefix  # retained for forward-compatibility
-    trainer = train_fn
-    if trainer is None:
-        from pmarlo.features.deeptica import train_deeptica as trainer
-
+    if train_fn is None:
+        from pmarlo.features.deeptica import train_deeptica as _train
+        trainer: Callable[..., Any] = _train
+    else:
+        trainer = train_fn
     return trainer(X_list, lagged_pairs, cfg, weights=weights)
 
 
@@ -56,7 +57,8 @@ def _load_or_train_model(
 @lru_cache(maxsize=512)
 def _load_shard_metadata_cached(path_str: str) -> Dict[str, Any]:
     try:
-        return json.loads(Path(path_str).read_text())
+        raw = json.loads(Path(path_str).read_text())
+        return cast(Dict[str,Any], raw) if isinstance(raw,dict) else {}
     except Exception:
         return {}
 
@@ -378,7 +380,7 @@ class BuildResult:
                 return None
             if hasattr(obj, "to_dict"):
                 return obj.to_dict()  # type: ignore[call-arg]
-            if is_dataclass(obj):
+            if is_dataclass(obj) and not isinstance(obj,type):
                 return asdict(obj)
             if hasattr(obj, "__dict__"):
                 return obj.__dict__
@@ -778,7 +780,10 @@ def _generate_run_id() -> str:
 def _count_frames(dataset: Any) -> int:
     try:
         if hasattr(dataset, "__len__"):
-            return len(dataset)
+            try:
+                return int(getattr(dataset, "n_frames"))
+            except Exception:
+                return 0
         if hasattr(dataset, "n_frames"):
             return dataset.n_frames
         if isinstance(dataset, dict) and "X" in dataset:
@@ -1135,7 +1140,7 @@ def estimate_memory_usage(dataset: Any, opts: BuildOpts) -> float:
 
 
 def create_build_summary(result: BuildResult) -> Dict[str, Any]:
-    summary = {
+    summary: Dict[str,Any] = {
         "success": result.metadata.success if result.metadata else False,
         "n_frames": result.n_frames,
         "n_shards": result.n_shards,

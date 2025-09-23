@@ -9,7 +9,7 @@ and future refactoring.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 import numpy as np
 from openmm import unit  # type: ignore
@@ -95,7 +95,7 @@ def demux_trajectories(
     if use_streaming:
         try:
             # Build temperature schedule for metadata
-            temp_schedule: Dict[str, Dict[str, float]] = {
+            temp_schedule = {
                 str(i): {} for i in range(int(remd.n_replicas))
             }
             for s, states in enumerate(remd.exchange_history):
@@ -373,7 +373,7 @@ def demux_trajectories(
     # Legacy fallback: build the same plan and use the same engine to ensure a path is returned
     try:
         # Build temperature schedule for metadata
-        temp_schedule: Dict[str, Dict[str, float]] = {
+        temp_schedule = {
             str(i): {} for i in range(int(remd.n_replicas))
         }
         for s, states in enumerate(remd.exchange_history):
@@ -404,8 +404,8 @@ def demux_trajectories(
                 setattr(reader, "chunk_size", cs)
         except Exception:
             pass
-        replica_frames: List[int] = []
-        replica_paths: List[str] = []
+        replica_frames = []
+        replica_paths = []
         for p in remd.trajectory_files:
             replica_paths.append(str(p))
             try:
@@ -449,10 +449,10 @@ def demux_trajectories(
         except Exception:
             pass
         writer = writer.open(str(demux_file), str(remd.pdb_file), overwrite=True)
-        fill_policy = (
-            getattr(remd, "demux_fill_policy", None)
-            or getattr(_cfg, "DEMUX_FILL_POLICY", "repeat")
-        ).lower()
+        _fp = getattr(remd, "demux_fill_policy", None)
+        if not isinstance(_fp, str) or not _fp:
+            _fp = cast(str, getattr(_cfg, "DEMUX_FILL_POLICY", "repeat"))
+        fill_policy = _fp.lower()
 
         # Resolve parallel workers even for legacy path for parity; often unused
         parallel_workers = getattr(remd, "demux_parallel_workers", None)

@@ -6,7 +6,7 @@ import importlib.util
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -83,7 +83,7 @@ else:
 
     from .deeptica.losses import VAMP2Loss
 
-    class DeepTICATrainer:
+    class DeepTICATrainer:  # type: ignore[no-redef]
         """Optimises a DeepTICA model using a tau-curriculum and VAMP-2 loss."""
 
         def __init__(self, model, cfg: TrainerConfig) -> None:
@@ -107,7 +107,7 @@ else:
                     list(cfg.tau_schedule) if cfg.tau_schedule else [int(cfg.tau_steps)]
                 )
                 self.curriculum_index = 0
-                self.history = []
+                self.history: list[dict[str, Any]] = []
                 self.global_step = 0
                 self.best_score = float("-inf")
                 self.checkpoint_dir = None
@@ -134,14 +134,14 @@ else:
 
             self.scheduler = self._make_scheduler()
 
-            self.curriculum: List[int] = (
+            self.curriculum: List[int] = (  # type: ignore[no-redef]
                 list(cfg.tau_schedule) if cfg.tau_schedule else [int(cfg.tau_steps)]
             )
             self.curriculum_index = 0
 
-            self.history: List[Dict[str, float]] = []
-            self.global_step: int = 0
-            self.best_score: float = float("-inf")
+            self.history: List[Dict[str, float]] = []  # type: ignore[no-redef]
+            self.global_step: int = 0  # type: ignore[no-redef]
+            self.best_score: float = float("-inf")  # type: ignore[no-redef]
             self.checkpoint_dir = (
                 Path(cfg.checkpoint_dir) if cfg.checkpoint_dir else None
             )
@@ -180,7 +180,8 @@ else:
             x_t, x_tau, weights = tensors
 
             self.model.net.train()
-            self.optimizer.zero_grad()
+            if self.optimizer is not None:
+                self.optimizer.zero_grad()
             loss, score = self._compute_loss_and_score(x_t, x_tau, weights)
             loss.backward()
 
@@ -210,7 +211,8 @@ else:
                         float(grad_norm),
                         float(warn_thresh),
                     )
-            self.optimizer.step()
+            if self.optimizer is not None:
+                self.optimizer.step()
             if self.scheduler is not None:
                 self.scheduler.step()
 
@@ -218,7 +220,7 @@ else:
                 "loss": float(loss.item()),
                 "vamp2": float(score.item()),
                 "tau": float(self.current_tau()),
-                "lr": float(self.optimizer.param_groups[0]["lr"]),
+                "lr": float(self.optimizer.param_groups[0]["lr"]) if self.optimizer else 0.0,
             }
             if grad_norm is not None:
                 metrics["grad_norm"] = float(grad_norm)
@@ -289,7 +291,7 @@ else:
 
             x_t = []
             x_tau = []
-            weights = [] if self.cfg.use_weights else None
+            weights: list[Any] | None = [] if self.cfg.use_weights else None
             for item in batch:
                 try:
                     x0, x1, w = item
@@ -323,6 +325,8 @@ else:
         ) -> Tuple[torch.Tensor, torch.Tensor]:
             if weights is not None and weights.shape != x_t.shape:
                 weights = weights.expand_as(x_t)
+            if self.model.net is None:
+                raise RuntimeError("Model network is not available")
             z_t = self.model.net(x_t)
             z_tau = self.model.net(x_tau)
             loss, score = self.loss_module(z_t, z_tau, weights)
