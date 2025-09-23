@@ -8,7 +8,7 @@ import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, TypedDict, cast
 
 import numpy as np
 import torch
@@ -17,6 +17,20 @@ from torch.utils.data import DataLoader, Dataset
 from pmarlo.features.deeptica.losses import VAMP2Loss
 
 logger = logging.getLogger(__name__)
+
+
+#inherit for the typeddict
+class _TauBlock(TypedDict):
+    tau: int
+    epochs: List[int]
+    train_loss_curve: List[float]
+    train_score_curve: List[float]
+    val_loss_curve: List[float]
+    val_score_curve: List[float]
+    learning_rate_curve: List[float]
+    grad_norm_mean_curve: List[float]
+    grad_norm_max_curve: List[float]
+    diagnostics: Dict[str, object]
 
 
 @torch.no_grad()
@@ -238,7 +252,7 @@ class DeepTICACurriculumTrainer:
 
         self._initialize_scheduler(total_epochs_planned)
 
-        per_tau_blocks: List[Dict[str, object]] = []
+        per_tau_blocks: List[_TauBlock] = []
         overall_epochs: List[int] = []
         overall_train_loss: List[float] = []
         overall_train_score: List[float] = []
@@ -250,7 +264,7 @@ class DeepTICACurriculumTrainer:
         start_time = time.time()
 
         for tau, dataset, diag in tau_blocks:
-            block: Dict[str, object] = {
+            block: _TauBlock = {
                 "tau": int(tau),
                 "epochs": [],
                 "train_loss_curve": [],
@@ -681,7 +695,9 @@ class DeepTICACurriculumTrainer:
                     "grad_norm_max",
                 ]
             )
-            for block in history.get("per_tau", []):
+            per_tau = cast(List[_TauBlock], history.get("per_tau", []))
+            #per tau is a proper List of blocks, prevents int(object) overload
+            for block in per_tau:
                 tau = int(block["tau"])
                 epochs = block["epochs"]
                 train_loss = block["train_loss_curve"]

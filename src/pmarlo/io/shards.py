@@ -157,7 +157,8 @@ class ShardRegistry:
             "replica_id": meta.replica_id,
             "segment_id": meta.segment_id,
         }
-        entries = [e for e in data.get("entries", []) if e.get("path") != entry["path"]]
+        entries_raw = data.get("entries", [])
+        entries = [e for e in entries_raw if isinstance(e, dict) and e.get("path") != entry["path"]]
         entries.append(entry)
         entries.sort(key=lambda e: e["canonical_id"])
         data["entries"] = entries
@@ -167,24 +168,29 @@ class ShardRegistry:
     def remove(self, shard_json: Path) -> None:
         data = self.load()
         path_str = str(Path(shard_json).resolve())
-        entries = [e for e in data.get("entries", []) if e.get("path") != path_str]
+        entries_raw = data.get("entries", [])
+        entries = [e for e in entries_raw if isinstance(e, dict) and e.get("path") != path_str]
         data["entries"] = entries
         data["count"] = len(entries)
         self.save(data)
 
     def validate_paths(self) -> Dict[str, List[str]]:
         data = self.load()
-        entries = data.get("entries", [])
+        entries_raw = data.get("entries", [])
+        entries = entries_raw if isinstance(entries_raw, list) else []
         missing: List[str] = []
         kept: List[str] = []
         for entry in entries:
+            if not isinstance(entry, dict):
+                continue
             json_path = Path(entry.get("path", ""))
             if json_path.exists():
                 kept.append(str(json_path))
             else:
                 missing.append(str(json_path))
         if missing:
-            data["entries"] = [e for e in entries if e.get("path") in kept]
+            valid_entries = [e for e in entries if isinstance(e, dict) and e.get("path") in kept]
+            data["entries"] = valid_entries
             data["count"] = len(data["entries"])
             self.save(data)
         return {"missing": missing, "kept": kept}

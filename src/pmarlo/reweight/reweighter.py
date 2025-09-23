@@ -100,7 +100,9 @@ class Reweighter:
 
         # Attach convenience mapping for downstream MSM/FES helpers
         if isinstance(dataset, MutableMapping):
-            dataset.setdefault("frame_weights", {}).update(weights)
+            frame_weights = dataset.setdefault("frame_weights", {})
+            if hasattr(frame_weights, 'update'):
+                frame_weights.update(weights)  # type: ignore[attr-defined]
         return weights
 
     # ------------------------------------------------------------------

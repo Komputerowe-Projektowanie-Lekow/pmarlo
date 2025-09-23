@@ -60,7 +60,7 @@ def validate_build_result(
     >>> print(validation["is_valid"])
     True
     """
-    validation_results = {
+    validation_results: Dict[str, Any] = {
         "is_valid": True,
         "messages": [],
         "warnings": [],

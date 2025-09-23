@@ -96,7 +96,7 @@ class MDAnalysisDCDWriter:
         assert writer is not None
         # MDAnalysis DCD expects Angstroms; we write raw floats as-is to avoid implicit unit conversions
         for i in range(c.shape[0]):
-            writer.write_next_timestep(c[i, :, :])  # type: ignore[arg-type]
+            writer.write_next_timestep(c[i, :, :])  # type: ignore[arg-type,attr-defined]
 
     def close(self) -> None:
         if not self._is_open:
@@ -104,7 +104,7 @@ class MDAnalysisDCDWriter:
         try:
             if self._writer is not None:
                 try:
-                    self._writer.close()  # type: ignore[call-arg]
+                    self._writer.close()  # type: ignore[call-arg,attr-defined]
                 except Exception:
                     pass
         finally:

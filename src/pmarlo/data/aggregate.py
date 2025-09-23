@@ -68,7 +68,8 @@ def _unique_shard_uid(meta, p: Path) -> str:
     """
     try:
         # Try to parse canonical ID from the source path
-        src = dict(getattr(meta, "source", {}))
+        source_attr = getattr(meta, "source", {})
+        src = dict(source_attr) if isinstance(source_attr, dict) else {}
         src_path_str = (
             src.get("traj")
             or src.get("path")
@@ -81,7 +82,8 @@ def _unique_shard_uid(meta, p: Path) -> str:
         # Attempt to parse canonical shard ID
         try:
             shard_id = parse_shard_id(src_path, require_exists=False)
-            return shard_id.canonical()
+            canonical_id: str = shard_id.canonical()
+            return canonical_id
         except Exception:
             # Fall back to legacy format if parsing fails
             pass
@@ -165,6 +167,10 @@ def load_shards_as_dataset(shard_jsons: Sequence[Path]) -> dict:
         dtrajs.append(None if dtraj is None else np.asarray(dtraj, dtype=np.int32))
         bias_arr = _maybe_read_bias(p.with_name(f"{meta.shard_id}.npz"))
         uid = _unique_shard_uid(meta, p)
+        # Ensure source is a proper dict for type safety
+        source_attr = getattr(meta, "source", {})
+        source_dict = dict(source_attr) if isinstance(source_attr, dict) else {}
+        
         info = {
             "id": str(uid),  # prefer unique ID to avoid collisions
             "legacy_id": str(getattr(meta, "shard_id", p.stem)),
@@ -174,22 +180,22 @@ def load_shards_as_dataset(shard_jsons: Sequence[Path]) -> dict:
             "bias_potential": bias_arr,
             "temperature": float(meta.temperature),
             # include entire source for downstream validators (kind/run/paths)
-            "source": dict(getattr(meta, "source", {})),
+            "source": source_dict,
         }
         # expose path and run uid for debugging/uniqueness
         try:
             info["source_path"] = str(
                 Path(
-                    info.get("source", {}).get("traj")
-                    or info.get("source", {}).get("path")
-                    or info.get("source", {}).get("file")
+                    source_dict.get("traj")
+                    or source_dict.get("path")
+                    or source_dict.get("file")
                     or p
                 ).resolve()
             )
             info["run_uid"] = (
-                info.get("source", {}).get("run_uid")
-                or info.get("source", {}).get("run_id")
-                or info.get("source", {}).get("run_dir")
+                source_dict.get("run_uid")
+                or source_dict.get("run_id")
+                or source_dict.get("run_dir")
             )
         except Exception:
             pass

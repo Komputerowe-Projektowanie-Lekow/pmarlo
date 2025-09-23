@@ -6,9 +6,15 @@ import importlib.util
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    try:
+        from .bias_hook import BiasHook
+    except ImportError:
+        BiasHook = Any  # type: ignore[misc,assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +46,7 @@ else:
 if not _HAS_FULL_IMPL:
 
     @dataclass
-    class Simulation:  # type: ignore[override]
+    class Simulation:  # type: ignore[no-redef]
         """Minimal placeholder implementation used when OpenMM is unavailable."""
 
         pdb_file: str
@@ -75,31 +81,50 @@ if not _HAS_FULL_IMPL:
                 " Install with `pip install 'pmarlo[full]'`."
             ) from _FULL_IMPORT_ERROR
 
-    def prepare_system(*args: Any, **kwargs: Any) -> tuple[None, None]:  # type: ignore[override]
+    def prepare_system(
+        pdb_file: Any, 
+        forcefield_files: Any = None, 
+        water_model: Any = "tip3p"
+    ) -> Any:  # type: ignore[misc]
         raise ImportError(
             "prepare_system requires OpenMM."
             " Install with `pip install 'pmarlo[full]'`."
         ) from _FULL_IMPORT_ERROR
 
-    def production_run(*args: Any, **kwargs: Any) -> Any:  # type: ignore[override]
+    def production_run(
+        sim: Any, 
+        steps: Any = 100000, 
+        report_interval: Any = 1000, 
+        bias_hook: "BiasHook | None" = None
+    ) -> Any:  # type: ignore[misc]
         raise ImportError(
             "production_run requires OpenMM."
             " Install with `pip install 'pmarlo[full]'`."
         ) from _FULL_IMPORT_ERROR
 
-    def build_transition_model(*args: Any, **kwargs: Any) -> Dict[str, Any]:  # type: ignore[override]
+    def build_transition_model(
+        features: Any, 
+        n_states: Any = 50, 
+        lag_time: Any = 1
+    ) -> Any:  # type: ignore[misc]
         raise ImportError(
             "build_transition_model requires the analysis stack (scikit-learn)."
             " Install with `pip install 'pmarlo[analysis]'`."
         ) from _FULL_IMPORT_ERROR
 
-    def relative_energies(*args: Any, **kwargs: Any) -> np.ndarray:  # type: ignore[override]
+    def relative_energies(
+        msm_result: Any, 
+        reference_state: Any = 0
+    ) -> Any:  # type: ignore[misc]
         raise ImportError(
             "relative_energies requires the analysis stack."
             " Install with `pip install 'pmarlo[analysis]'`."
         ) from _FULL_IMPORT_ERROR
 
-    def plot_DG(*args: Any, **kwargs: Any) -> Any:  # type: ignore[override]
+    def plot_DG(
+        features: Any, 
+        save_path: Any = None
+    ) -> Any:  # type: ignore[misc]
         raise ImportError(
             "plot_DG requires matplotlib. Install with `pip install 'pmarlo[plot]'`."
         ) from _FULL_IMPORT_ERROR

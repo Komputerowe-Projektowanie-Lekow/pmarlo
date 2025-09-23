@@ -145,7 +145,7 @@ class VAMP2Loss(nn.Module):
 
     def _identity_like(self, mat: Tensor, device: torch.device) -> Tensor:
         dim = mat.shape[-1]
-        eye = self._eye
+        eye = self._eye  # type: ignore[has-type]
         if eye.numel() != dim * dim or eye.device != device:
             eye = torch.eye(dim, device=device, dtype=self.target_dtype)
             self._eye = eye

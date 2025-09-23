@@ -53,7 +53,7 @@ class ShardId:
         """Expose the shard identifier expected by downstream code."""
 
         if self.meta is not None:
-            return self.meta.shard_id
+            return str(self.meta.shard_id)
         return self.canonical()
 
     @property

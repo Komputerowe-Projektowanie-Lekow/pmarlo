@@ -44,7 +44,7 @@ def _looks_like_split(value: Any) -> bool:
 
     if arr.ndim != 2 or arr.shape[0] == 0 or arr.shape[1] == 0:
         return False
-    return np.isfinite(arr).all()
+    return bool(np.isfinite(arr).all())
 
 
 def _normalise_splits(dataset: DatasetLike) -> Dict[str, Any]:
