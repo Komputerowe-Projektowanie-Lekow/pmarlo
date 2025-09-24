@@ -211,9 +211,7 @@ def _local_index_in_group(path: Path, run_dir: Path, pattern: re.Pattern[str]) -
 
     target = path.resolve() if path.exists() else path
     siblings = sorted(
-        p.resolve()
-        for p in run_dir.iterdir()
-        if p.is_file() and pattern.search(p.name)
+        p.resolve() for p in run_dir.iterdir() if p.is_file() and pattern.search(p.name)
     )
     try:
         return siblings.index(target)

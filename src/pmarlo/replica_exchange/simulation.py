@@ -6,7 +6,7 @@ import importlib.util
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict
 
 import numpy as np
 
@@ -24,8 +24,10 @@ _FULL_IMPORT_ERROR: Exception | None = None
 
 if _HAS_OPENMM:
     try:  # pragma: no cover - exercised only when OpenMM is present
-        from ._simulation_full import (  # type: ignore[assignment]
-            Simulation as _FullSimulation,
+        from ._simulation_full import (
+            Simulation as _FullSimulation,  # type: ignore[assignment]
+        )
+        from ._simulation_full import (
             build_transition_model,
             plot_DG,
             prepare_system,
@@ -75,16 +77,16 @@ if not _HAS_FULL_IMPL:
                 " Install with `pip install 'pmarlo[full]'`."
             ) from _FULL_IMPORT_ERROR
 
-        def feature_extraction(self, *_args: Any, **_kwargs: Any) -> Dict[str, np.ndarray]:
+        def feature_extraction(
+            self, *_args: Any, **_kwargs: Any
+        ) -> Dict[str, np.ndarray]:
             raise ImportError(
                 "Simulation.feature_extraction requires OpenMM+mdtraj."
                 " Install with `pip install 'pmarlo[full]'`."
             ) from _FULL_IMPORT_ERROR
 
     def prepare_system(
-        pdb_file: Any, 
-        forcefield_files: Any = None, 
-        water_model: Any = "tip3p"
+        pdb_file: Any, forcefield_files: Any = None, water_model: Any = "tip3p"
     ) -> Any:  # type: ignore[misc]
         raise ImportError(
             "prepare_system requires OpenMM."
@@ -92,10 +94,10 @@ if not _HAS_FULL_IMPL:
         ) from _FULL_IMPORT_ERROR
 
     def production_run(
-        sim: Any, 
-        steps: Any = 100000, 
-        report_interval: Any = 1000, 
-        bias_hook: "BiasHook | None" = None
+        sim: Any,
+        steps: Any = 100000,
+        report_interval: Any = 1000,
+        bias_hook: "BiasHook | None" = None,
     ) -> Any:  # type: ignore[misc]
         raise ImportError(
             "production_run requires OpenMM."
@@ -103,9 +105,7 @@ if not _HAS_FULL_IMPL:
         ) from _FULL_IMPORT_ERROR
 
     def build_transition_model(
-        features: Any, 
-        n_states: Any = 50, 
-        lag_time: Any = 1
+        features: Any, n_states: Any = 50, lag_time: Any = 1
     ) -> Any:  # type: ignore[misc]
         raise ImportError(
             "build_transition_model requires the analysis stack (scikit-learn)."
@@ -113,18 +113,14 @@ if not _HAS_FULL_IMPL:
         ) from _FULL_IMPORT_ERROR
 
     def relative_energies(
-        msm_result: Any, 
-        reference_state: Any = 0
+        msm_result: Any, reference_state: Any = 0
     ) -> Any:  # type: ignore[misc]
         raise ImportError(
             "relative_energies requires the analysis stack."
             " Install with `pip install 'pmarlo[analysis]'`."
         ) from _FULL_IMPORT_ERROR
 
-    def plot_DG(
-        features: Any, 
-        save_path: Any = None
-    ) -> Any:  # type: ignore[misc]
+    def plot_DG(features: Any, save_path: Any = None) -> Any:  # type: ignore[misc]
         raise ImportError(
             "plot_DG requires matplotlib. Install with `pip install 'pmarlo[plot]'`."
         ) from _FULL_IMPORT_ERROR
@@ -182,7 +178,9 @@ def feature_extraction(
     )
     traj = md.load(trajectory_file, top=topology_file, stride=stride_int)
     if traj.n_frames == 0:
-        raise ValueError("Loaded trajectory contains no frames; cannot extract features")
+        raise ValueError(
+            "Loaded trajectory contains no frames; cannot extract features"
+        )
 
     coords = traj.xyz.reshape(traj.n_frames, -1)
     cluster_args: Dict[str, Any] = {

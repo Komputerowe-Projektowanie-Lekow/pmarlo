@@ -191,9 +191,7 @@ else:
             if clip_mode == "value":
                 clip_value = getattr(self.cfg, "grad_clip_value", None)
                 if clip_value is not None:
-                    clip_grad_value_(
-                        self.model.net.parameters(), float(clip_value)
-                    )
+                    clip_grad_value_(self.model.net.parameters(), float(clip_value))
             else:
                 if self.cfg.grad_clip_norm is not None:
                     grad_norm = float(
@@ -220,7 +218,11 @@ else:
                 "loss": float(loss.item()),
                 "vamp2": float(score.item()),
                 "tau": float(self.current_tau()),
-                "lr": float(self.optimizer.param_groups[0]["lr"]) if self.optimizer else 0.0,
+                "lr": (
+                    float(self.optimizer.param_groups[0]["lr"])
+                    if self.optimizer
+                    else 0.0
+                ),
             }
             if grad_norm is not None:
                 metrics["grad_norm"] = float(grad_norm)
@@ -313,7 +315,9 @@ else:
             x_t_cat = torch.cat(x_t, dim=0).to(self.device)
             x_tau_cat = torch.cat(x_tau, dim=0).to(self.device)
             w_cat = (
-                torch.cat(weights, dim=0).to(self.device) if weights is not None else None
+                torch.cat(weights, dim=0).to(self.device)
+                if weights is not None
+                else None
             )
             return x_t_cat, x_tau_cat, w_cat
 
@@ -329,10 +333,12 @@ else:
                 raise RuntimeError("Model network is not available")
             z_t = self.model.net(x_t)
             z_tau = self.model.net(x_tau)
+            if self.loss_module is None:
+                raise RuntimeError("Loss module is not initialised")
             loss, score = self.loss_module(z_t, z_tau, weights)
             return loss, score
 
-        def _compute_grad_norm(self, parameters: Iterable[torch.nn.Parameter]):
+        def _compute_grad_norm(self, parameters: Iterable[torch.nn.Parameter]) -> float:
             total_norm = 0.0
             for p in parameters:
                 if p.grad is None:
@@ -356,4 +362,3 @@ else:
             if float(score) > self.best_score:
                 self.best_score = float(score)
                 torch.save(self.model.net.state_dict(), self.best_checkpoint_path)
-

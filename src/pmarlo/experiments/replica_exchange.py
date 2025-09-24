@@ -8,7 +8,7 @@ import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, cast
 
 from .benchmark_utils import (
     build_remd_baseline_object,
@@ -36,13 +36,14 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 if _HAS_SKLEARN:  # pragma: no cover - depends on optional ML stack
     from ..replica_exchange.config import RemdConfig as _RemdConfig
+    from ..replica_exchange.replica_exchange import ReplicaExchange as _ReplicaExchange
     from ..replica_exchange.replica_exchange import (
-        ReplicaExchange as _ReplicaExchange,
         setup_bias_variables as _setup_bias_variables,
     )
 else:  # pragma: no cover - executed in minimal environments
+
     @dataclass
-    class _RemdConfig:
+    class FallbackRemdConfig:  # type: ignore[misc]
         pdb_file: str
         temperatures: Optional[List[float]]
         output_dir: str
@@ -51,14 +52,16 @@ else:  # pragma: no cover - executed in minimal environments
         auto_setup: bool
         random_seed: int | None
 
-    class _ReplicaExchange:  # type: ignore[override]
+    class FallbackReplicaExchange:  # type: ignore[override]
         def __init__(self, *args: object, **kwargs: object) -> None:  # noqa: D401
             raise ImportError(
                 "ReplicaExchange requires optional dependencies (install pmarlo[full])"
             )
 
         @classmethod
-        def from_config(cls, *_args: object, **_kwargs: object) -> "_ReplicaExchange":
+        def from_config(
+            cls, *_args: object, **_kwargs: object
+        ) -> "FallbackReplicaExchange":
             return cls()
 
         def setup_replicas(self, **_: object) -> None:
@@ -74,11 +77,15 @@ else:  # pragma: no cover - executed in minimal environments
         def get_exchange_statistics(self) -> Dict[str, object]:
             return {}
 
-    def _setup_bias_variables(*_args: object, **_kwargs: object):
-        return None
+    def _setup_bias_variables_fallback(pdf_bile: str) -> List[Any]:
+        return []
 
-ReplicaExchange = _ReplicaExchange
-setup_bias_variables = _setup_bias_variables
+
+RemdConfigRT = _RemdConfig if _HAS_SKLEARN else FallbackRemdConfig
+ReplicaExchange = _ReplicaExchange if _HAS_SKLEARN else FallbackReplicaExchange
+setup_bias_variables = (
+    _setup_bias_variables if _HAS_SKLEARN else _setup_bias_variables_fallback
+)
 
 
 @dataclass
@@ -124,7 +131,7 @@ def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
     else:
         temps = config.temperatures
 
-    remd_config = _RemdConfig(
+    remd_config = RemdConfigRT(
         pdb_file=config.pdb_file,
         temperatures=temps,
         output_dir=str(run_dir / "remd"),
@@ -135,7 +142,7 @@ def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
     )
 
     if hasattr(ReplicaExchange, "from_config"):
-        remd = ReplicaExchange.from_config(remd_config)
+        remd = ReplicaExchange.from_config(cast(Any, remd_config))
     else:
         remd = ReplicaExchange(
             pdb_file=config.pdb_file,

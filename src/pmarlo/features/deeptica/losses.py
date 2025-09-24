@@ -82,8 +82,12 @@ class VAMP2Loss(nn.Module):
         trt = torch.clamp(torch.trace(Ctt), min=trace_floor)
         mu0 = tr0 / float(max(1, dim))
         mut = trt / float(max(1, dim))
-        diag_mean0 = torch.clamp(torch.diagonal(C00, dim1=-2, dim2=-1).mean(), min=trace_floor)
-        diag_meant = torch.clamp(torch.diagonal(Ctt, dim1=-2, dim2=-1).mean(), min=trace_floor)
+        diag_mean0 = torch.clamp(
+            torch.diagonal(C00, dim1=-2, dim2=-1).mean(), min=trace_floor
+        )
+        diag_meant = torch.clamp(
+            torch.diagonal(Ctt, dim1=-2, dim2=-1).mean(), min=trace_floor
+        )
         ridge0 = torch.maximum(mu0 * self.eps, diag_mean0 * self.eps_abs)
         ridget = torch.maximum(mut * self.eps, diag_meant * self.eps_abs)
         alpha = self.alpha

@@ -11,23 +11,26 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 try:  # pragma: no cover - exercised when optional extras are installed
-    import torch  # type: ignore
     import mlcolvar as _mlc  # type: ignore
+    import torch  # type: ignore
     from sklearn.preprocessing import StandardScaler  # type: ignore
 except Exception as exc:  # pragma: no cover - executed in lightweight test envs
-    _IMPORT_ERROR = exc
+    _IMPORT_ERROR: Exception | None = exc
 else:  # pragma: no cover - exercised only in full environments
     from ._full import *  # type: ignore[F401,F403]
+
     __all__ = [name for name in globals().keys() if not name.startswith("_")]
     _IMPORT_ERROR = None
 
 if _IMPORT_ERROR is None:
+    # Optional extras are installed; public API exported from ._full.
     pass
 else:
+    # Lightweight fallback exports when optional extras are missing.
     __all__ = ["DeepTICAConfig", "DeepTICAModel", "train_deeptica"]
 
     @dataclass(slots=True)
-    class DeepTICAConfig:
+    class DeepTICAConfig:  # type: ignore[no-redef]
         """Lightweight configuration used when mlcolvar/torch are unavailable."""
 
         lag: int
@@ -43,14 +46,18 @@ else:
     class _IdentityNet:
         def __init__(self, n_out: int) -> None:
             self.n_out = int(n_out)
+            self._n_features = int(n_out)
 
         def __call__(self, X: np.ndarray) -> np.ndarray:
             arr = np.asarray(X, dtype=np.float64)
-            if arr.shape[-1] != self.n_out:
-                return np.zeros((arr.shape[0], self.n_out), dtype=np.float64)
+            if arr.ndim == 1:
+                arr = arr.reshape(-1, self._n_features)
+            if arr.shape[-1] != self._n_features:
+                zeros = np.zeros((arr.shape[0], self._n_features), dtype=np.float64)
+                return zeros
             return arr
 
-    class DeepTICAModel:
+    class DeepTICAModel:  # type: ignore[no-redef]
         """Minimal DeepTICA model stub for dependency-free testing."""
 
         def __init__(
@@ -68,7 +75,9 @@ else:
         def transform(self, X: np.ndarray) -> np.ndarray:
             history = self.training_history
             mean = np.asarray(
-                history.get("output_mean", np.zeros(self.config.n_out, dtype=np.float64)),
+                history.get(
+                    "output_mean", np.zeros(self.config.n_out, dtype=np.float64)
+                ),
                 dtype=np.float64,
             )
             transform = np.asarray(
@@ -108,7 +117,7 @@ else:
         }
         return history
 
-    def train_deeptica(
+    def train_deeptica(  # type: ignore[misc,no-redef]
         X_list: Iterable[np.ndarray],
         lagged_pairs: tuple[np.ndarray, np.ndarray] | Sequence[np.ndarray],
         cfg: DeepTICAConfig,
@@ -122,7 +131,19 @@ else:
             raise ValueError("Expected at least one trajectory array")
         n_frames = sum(max(0, arr.shape[0]) for arr in arrays)
         history = _compute_history(cfg, n_frames)
-        model = DeepTICAModel(cfg, scaler=None, net=_IdentityNet(cfg.n_out), training_history=history)
+
+        # Accept weights argument for API parity; ensure numeric array shape matches frames
+        if weights is not None:
+            weights_arr = np.asarray(weights, dtype=np.float64)
+            if weights_arr.size not in {0, n_frames}:
+                raise ValueError("weights must be empty or match the number of frames")
+
+        model = DeepTICAModel(
+            cfg,
+            scaler=None,
+            net=_IdentityNet(cfg.n_out),
+            training_history=history,
+        )
         logger.warning(
             "DeepTICA optional dependencies missing; returning analytical stub model"
         )

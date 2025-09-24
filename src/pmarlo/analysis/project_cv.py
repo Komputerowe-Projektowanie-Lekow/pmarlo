@@ -9,7 +9,6 @@ from numpy.typing import NDArray
 
 from pmarlo.ml.deeptica.whitening import apply_output_transform
 
-
 MetadataLike = Mapping[str, Any] | MutableMapping[str, Any]
 
 

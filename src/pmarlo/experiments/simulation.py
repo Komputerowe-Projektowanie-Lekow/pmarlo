@@ -3,7 +3,7 @@ import json
 import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, Optional, TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Dict, Optional, cast
 
 import numpy as np
 
@@ -79,7 +79,6 @@ class _PipelineProxy:
             ) from exc
         return cast(PipelineType, pipeline_cls(*args, **kwargs))
 
-
     def __getattr__(self, name: str):
         try:
             pipeline_cls = self._load_pipeline()
@@ -116,9 +115,7 @@ def _create_run_dir(output_root: str) -> Path:
     return timestamp_dir(output_root)
 
 
-def _configure_pipeline(
-    config: SimulationConfig, run_dir: Path
-) -> "PipelineType":
+def _configure_pipeline(config: SimulationConfig, run_dir: Path) -> "PipelineType":
     """Instantiate a single-temperature simulation pipeline."""
     return Pipeline(
         pdb_file=config.pdb_file,

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, cast
 
 from pmarlo.io.catalog import (
     ShardCatalog,
@@ -165,7 +165,7 @@ def validate_fes_quality(
     Dict[str, Any]
         Validation results with quality metrics and warnings
     """
-    validation_results = {
+    validation_results: Dict[str, Any] = {
         "is_valid": True,
         "messages": [],
         "warnings": [],

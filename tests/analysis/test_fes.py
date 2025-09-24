@@ -96,4 +96,3 @@ def test_grid_smoothing_applies_neighbor_floor():
     # Bins neighbouring the populated cell should have received mass.
     zero_fraction = np.count_nonzero(hist == 0.0) / hist.size
     assert zero_fraction < 0.8
-

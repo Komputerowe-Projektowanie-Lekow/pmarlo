@@ -10,11 +10,12 @@ simulation, and Markov state model analysis using the transform runner system.
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, cast
 
 import numpy as np
 
 from ..markov_state_model.enhanced_msm import EnhancedMSM as MarkovStateModel
+
 if TYPE_CHECKING:
     from ..markov_state_model.enhanced_msm import EnhancedMSM as MarkovStateModelType
 else:

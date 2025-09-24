@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import warnings
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence
+from typing import Any, Dict, Iterable, List, Sequence, cast
 
 from pmarlo.shards.discover import discover_shard_jsons
 from pmarlo.shards.id import canonical_shard_id
@@ -128,7 +128,7 @@ class ShardRegistry:
     def __init__(self, index_path: Path) -> None:
         self.index_path = Path(index_path)
 
-    def load(self) -> Dict[str, object]:
+    def load(self) -> Dict[str, Any]:
         try:
             data = json.loads(self.index_path.read_text())
             if not isinstance(data, dict):
@@ -157,8 +157,12 @@ class ShardRegistry:
             "replica_id": meta.replica_id,
             "segment_id": meta.segment_id,
         }
-        entries_raw = data.get("entries", [])
-        entries = [e for e in entries_raw if isinstance(e, dict) and e.get("path") != entry["path"]]
+        entries_raw = cast(List[Dict[str, Any]], data.get("entries", []))
+        entries: List[Dict[str, Any]] = [
+            e
+            for e in entries_raw
+            if isinstance(e, dict) and e.get("path") != entry["path"]
+        ]
         entries.append(entry)
         entries.sort(key=lambda e: e["canonical_id"])
         data["entries"] = entries
@@ -168,16 +172,20 @@ class ShardRegistry:
     def remove(self, shard_json: Path) -> None:
         data = self.load()
         path_str = str(Path(shard_json).resolve())
-        entries_raw = data.get("entries", [])
-        entries = [e for e in entries_raw if isinstance(e, dict) and e.get("path") != path_str]
+        entries_raw = cast(List[Dict[str, Any]], data.get("entries", []))
+        entries: List[Dict[str, Any]] = [
+            e for e in entries_raw if isinstance(e, dict) and e.get("path") != path_str
+        ]
         data["entries"] = entries
         data["count"] = len(entries)
         self.save(data)
 
     def validate_paths(self) -> Dict[str, List[str]]:
         data = self.load()
-        entries_raw = data.get("entries", [])
-        entries = entries_raw if isinstance(entries_raw, list) else []
+        entries_raw = cast(List[Dict[str, Any]], data.get("entries", []))
+        entries: List[Dict[str, Any]] = (
+            entries_raw if isinstance(entries_raw, list) else []
+        )
         missing: List[str] = []
         kept: List[str] = []
         for entry in entries:
@@ -189,8 +197,10 @@ class ShardRegistry:
             else:
                 missing.append(str(json_path))
         if missing:
-            valid_entries = [e for e in entries if isinstance(e, dict) and e.get("path") in kept]
+            valid_entries: List[Dict[str, Any]] = [
+                e for e in entries if isinstance(e, dict) and e.get("path") in kept
+            ]
             data["entries"] = valid_entries
-            data["count"] = len(data["entries"])
+            data["count"] = len(valid_entries)
             self.save(data)
         return {"missing": missing, "kept": kept}

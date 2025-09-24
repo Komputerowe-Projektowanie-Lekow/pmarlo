@@ -25,7 +25,10 @@ _OPTIONAL_EXPORTS: Dict[str, Tuple[str, str]] = {
     "train_deeptica": ("pmarlo.features.deeptica", "train_deeptica"),
     "PairDiagItem": ("pmarlo.features.diagnostics", "PairDiagItem"),
     "PairDiagReport": ("pmarlo.features.diagnostics", "PairDiagReport"),
-    "diagnose_deeptica_pairs": ("pmarlo.features.diagnostics", "diagnose_deeptica_pairs"),
+    "diagnose_deeptica_pairs": (
+        "pmarlo.features.diagnostics",
+        "diagnose_deeptica_pairs",
+    ),
     "make_training_pairs_from_shards": (
         "pmarlo.features.pairs",
         "make_training_pairs_from_shards",

@@ -38,13 +38,14 @@ def _load_or_train_model(
     weights: Optional[np.ndarray] = None,
     model_dir: Optional[str] = None,  # noqa: ARG001 - compatibility shim
     model_prefix: Optional[str] = None,  # noqa: ARG001 - compatibility shim
-    train_fn: Optional[Callable[... ,Any]] = None,
+    train_fn: Optional[Callable[..., Any]] = None,
 ) -> Any:
     """Return a Deep-TICA model, training one when persistence is unavailable."""
 
     del model_dir, model_prefix  # retained for forward-compatibility
     if train_fn is None:
         from pmarlo.features.deeptica import train_deeptica as _train
+
         trainer: Callable[..., Any] = _train
     else:
         trainer = train_fn
@@ -58,7 +59,7 @@ def _load_or_train_model(
 def _load_shard_metadata_cached(path_str: str) -> Dict[str, Any]:
     try:
         raw = json.loads(Path(path_str).read_text())
-        return cast(Dict[str,Any], raw) if isinstance(raw,dict) else {}
+        return cast(Dict[str, Any], raw) if isinstance(raw, dict) else {}
     except Exception:
         return {}
 
@@ -380,7 +381,7 @@ class BuildResult:
                 return None
             if hasattr(obj, "to_dict"):
                 return obj.to_dict()  # type: ignore[call-arg]
-            if is_dataclass(obj) and not isinstance(obj,type):
+            if is_dataclass(obj) and not isinstance(obj, type):
                 return asdict(obj)
             if hasattr(obj, "__dict__"):
                 return obj.__dict__
@@ -740,7 +741,9 @@ def build_result(
         try:
             diag_mass_val = None
             if transition_matrix is not None and transition_matrix.size > 0:
-                diag_mass_val = float(np.trace(transition_matrix) / transition_matrix.shape[0])
+                diag_mass_val = float(
+                    np.trace(transition_matrix) / transition_matrix.shape[0]
+                )
             diagnostics = compute_diagnostics(working_dataset, diag_mass=diag_mass_val)
             if diagnostics.get("warnings"):
                 flags.setdefault("diagnostic_warnings", diagnostics["warnings"])
@@ -780,12 +783,21 @@ def _generate_run_id() -> str:
 def _count_frames(dataset: Any) -> int:
     try:
         if hasattr(dataset, "__len__"):
+            n_frames_attr = getattr(dataset, "n_frames", None)
+            if n_frames_attr is not None:
+                try:
+                    return int(n_frames_attr)
+                except Exception:
+                    pass
+            try:
+                return int(len(dataset))
+            except Exception:
+                pass
+        if hasattr(dataset, "n_frames"):
             try:
                 return int(getattr(dataset, "n_frames"))
             except Exception:
                 return 0
-        if hasattr(dataset, "n_frames"):
-            return dataset.n_frames
         if isinstance(dataset, dict) and "X" in dataset:
             return int(np.asarray(dataset["X"]).shape[0])
         return 0
@@ -848,7 +860,9 @@ def _build_msm(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
             try:
                 ensure_msm_inputs_whitened(dataset)
             except Exception:
-                logger.debug("Failed to apply CV whitening before MSM build", exc_info=True)
+                logger.debug(
+                    "Failed to apply CV whitening before MSM build", exc_info=True
+                )
         if isinstance(dataset, dict):
             dtrajs = dataset.get("dtrajs")
 
@@ -1140,7 +1154,7 @@ def estimate_memory_usage(dataset: Any, opts: BuildOpts) -> float:
 
 
 def create_build_summary(result: BuildResult) -> Dict[str, Any]:
-    summary: Dict[str,Any] = {
+    summary: Dict[str, Any] = {
         "success": result.metadata.success if result.metadata else False,
         "n_frames": result.n_frames,
         "n_shards": result.n_shards,

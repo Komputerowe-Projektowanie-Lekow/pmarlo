@@ -114,9 +114,9 @@ class ShardCatalog:
                         if shard.temperature_K is not None
                         else ""
                     ),
-                    "replica_id": ""
-                    if shard.replica_index is None
-                    else str(shard.replica_index),
+                    "replica_id": (
+                        "" if shard.replica_index is None else str(shard.replica_index)
+                    ),
                     "segment_id": str(shard.local_index),
                     "run_id": shard.run_id,
                     "source_kind": shard.source_kind,

@@ -33,7 +33,9 @@ def _ar1_process(rho: float, length: int, rng: np.random.Generator) -> np.ndarra
     return x
 
 
-def _make_sequences(n_shards: int, length: int, rng: np.random.Generator) -> list[np.ndarray]:
+def _make_sequences(
+    n_shards: int, length: int, rng: np.random.Generator
+) -> list[np.ndarray]:
     sequences: list[np.ndarray] = []
     for _ in range(n_shards):
         slow = _ar1_process(0.995, length, rng)

@@ -49,7 +49,9 @@ def test_compute_diagnostics_triviality_and_mass_warning():
     result = compute_diagnostics(dataset, diag_mass=0.99)
 
     canon = result.get("canonical_correlation", {})
-    assert "train" in canon and canon["train"], "expected canonical correlations for train split"
+    assert (
+        "train" in canon and canon["train"]
+    ), "expected canonical correlations for train split"
     warnings = result.get("warnings", [])
     assert any("reparametrize" in w for w in warnings)
     assert any("MSM diagonal mass" in w for w in warnings)

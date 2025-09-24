@@ -4,12 +4,11 @@ from __future__ import annotations
 
 """Reweighting helpers for downstream MSM/FES analysis."""
 
+import math
 from dataclasses import dataclass
 from typing import Dict, Mapping, MutableMapping
 
-import math
 import numpy as np
-
 
 _KB_KJ_PER_MOL = 0.00831446261815324
 
@@ -101,16 +100,14 @@ class Reweighter:
         # Attach convenience mapping for downstream MSM/FES helpers
         if isinstance(dataset, MutableMapping):
             frame_weights = dataset.setdefault("frame_weights", {})
-            if hasattr(frame_weights, 'update'):
+            if hasattr(frame_weights, "update"):
                 frame_weights.update(weights)  # type: ignore[attr-defined]
         return weights
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-    def _extract_splits(
-        self, dataset: AnalysisDataset
-    ) -> Dict[str, _SplitThermo]:
+    def _extract_splits(self, dataset: AnalysisDataset) -> Dict[str, _SplitThermo]:
         splits_raw = dataset.get("splits") if isinstance(dataset, Mapping) else None
         if not isinstance(splits_raw, Mapping):
             return {}
@@ -128,9 +125,7 @@ class Reweighter:
             splits[str(name)] = thermo
         return splits
 
-    def _coerce_optional_array(
-        self, split: object, key: str
-    ) -> np.ndarray | None:
+    def _coerce_optional_array(self, split: object, key: str) -> np.ndarray | None:
         if isinstance(split, Mapping):
             val = split.get(key)
         else:
@@ -172,13 +167,9 @@ class Reweighter:
             T = float(temp)
             if T > 0 and math.isfinite(T):
                 return 1.0 / (_KB_KJ_PER_MOL * T)
-        raise ValueError(
-            "Each split must define beta or temperature_K for reweighting"
-        )
+        raise ValueError("Each split must define beta or temperature_K for reweighting")
 
-    def _compute_split_weights(
-        self, thermo: _SplitThermo, mode: str
-    ) -> np.ndarray:
+    def _compute_split_weights(self, thermo: _SplitThermo, mode: str) -> np.ndarray:
         n_frames = thermo.n_frames
         if n_frames <= 0:
             return np.zeros((0,), dtype=np.float64)

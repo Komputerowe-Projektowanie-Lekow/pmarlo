@@ -6,9 +6,8 @@ from typing import Any, Mapping, MutableMapping
 
 import numpy as np
 
-from .project_cv import apply_whitening_from_metadata
 from .discretize import MSMDiscretizationResult, discretize_dataset
-
+from .project_cv import apply_whitening_from_metadata
 
 DatasetLike = MutableMapping[str, Any]
 
@@ -34,7 +33,9 @@ def ensure_msm_inputs_whitened(dataset: DatasetLike | Mapping[str, Any]) -> bool
     if not isinstance(summary, (MutableMapping, dict)):
         return False
 
-    whitened, applied = apply_whitening_from_metadata(np.asarray(X, dtype=np.float64), summary)
+    whitened, applied = apply_whitening_from_metadata(
+        np.asarray(X, dtype=np.float64), summary
+    )
     if applied:
         dataset["X"] = whitened  # type: ignore[index]
     return applied

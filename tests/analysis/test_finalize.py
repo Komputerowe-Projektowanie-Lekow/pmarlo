@@ -6,7 +6,6 @@ import types
 
 import numpy as np
 
-
 _KB_KJ_PER_MOL = 0.00831446261815324
 
 
