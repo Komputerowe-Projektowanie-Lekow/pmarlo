@@ -12,8 +12,6 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, cast
 
-import numpy as np
-
 from ..markov_state_model.enhanced_msm import EnhancedMSM as MarkovStateModel
 
 if TYPE_CHECKING:
@@ -21,10 +19,9 @@ if TYPE_CHECKING:
 else:
     MarkovStateModelType = object  # runtime stub; only used for annotations
 
-from ..markov_state_model.enhanced_msm import run_complete_msm_analysis
 from ..protein.protein import Protein
 from ..replica_exchange.config import RemdConfig
-from ..replica_exchange.replica_exchange import ReplicaExchange, run_remd_simulation
+from ..replica_exchange.replica_exchange import ReplicaExchange
 from ..replica_exchange.simulation import Simulation
 from ..utils.seed import set_global_seed
 from .plan import TransformPlan, TransformStep

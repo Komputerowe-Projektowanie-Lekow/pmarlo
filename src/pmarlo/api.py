@@ -4,7 +4,18 @@ import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Literal,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 import mdtraj as md  # type: ignore
 import numpy as np
@@ -13,7 +24,6 @@ from .config import JOINT_USE_REWEIGHT
 from .data.aggregate import aggregate_and_build as _aggregate_and_build
 from .features import get_feature
 from .features.base import parse_feature_spec
-from .io import trajectory as _traj_io
 from .markov_state_model._msm_utils import build_simple_msm as _build_simple_msm
 from .markov_state_model._msm_utils import (
     candidate_lag_ladder,
@@ -1549,37 +1559,13 @@ def emit_shards_rg_rmsd_windowed(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    top0 = md.load(str(pdb_file))
-    ref = (
-        md.load(str(reference), top=str(pdb_file))[0]
-        if reference is not None and Path(reference).exists()
-        else top0[0]
-    )
-    ca_sel = top0.topology.select("name CA")
-    ca_sel = ca_sel if ca_sel.size else None
-
-    existing: list[int] = []
-    for shard_file in sorted(out_dir.glob("shard_*.json")):
-        try:
-            existing.append(int(shard_file.stem.split("_")[1]))
-        except Exception:
-            continue
-    next_idx = (max(existing) + 1) if existing else 0
-    start_idx = next_idx
-    seed_base = int(seed_start) + start_idx
-
-    reporter = ProgressReporter(progress_callback)
-
-    def _emit(event: str, data: dict) -> None:
-        try:
-            reporter.emit(event, data)
-        except Exception:
-            pass
-
+    ref, ca_sel = _load_reference_and_selection(md, pdb_file, reference)
+    next_idx, start_idx, seed_base = _initialise_shard_indices(out_dir, seed_start)
+    emit_progress = _make_emit_callback(ProgressReporter(progress_callback))
     shard_paths: list[Path] = []
     files = [Path(p) for p in traj_files]
     files.sort()
-    _emit(
+    emit_progress(
         "emit_begin",
         {
             "n_inputs": len(files),
@@ -1594,7 +1580,7 @@ def emit_shards_rg_rmsd_windowed(
     hop = max(1, int(hop_frames) if hop_frames is not None else window)
 
     for index, traj_path in enumerate(files):
-        _emit(
+        emit_progress(
             "emit_one_begin",
             {
                 "index": int(index),
@@ -1604,72 +1590,32 @@ def emit_shards_rg_rmsd_windowed(
             },
         )
 
-        rg_parts: list[np.ndarray] = []
-        rmsd_parts: list[np.ndarray] = []
-        total_frames = 0
-        for chunk in _traj_io.iterload(
-            str(traj_path),
-            top=str(pdb_file),
-            stride=int(max(1, stride)),
-            chunk=1000,
-        ):
-            try:
-                chunk = chunk.superpose(ref, atom_indices=ca_sel)
-            except Exception:
-                pass
-            rg_parts.append(md.compute_rg(chunk).astype(np.float64))
-            rmsd_parts.append(
-                md.rmsd(chunk, ref, atom_indices=ca_sel).astype(np.float64)
-            )
-            total_frames += int(chunk.n_frames)
+        rg, rmsd, total_frames = _collect_rg_rmsd(
+            traj_path,
+            pdb_file,
+            ref,
+            ca_sel,
+            stride,
+            md,
+            _traj_io.iterload,
+        )
+        window_paths, next_idx = _emit_windows(
+            rg,
+            rmsd,
+            window,
+            hop,
+            next_idx,
+            start_idx,
+            seed_base,
+            out_dir,
+            traj_path,
+            write_shard,
+            temperature,
+            provenance,
+        )
+        shard_paths.extend(window_paths)
 
-        if rg_parts:
-            rg = np.concatenate(rg_parts)
-        else:
-            rg = np.zeros((0,), dtype=np.float64)
-        if rmsd_parts:
-            rmsd = np.concatenate(rmsd_parts)
-        else:
-            rmsd = np.zeros((0,), dtype=np.float64)
-
-        n_frames = int(rg.shape[0])
-        # Adapt window/hop to ensure at least one shard if frames exist
-        if n_frames > 0:
-            eff_window = min(window, n_frames)
-            eff_hop = min(hop, eff_window)
-            for start in range(0, n_frames - eff_window + 1, eff_hop):
-                stop = start + eff_window
-                shard_id = f"shard_{next_idx:04d}"
-                cvs = {
-                    "Rg": rg[start:stop],
-                    "RMSD_ref": rmsd[start:stop],
-                }
-                source: dict[str, object] = {
-                    "traj": str(traj_path),
-                    "range": [int(start), int(stop)],
-                    "n_frames": int(stop - start),
-                }
-                if provenance:
-                    try:
-                        merged = dict(provenance)
-                        merged.update(source)
-                        source = merged
-                    except Exception:
-                        pass
-                shard_path = write_shard(
-                    out_dir=out_dir,
-                    shard_id=shard_id,
-                    cvs=cvs,
-                    dtraj=None,
-                    periodic={"Rg": False, "RMSD_ref": False},
-                    seed=int(seed_base + (next_idx - start_idx)),
-                    temperature=float(temperature),
-                    source=source,
-                )
-                shard_paths.append(shard_path.resolve())
-                next_idx += 1
-
-        _emit(
+        emit_progress(
             "emit_one_end",
             {
                 "index": int(index),
@@ -1680,7 +1626,7 @@ def emit_shards_rg_rmsd_windowed(
             },
         )
 
-    _emit(
+    emit_progress(
         "emit_end",
         {
             "n_shards": len(shard_paths),
@@ -1689,6 +1635,146 @@ def emit_shards_rg_rmsd_windowed(
         },
     )
     return shard_paths
+
+
+def _load_reference_and_selection(
+    md_module: Any,
+    pdb_file: Path,
+    reference: str | Path | None,
+) -> tuple[Any, Any]:
+    """Load reference frame and C-alpha selection indices."""
+
+    top0 = md_module.load(str(pdb_file))
+    if reference is not None and Path(reference).exists():
+        ref = md_module.load(str(reference), top=str(pdb_file))[0]
+    else:
+        ref = top0[0]
+    ca_sel = top0.topology.select("name CA")
+    return ref, ca_sel if ca_sel.size else None
+
+
+def _initialise_shard_indices(
+    out_dir: Path,
+    seed_start: int,
+) -> tuple[int, int, int]:
+    """Determine the next shard index and corresponding RNG seed base."""
+
+    existing = []
+    for shard_file in sorted(out_dir.glob("shard_*.json")):
+        try:
+            existing.append(int(shard_file.stem.split("_")[1]))
+        except Exception:
+            continue
+
+    next_idx = (max(existing) + 1) if existing else 0
+    start_idx = next_idx
+    seed_base = int(seed_start) + start_idx
+    return next_idx, start_idx, seed_base
+
+
+def _make_emit_callback(reporter: Any) -> Callable[[str, dict], None]:
+    """Wrap progress reporter emission with best-effort error handling."""
+
+    def _emit(event: str, data: dict) -> None:
+        try:
+            reporter.emit(event, data)
+        except Exception:
+            pass
+
+    return _emit
+
+
+def _collect_rg_rmsd(
+    traj_path: Path,
+    pdb_file: Path,
+    reference: Any,
+    ca_sel: Any,
+    stride: int,
+    md_module: Any,
+    iterload: Callable[..., Iterable[Any]],
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Accumulate radius of gyration and RMSD arrays for a trajectory."""
+
+    rg_parts: list[np.ndarray] = []
+    rmsd_parts: list[np.ndarray] = []
+    total_frames = 0
+    stride_val = int(max(1, stride))
+    for chunk in iterload(
+        str(traj_path),
+        top=str(pdb_file),
+        stride=stride_val,
+        chunk=1000,
+    ):
+        try:
+            chunk = chunk.superpose(reference, atom_indices=ca_sel)
+        except Exception:
+            pass
+        rg_parts.append(md_module.compute_rg(chunk).astype(np.float64))
+        rmsd_parts.append(
+            md_module.rmsd(chunk, reference, atom_indices=ca_sel).astype(np.float64)
+        )
+        total_frames += int(chunk.n_frames)
+
+    rg = np.concatenate(rg_parts) if rg_parts else np.zeros((0,), dtype=np.float64)
+    rmsd = (
+        np.concatenate(rmsd_parts) if rmsd_parts else np.zeros((0,), dtype=np.float64)
+    )
+    return rg, rmsd, total_frames
+
+
+def _emit_windows(
+    rg: np.ndarray,
+    rmsd: np.ndarray,
+    window: int,
+    hop: int,
+    next_idx: int,
+    start_idx: int,
+    seed_base: int,
+    out_dir: Path,
+    traj_path: Path,
+    write_shard: Callable[..., Path],
+    temperature: float,
+    provenance: dict | None,
+) -> tuple[list[Path], int]:
+    """Write overlapping shards for the provided CV time-series."""
+
+    shard_paths: list[Path] = []
+    n_frames = int(rg.shape[0])
+    if n_frames <= 0:
+        return shard_paths, next_idx
+
+    eff_window = min(window, n_frames)
+    eff_hop = min(hop, eff_window)
+    for start in range(0, n_frames - eff_window + 1, eff_hop):
+        stop = start + eff_window
+        shard_id = f"shard_{next_idx:04d}"
+        cvs = {"Rg": rg[start:stop], "RMSD_ref": rmsd[start:stop]}
+        source: dict[str, object] = {
+            "traj": str(traj_path),
+            "range": [int(start), int(stop)],
+            "n_frames": int(stop - start),
+        }
+        if provenance:
+            try:
+                merged = dict(provenance)
+                merged.update(source)
+                source = merged
+            except Exception:
+                pass
+        shard_path = write_shard(
+            out_dir=out_dir,
+            shard_id=shard_id,
+            cvs=cvs,
+            dtraj=None,
+            periodic={"Rg": False, "RMSD_ref": False},
+            seed=int(seed_base + (next_idx - start_idx)),
+            temperature=float(temperature),
+            source=source,
+        )
+        shard_paths.append(shard_path.resolve())
+        next_idx += 1
+
+    return shard_paths, next_idx
 
 
 def emit_shards_rg_rmsd(
@@ -1806,63 +1892,16 @@ def build_from_shards(
 
     from .data.shard import read_shard as _read_shard
 
-    if not shard_jsons:
-        raise ValueError("No shard JSONs provided")
-    shard_jsons = [str(Path(p)) for p in shard_jsons]
-    meta0, _, _ = _read_shard(Path(shard_jsons[0]))
-    names = tuple(meta0.cv_names)
-    cv_pair = (names[0], names[1]) if len(names) >= 2 else ("cv1", "cv2")
+    shard_paths = _normalise_shard_inputs(shard_jsons)
+    meta0, _, _ = _read_shard(shard_paths[0])
+    cv_pair = _infer_cv_pair(meta0)
+    edges = _compute_cv_edges(shard_paths, cv_pair, bins, _read_shard, _np)
 
-    # Compute global edges
-    mins = [_np.inf, _np.inf]
-    maxs = [-_np.inf, -_np.inf]
-    for p in shard_jsons:
-        m, X, _ = _read_shard(Path(p))
-        assert tuple(m.cv_names)[:2] == cv_pair, "Shard CV names mismatch"
-        mins[0] = min(mins[0], float(_np.nanmin(X[:, 0])))
-        mins[1] = min(mins[1], float(_np.nanmin(X[:, 1])))
-        maxs[0] = max(maxs[0], float(_np.nanmax(X[:, 0])))
-        maxs[1] = max(maxs[1], float(_np.nanmax(X[:, 1])))
-    if not _np.isfinite(mins[0]) or mins[0] == maxs[0]:
-        maxs[0] = mins[0] + 1e-8
-    if not _np.isfinite(mins[1]) or mins[1] == maxs[1]:
-        maxs[1] = mins[1] + 1e-8
-    edges = {
-        cv_pair[0]: _np.linspace(mins[0], maxs[0], int(bins.get(cv_pair[0], 32)) + 1),
-        cv_pair[1]: _np.linspace(mins[1], maxs[1], int(bins.get(cv_pair[1], 32)) + 1),
-    }
-
-    model_dir = None
-    if notes:
-        try:
-            model_dir = notes.get("model_dir") if isinstance(notes, dict) else None
-        except Exception:
-            model_dir = None
-
-    steps: list[_TransformStep] = []
-    if learn_cv:
-        params = dict(deeptica_params or {})
-        if "lag" not in params:
-            params["lag"] = int(max(1, lag))
-        if model_dir and "model_dir" not in params:
-            params["model_dir"] = model_dir
-        steps.append(_TransformStep("LEARN_CV", {"method": "deeptica", **params}))
-    steps.append(_TransformStep("SMOOTH_FES", {"sigma": 0.6}))
-    plan = _TransformPlan(steps=tuple(steps))
-
-    opts = _BuildOpts(
-        seed=int(seed),
-        temperature=float(temperature),
-        lag_candidates=(int(lag), int(2 * lag), int(3 * lag)),
-    )
-    all_notes = dict(notes or {})
-    all_notes.setdefault("cv_bin_edges", {k: v.tolist() for k, v in edges.items()})
-    # Determine number of macrostates
-    if n_macrostates is not None:
-        n_states = int(n_macrostates)
-    else:
-        n_states = int((deeptica_params or {}).get("n_states", 5))
-
+    model_dir = _extract_model_dir(notes)
+    plan = _build_transform_plan(learn_cv, deeptica_params, lag, model_dir)
+    opts = _build_opts(seed, temperature, lag)
+    all_notes = _merge_notes_with_edges(notes, edges)
+    n_states = _determine_macrostates(n_macrostates, deeptica_params)
     applied = _AppliedOpts(
         bins=bins,
         lag=int(lag),
@@ -1871,7 +1910,7 @@ def build_from_shards(
     )
 
     br, ds_hash = _aggregate_and_build(
-        [Path(p) for p in shard_jsons],
+        shard_paths,
         opts=opts,
         plan=plan,
         applied=applied,
@@ -1879,6 +1918,125 @@ def build_from_shards(
         progress_callback=progress_callback,
     )
     return br, ds_hash
+
+
+def _normalise_shard_inputs(shard_jsons: list[str | Path]) -> list[Path]:
+    """Validate shard inputs and return canonical Path objects."""
+
+    if not shard_jsons:
+        raise ValueError("No shard JSONs provided")
+    return [Path(p) for p in shard_jsons]
+
+
+def _infer_cv_pair(meta: Any) -> tuple[str, str]:
+    """Derive the primary CV pair used for downstream binning."""
+
+    names = tuple(meta.cv_names)
+    if len(names) >= 2:
+        return names[0], names[1]
+    return "cv1", "cv2"
+
+
+def _compute_cv_edges(
+    shard_paths: list[Path],
+    cv_pair: tuple[str, str],
+    bins: Mapping[str, int],
+    reader: Callable[[Path], tuple[Any, Any, Any]],
+    np_module: Any,
+) -> dict[str, np.ndarray]:
+    """Compute global bin edges across all shards for the first two CVs."""
+
+    mins = [np_module.inf, np_module.inf]
+    maxs = [-np_module.inf, -np_module.inf]
+    for path in shard_paths:
+        meta, data, _ = reader(path)
+        if tuple(meta.cv_names)[:2] != cv_pair:
+            raise ValueError("Shard CV names mismatch")
+        mins[0] = min(mins[0], float(np_module.nanmin(data[:, 0])))
+        mins[1] = min(mins[1], float(np_module.nanmin(data[:, 1])))
+        maxs[0] = max(maxs[0], float(np_module.nanmax(data[:, 0])))
+        maxs[1] = max(maxs[1], float(np_module.nanmax(data[:, 1])))
+
+    if not np_module.isfinite(mins[0]) or mins[0] == maxs[0]:
+        maxs[0] = mins[0] + 1e-8
+    if not np_module.isfinite(mins[1]) or mins[1] == maxs[1]:
+        maxs[1] = mins[1] + 1e-8
+
+    return {
+        cv_pair[0]: np_module.linspace(
+            mins[0],
+            maxs[0],
+            int(bins.get(cv_pair[0], 32)) + 1,
+        ),
+        cv_pair[1]: np_module.linspace(
+            mins[1],
+            maxs[1],
+            int(bins.get(cv_pair[1], 32)) + 1,
+        ),
+    }
+
+
+def _extract_model_dir(notes: dict | None) -> str | None:
+    """Return the model directory hint from notes if present."""
+
+    if not notes or not isinstance(notes, dict):
+        return None
+    try:
+        model_dir = notes.get("model_dir")
+    except Exception:
+        model_dir = None
+    return model_dir
+
+
+def _build_transform_plan(
+    learn_cv: bool,
+    deeptica_params: dict | None,
+    lag: int,
+    model_dir: str | None,
+) -> _TransformPlan:
+    """Assemble the transform plan with optional Deeptica learning."""
+
+    steps: list[_TransformStep] = []
+    if learn_cv:
+        params = dict(deeptica_params or {})
+        params.setdefault("lag", int(max(1, lag)))
+        if model_dir and "model_dir" not in params:
+            params["model_dir"] = model_dir
+        steps.append(_TransformStep("LEARN_CV", {"method": "deeptica", **params}))
+    steps.append(_TransformStep("SMOOTH_FES", {"sigma": 0.6}))
+    return _TransformPlan(steps=tuple(steps))
+
+
+def _build_opts(seed: int, temperature: float, lag: int) -> _BuildOpts:
+    """Create BuildOpts with a simple lag candidate ladder."""
+
+    return _BuildOpts(
+        seed=int(seed),
+        temperature=float(temperature),
+        lag_candidates=(int(lag), int(2 * lag), int(3 * lag)),
+    )
+
+
+def _merge_notes_with_edges(
+    notes: dict | None,
+    edges: Mapping[str, np.ndarray],
+) -> dict:
+    """Merge user notes with computed CV bin edges."""
+
+    merged = dict(notes or {})
+    merged.setdefault("cv_bin_edges", {k: v.tolist() for k, v in edges.items()})
+    return merged
+
+
+def _determine_macrostates(
+    n_macrostates: int | None,
+    deeptica_params: dict | None,
+) -> int:
+    """Decide how many macrostates to request for downstream analysis."""
+
+    if n_macrostates is not None:
+        return int(n_macrostates)
+    return int((deeptica_params or {}).get("n_states", 5))
 
 
 def demultiplex_run(
@@ -1918,110 +2076,230 @@ def demultiplex_run(
         parse_temperature_ladder,
     )
 
+    out_dir_path, topo_path, replica_paths = _prepare_demux_paths(
+        out_dir,
+        topology_path,
+        replica_traj_paths,
+    )
+    temperatures = _parse_temperature_ladder_safe(ladder_K, parse_temperature_ladder)
+    exchange_records = _load_exchange_records_safe(
+        exchange_log_path, parse_exchange_log
+    )
+
+    if not exchange_records:
+        return []
+
+    _validate_demux_inputs(temperatures, replica_paths, exchange_records)
+
+    reader = MDTrajReader(topology_path=str(topo_path))
+    replica_frames = _collect_replica_frames(reader, replica_paths)
+    writers, dcd_paths = _open_demux_writers(
+        out_dir_path,
+        topo_path,
+        temperatures,
+        fmt,
+    )
+
+    try:
+        segments_per_temp, dst_positions = _demux_exchange_segments(
+            exchange_records,
+            replica_frames,
+            writers,
+        )
+    finally:
+        _close_demux_writers(writers)
+
+    return _write_demux_manifests(
+        run_id,
+        temperatures,
+        dcd_paths,
+        dst_positions,
+        segments_per_temp,
+        dt_ps,
+    )
+
+
+def _prepare_demux_paths(
+    out_dir: str | Path,
+    topology_path: str | Path,
+    replica_traj_paths: list[str | Path],
+) -> tuple[Path, Path, list[Path]]:
+    """Create output directory and normalise key input paths."""
+
     out_dir_path = Path(out_dir)
     out_dir_path.mkdir(parents=True, exist_ok=True)
     topo_path = Path(topology_path)
     replica_paths = [Path(p) for p in replica_traj_paths]
+    return out_dir_path, topo_path, replica_paths
+
+
+def _parse_temperature_ladder_safe(
+    ladder: list[float] | str,
+    parser: Callable[[list[float] | str], Sequence[float]],
+) -> list[float]:
+    """Parse the temperature ladder and surface friendlier errors."""
 
     try:
-        temperatures = parse_temperature_ladder(ladder_K)
+        values = list(parser(ladder))
     except Exception as exc:  # pragma: no cover - defensive
         raise ValueError("Failed to parse temperature ladder") from exc
+    return [float(val) for val in values]
 
-    if len(temperatures) != len(replica_paths):
-        raise ValueError(
-            "Temperature ladder length does not match number of replica trajectories"
-        )
+
+def _load_exchange_records_safe(
+    exchange_log_path: str | Path,
+    loader: Callable[[str], Sequence[Any]],
+) -> list[Any]:
+    """Load exchange records with consistent error handling."""
 
     try:
-        exchange_records = parse_exchange_log(str(exchange_log_path))
+        records = list(loader(str(exchange_log_path)))
     except FileNotFoundError as exc:
         raise ValueError(f"Exchange log not found: {exchange_log_path}") from exc
     except ValueError:
         raise
     except Exception as exc:  # pragma: no cover - defensive
         raise ValueError("Failed to parse exchange log") from exc
+    records.sort(key=lambda rec: rec.step_index)
+    return records
 
+
+def _validate_demux_inputs(
+    temperatures: Sequence[float],
+    replica_paths: Sequence[Path],
+    exchange_records: Sequence[Any],
+) -> None:
+    """Sanity-check parsed inputs before demultiplexing frames."""
+
+    if len(temperatures) != len(replica_paths):
+        raise ValueError(
+            "Temperature ladder length does not match number of replica trajectories"
+        )
     if not exchange_records:
-        return []
-
-    exchange_records = sorted(exchange_records, key=lambda rec: rec.step_index)
+        raise ValueError("Exchange log contained no exchanges")
     n_temps = len(temperatures)
-    if any(len(rec.temp_to_replica) != n_temps for rec in exchange_records):
+    if any(len(record.temp_to_replica) != n_temps for record in exchange_records):
         raise ValueError("Exchange log column count does not match temperature ladder")
 
-    reader = MDTrajReader(topology_path=str(topo_path))
-    replica_frames: list[list[np.ndarray]] = []
+
+def _collect_replica_frames(
+    reader: Any,
+    replica_paths: Sequence[Path],
+) -> list[list[np.ndarray]]:
+    """Load all frames for each replica using the shared reader."""
+
+    frames_per_replica: list[list[np.ndarray]] = []
     for path in replica_paths:
         count = reader.probe_length(str(path))
         frames = list(reader.iter_frames(str(path), start=0, stop=count, stride=1))
-        replica_frames.append(frames)
+        frames_per_replica.append(frames)
+    return frames_per_replica
+
+
+def _open_demux_writers(
+    out_dir_path: Path,
+    topo_path: Path,
+    temperatures: Sequence[float],
+    fmt: str,
+) -> tuple[list[MDTrajDCDWriter], list[Path]]:
+    """Open one trajectory writer per temperature and return their paths."""
+
     writers: list[MDTrajDCDWriter] = []
-    dcd_paths: list[Path] = []
+    paths: list[Path] = []
     for temp in temperatures:
         demux_path = out_dir_path / f"demux_T{float(temp):.0f}K.{fmt}"
         writer = MDTrajDCDWriter()
         writer.open(str(demux_path), topology_path=str(topo_path), overwrite=True)
         writers.append(writer)
-        dcd_paths.append(demux_path)
+        paths.append(demux_path)
+    return writers, paths
 
+
+def _demux_exchange_segments(
+    exchange_records: Sequence[Any],
+    replica_frames: Sequence[Sequence[np.ndarray]],
+    writers: Sequence[MDTrajDCDWriter],
+) -> tuple[list[list[Dict[str, Any]]], list[int]]:
+    """Replay exchanges and write per-temperature segments."""
+
+    n_temps = len(writers)
     segments_per_temp: list[list[Dict[str, Any]]] = [list() for _ in range(n_temps)]
     dst_positions = [0] * n_temps
-    segments_consumed = [0] * len(replica_paths)
+    segments_consumed = [0] * len(replica_frames)
 
-    try:
-        for seg_index, record in enumerate(exchange_records):
-            mapping = list(record.temp_to_replica)
-            if sorted(mapping) != list(range(len(replica_paths))):
-                raise ValueError("Exchange log rows must be permutations")
+    for seg_index, record in enumerate(exchange_records):
+        mapping = list(record.temp_to_replica)
+        _validate_exchange_mapping(mapping, len(replica_frames), seg_index)
+        frame_index = seg_index // max(1, len(replica_frames))
 
-            frame_index = seg_index // max(1, len(replica_paths))
-            for temp_index, rep_idx in enumerate(mapping):
-                if rep_idx < 0 or rep_idx >= len(replica_paths):
-                    raise ValueError(
-                        f"Replica index {rep_idx} out of range for segment {seg_index}"
-                    )
-
-                frames_for_replica = replica_frames[rep_idx]
-                if frame_index >= len(frames_for_replica):
-                    raise ValueError(
-                        f"Replica {rep_idx} exhausted after {frame_index} frames"
-                    )
-
-                segments_consumed[rep_idx] += 1
-                if segments_consumed[rep_idx] > len(frames_for_replica):
-                    raise ValueError(
-                        f"Replica {rep_idx} consumed more segments than available frames"
-                    )
-
-                frame = frames_for_replica[frame_index]
-                frame_array = frame[np.newaxis, :, :]
-                writers[temp_index].write_frames(frame_array)
-
-                src_start = frame_index
-                src_stop = src_start + 1
-                dst_start = dst_positions[temp_index]
-                dst_stop = dst_start + 1
-
-                segments_per_temp[temp_index].append(
-                    {
-                        "segment_index": int(seg_index),
-                        "slice_index": int(record.step_index),
-                        "source_replica": int(rep_idx),
-                        "src_frame_start": int(src_start),
-                        "src_frame_stop": int(src_stop),
-                        "dst_frame_start": int(dst_start),
-                        "dst_frame_stop": int(dst_stop),
-                    }
+        for temp_index, rep_idx in enumerate(mapping):
+            frames_for_replica = replica_frames[rep_idx]
+            if frame_index >= len(frames_for_replica):
+                raise ValueError(
+                    f"Replica {rep_idx} exhausted after {frame_index} frames"
                 )
 
-                dst_positions[temp_index] = dst_stop
-    finally:
-        for writer in writers:
-            try:
-                writer.close()
-            except Exception:  # pragma: no cover - defensive
-                pass
+            segments_consumed[rep_idx] += 1
+            if segments_consumed[rep_idx] > len(frames_for_replica):
+                raise ValueError(
+                    f"Replica {rep_idx} consumed more segments than available frames"
+                )
+
+            frame = frames_for_replica[frame_index]
+            writers[temp_index].write_frames(frame[np.newaxis, :, :])
+
+            src_start = frame_index
+            dst_start = dst_positions[temp_index]
+            segment_info = {
+                "segment_index": int(seg_index),
+                "slice_index": int(record.step_index),
+                "source_replica": int(rep_idx),
+                "src_frame_start": int(src_start),
+                "src_frame_stop": int(src_start + 1),
+                "dst_frame_start": int(dst_start),
+                "dst_frame_stop": int(dst_start + 1),
+            }
+            segments_per_temp[temp_index].append(segment_info)
+            dst_positions[temp_index] += 1
+
+    return segments_per_temp, dst_positions
+
+
+def _validate_exchange_mapping(
+    mapping: Sequence[int],
+    n_replicas: int,
+    seg_index: int,
+) -> None:
+    """Ensure each exchange row is a permutation of replica indices."""
+
+    if sorted(mapping) != list(range(n_replicas)):
+        raise ValueError("Exchange log rows must be permutations")
+    for rep_idx in mapping:
+        if rep_idx < 0 or rep_idx >= n_replicas:
+            raise ValueError(
+                f"Replica index {rep_idx} out of range for segment {seg_index}"
+            )
+
+
+def _close_demux_writers(writers: Sequence[MDTrajDCDWriter]) -> None:
+    """Close all trajectory writers, suppressing cleanup issues."""
+
+    for writer in writers:
+        try:
+            writer.close()
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+
+def _write_demux_manifests(
+    run_id: str,
+    temperatures: Sequence[float],
+    dcd_paths: Sequence[Path],
+    dst_positions: Sequence[int],
+    segments_per_temp: Sequence[Sequence[Dict[str, Any]]],
+    dt_ps: float,
+) -> list[str]:
+    """Write JSON manifests for each demultiplexed temperature trajectory."""
 
     json_paths: list[str] = []
     run_id_str = str(run_id)
@@ -2037,13 +2315,12 @@ def demultiplex_run(
             "n_frames": int(dst_positions[temp_index]),
             "dt_ps": dt_ps_value,
             "trajectory": dcd_path.name,
-            "segments": segments_per_temp[temp_index],
+            "segments": list(segments_per_temp[temp_index]),
             "integrity": {"traj_sha256": digest},
         }
         json_path = dcd_path.with_suffix(".json")
         json_path.write_text(json.dumps(metadata, sort_keys=True))
         json_paths.append(str(json_path))
-
     return json_paths
 
 

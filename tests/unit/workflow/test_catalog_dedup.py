@@ -7,8 +7,6 @@ to ensure proper handling of mixed file types and collision-free identification.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from pmarlo.io.catalog import (

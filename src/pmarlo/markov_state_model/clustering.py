@@ -32,7 +32,6 @@ from dataclasses import dataclass
 from typing import Literal, cast
 
 import numpy as np
-from numpy.typing import NDArray
 from sklearn.cluster import KMeans, MiniBatchKMeans
 from sklearn.metrics import silhouette_score
 

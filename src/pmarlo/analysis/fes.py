@@ -274,6 +274,45 @@ def compute_weighted_fes(
 ) -> dict[str, Any]:
     """Compute a weighted free energy surface via KDE or grid histogram."""
 
+    split_name, split_data, coords = _prepare_fes_coordinates(
+        dataset,
+        split,
+        apply_whitening=apply_whitening,
+    )
+    weights_arr = _resolve_frame_weights(split_name, split_data, dataset, weights)
+    if weights_arr is not None and weights_arr.shape[0] != coords.shape[0]:
+        raise ValueError("Frame weights must match the number of frames in the split")
+    metadata = _base_fes_metadata(split_name, temperature_K, method, weights_arr)
+
+    hist, xedges, yedges, meta_updates = _compute_fes_surface(
+        coords,
+        method=metadata["method"],
+        weights=weights_arr,
+        bins=bins,
+        bandwidth=bandwidth,
+        min_count_per_bin=min_count_per_bin,
+    )
+    metadata.update(meta_updates)
+
+    free_energy = _finalize_free_energy(hist, temperature_K)
+
+    return {
+        "histogram": hist,
+        "xedges": xedges,
+        "yedges": yedges,
+        "free_energy": free_energy,
+        "metadata": metadata,
+    }
+
+
+def _prepare_fes_coordinates(
+    dataset: DatasetLike | Mapping[str, Any],
+    split: str | None,
+    *,
+    apply_whitening: bool,
+) -> tuple[str, Mapping[str, Any], np.ndarray]:
+    """Return the split metadata and whitened CV coordinates."""
+
     if not isinstance(dataset, (MutableMapping, dict)):
         raise ValueError("Dataset must be a mapping with 'splits'")
 
@@ -281,63 +320,93 @@ def compute_weighted_fes(
         try:
             ensure_fes_inputs_whitened(dataset)
         except Exception:
-            # Whitening is best-effort; continue with raw coordinates when missing
-            pass
+            pass  # Whitening is best-effort; fall back to raw data when missing
 
     split_name, split_data = _select_split(dataset, split)
-    X = _coerce_array(split_data, "X")
+    coords = _coerce_array(split_data, "X")
+    return split_name, split_data, coords
 
-    if weights is None:
-        candidate = None
-        if isinstance(split_data, Mapping):
-            candidate = split_data.get("weights")
-        if candidate is None and isinstance(dataset, Mapping):
-            fw = dataset.get("frame_weights")
-            if isinstance(fw, Mapping):
-                candidate = fw.get(split_name)
-        weights_arr = (
-            None
-            if candidate is None
-            else np.asarray(candidate, dtype=np.float64).reshape(-1)
-        )
-    else:
-        weights_arr = np.asarray(weights, dtype=np.float64).reshape(-1)
 
-    if weights_arr is not None and weights_arr.shape[0] != X.shape[0]:
-        raise ValueError("Frame weights must match the number of frames in the split")
+def _resolve_frame_weights(
+    split_name: str,
+    split_data: Mapping[str, Any],
+    dataset: DatasetLike | Mapping[str, Any],
+    explicit_weights: Sequence[float] | np.ndarray | None,
+) -> np.ndarray | None:
+    """Return per-frame weights from explicit input or dataset metadata."""
 
-    coord_x = X[:, 0]
-    coord_y = X[:, 1]
+    if explicit_weights is not None:
+        return np.asarray(explicit_weights, dtype=np.float64).reshape(-1)
+
+    candidate = split_data.get("weights") if isinstance(split_data, Mapping) else None
+    if candidate is None and isinstance(dataset, Mapping):
+        fw = dataset.get("frame_weights")
+        if isinstance(fw, Mapping):
+            candidate = fw.get(split_name)
+
+    if candidate is None:
+        return None
+
+    weights = np.asarray(candidate, dtype=np.float64).reshape(-1)
+    return weights
+
+
+def _base_fes_metadata(
+    split_name: str,
+    temperature_K: float,
+    method: str,
+    weights: np.ndarray | None,
+) -> dict[str, Any]:
+    """Build the base metadata dictionary for FES results."""
+
     method_norm = str(method or "kde").lower()
-    metadata: dict[str, Any] = {
-        "temperature_K": float(temperature_K),
-        "split": split_name,
-        "weighted": weights_arr is not None,
-        "method": method_norm,
-    }
-
     if method_norm not in {"kde", "grid"}:
         raise ValueError("FES method must be either 'kde' or 'grid'")
 
-    if method_norm == "kde":
+    return {
+        "temperature_K": float(temperature_K),
+        "split": split_name,
+        "weighted": weights is not None,
+        "method": method_norm,
+    }
+
+
+def _compute_fes_surface(
+    coords: np.ndarray,
+    *,
+    method: str,
+    weights: np.ndarray | None,
+    bins: int | Sequence[int],
+    bandwidth: str | float,
+    min_count_per_bin: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
+    """Evaluate KDE or histogram surfaces for the provided coordinates."""
+
+    coord_x = coords[:, 0]
+    coord_y = coords[:, 1]
+
+    if method == "kde":
         surface, xedges, yedges, extra_meta = _compute_kde_surface(
             coord_x,
             coord_y,
-            weights_arr,
+            weights,
             bins=bins,
             bandwidth=bandwidth,
         )
-        metadata.update(extra_meta)
-        hist = surface
-    else:
-        hist, xedges, yedges, extra_meta = _compute_histogram_surface(
-            coord_x,
-            coord_y,
-            weights_arr,
-            bins=bins,
-            min_count_per_bin=int(min_count_per_bin),
-        )
-        metadata.update(extra_meta)
+        return surface, xedges, yedges, extra_meta
+
+    hist, xedges, yedges, extra_meta = _compute_histogram_surface(
+        coord_x,
+        coord_y,
+        weights,
+        bins=bins,
+        min_count_per_bin=int(min_count_per_bin),
+    )
+    return hist, xedges, yedges, extra_meta
+
+
+def _finalize_free_energy(hist: np.ndarray, temperature_K: float) -> np.ndarray:
+    """Convert histogram counts into a free-energy landscape."""
 
     total = float(np.sum(hist))
     if not np.isfinite(total) or total <= 0:
@@ -352,10 +421,4 @@ def compute_weighted_fes(
     if finite.any():
         free_energy = free_energy - np.min(free_energy[finite])
 
-    return {
-        "histogram": hist,
-        "xedges": xedges,
-        "yedges": yedges,
-        "free_energy": free_energy,
-        "metadata": metadata,
-    }
+    return free_energy

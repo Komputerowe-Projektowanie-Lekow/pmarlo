@@ -7,10 +7,7 @@ and diagnostic message formatting.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
-import pytest
 
 from pmarlo.workflow.validation import (
     format_validation_report,

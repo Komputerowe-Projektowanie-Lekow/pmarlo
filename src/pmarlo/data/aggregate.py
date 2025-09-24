@@ -11,7 +11,7 @@ Outputs a single JSON bundle via BuildResult.to_json() with a dataset hash
 recorded into RunMetadata (when available) for end-to-end reproducibility.
 """
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
@@ -92,10 +92,188 @@ def _unique_shard_uid(meta, p: Path) -> str:
 
         # Legacy format for backward compatibility
         run_uid = src.get("run_uid") or src.get("run_id") or src.get("run_dir") or ""
-        return f"{run_uid}|{getattr(meta,'shard_id','')}|{src_path_str}"
+        return f"{run_uid}|{getattr(meta, 'shard_id', '')}|{src_path_str}"
     except Exception:
         # Ultimate fallback
-        return f"fallback|{getattr(meta,'shard_id','')}|{str(Path(p).resolve())}"
+        return f"fallback|{getattr(meta, 'shard_id', '')}|{str(Path(p).resolve())}"
+
+
+@dataclass(slots=True)
+class AggregatedShards:
+    dataset: dict[str, Any]
+    dtrajs: List[np.ndarray | None]
+    shards_info: List[dict]
+    cv_names: tuple[str, ...]
+    X_all: np.ndarray
+
+
+def _aggregate_shard_contents(shard_jsons: Sequence[Path]) -> AggregatedShards:
+    """Load shards, enforce safety rails, and build the dataset payload."""
+
+    paths = _normalise_shard_paths(shard_jsons)
+
+    cv_names_ref: tuple[str, ...] | None = None
+    periodic_ref: tuple[bool, ...] | None = None
+    X_parts: List[np.ndarray] = []
+    dtrajs: List[np.ndarray | None] = []
+    shards_info: List[dict] = []
+    kinds: list[str] = []
+    temps: list[float] = []
+
+    for path in paths:
+        meta2 = _safe_load_meta(path)
+        if meta2 is not None:
+            kinds.append(meta2.kind)
+            if meta2.kind == "demux":
+                temps.append(float(getattr(meta2, "temperature_K")))
+
+        meta, X, dtraj = read_shard(path)
+        kinds.extend(_infer_shard_kind(meta))
+        maybe_temp = _maybe_temperature(meta)
+        if maybe_temp is not None:
+            temps.append(maybe_temp)
+
+        cv_names_ref, periodic_ref = _validate_or_set_refs(
+            meta,
+            cv_names_ref,
+            periodic_ref,
+        )
+
+        X_np = np.asarray(X, dtype=np.float64)
+        X_parts.append(X_np)
+        dtrajs.append(None if dtraj is None else np.asarray(dtraj, dtype=np.int32))
+
+        shard_info = _build_shard_info(meta, path, X_np, dtraj)
+        shards_info.append(shard_info)
+
+    _validate_shard_safety(kinds, temps)
+
+    cv_names = tuple(cv_names_ref or tuple())
+    periodic = tuple(periodic_ref or tuple())
+    X_all = np.vstack(X_parts).astype(np.float64, copy=False)
+    _fill_shard_offsets(shards_info)
+
+    dataset = {
+        "X": X_all,
+        "cv_names": cv_names,
+        "periodic": periodic,
+        "dtrajs": [d for d in dtrajs if d is not None],
+        "__shards__": shards_info,
+    }
+    return AggregatedShards(dataset, dtrajs, shards_info, cv_names, X_all)
+
+
+def _normalise_shard_paths(shard_jsons: Sequence[Path]) -> list[Path]:
+    if not shard_jsons:
+        raise ValueError("No shard JSONs provided")
+    return [Path(p) for p in shard_jsons]
+
+
+def _safe_load_meta(path: Path) -> Any | None:
+    try:
+        return load_shard_meta(path)
+    except Exception:
+        return None
+
+
+def _infer_shard_kind(meta: Any) -> list[str]:
+    kinds: list[str] = []
+    meta_kind = getattr(meta, "kind", None)
+    if meta_kind:
+        kinds.append(str(meta_kind))
+        return kinds
+
+    source_info = getattr(meta, "source", {})
+    if isinstance(source_info, dict):
+        raw_path = (
+            source_info.get("traj")
+            or source_info.get("path")
+            or source_info.get("file")
+            or source_info.get("source_path")
+            or ""
+        )
+        lower = str(raw_path).lower()
+        if "demux" in lower:
+            kinds.append("demux")
+        elif lower:
+            kinds.append("replica")
+    return kinds
+
+
+def _maybe_temperature(meta: Any) -> float | None:
+    try:
+        return float(getattr(meta, "temperature"))
+    except Exception:
+        return None
+
+
+def _build_shard_info(meta: Any, path: Path, X_np: np.ndarray, dtraj: Any) -> dict:
+    bias_arr = _maybe_read_bias(path.with_name(f"{meta.shard_id}.npz"))
+    uid = _unique_shard_uid(meta, path)
+    shard_dtraj = None if dtraj is None else np.asarray(dtraj, dtype=np.int32)
+
+    source_attr = getattr(meta, "source", {})
+    source_dict = dict(source_attr) if isinstance(source_attr, dict) else {}
+
+    info: dict[str, Any] = {
+        "id": str(uid),
+        "legacy_id": str(getattr(meta, "shard_id", path.stem)),
+        "start": 0,
+        "stop": int(X_np.shape[0]),
+        "dtraj": shard_dtraj,
+        "bias_potential": bias_arr,
+        "temperature": float(meta.temperature),
+        "source": source_dict,
+    }
+
+    try:
+        info["source_path"] = str(
+            Path(
+                source_dict.get("traj")
+                or source_dict.get("path")
+                or source_dict.get("file")
+                or path
+            ).resolve()
+        )
+        info["run_uid"] = (
+            source_dict.get("run_uid")
+            or source_dict.get("run_id")
+            or source_dict.get("run_dir")
+        )
+    except Exception:
+        pass
+
+    return info
+
+
+def _validate_shard_safety(kinds: Sequence[str], temps: Sequence[float]) -> None:
+    if kinds:
+        unique_kinds = sorted(set(kinds))
+        if len(unique_kinds) > 1:
+            raise TemperatureConsistencyError(
+                f"Mixed shard kinds not allowed: {unique_kinds}. DEMUX-only is required."
+            )
+        if unique_kinds[0] != "demux":
+            raise TemperatureConsistencyError(
+                f"Replica shards are not accepted for learning; found kind={unique_kinds[0]}"
+            )
+    if temps:
+        utemps = sorted(set(round(float(t), 6) for t in temps))
+        if len(utemps) > 1:
+            raise TemperatureConsistencyError(
+                f"Multiple DEMUX temperatures detected: {utemps}. Provide a single-T dataset."
+            )
+
+
+def _fill_shard_offsets(shards_info: Sequence[dict]) -> None:
+    offset = 0
+    for shard in shards_info:
+        length = int(shard["stop"])
+        if length <= 0:
+            raise TemperatureConsistencyError("Shard length must be positive")
+        shard["start"] = offset
+        shard["stop"] = offset + length
+        offset += length
 
 
 def load_shards_as_dataset(shard_jsons: Sequence[Path]) -> dict:
@@ -114,135 +292,8 @@ def load_shards_as_dataset(shard_jsons: Sequence[Path]) -> dict:
     dict
         A dataset mapping containing concatenated CVs and per‑shard metadata.
     """
-    if not shard_jsons:
-        raise ValueError("No shard JSONs provided")
-
-    cv_names_ref: tuple[str, ...] | None = None
-    periodic_ref: tuple[bool, ...] | None = None
-    X_parts: List[np.ndarray] = []
-    dtrajs: List[np.ndarray | None] = []
-    shards_info: List[dict] = []
-
-    # Enforce DEMUX-only and single-temperature safety rails
-    kinds: list[str] = []
-    temps: list[float] = []
-
-    for p in shard_jsons:
-        p = Path(p)
-        try:
-            meta2 = load_shard_meta(p)
-            kinds.append(meta2.kind)
-            if meta2.kind == "demux":
-                # Demux shards must carry temperature_K
-                temps.append(float(getattr(meta2, "temperature_K")))
-        except Exception:
-            # Fallback: use legacy meta but we cannot relax rules below
-            pass
-        meta, X, dtraj = read_shard(p)
-        meta_kind = getattr(meta, "kind", None)
-        if meta_kind:
-            kinds.append(str(meta_kind))
-        else:
-            source_info = getattr(meta, "source", {})
-            if isinstance(source_info, dict):
-                raw_path = (
-                    source_info.get("traj")
-                    or source_info.get("path")
-                    or source_info.get("file")
-                    or source_info.get("source_path")
-                    or ""
-                )
-                lower = str(raw_path).lower()
-                if "demux" in lower:
-                    kinds.append("demux")
-                elif lower:
-                    kinds.append("replica")
-        try:
-            temps.append(float(getattr(meta, "temperature")))
-        except Exception:
-            pass
-        cv_names_ref, periodic_ref = _validate_or_set_refs(
-            meta, cv_names_ref, periodic_ref
-        )
-        X_np = np.asarray(X, dtype=np.float64)
-        X_parts.append(X_np)
-        dtrajs.append(None if dtraj is None else np.asarray(dtraj, dtype=np.int32))
-        bias_arr = _maybe_read_bias(p.with_name(f"{meta.shard_id}.npz"))
-        uid = _unique_shard_uid(meta, p)
-        # Ensure source is a proper dict for type safety
-        source_attr = getattr(meta, "source", {})
-        source_dict = dict(source_attr) if isinstance(source_attr, dict) else {}
-
-        info = {
-            "id": str(uid),  # prefer unique ID to avoid collisions
-            "legacy_id": str(getattr(meta, "shard_id", p.stem)),
-            "start": 0,  # placeholder; filled after we know offsets
-            "stop": int(X_np.shape[0]),
-            "dtraj": None if dtraj is None else np.asarray(dtraj, dtype=np.int32),
-            "bias_potential": bias_arr,
-            "temperature": float(meta.temperature),
-            # include entire source for downstream validators (kind/run/paths)
-            "source": source_dict,
-        }
-        # expose path and run uid for debugging/uniqueness
-        try:
-            info["source_path"] = str(
-                Path(
-                    source_dict.get("traj")
-                    or source_dict.get("path")
-                    or source_dict.get("file")
-                    or p
-                ).resolve()
-            )
-            info["run_uid"] = (
-                source_dict.get("run_uid")
-                or source_dict.get("run_id")
-                or source_dict.get("run_dir")
-            )
-        except Exception:
-            pass
-        shards_info.append(info)
-
-    # Safety rails
-    if kinds:
-        unique_kinds = sorted(set(kinds))
-        if len(unique_kinds) > 1:
-            raise TemperatureConsistencyError(
-                f"Mixed shard kinds not allowed: {unique_kinds}. DEMUX-only is required."
-            )
-        if unique_kinds[0] != "demux":
-            raise TemperatureConsistencyError(
-                f"Replica shards are not accepted for learning; found kind={unique_kinds[0]}"
-            )
-    if temps:
-        utemps = sorted(set(round(float(t), 6) for t in temps))
-        if len(utemps) > 1:
-            raise TemperatureConsistencyError(
-                f"Multiple DEMUX temperatures detected: {utemps}. Provide a single-T dataset."
-            )
-
-    cv_names = tuple(cv_names_ref or tuple())
-    periodic = tuple(periodic_ref or tuple())
-    X_all = np.vstack(X_parts).astype(np.float64, copy=False)
-
-    # Fill global start/stop offsets for shards_info to allow slice-based access.
-    offset = 0
-    for s in shards_info:
-        length = int(s["stop"])  # currently holds local length
-        if length <= 0:
-            raise TemperatureConsistencyError("Shard length must be positive")
-        s["start"] = offset
-        s["stop"] = offset + length
-        offset += length
-
-    dataset = {
-        "X": X_all,
-        "cv_names": cv_names,
-        "periodic": periodic,
-        "dtrajs": [d for d in dtrajs if d is not None],
-        "__shards__": shards_info,
-    }
-    return dataset
+    aggregated = _aggregate_shard_contents(shard_jsons)
+    return aggregated.dataset
 
 
 def _validate_or_set_refs(
@@ -305,111 +356,13 @@ def aggregate_and_build(
     Returns (BuildResult, dataset_hash_hex).
     """
 
-    if not shard_jsons:
-        raise ValueError("No shard JSONs provided")
+    aggregated = _aggregate_shard_contents(shard_jsons)
 
-    cv_names_ref: tuple[str, ...] | None = None
-    periodic_ref: tuple[bool, ...] | None = None
-    X_parts: List[np.ndarray] = []
-    dtrajs: List[np.ndarray | None] = []
-    shards_info: List[dict] = []
-
-    # Enforce DEMUX-only and single-temperature safety rails
-    kinds: list[str] = []
-    temps: list[float] = []
-
-    for p in shard_jsons:
-        p = Path(p)
-        try:
-            meta2 = load_shard_meta(p)
-            kinds.append(meta2.kind)
-            if meta2.kind == "demux":
-                temps.append(float(getattr(meta2, "temperature_K")))
-        except Exception:
-            pass
-        meta, X, dtraj = read_shard(p)
-        meta_kind = getattr(meta, "kind", None)
-        if meta_kind:
-            kinds.append(str(meta_kind))
-        else:
-            source_info = getattr(meta, "source", {})
-            if isinstance(source_info, dict):
-                raw_path = (
-                    source_info.get("traj")
-                    or source_info.get("path")
-                    or source_info.get("file")
-                    or source_info.get("source_path")
-                    or ""
-                )
-                lower = str(raw_path).lower()
-                if "demux" in lower:
-                    kinds.append("demux")
-                elif lower:
-                    kinds.append("replica")
-        try:
-            temps.append(float(getattr(meta, "temperature")))
-        except Exception:
-            pass
-        cv_names_ref, periodic_ref = _validate_or_set_refs(
-            meta, cv_names_ref, periodic_ref
-        )
-        X_np = np.asarray(X, dtype=np.float64)
-        X_parts.append(X_np)
-        dtrajs.append(None if dtraj is None else np.asarray(dtraj, dtype=np.int32))
-        bias_arr = _maybe_read_bias(p.with_name(f"{meta.shard_id}.npz"))
-        uid = _unique_shard_uid(meta, p)
-        info = {
-            "id": str(uid),
-            "legacy_id": str(getattr(meta, "shard_id", p.stem)),
-            "start": 0,  # placeholder; filled after we know offsets
-            "stop": int(X_np.shape[0]),
-            "dtraj": None if dtraj is None else np.asarray(dtraj, dtype=np.int32),
-            "bias_potential": bias_arr,
-            "temperature": float(meta.temperature),
-            # also carry source metadata for validators and cache/cleanup
-            "source": dict(getattr(meta, "source", {})),
-        }
-        shards_info.append(info)
-
-    # Safety rails
-    if kinds:
-        unique_kinds = sorted(set(kinds))
-        if len(unique_kinds) > 1:
-            raise TemperatureConsistencyError(
-                f"Mixed shard kinds not allowed: {unique_kinds}. DEMUX-only is required."
-            )
-        if unique_kinds[0] != "demux":
-            raise TemperatureConsistencyError(
-                f"Replica shards are not accepted for learning; found kind={unique_kinds[0]}"
-            )
-    if temps:
-        utemps = sorted(set(round(float(t), 6) for t in temps))
-        if len(utemps) > 1:
-            raise TemperatureConsistencyError(
-                f"Multiple DEMUX temperatures detected: {utemps}. Provide a single-T dataset."
-            )
-
-    cv_names = tuple(cv_names_ref or tuple())
-    periodic = tuple(periodic_ref or tuple())
-    X_all = np.vstack(X_parts).astype(np.float64, copy=False)
-
-    # Fill global start/stop offsets for shards_info to allow slice-based access.
-    offset = 0
-    for s in shards_info:
-        length = int(s["stop"])  # currently holds local length
-        if length <= 0:
-            raise TemperatureConsistencyError("Shard length must be positive")
-        s["start"] = offset
-        s["stop"] = offset + length
-        offset += length
-
-    dataset = {
-        "X": X_all,
-        "cv_names": cv_names,
-        "periodic": periodic,
-        "dtrajs": [d for d in dtrajs if d is not None],
-        "__shards__": shards_info,
-    }
+    dataset = aggregated.dataset
+    dtrajs = aggregated.dtrajs
+    shards_info = aggregated.shards_info
+    cv_names = aggregated.cv_names
+    X_all = aggregated.X_all
 
     # Optional unified progress callback forwarding (aliases accepted)
     cb = coerce_progress_callback(kwargs)

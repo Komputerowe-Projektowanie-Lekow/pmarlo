@@ -113,38 +113,14 @@ def compute_diagnostics(
     warnings: list[str] = []
 
     for name, split in splits.items():
-        try:
-            X = _coerce_array(split)
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("Skipping diagnostic split %s: %s", name, exc)
+        processed = _compute_split_diagnostics(name, split, taus)
+        if processed is None:
             continue
-        metadata = None
-        if isinstance(split, Mapping):
-            metadata = split.get("meta")
-        whitened, _ = apply_whitening_from_metadata(X, metadata)
-
-        inputs = None
-        if isinstance(split, Mapping):
-            inputs = _extract_optional_inputs(split)
-        if inputs is not None:
-            if inputs.shape[0] != whitened.shape[0]:
-                length = min(inputs.shape[0], whitened.shape[0])
-                inputs = inputs[:length]
-                whitened = whitened[:length]
-            corr = _canonical_correlations(inputs, whitened)
-            if corr:
-                canonical[name] = corr
-                if corr and min(corr) > 0.95:
-                    msg = f"{name}: CVs reparametrize inputs"
-                    warnings.append(msg)
-                    logger.warning(msg)
-        curve = _autocorrelation_curve(whitened, taus)
-        autocorr[name] = {"taus": list(taus), "values": curve}
-        if len(curve) >= 4 and np.isfinite(curve[0]) and np.isfinite(curve[3]):
-            if abs(curve[0] - curve[3]) < 0.05:
-                msg = f"{name}: CV autocorrelation flat across lags"
-                warnings.append(msg)
-                logger.warning(msg)
+        split_canonical, split_autocorr, split_warnings = processed
+        if split_canonical:
+            canonical[name] = split_canonical
+        autocorr[name] = split_autocorr
+        warnings.extend(split_warnings)
 
     if diag_mass is not None and np.isfinite(diag_mass) and diag_mass > 0.95:
         msg = f"MSM diagonal mass high ({diag_mass:.3f})"
@@ -158,3 +134,46 @@ def compute_diagnostics(
         "taus": list(taus),
         "warnings": warnings,
     }
+
+
+def _compute_split_diagnostics(
+    name: str,
+    split: Any,
+    taus: Sequence[int],
+) -> tuple[list[float] | None, Dict[str, Any], list[str]] | None:
+    """Gather canonical correlations and autocorrelation curve for one split."""
+
+    try:
+        X = _coerce_array(split)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("Skipping diagnostic split %s: %s", name, exc)
+        return None
+
+    metadata = split.get("meta") if isinstance(split, Mapping) else None
+    whitened, _ = apply_whitening_from_metadata(X, metadata)
+
+    canonical: list[float] | None = None
+    warnings: list[str] = []
+    inputs = _extract_optional_inputs(split) if isinstance(split, Mapping) else None
+    if inputs is not None:
+        if inputs.shape[0] != whitened.shape[0]:
+            length = min(inputs.shape[0], whitened.shape[0])
+            inputs = inputs[:length]
+            whitened = whitened[:length]
+        correlations = _canonical_correlations(inputs, whitened)
+        if correlations:
+            canonical = correlations
+            if min(correlations) > 0.95:
+                msg = f"{name}: CVs reparametrize inputs"
+                warnings.append(msg)
+                logger.warning(msg)
+
+    curve = _autocorrelation_curve(whitened, taus)
+    autocorr = {"taus": list(taus), "values": curve}
+    if len(curve) >= 4 and np.isfinite(curve[0]) and np.isfinite(curve[3]):
+        if abs(curve[0] - curve[3]) < 0.05:
+            msg = f"{name}: CV autocorrelation flat across lags"
+            warnings.append(msg)
+            logger.warning(msg)
+
+    return canonical, autocorr, warnings

@@ -10,7 +10,7 @@ filenames as opaque.
 
 import json
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, List, Tuple
 
 from pmarlo.io.shard_id import parse_shard_id
 

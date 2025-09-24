@@ -1,8 +1,9 @@
-"""Frame reweighting helpers for MSM and FES analysis."""
+"""Frame reweighting helpers for MSM and FES analysis.
+
+Reweighting helpers for downstream MSM/FES analysis.
+"""
 
 from __future__ import annotations
-
-"""Reweighting helpers for downstream MSM/FES analysis."""
 
 import math
 from dataclasses import dataclass

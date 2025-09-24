@@ -20,7 +20,7 @@ from pmarlo.transform.progress import ProgressCB, ProgressReporter
 
 from ..replica_exchange import config as _cfg
 from .demux_engine import demux_streaming
-from .demux_metadata import DemuxIntegrityError, DemuxMetadata, serialize_metadata
+from .demux_metadata import DemuxIntegrityError, serialize_metadata
 from .demux_plan import build_demux_plan
 
 logger = logging.getLogger("pmarlo")

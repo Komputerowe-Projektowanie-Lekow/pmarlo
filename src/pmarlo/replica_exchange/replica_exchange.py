@@ -14,12 +14,12 @@ import os
 import pickle
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 import openmm
 from openmm import Platform, unit
-from openmm.app import ForceField, PDBFile, Simulation
+from openmm.app import PDBFile, Simulation
 
 from pmarlo.transform.progress import ProgressCB, ProgressPrinter, ProgressReporter
 
