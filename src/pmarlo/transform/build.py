@@ -116,6 +116,47 @@ def _temperature_matches_target(
     return any(abs(temp - target) <= tol for temp in temperatures)
 
 
+def _apply_demux_filter(
+    shards: Sequence[Path],
+    *,
+    demux_temperature: Optional[float],
+    tolerance: float,
+) -> List[Path]:
+    filtered: List[Path] = []
+    for shard_path in shards:
+        meta = _get_shard_metadata(shard_path)
+        if not _is_demux_shard(shard_path, meta):
+            continue
+        if demux_temperature is None:
+            filtered.append(shard_path)
+            continue
+        temps = _collect_demux_temperatures(meta)
+        if not temps:
+            continue
+        if _temperature_matches_target(temps, float(demux_temperature), tolerance):
+            filtered.append(shard_path)
+    return filtered
+
+
+def _select_mode_subset(
+    shards: Sequence[Path], mode: str, max_shards: Optional[int]
+) -> List[Path]:
+    limit = max_shards or 10
+    if mode == "first":
+        return list(shards[:limit])
+    if mode == "last":
+        return list(shards[-limit:])
+    if mode == "random":
+        import random
+
+        shuffled = list(shards)
+        random.shuffle(shuffled)
+        return shuffled[:limit]
+    if mode == "all":
+        return list(shards if max_shards is None else shards[:max_shards])
+    raise ValueError(f"Unknown selection mode: {mode}")
+
+
 def select_shards(
     all_shards: Sequence[Union[str, Path]],
     *,
@@ -133,44 +174,16 @@ def select_shards(
     tol = demux_temperature_tolerance if demux_temperature_tolerance >= 0 else 0.0
 
     if mode == "demux":
-        filtered: List[Path] = []
-        for shard_path in shards:
-            meta = _get_shard_metadata(shard_path)
-            if not _is_demux_shard(shard_path, meta):
-                continue
-            if demux_temperature is not None:
-                temps = _collect_demux_temperatures(meta)
-                if not temps:
-                    continue
-                if not _temperature_matches_target(
-                    temps, float(demux_temperature), tol
-                ):
-                    continue
-            filtered.append(shard_path)
-        shards = filtered
+        filtered = _apply_demux_filter(
+            shards,
+            demux_temperature=demux_temperature,
+            tolerance=tol,
+        )
+        if max_shards is not None and len(filtered) > max_shards:
+            filtered = filtered[:max_shards]
+        return filtered
 
-    elif mode == "first":
-        limit = max_shards if max_shards else 10
-        shards = shards[:limit]
-    elif mode == "last":
-        limit = max_shards if max_shards else 10
-        shards = shards[-limit:]
-    elif mode == "random":
-        import random
-
-        shuffled = list(shards)
-        random.shuffle(shuffled)
-        limit = max_shards if max_shards else 10
-        shards = shuffled[:limit]
-    elif mode == "all":
-        pass
-    else:
-        raise ValueError(f"Unknown selection mode: {mode}")
-
-    if max_shards and mode in {"demux", "all"} and len(shards) > max_shards:
-        shards = shards[:max_shards]
-
-    return shards
+    return _select_mode_subset(shards, mode, max_shards)
 
 
 def group_demux_shards_by_temperature(
@@ -202,6 +215,58 @@ def group_demux_shards_by_temperature(
         groups[key].append(shard_path)
 
     return groups
+
+
+def _serialize_array_payload(arr: Optional[np.ndarray]) -> Optional[Dict[str, Any]]:
+    if arr is None:
+        return None
+    return {
+        "dtype": str(arr.dtype),
+        "shape": list(arr.shape),
+        "data": base64.b64encode(arr.tobytes()).decode("ascii"),
+    }
+
+
+def _serialize_generic_payload(obj: Any) -> Any:
+    if obj is None:
+        return None
+    if hasattr(obj, "to_dict"):
+        return obj.to_dict()  # type: ignore[call-arg]
+    if is_dataclass(obj) and not isinstance(obj, type):
+        return asdict(obj)
+    if hasattr(obj, "__dict__"):
+        return obj.__dict__
+    return _sanitize_artifacts(obj)
+
+
+def _serialize_fes_payload(obj: Any) -> Any:
+    from ..markov_state_model.free_energy import FESResult
+
+    if obj is None:
+        return None
+    if isinstance(obj, FESResult):
+        return {
+            "F": _serialize_array_payload(obj.F),
+            "xedges": _serialize_array_payload(obj.xedges),
+            "yedges": _serialize_array_payload(obj.yedges),
+            "levels_kJmol": _serialize_array_payload(obj.levels_kJmol),
+            "metadata": _sanitize_artifacts(obj.metadata),
+        }
+    if isinstance(obj, dict):
+        return obj
+    return _serialize_generic_payload(obj)
+
+
+def _serialize_applied_opts(
+    applied: Optional[AppliedOpts],
+) -> Optional[Dict[str, Any]]:
+    if applied is None:
+        return None
+    payload = asdict(applied)
+    shards = payload.get("selected_shards")
+    if isinstance(shards, list):
+        payload["selected_shards"] = [str(s) for s in shards]
+    return payload
 
 
 # --- Configuration classes ---------------------------------------------------
@@ -364,62 +429,21 @@ class BuildResult:
     diagnostics: Optional[Dict[str, Any]] = None
 
     def to_json(self) -> str:
-        def _serialize_array(arr: Optional[np.ndarray]) -> Optional[Dict[str, Any]]:
-            if arr is None:
-                return None
-            return {
-                "dtype": str(arr.dtype),
-                "shape": list(arr.shape),
-                "data": base64.b64encode(arr.tobytes()).decode("ascii"),
-            }
-
-        def _serialize_generic(obj: Any) -> Any:
-            if obj is None:
-                return None
-            if hasattr(obj, "to_dict"):
-                return obj.to_dict()  # type: ignore[call-arg]
-            if is_dataclass(obj) and not isinstance(obj, type):
-                return asdict(obj)
-            if hasattr(obj, "__dict__"):
-                return obj.__dict__
-            return _sanitize_artifacts(obj)
-
-        def _serialize_fes(obj: Any) -> Any:
-            from ..markov_state_model.free_energy import FESResult
-
-            if obj is None:
-                return None
-            if isinstance(obj, FESResult):
-                return {
-                    "F": _serialize_array(obj.F),
-                    "xedges": _serialize_array(obj.xedges),
-                    "yedges": _serialize_array(obj.yedges),
-                    "levels_kJmol": _serialize_array(obj.levels_kJmol),
-                    "metadata": _sanitize_artifacts(obj.metadata),
-                }
-            if isinstance(obj, dict):
-                return obj
-            return _serialize_generic(obj)
-
-        applied_dict = None
-        if self.applied_opts is not None:
-            applied_dict = asdict(self.applied_opts)
-            shards = applied_dict.get("selected_shards")
-            if isinstance(shards, list):
-                applied_dict["selected_shards"] = [str(s) for s in shards]
-
+        applied_dict = _serialize_applied_opts(self.applied_opts)
         data = {
-            "transition_matrix": _serialize_array(self.transition_matrix),
-            "stationary_distribution": _serialize_array(self.stationary_distribution),
-            "msm": _serialize_generic(self.msm),
-            "fes": _serialize_fes(self.fes),
-            "tram": _serialize_generic(self.tram),
+            "transition_matrix": _serialize_array_payload(self.transition_matrix),
+            "stationary_distribution": _serialize_array_payload(
+                self.stationary_distribution
+            ),
+            "msm": _serialize_generic_payload(self.msm),
+            "fes": _serialize_fes_payload(self.fes),
+            "tram": _serialize_generic_payload(self.tram),
             "metadata": self.metadata.to_dict() if self.metadata else None,
             "applied_opts": applied_dict,
             "n_frames": self.n_frames,
             "n_shards": self.n_shards,
             "feature_names": self.feature_names,
-            "cluster_populations": _serialize_array(self.cluster_populations),
+            "cluster_populations": _serialize_array_payload(self.cluster_populations),
             "artifacts": _sanitize_artifacts(self.artifacts),
             "messages": list(self.messages),
             "flags": _sanitize_artifacts(dict(self.flags)),
@@ -490,6 +514,293 @@ class BuildResult:
 # --- Build functions ---------------------------------------------------------
 
 
+def _prepare_applied_state(
+    opts: BuildOpts,
+    plan: Optional[TransformPlan],
+    applied: Optional[AppliedOpts],
+) -> Tuple[Optional[TransformPlan], AppliedOpts]:
+    plan_to_use = plan or opts.plan
+    if applied is None:
+        applied_obj = AppliedOpts.from_opts(opts, [], plan=plan_to_use)
+    else:
+        applied_obj = applied
+        if applied_obj.original_opts is None:
+            applied_obj.original_opts = opts
+        if applied_obj.actual_plan is None and plan_to_use is not None:
+            applied_obj.actual_plan = plan_to_use
+    return plan_to_use, applied_obj
+
+
+def _inject_model_dir(
+    plan: Optional[TransformPlan], applied: AppliedOpts
+) -> Optional[TransformPlan]:
+    if plan is None or not isinstance(applied.notes, dict):
+        return plan
+    raw_model_dir = applied.notes.get("model_dir")
+    model_dir_str: Optional[str] = None
+    if raw_model_dir:
+        try:
+            model_dir_str = str(raw_model_dir)
+        except Exception:
+            model_dir_str = None
+    if not model_dir_str:
+        return plan
+    updated_steps = []
+    plan_changed = False
+    for step in plan.steps:
+        if step.name == "LEARN_CV" and "model_dir" not in step.params:
+            params = dict(step.params)
+            params["model_dir"] = model_dir_str
+            updated_steps.append(TransformStep(step.name, params))
+            plan_changed = True
+        else:
+            updated_steps.append(step)
+    return TransformPlan(steps=tuple(updated_steps)) if plan_changed else plan
+
+
+def _create_metadata(
+    opts: BuildOpts, plan: Optional[TransformPlan], applied: AppliedOpts
+) -> Tuple[RunMetadata, datetime]:
+    import platform
+    import socket
+    from datetime import datetime as _dt
+
+    start_dt = _dt.now()
+    metadata = RunMetadata(
+        run_id=_generate_run_id(),
+        start_time=start_dt.isoformat(),
+        hostname=socket.gethostname(),
+        transform_plan=tuple(plan.steps) if plan else None,
+        applied_opts=applied,
+        seed=opts.seed,
+        temperature=opts.temperature,
+        python_version=platform.python_version(),
+    )
+    return metadata, start_dt
+
+
+def _maybe_apply_plan(
+    plan: Optional[TransformPlan],
+    dataset: Any,
+    applied: AppliedOpts,
+    progress_callback: Optional[ProgressCB],
+) -> Any:
+    if plan is None:
+        return dataset
+    logger.info("Applying transform plan with %d steps", len(plan.steps))
+    result = _apply_plan(plan, dataset, progress_callback=progress_callback)
+    applied.actual_plan = plan
+    return result
+
+
+def _extract_artifacts_dict(dataset: Any) -> Dict[str, Any]:
+    if isinstance(dataset, dict):
+        raw = dataset.get("__artifacts__")
+        if isinstance(raw, dict):
+            return _sanitize_artifacts(raw)
+    return {}
+
+
+def _record_deeptica_notes(artifacts: Dict[str, Any], applied: AppliedOpts) -> None:
+    try:
+        if "mlcv_deeptica" not in artifacts:
+            return
+        note = {"method": "deeptica"}
+        summary = artifacts.get("mlcv_deeptica", {})
+        if isinstance(summary, dict):
+            for key in ("lag", "n_out", "pairs_total", "model_prefix"):
+                if key in summary and summary[key] is not None:
+                    note[key] = summary[key]
+        if applied.notes is None:
+            applied.notes = {}
+        applied.notes["mlcv"] = note
+    except Exception:
+        pass
+
+
+def _record_cv_bins(working_dataset: Any, applied: AppliedOpts) -> None:
+    try:
+        if not isinstance(working_dataset, dict) or "X" not in working_dataset:
+            return
+        X_arr = np.asarray(working_dataset.get("X"), dtype=float)
+        if X_arr.ndim != 2 or X_arr.shape[1] < 2 or X_arr.shape[0] <= 0:
+            return
+        cv1 = X_arr[:, 0]
+        cv2 = X_arr[:, 1]
+        n1 = 32
+        n2 = 32
+        if isinstance(applied.bins, dict):
+            try:
+                n1 = int(applied.bins.get("cv1", n1))
+                n2 = int(applied.bins.get("cv2", n2))
+            except Exception:
+                n1, n2 = 32, 32
+
+        def _bounds(arr: np.ndarray) -> Tuple[float, float]:
+            a_min = float(np.nanmin(arr))
+            a_max = float(np.nanmax(arr))
+            if not np.isfinite(a_min) or not np.isfinite(a_max) or a_max <= a_min:
+                return -1.0, 1.0
+            return a_min, a_max
+
+        a_min, a_max = _bounds(cv1)
+        b_min, b_max = _bounds(cv2)
+        e1 = np.linspace(a_min, a_max, int(max(2, n1)) + 1).astype(float).tolist()
+        e2 = np.linspace(b_min, b_max, int(max(2, n2)) + 1).astype(float).tolist()
+        if applied.notes is None:
+            applied.notes = {}
+        applied.notes["cv_bin_edges"] = {"cv1": e1, "cv2": e2}
+    except Exception:
+        pass
+
+
+def _build_msm_payload(
+    working_dataset: Any, opts: BuildOpts, applied: AppliedOpts
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[Any]]:
+    if opts.msm_mode == "none":
+        return None, None, None
+    logger.info("Building MSM...")
+    msm_result = _build_msm(working_dataset, opts, applied)
+    if isinstance(msm_result, tuple) and len(msm_result) == 2:
+        return msm_result[0], msm_result[1], None
+    return None, None, msm_result
+
+
+def _build_fes_payload(
+    working_dataset: Any, opts: BuildOpts, applied: AppliedOpts, metadata: RunMetadata
+) -> Optional[Any]:
+    if not opts.enable_fes:
+        return None
+    logger.info("Building FES...")
+    fes_raw = _build_fes(working_dataset, opts, applied)
+    if isinstance(fes_raw, dict) and "result" in fes_raw:
+        result_obj = fes_raw.get("result")
+        names = tuple(
+            x for x in (fes_raw.get("cv1_name"), fes_raw.get("cv2_name")) if x
+        )
+        bins_tuple: Optional[Tuple[int, ...]] = None
+        if isinstance(applied.bins, dict) and names:
+            candidate: List[int] = []
+            for name in names:
+                key = str(name)
+                value = applied.bins.get(key) if applied.bins else None
+                if value is None and applied.bins:
+                    value = applied.bins.get(key.lower())
+                if value is None:
+                    candidate = []
+                    break
+                candidate.append(int(value))
+            if candidate and all(v > 0 for v in candidate):
+                bins_tuple = tuple(candidate)
+        if bins_tuple is None and isinstance(applied.bins, dict):
+            ordered = [int(v) for v in applied.bins.values() if int(v) > 0]
+            if names and len(ordered) >= len(names):
+                bins_tuple = tuple(ordered[: len(names)])
+        metadata.fes = {
+            "bins": bins_tuple,
+            "names": names,
+            "temperature": opts.temperature,
+        }
+        return result_obj
+    metadata.fes = None
+    if isinstance(fes_raw, dict) and fes_raw.get("skipped"):
+        return None
+    return fes_raw
+
+
+def _build_tram_payload(
+    working_dataset: Any, opts: BuildOpts, applied: AppliedOpts
+) -> Optional[Any]:
+    if not opts.enable_tram:
+        return None
+    logger.info("Building TRAM...")
+    return _build_tram(working_dataset, opts, applied)
+
+
+def _update_metadata_end(metadata: RunMetadata, start_dt: datetime) -> None:
+    from datetime import datetime as _dt
+
+    end_dt = _dt.now()
+    metadata.end_time = end_dt.isoformat()
+    metadata.duration_seconds = (end_dt - start_dt).total_seconds()
+    metadata.success = True
+
+
+def _resolve_shard_counts(applied: AppliedOpts, dataset: Any) -> int:
+    if applied.selected_shards:
+        return len(applied.selected_shards)
+    if isinstance(dataset, dict):
+        shards_meta = dataset.get("__shards__")
+        if isinstance(shards_meta, list):
+            return len(shards_meta)
+    return 0
+
+
+def _ensure_selected_shards(applied: AppliedOpts, dataset: Any) -> None:
+    if applied.selected_shards:
+        return
+    if isinstance(dataset, dict):
+        shards_meta = dataset.get("__shards__")
+        if isinstance(shards_meta, list):
+            try:
+                applied.selected_shards = [
+                    Path(str(item.get("id", ""))) for item in shards_meta
+                ]
+            except Exception:
+                applied.selected_shards = []
+
+
+def _attach_fes_quality(artifacts: Dict[str, Any], fes_payload: Any) -> Dict[str, Any]:
+    try:
+        from ..markov_state_model.free_energy import FESResult
+
+        if isinstance(fes_payload, FESResult):
+            quality = _extract_fes_quality_artifact(fes_payload)
+            if quality:
+                enriched = dict(artifacts)
+                enriched["fes_quality"] = _sanitize_artifacts(quality)
+                return enriched
+    except Exception:
+        logger.debug("Failed to derive FES quality artifact", exc_info=True)
+    return artifacts
+
+
+def _collect_flags(
+    transition_matrix: Optional[np.ndarray],
+    fes_payload: Optional[Any],
+    tram_payload: Optional[Any],
+    artifacts: Dict[str, Any],
+) -> Dict[str, Any]:
+    flags: Dict[str, Any] = {}
+    if transition_matrix is not None and transition_matrix.size > 0:
+        flags["has_msm"] = True
+    if fes_payload is not None:
+        flags["has_fes"] = True
+    if tram_payload not in (None, {}):
+        flags["has_tram"] = True
+    if "mlcv_deeptica" in artifacts:
+        summary = artifacts["mlcv_deeptica"]
+        if isinstance(summary, dict):
+            flags["mlcv_deeptica_applied"] = bool(summary.get("applied"))
+    return flags
+
+
+def _compute_diagnostics_safe(
+    dataset: Any, transition_matrix: Optional[np.ndarray]
+) -> Optional[Dict[str, Any]]:
+    try:
+        diag_mass_val = None
+        if transition_matrix is not None and transition_matrix.size > 0:
+            diag_mass_val = float(
+                np.trace(transition_matrix) / transition_matrix.shape[0]
+            )
+        diagnostics = compute_diagnostics(dataset, diag_mass=diag_mass_val)
+        return diagnostics
+    except Exception:
+        logger.debug("Failed to compute diagnostics", exc_info=True)
+        return None
+
+
 def build_result(
     dataset: Any,
     opts: Optional[BuildOpts] = None,
@@ -501,252 +812,37 @@ def build_result(
     if opts is None:
         opts = BuildOpts()
 
-    plan_to_use = plan or opts.plan
-
-    if applied is None:
-        applied_obj = AppliedOpts.from_opts(opts, [], plan=plan_to_use)
-    else:
-        applied_obj = applied
-        if applied_obj.original_opts is None:
-            applied_obj.original_opts = opts
-        if applied_obj.actual_plan is None and plan_to_use is not None:
-            applied_obj.actual_plan = plan_to_use
-
-    set_global_seed(opts.seed)
-
-    if plan_to_use and isinstance(applied_obj.notes, dict):
-        raw_model_dir = applied_obj.notes.get("model_dir")
-        model_dir_str: Optional[str] = None
-        if raw_model_dir:
-            try:
-                model_dir_str = str(raw_model_dir)
-            except Exception:
-                model_dir_str = None
-        if model_dir_str:
-            updated_steps = []
-            plan_changed = False
-            for step in plan_to_use.steps:
-                if step.name == "LEARN_CV" and "model_dir" not in step.params:
-                    params = dict(step.params)
-                    params["model_dir"] = model_dir_str
-                    updated_steps.append(TransformStep(step.name, params))
-                    plan_changed = True
-                else:
-                    updated_steps.append(step)
-            if plan_changed:
-                plan_to_use = TransformPlan(steps=tuple(updated_steps))
-
-    import platform
-    import socket
-    from datetime import datetime
-
-    start_dt = datetime.now()
-    metadata = RunMetadata(
-        run_id=_generate_run_id(),
-        start_time=start_dt.isoformat(),
-        hostname=socket.gethostname(),
-        transform_plan=tuple(plan_to_use.steps) if plan_to_use else None,
-        applied_opts=applied_obj,
-        seed=opts.seed,
-        temperature=opts.temperature,
-        python_version=platform.python_version(),
-    )
+    plan_to_use, applied_obj = _prepare_applied_state(opts, plan, applied)
+    plan_to_use = _inject_model_dir(plan_to_use, applied_obj)
+    metadata, start_dt = _create_metadata(opts, plan_to_use, applied_obj)
 
     try:
-        working_dataset = dataset
-        if plan_to_use is not None:
-            logger.info("Applying transform plan with %d steps", len(plan_to_use.steps))
-            working_dataset = _apply_plan(
-                plan_to_use, working_dataset, progress_callback=progress_callback
-            )
-            applied_obj.actual_plan = plan_to_use
+        working_dataset = _maybe_apply_plan(
+            plan_to_use, dataset, applied_obj, progress_callback
+        )
 
-        artifacts: Dict[str, Any] = {}
-        if isinstance(working_dataset, dict):
-            raw_artifacts = working_dataset.get("__artifacts__")
-            if isinstance(raw_artifacts, dict):
-                artifacts = _sanitize_artifacts(raw_artifacts)
+        artifacts = _extract_artifacts_dict(working_dataset)
+        _record_deeptica_notes(artifacts, applied_obj)
+        _record_cv_bins(working_dataset, applied_obj)
 
-        # Record provenance notes for learned CVs, if present
-        try:
-            if "mlcv_deeptica" in artifacts:
-                # Minimal note to satisfy downstream gating/tests
-                note = {"method": "deeptica"}
-                # Include selected high-signal fields when available
-                try:
-                    summ = artifacts.get("mlcv_deeptica", {})
-                    if isinstance(summ, dict):
-                        for key in ("lag", "n_out", "pairs_total", "model_prefix"):
-                            if key in summ and summ[key] is not None:
-                                note[key] = summ[key]
-                except Exception:
-                    pass
-                if applied_obj.notes is None:
-                    applied_obj.notes = {}
-                applied_obj.notes["mlcv"] = note
-        except Exception:
-            # Notes are best-effort and must not break the build
-            pass
+        transition_matrix, stationary_distribution, msm_payload = _build_msm_payload(
+            working_dataset, opts, applied_obj
+        )
+        fes_payload = _build_fes_payload(working_dataset, opts, applied_obj, metadata)
+        tram_payload = _build_tram_payload(working_dataset, opts, applied_obj)
 
-        # Also record CV bin edges for the first two learned CVs
-        try:
-            if isinstance(working_dataset, dict) and "X" in working_dataset:
-                X_arr = np.asarray(working_dataset.get("X"), dtype=float)
-                if X_arr.ndim == 2 and X_arr.shape[1] >= 2 and X_arr.shape[0] > 0:
-                    cv1 = X_arr[:, 0]
-                    cv2 = X_arr[:, 1]
-                    n1 = 32
-                    n2 = 32
-                    try:
-                        if isinstance(applied_obj.bins, dict):
-                            n1 = int(applied_obj.bins.get("cv1", n1))
-                            n2 = int(applied_obj.bins.get("cv2", n2))
-                    except Exception:
-                        pass
-
-                    def _bounds(arr):
-                        a_min = float(np.nanmin(arr))
-                        a_max = float(np.nanmax(arr))
-                        if (
-                            not np.isfinite(a_min)
-                            or not np.isfinite(a_max)
-                            or a_max <= a_min
-                        ):
-                            return -1.0, 1.0
-                        return a_min, a_max
-
-                    a_min, a_max = _bounds(cv1)
-                    b_min, b_max = _bounds(cv2)
-                    e1 = (
-                        np.linspace(a_min, a_max, int(max(2, n1)) + 1)
-                        .astype(float)
-                        .tolist()
-                    )
-                    e2 = (
-                        np.linspace(b_min, b_max, int(max(2, n2)) + 1)
-                        .astype(float)
-                        .tolist()
-                    )
-                    if applied_obj.notes is None:
-                        applied_obj.notes = {}
-                    applied_obj.notes["cv_bin_edges"] = {"cv1": e1, "cv2": e2}
-        except Exception:
-            pass
-
-        transition_matrix: Optional[np.ndarray] = None
-        stationary_distribution: Optional[np.ndarray] = None
-        msm_payload: Optional[Any] = None
-        if opts.msm_mode != "none":
-            logger.info("Building MSM...")
-            msm_result = _build_msm(working_dataset, opts, applied_obj)
-            if isinstance(msm_result, tuple) and len(msm_result) == 2:
-                transition_matrix, stationary_distribution = msm_result
-            else:
-                msm_payload = msm_result
-
-        fes_payload: Optional[Any] = None
-        if opts.enable_fes:
-            logger.info("Building FES...")
-            fes_raw = _build_fes(working_dataset, opts, applied_obj)
-            if isinstance(fes_raw, dict) and "result" in fes_raw:
-                result_obj = fes_raw.get("result")
-                fes_names = tuple(
-                    x for x in (fes_raw.get("cv1_name"), fes_raw.get("cv2_name")) if x
-                )
-                bins_tuple: Optional[Tuple[int, ...]] = None
-                if isinstance(applied_obj.bins, dict) and fes_names:
-                    candidate: List[int] = []
-                    for name in fes_names:
-                        key = str(name)
-                        value = applied_obj.bins.get(key)
-                        if value is None:
-                            value = applied_obj.bins.get(key.lower())
-                        if value is None:
-                            candidate = []
-                            break
-                        candidate.append(int(value))
-                    if candidate and all(v > 0 for v in candidate):
-                        bins_tuple = tuple(candidate)
-                if bins_tuple is None and isinstance(applied_obj.bins, dict):
-                    ordered = [int(v) for v in applied_obj.bins.values() if int(v) > 0]
-                    if fes_names and len(ordered) >= len(fes_names):
-                        bins_tuple = tuple(ordered[: len(fes_names)])
-                metadata.fes = {
-                    "bins": bins_tuple,
-                    "names": fes_names,
-                    "temperature": opts.temperature,
-                }
-                fes_payload = result_obj
-            else:
-                metadata.fes = None
-                if isinstance(fes_raw, dict) and fes_raw.get("skipped"):
-                    fes_payload = None
-                else:
-                    fes_payload = fes_raw
-
-        tram_payload: Optional[Any] = None
-        if opts.enable_tram:
-            logger.info("Building TRAM...")
-            tram_payload = _build_tram(working_dataset, opts, applied_obj)
-
-        end_dt = datetime.now()
-        metadata.end_time = end_dt.isoformat()
-        metadata.duration_seconds = (end_dt - start_dt).total_seconds()
-        metadata.success = True
+        _update_metadata_end(metadata, start_dt)
 
         n_frames = _count_frames(working_dataset)
         feature_names = _extract_feature_names(working_dataset)
+        _ensure_selected_shards(applied_obj, dataset)
+        n_shards = _resolve_shard_counts(applied_obj, dataset)
 
-        if not applied_obj.selected_shards and isinstance(dataset, dict):
-            shards_meta = dataset.get("__shards__")
-            if isinstance(shards_meta, list):
-                try:
-                    applied_obj.selected_shards = [
-                        Path(str(item.get("id", ""))) for item in shards_meta
-                    ]
-                except Exception:
-                    applied_obj.selected_shards = []
-
-        n_shards = len(applied_obj.selected_shards)
-        if n_shards == 0 and isinstance(dataset, dict):
-            shards_meta = dataset.get("__shards__")
-            if isinstance(shards_meta, list):
-                n_shards = len(shards_meta)
-
-        flags: Dict[str, Any] = {}
-        if transition_matrix is not None and transition_matrix.size > 0:
-            flags["has_msm"] = True
-        if fes_payload is not None:
-            flags["has_fes"] = True
-            try:
-                from ..markov_state_model.free_energy import FESResult
-
-                if isinstance(fes_payload, FESResult):
-                    quality = _extract_fes_quality_artifact(fes_payload)
-                    if quality:
-                        artifacts = dict(artifacts)
-                        artifacts["fes_quality"] = _sanitize_artifacts(quality)
-            except Exception:
-                logger.debug("Failed to derive FES quality artifact", exc_info=True)
-        if tram_payload not in (None, {}):
-            flags["has_tram"] = True
-        if "mlcv_deeptica" in artifacts:
-            summary = artifacts["mlcv_deeptica"]
-            flags["mlcv_deeptica_applied"] = bool(summary.get("applied"))
-
-        diagnostics: Optional[Dict[str, Any]] = None
-        try:
-            diag_mass_val = None
-            if transition_matrix is not None and transition_matrix.size > 0:
-                diag_mass_val = float(
-                    np.trace(transition_matrix) / transition_matrix.shape[0]
-                )
-            diagnostics = compute_diagnostics(working_dataset, diag_mass=diag_mass_val)
-            if diagnostics.get("warnings"):
-                flags.setdefault("diagnostic_warnings", diagnostics["warnings"])
-        except Exception:
-            logger.debug("Failed to compute diagnostics", exc_info=True)
-            diagnostics = None
+        artifacts = _attach_fes_quality(artifacts, fes_payload)
+        flags = _collect_flags(transition_matrix, fes_payload, tram_payload, artifacts)
+        diagnostics = _compute_diagnostics_safe(working_dataset, transition_matrix)
+        if diagnostics and diagnostics.get("warnings"):
+            flags.setdefault("diagnostic_warnings", diagnostics["warnings"])
 
         return BuildResult(
             transition_matrix=transition_matrix,
@@ -777,29 +873,48 @@ def _generate_run_id() -> str:
     return f"build_{int(time.time())}_{os.getpid()}"
 
 
-def _count_frames(dataset: Any) -> int:
+def _safe_int(value: Any) -> Optional[int]:
     try:
-        if hasattr(dataset, "__len__"):
-            n_frames_attr = getattr(dataset, "n_frames", None)
-            if n_frames_attr is not None:
-                try:
-                    return int(n_frames_attr)
-                except Exception:
-                    pass
-            try:
-                return int(len(dataset))
-            except Exception:
-                pass
-        if hasattr(dataset, "n_frames"):
-            try:
-                return int(getattr(dataset, "n_frames"))
-            except Exception:
-                return 0
-        if isinstance(dataset, dict) and "X" in dataset:
-            return int(np.asarray(dataset["X"]).shape[0])
-        return 0
+        return int(value)
     except Exception:
-        return 0
+        return None
+
+
+def _frames_from_len(dataset: Any) -> Optional[int]:
+    if not hasattr(dataset, "__len__"):
+        return None
+    n_frames_attr = getattr(dataset, "n_frames", None)
+    if n_frames_attr is not None:
+        value = _safe_int(n_frames_attr)
+        if value is not None:
+            return value
+    try:
+        return _safe_int(len(dataset))
+    except Exception:
+        return None
+
+
+def _frames_from_attr(dataset: Any) -> Optional[int]:
+    if hasattr(dataset, "n_frames"):
+        return _safe_int(getattr(dataset, "n_frames"))
+    return None
+
+
+def _frames_from_mapping(dataset: Any) -> Optional[int]:
+    if isinstance(dataset, dict) and "X" in dataset:
+        try:
+            return _safe_int(np.asarray(dataset["X"]).shape[0])
+        except Exception:
+            return None
+    return None
+
+
+def _count_frames(dataset: Any) -> int:
+    for extractor in (_frames_from_len, _frames_from_attr, _frames_from_mapping):
+        value = extractor(dataset)
+        if value is not None:
+            return value
+    return 0
 
 
 def _extract_feature_names(dataset: Any) -> List[str]:
@@ -850,99 +965,114 @@ def _extract_cvs(
     return None
 
 
+def _ensure_msm_whitened(dataset: Any) -> None:
+    if not isinstance(dataset, dict):
+        return
+    try:
+        ensure_msm_inputs_whitened(dataset)
+    except Exception:
+        logger.debug("Failed to apply CV whitening before MSM build", exc_info=True)
+
+
+def _cluster_continuous_trajectories(
+    dataset: Dict[str, Any], opts: BuildOpts
+) -> Optional[List[np.ndarray]]:
+    if "X" not in dataset:
+        return None
+    X = dataset["X"]
+    if not isinstance(X, np.ndarray) or X.size == 0:
+        logger.warning("No continuous CV data available for clustering")
+        return None
+    logger.info(
+        "No discrete trajectories found, clustering continuous CV data for MSM..."
+    )
+    from ..markov_state_model.clustering import cluster_microstates
+
+    clustering = cluster_microstates(
+        X,
+        n_states=opts.n_states,
+        method="kmeans",
+        random_state=opts.seed,
+    )
+    labels = clustering.labels
+    if labels is None or labels.size == 0:
+        logger.warning("Clustering failed to produce labels")
+        return None
+
+    shards_info = dataset.get("__shards__", [])
+    if shards_info:
+        dtrajs: List[np.ndarray] = []
+        for shard_info in shards_info:
+            start = int(shard_info.get("start", 0))
+            stop = int(shard_info.get("stop", start))
+            if stop > start:
+                shard_labels = labels[start:stop]
+                dtrajs.append(shard_labels.astype(np.int32))
+        logger.info("Created %d discrete trajectories from clustering", len(dtrajs))
+        return dtrajs
+    logger.info("Created 1 discrete trajectory from clustering")
+    return [labels.astype(np.int32)]
+
+
+def _prepare_dtrajs(dataset: Any, opts: BuildOpts) -> Optional[List[np.ndarray]]:
+    raw = dataset
+    if isinstance(dataset, dict):
+        raw = dataset.get("dtrajs")
+    if raw and not (isinstance(raw, list) and all(d is None for d in raw)):
+        return list(raw) if isinstance(raw, list) else [np.asarray(raw)]
+    if isinstance(dataset, dict):
+        return _cluster_continuous_trajectories(dataset, opts)
+    logger.warning("No dtrajs or continuous data available for MSM building")
+    return None
+
+
+def _clean_dtrajs(dtrajs: Sequence[Any]) -> List[np.ndarray]:
+    clean: List[np.ndarray] = []
+    for traj in dtrajs:
+        if traj is None:
+            continue
+        arr = np.asarray(traj, dtype=np.int32).reshape(-1)
+        if arr.size:
+            clean.append(arr)
+    return clean
+
+
+def _observed_state_count(dtrajs: Sequence[np.ndarray]) -> int:
+    observed: set[int] = set()
+    for traj in dtrajs:
+        arr = np.asarray(traj, dtype=int).reshape(-1)
+        if arr.size:
+            observed.update(int(v) for v in arr if int(v) >= 0)
+    return len(observed)
+
+
+def _fallback_uniform_msm(
+    opts: BuildOpts, observed: int
+) -> Tuple[np.ndarray, np.ndarray]:
+    n_unique = observed if observed > 0 else int(max(1, opts.n_states or 1))
+    T = np.eye(n_unique, dtype=float)
+    pi = np.full(n_unique, 1.0 / n_unique, dtype=float)
+    return T, pi
+
+
 def _build_msm(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
     try:
-        dtrajs: Any = dataset
-        if isinstance(dataset, dict):
-            try:
-                ensure_msm_inputs_whitened(dataset)
-            except Exception:
-                logger.debug(
-                    "Failed to apply CV whitening before MSM build", exc_info=True
-                )
-        if isinstance(dataset, dict):
-            dtrajs = dataset.get("dtrajs")
-
-        # If dtrajs are missing or empty, try to create them from continuous CV data
-        if not dtrajs or (isinstance(dtrajs, list) and all(d is None for d in dtrajs)):
-            if isinstance(dataset, dict) and "X" in dataset:
-                logger.info(
-                    "No discrete trajectories found, clustering continuous CV data for MSM..."
-                )
-                X = dataset["X"]
-                if isinstance(X, np.ndarray) and X.size > 0:
-                    # Import clustering function
-                    from ..markov_state_model.clustering import cluster_microstates
-
-                    # Perform clustering to create discrete trajectories
-                    clustering = cluster_microstates(
-                        X,
-                        n_states=opts.n_states,
-                        method="kmeans",
-                        random_state=opts.seed,
-                    )
-
-                    labels = clustering.labels
-                    if labels is not None and labels.size > 0:
-                        # Split labels back into per-shard trajectories based on shard info
-                        shards_info = dataset.get("__shards__", [])
-                        if shards_info:
-                            dtrajs = []
-                            for shard_info in shards_info:
-                                start = int(shard_info.get("start", 0))
-                                stop = int(shard_info.get("stop", start))
-                                if stop > start:
-                                    shard_labels = labels[start:stop]
-                                    dtrajs.append(shard_labels.astype(np.int32))
-                        else:
-                            # Single trajectory case
-                            dtrajs = [labels.astype(np.int32)]
-
-                        logger.info(
-                            f"Created {len(dtrajs)} discrete trajectories from clustering"
-                        )
-                    else:
-                        logger.warning("Clustering failed to produce labels")
-                        return None
-                else:
-                    logger.warning("No continuous CV data available for clustering")
-                    return None
-            else:
-                logger.warning(
-                    "No dtrajs or continuous data available for MSM building"
-                )
-                return None
-
-        if isinstance(dtrajs, list):
-            clean: List[np.ndarray] = []
-            for dt in dtrajs:
-                if dt is None:
-                    continue
-                arr = np.asarray(dt, dtype=np.int32).reshape(-1)
-                if arr.size:
-                    clean.append(arr)
-            if not clean:
-                return None
-            dtrajs = clean
+        _ensure_msm_whitened(dataset)
+        dtrajs = _prepare_dtrajs(dataset, opts)
+        if not dtrajs:
+            return None
+        clean = _clean_dtrajs(dtrajs)
+        if not clean:
+            return None
         T, pi = build_simple_msm(
-            dtrajs,
+            clean,
             n_states=opts.n_states,
             lag=opts.lag_time,
             count_mode=str(opts.count_mode),
         )
         if pi.size == 0 or not np.isfinite(np.sum(pi)) or np.sum(pi) == 0.0:
-            observed: set[int] = set()
-            for traj in dtrajs:
-                if traj is None:
-                    continue
-                arr = np.asarray(traj, dtype=int).reshape(-1)
-                if arr.size:
-                    observed.update(int(v) for v in arr if int(v) >= 0)
-            n_unique = len(observed)
-            if n_unique <= 0:
-                n_unique = int(max(1, opts.n_states or 1))
-            T = np.eye(n_unique, dtype=float)
-            pi = np.full(n_unique, 1.0 / n_unique, dtype=float)
+            observed = _observed_state_count(clean)
+            return _fallback_uniform_msm(opts, observed)
         return T, pi
     except Exception as e:
         logger.warning("MSM build failed: %s", e)
@@ -968,6 +1098,81 @@ def _build_tram(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
 # --- Default builders ---------------------------------------------------------
 
 
+def _coerce_cv_arrays(
+    cv1: np.ndarray, cv2: np.ndarray
+) -> tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[str]]:
+    try:
+        a = np.asarray(cv1, dtype=float).reshape(-1)
+        b = np.asarray(cv2, dtype=float).reshape(-1)
+    except Exception as exc:
+        logger.warning("Failed to coerce CVs to float: %s", exc)
+        return None, None, "cv_coercion_failed"
+    if a.size == 0 or b.size == 0:
+        return None, None, "empty_cvs"
+    if not np.isfinite(a).all() or not np.isfinite(b).all():
+        return None, None, "non_finite_cvs"
+    return a, b, None
+
+
+def _histogram_fes_fallback(
+    a: np.ndarray,
+    b: np.ndarray,
+    names: Tuple[str, str],
+    opts: BuildOpts,
+) -> Dict[str, Any]:
+    try:
+        hist, xedges, yedges = np.histogram2d(a, b, bins=32)
+    except Exception as exc2:
+        logger.warning("Histogram fallback failed: %s", exc2)
+        a_min, a_max = float(np.min(a)), float(np.max(a))
+        b_min, b_max = float(np.min(b)), float(np.max(b))
+        if not np.isfinite(a_min) or not np.isfinite(a_max):
+            a_min, a_max = -1.0, 1.0
+        if not np.isfinite(b_min) or not np.isfinite(b_max):
+            b_min, b_max = -1.0, 1.0
+        if a_max <= a_min:
+            a_max = a_min + 1.0
+        if b_max <= b_min:
+            b_max = b_min + 1.0
+        xedges = np.linspace(a_min, a_max, 33)
+        yedges = np.linspace(b_min, b_max, 33)
+        hist = np.ones((32, 32), dtype=np.float64)
+    hist = np.asarray(hist, dtype=np.float64)
+    with np.errstate(divide="ignore"):
+        F = -np.log(hist + 1e-12)
+    from pmarlo.markov_state_model.free_energy import FESResult
+
+    fallback = FESResult(
+        F=F,
+        xedges=xedges,
+        yedges=yedges,
+        metadata={"method": "histogram", "temperature": opts.temperature},
+    )
+    return {"result": fallback, "cv1_name": names[0], "cv2_name": names[1]}
+
+
+def _generate_fes(
+    a: np.ndarray,
+    b: np.ndarray,
+    names: Tuple[str, str],
+    periodic: Tuple[bool, bool],
+    opts: BuildOpts,
+) -> Dict[str, Any]:
+    try:
+        from pmarlo.markov_state_model.free_energy import generate_2d_fes
+
+        fes = generate_2d_fes(
+            a,
+            b,
+            temperature=opts.temperature,
+            periodic=periodic,
+        )
+        return {"result": fes, "cv1_name": names[0], "cv2_name": names[1]}
+    except Exception as exc:
+        logger.warning("FES generation failed: %s; using histogram fallback", exc)
+        return _histogram_fes_fallback(a, b, names, opts)
+
+
 def default_fes_builder(
     dataset: Any, opts: BuildOpts, applied: AppliedOpts
 ) -> Any | None:
@@ -984,59 +1189,12 @@ def default_fes_builder(
         return {"skipped": True, "reason": "no_cvs"}
 
     cv1, cv2, names, periodic = cv_pair
-    try:
-        a = np.asarray(cv1, dtype=float).reshape(-1)
-        b = np.asarray(cv2, dtype=float).reshape(-1)
-        if a.size == 0 or b.size == 0:
-            return {"skipped": True, "reason": "empty_cvs"}
-        if not np.isfinite(a).all() or not np.isfinite(b).all():
-            return {"skipped": True, "reason": "non_finite_cvs"}
-    except Exception as exc:
-        logger.warning("Failed to coerce CVs to float: %s", exc)
-        return {"skipped": True, "reason": "cv_coercion_failed"}
+    a, b, error = _coerce_cv_arrays(cv1, cv2)
+    if error is not None:
+        return {"skipped": True, "reason": error}
 
-    try:
-        from pmarlo.markov_state_model.free_energy import generate_2d_fes
-
-        fes = generate_2d_fes(
-            a,
-            b,
-            temperature=opts.temperature,
-            periodic=periodic,
-        )
-        return {"result": fes, "cv1_name": names[0], "cv2_name": names[1]}
-    except Exception as exc:
-        logger.warning("FES generation failed: %s; using histogram fallback", exc)
-        try:
-            hist, xedges, yedges = np.histogram2d(a, b, bins=32)
-        except Exception as exc2:
-            logger.warning("Histogram fallback failed: %s", exc2)
-            a_min, a_max = float(np.min(a)), float(np.max(a))
-            b_min, b_max = float(np.min(b)), float(np.max(b))
-            if not np.isfinite(a_min) or not np.isfinite(a_max):
-                a_min, a_max = -1.0, 1.0
-            if not np.isfinite(b_min) or not np.isfinite(b_max):
-                b_min, b_max = -1.0, 1.0
-            if a_max <= a_min:
-                a_max = a_min + 1.0
-            if b_max <= b_min:
-                b_max = b_min + 1.0
-            xedges = np.linspace(a_min, a_max, 33)
-            yedges = np.linspace(b_min, b_max, 33)
-            hist = np.ones((32, 32), dtype=np.float64)
-        hist = np.asarray(hist, dtype=np.float64)
-        with np.errstate(divide="ignore"):
-            F = -np.log(hist + 1e-12)
-
-        from pmarlo.markov_state_model.free_energy import FESResult
-
-        fallback = FESResult(
-            F=F,
-            xedges=xedges,
-            yedges=yedges,
-            metadata={"method": "histogram", "temperature": opts.temperature},
-        )
-        return {"result": fallback, "cv1_name": names[0], "cv2_name": names[1]}
+    assert a is not None and b is not None
+    return _generate_fes(a, b, names, periodic, opts)
 
 
 def default_tram_builder(
@@ -1049,37 +1207,49 @@ def default_tram_builder(
 # --- Artifact helpers --------------------------------------------------------
 
 
+def _fes_metadata_summary(meta: Dict[str, Any]) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {}
+    frac = meta.get("empty_bins_fraction")
+    try:
+        summary["empty_bins_fraction"] = float(frac) if frac is not None else 0.0
+    except Exception:
+        summary["empty_bins_fraction"] = 0.0
+    warn = meta.get("sparse_warning")
+    summary["warn_sparse"] = bool(warn)
+    if warn:
+        summary["sparse_warning"] = str(warn)
+    banner = meta.get("sparse_banner")
+    if banner:
+        summary["sparse_banner"] = str(banner)
+    method = meta.get("method")
+    if method:
+        summary["method"] = str(method)
+    if "adaptive" in meta:
+        summary["adaptive"] = meta.get("adaptive")
+    return summary
+
+
+def _coerce_temperature(value: Any) -> Optional[float]:
+    coerced = _coerce_float(value) if value is not None else None
+    return coerced
+
+
 def _extract_fes_quality_artifact(fes_obj: Any) -> Dict[str, Any]:
     """Derive a lightweight quality summary from an :class:`FESResult`."""
 
     quality: Dict[str, Any] = {}
-    meta = getattr(fes_obj, "metadata", {})
-    if isinstance(meta, dict):
-        frac = meta.get("empty_bins_fraction")
-        try:
-            quality["empty_bins_fraction"] = float(frac) if frac is not None else 0.0
-        except Exception:
-            quality["empty_bins_fraction"] = 0.0
-        quality["warn_sparse"] = bool(meta.get("sparse_warning"))
-        if meta.get("sparse_warning"):
-            quality["sparse_warning"] = str(meta.get("sparse_warning"))
-        banner = meta.get("sparse_banner")
-        if banner:
-            quality["sparse_banner"] = str(banner)
-        method = meta.get("method")
-        if method:
-            quality["method"] = str(method)
-        adaptive = meta.get("adaptive")
-        if adaptive is not None:
-            quality["adaptive"] = adaptive
+    metadata = getattr(fes_obj, "metadata", {})
+    if isinstance(metadata, dict):
+        quality.update(_fes_metadata_summary(metadata))
+        temperature_source = metadata.get("temperature")
+    else:
+        temperature_source = None
     temperature = getattr(fes_obj, "temperature", None)
-    if temperature is None and isinstance(meta, dict):
-        temperature = meta.get("temperature")
-    if temperature is not None:
-        try:
-            quality["temperature_K"] = float(temperature)
-        except Exception:
-            pass
+    if temperature is None:
+        temperature = temperature_source
+    temp_val = _coerce_temperature(temperature)
+    if temp_val is not None:
+        quality["temperature_K"] = temp_val
     return quality
 
 

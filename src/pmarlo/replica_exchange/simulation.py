@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,11 +17,21 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_HAS_OPENMM = importlib.util.find_spec("openmm") is not None
-_HAS_FULL_IMPL = False
 _FULL_IMPORT_ERROR: Exception | None = None
 
-if _HAS_OPENMM:
+
+def _load_full_impl() -> bool:
+    """Attempt to import the heavy-weight simulation backend."""
+    import importlib.util
+
+    global _FULL_IMPORT_ERROR
+
+    if importlib.util.find_spec("openmm") is None:
+        _FULL_IMPORT_ERROR = ImportError(
+            "OpenMM not available; replica-exchange simulation requires optional dependencies."
+        )
+        return False
+
     try:  # pragma: no cover - exercised only when OpenMM is present
         from ._simulation_full import (
             Simulation as _FullSimulation,  # type: ignore[assignment]
@@ -36,13 +45,20 @@ if _HAS_OPENMM:
         )
     except Exception as exc:  # pragma: no cover - optional dependency missing
         _FULL_IMPORT_ERROR = exc
-    else:  # pragma: no cover - exercised only when OpenMM stack available
-        Simulation = _FullSimulation
-        _HAS_FULL_IMPL = True
-else:
-    _FULL_IMPORT_ERROR = ImportError(
-        "OpenMM not available; replica-exchange simulation requires optional dependencies."
+        return False
+
+    globals().update(
+        Simulation=_FullSimulation,
+        build_transition_model=build_transition_model,
+        plot_DG=plot_DG,
+        prepare_system=prepare_system,
+        production_run=production_run,
+        relative_energies=relative_energies,
     )
+    return True
+
+
+_HAS_FULL_IMPL = _load_full_impl()
 
 
 if not _HAS_FULL_IMPL:

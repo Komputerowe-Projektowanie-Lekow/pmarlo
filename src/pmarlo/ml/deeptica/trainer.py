@@ -6,9 +6,9 @@ import csv
 import logging
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, TypedDict, cast
+from typing import Dict, Iterator, List, Optional, Sequence, TypedDict, cast
 
 import numpy as np
 import torch
@@ -31,6 +31,191 @@ class _TauBlock(TypedDict):
     grad_norm_mean_curve: List[float]
     grad_norm_max_curve: List[float]
     diagnostics: Dict[str, object]
+
+
+@dataclass
+class _BatchOutcome:
+    """Container holding results for a single optimisation step."""
+
+    loss: float
+    score: float
+    batch_size: int
+    grad_norm: float
+    metrics: Dict[str, object]
+
+
+@dataclass
+class _EpochAccumulator:
+    """Accumulate metrics across batches for a full training epoch."""
+
+    total_loss: float = 0.0
+    total_score: float = 0.0
+    total_weight: int = 0
+    grad_norms: List[float] = field(default_factory=list)
+    cond_c00_sum: float = 0.0
+    cond_ctt_sum: float = 0.0
+    cond_weight: float = 0.0
+    var_z0_sum: np.ndarray | None = None
+    var_zt_sum: np.ndarray | None = None
+    mean_z0_sum: np.ndarray | None = None
+    mean_zt_sum: np.ndarray | None = None
+    eig0_min: float = float("inf")
+    eig0_max: float = 0.0
+    eigt_min: float = float("inf")
+    eigt_max: float = 0.0
+
+    def update(self, outcome: _BatchOutcome) -> None:
+        self.total_loss += outcome.loss * outcome.batch_size
+        self.total_score += outcome.score * outcome.batch_size
+        self.total_weight += outcome.batch_size
+        self.grad_norms.append(outcome.grad_norm)
+        self._update_condition_metrics(outcome)
+
+    def finalize(self) -> Dict[str, float | List[float]]:
+        if self.total_weight == 0:
+            return {
+                "loss": 0.0,
+                "score": 0.0,
+                "grad_norm_mean": 0.0,
+                "grad_norm_max": 0.0,
+            }
+        grad_norm_mean = float(np.mean(self.grad_norms)) if self.grad_norms else 0.0
+        grad_norm_max = float(np.max(self.grad_norms)) if self.grad_norms else 0.0
+        agg: Dict[str, float | List[float]] = {
+            "loss": self.total_loss / float(self.total_weight),
+            "score": self.total_score / float(self.total_weight),
+            "grad_norm_mean": grad_norm_mean,
+            "grad_norm_max": grad_norm_max,
+        }
+        if self.cond_weight > 0:
+            agg["cond_c00"] = self.cond_c00_sum / self.cond_weight
+            agg["cond_ctt"] = self.cond_ctt_sum / self.cond_weight
+        if self.var_z0_sum is not None and self.cond_weight > 0:
+            agg["var_z0"] = (self.var_z0_sum / self.cond_weight).tolist()
+        if self.var_zt_sum is not None and self.cond_weight > 0:
+            agg["var_zt"] = (self.var_zt_sum / self.cond_weight).tolist()
+        if self.mean_z0_sum is not None and self.cond_weight > 0:
+            agg["mean_z0"] = (self.mean_z0_sum / self.cond_weight).tolist()
+        if self.mean_zt_sum is not None and self.cond_weight > 0:
+            agg["mean_zt"] = (self.mean_zt_sum / self.cond_weight).tolist()
+        if self.eig0_min != float("inf"):
+            agg["eig_c00_min"] = self.eig0_min
+        if self.eig0_max != 0.0:
+            agg["eig_c00_max"] = self.eig0_max
+        if self.eigt_min != float("inf"):
+            agg["eig_ctt_min"] = self.eigt_min
+        if self.eigt_max != 0.0:
+            agg["eig_ctt_max"] = self.eigt_max
+        return agg
+
+    def _update_condition_metrics(self, outcome: _BatchOutcome) -> None:
+        metrics = outcome.metrics
+        batch_size = float(outcome.batch_size)
+        cond_c00 = float(metrics.get("cond_C00", 0.0))
+        cond_ctt = float(metrics.get("cond_Ctt", 0.0))
+        self.cond_c00_sum += cond_c00 * batch_size
+        self.cond_ctt_sum += cond_ctt * batch_size
+        self.cond_weight += batch_size
+        self.var_z0_sum = self._accumulate_vector(
+            self.var_z0_sum, metrics.get("var_z0"), batch_size
+        )
+        self.var_zt_sum = self._accumulate_vector(
+            self.var_zt_sum, metrics.get("var_zt"), batch_size
+        )
+        self.mean_z0_sum = self._accumulate_vector(
+            self.mean_z0_sum, metrics.get("mean_z0"), batch_size
+        )
+        self.mean_zt_sum = self._accumulate_vector(
+            self.mean_zt_sum, metrics.get("mean_zt"), batch_size
+        )
+        self.eig0_min = min(
+            self.eig0_min, float(metrics.get("eig_C00_min", self.eig0_min))
+        )
+        self.eig0_max = max(
+            self.eig0_max, float(metrics.get("eig_C00_max", self.eig0_max))
+        )
+        self.eigt_min = min(
+            self.eigt_min, float(metrics.get("eig_Ctt_min", self.eigt_min))
+        )
+        self.eigt_max = max(
+            self.eigt_max, float(metrics.get("eig_Ctt_max", self.eigt_max))
+        )
+
+    @staticmethod
+    def _accumulate_vector(
+        accumulator: np.ndarray | None, values: object, weight: float
+    ) -> np.ndarray | None:
+        if not isinstance(values, list) or not values:
+            return accumulator
+        arr = np.asarray(values, dtype=np.float64) * weight
+        if accumulator is None:
+            return arr
+        return accumulator + arr
+
+
+@dataclass
+class _CurriculumMetrics:
+    """Running collections of curriculum-wide metrics."""
+
+    per_tau_blocks: List[_TauBlock] = field(default_factory=list)
+    overall_epochs: List[int] = field(default_factory=list)
+    overall_train_loss: List[float] = field(default_factory=list)
+    overall_train_score: List[float] = field(default_factory=list)
+    overall_val_loss: List[float] = field(default_factory=list)
+    overall_val_score: List[float] = field(default_factory=list)
+    overall_learning_rate: List[float] = field(default_factory=list)
+    overall_grad_norm_mean: List[float] = field(default_factory=list)
+    overall_grad_norm_max: List[float] = field(default_factory=list)
+
+    def add_tau_block(self, tau: int, diagnostics: Dict[str, object]) -> _TauBlock:
+        block: _TauBlock = {
+            "tau": int(tau),
+            "epochs": [],
+            "train_loss_curve": [],
+            "train_score_curve": [],
+            "val_loss_curve": [],
+            "val_score_curve": [],
+            "learning_rate_curve": [],
+            "grad_norm_mean_curve": [],
+            "grad_norm_max_curve": [],
+            "diagnostics": diagnostics,
+        }
+        self.per_tau_blocks.append(block)
+        return block
+
+    def next_epoch_index(self) -> int:
+        return len(self.overall_epochs) + 1
+
+    def record_epoch(
+        self,
+        block: _TauBlock,
+        overall_epoch: int,
+        train_metrics: Dict[str, object],
+        val_metrics: Dict[str, float],
+        lr: float,
+    ) -> None:
+        train_loss = float(train_metrics.get("loss", 0.0))
+        train_score = float(train_metrics.get("score", 0.0))
+        grad_norm_mean = float(train_metrics.get("grad_norm_mean", 0.0))
+        grad_norm_max = float(train_metrics.get("grad_norm_max", 0.0))
+        val_loss = float(val_metrics.get("loss", 0.0))
+        val_score = float(val_metrics.get("score", 0.0))
+        block["epochs"].append(overall_epoch)
+        block["train_loss_curve"].append(train_loss)
+        block["train_score_curve"].append(train_score)
+        block["val_loss_curve"].append(val_loss)
+        block["val_score_curve"].append(val_score)
+        block["learning_rate_curve"].append(float(lr))
+        block["grad_norm_mean_curve"].append(grad_norm_mean)
+        block["grad_norm_max_curve"].append(grad_norm_max)
+        self.overall_epochs.append(overall_epoch)
+        self.overall_train_loss.append(train_loss)
+        self.overall_train_score.append(train_score)
+        self.overall_val_loss.append(val_loss)
+        self.overall_val_score.append(val_score)
+        self.overall_learning_rate.append(float(lr))
+        self.overall_grad_norm_mean.append(grad_norm_mean)
+        self.overall_grad_norm_max.append(grad_norm_max)
 
 
 @torch.no_grad()
@@ -227,6 +412,34 @@ class DeepTICACurriculumTrainer:
     ) -> Dict[str, object]:
         """Train the wrapped model and return the history dictionary."""
 
+        train_arrays, val_arrays = self._prepare_train_val(sequences, val_sequences)
+        val_loader = self._build_validation_loader(val_arrays)
+        tau_blocks, total_epochs_planned = self._prepare_tau_blocks(train_arrays)
+        self._initialize_scheduler(total_epochs_planned)
+        start_time = time.time()
+        metrics = self._run_curriculum(tau_blocks, val_loader)
+
+        if self._best_state is not None:
+            self.module.load_state_dict(self._best_state)
+
+        history = self._build_history(metrics, start_time)
+        self.grad_norm_curve = metrics.overall_grad_norm_mean
+
+        csv_path = self._write_metrics_csv(history)
+        if csv_path is not None:
+            history["metrics_csv"] = str(csv_path)
+        if self._best_checkpoint_path is not None:
+            history["best_checkpoint"] = str(self._best_checkpoint_path)
+
+        self.history = history
+        self._attach_history_to_model(history)
+        return history
+
+    def _prepare_train_val(
+        self,
+        sequences: Sequence[np.ndarray],
+        val_sequences: Optional[Sequence[np.ndarray]],
+    ) -> tuple[List[np.ndarray], List[np.ndarray]]:
         train_arrays = [np.asarray(seq, dtype=np.float32) for seq in sequences]
         if not train_arrays:
             raise ValueError("at least one training sequence is required")
@@ -236,16 +449,28 @@ class DeepTICACurriculumTrainer:
             train_arrays, val_arrays = self._split_train_val(train_arrays)
         else:
             val_arrays = [np.asarray(seq, dtype=np.float32) for seq in val_sequences]
+            if any(arr.ndim != 2 for arr in val_arrays):
+                raise ValueError("validation sequences must all be 2-D arrays")
         if not val_arrays:
             raise ValueError("validation sequences are empty after splitting")
+        return train_arrays, val_arrays
 
+    def _build_validation_loader(
+        self, val_arrays: Sequence[np.ndarray]
+    ) -> DataLoader[tuple[torch.Tensor, torch.Tensor]]:
         val_dataset = _LaggedPairDataset(val_arrays, self.cfg.val_tau)
         if len(val_dataset) == 0:
             raise ValueError(
                 "validation dataset is empty – ensure val_tau is compatible with sequence lengths"
             )
-        val_loader = self._build_loader(val_dataset, shuffle=False)
+        loader = self._build_loader(val_dataset, shuffle=False)
+        if loader is None:
+            raise ValueError("validation dataset could not be constructed")
+        return loader
 
+    def _prepare_tau_blocks(
+        self, train_arrays: Sequence[np.ndarray]
+    ) -> tuple[List[tuple[int, _LaggedPairDataset, Dict[str, object]]], int]:
         tau_blocks: List[tuple[int, _LaggedPairDataset, Dict[str, object]]] = []
         total_epochs_planned = 0
         for tau in self.cfg.tau_schedule:
@@ -254,34 +479,16 @@ class DeepTICACurriculumTrainer:
             tau_blocks.append((int(tau), dataset, diag))
             if len(dataset) > 0:
                 total_epochs_planned += int(self.cfg.epochs_per_tau)
+        return tau_blocks, total_epochs_planned
 
-        self._initialize_scheduler(total_epochs_planned)
-
-        per_tau_blocks: List[_TauBlock] = []
-        overall_epochs: List[int] = []
-        overall_train_loss: List[float] = []
-        overall_train_score: List[float] = []
-        overall_val_loss: List[float] = []
-        overall_val_score: List[float] = []
-        overall_learning_rate: List[float] = []
-        overall_grad_norm_mean: List[float] = []
-        overall_grad_norm_max: List[float] = []
-        start_time = time.time()
-
+    def _run_curriculum(
+        self,
+        tau_blocks: Sequence[tuple[int, _LaggedPairDataset, Dict[str, object]]],
+        val_loader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
+    ) -> _CurriculumMetrics:
+        metrics = _CurriculumMetrics()
         for tau, dataset, diag in tau_blocks:
-            block: _TauBlock = {
-                "tau": int(tau),
-                "epochs": [],
-                "train_loss_curve": [],
-                "train_score_curve": [],
-                "val_loss_curve": [],
-                "val_score_curve": [],
-                "learning_rate_curve": [],
-                "grad_norm_mean_curve": [],
-                "grad_norm_max_curve": [],
-                "diagnostics": diag,
-            }
-            per_tau_blocks.append(block)
+            block = metrics.add_tau_block(int(tau), diag)
             if len(dataset) == 0:
                 logger.warning(
                     "No lagged pairs available at tau=%d; skipping curriculum stage",
@@ -291,121 +498,139 @@ class DeepTICACurriculumTrainer:
             loader = self._build_loader(dataset, shuffle=self.cfg.shuffle)
             if loader is None:
                 continue
-            logger.info("Starting tau stage tau=%d (val_tau=%d)", tau, self.cfg.val_tau)
-            for epoch_idx in range(int(self.cfg.epochs_per_tau)):
-                current_lr = self._step_scheduler()
-                train_metrics = self._train_one_epoch(loader)
-                val_metrics = self._evaluate(val_loader)
-                overall_epoch = len(overall_epochs) + 1
-                overall_epochs.append(overall_epoch)
-                overall_train_loss.append(train_metrics["loss"])
-                overall_train_score.append(train_metrics["score"])
-                overall_val_loss.append(val_metrics["loss"])
-                overall_val_score.append(val_metrics["score"])
-                overall_learning_rate.append(current_lr)
-                overall_grad_norm_mean.append(train_metrics["grad_norm_mean"])
-                overall_grad_norm_max.append(train_metrics["grad_norm_max"])
-                cond_c00 = float(train_metrics.get("cond_c00", 0.0))
-                cond_ctt = float(train_metrics.get("cond_ctt", 0.0))
-                self.cond_c00_curve.append(cond_c00)
-                self.cond_ctt_curve.append(cond_ctt)
-                var_z0 = train_metrics.get("var_z0")
-                var_zt = train_metrics.get("var_zt")
-                mean_z0 = train_metrics.get("mean_z0")
-                mean_zt = train_metrics.get("mean_zt")
-                eig0_min = float(train_metrics.get("eig_c00_min", float("nan")))
-                eig0_max = float(train_metrics.get("eig_c00_max", float("nan")))
-                eigt_min = float(train_metrics.get("eig_ctt_min", float("nan")))
-                eigt_max = float(train_metrics.get("eig_ctt_max", float("nan")))
-                self.c0_eig_min_curve.append(eig0_min)
-                self.c0_eig_max_curve.append(eig0_max)
-                self.ctt_eig_min_curve.append(eigt_min)
-                self.ctt_eig_max_curve.append(eigt_max)
-                self.var_z0_curve.append(
-                    [float(x) for x in var_z0] if isinstance(var_z0, list) else []
-                )
-                self.var_zt_curve.append(
-                    [float(x) for x in var_zt] if isinstance(var_zt, list) else []
-                )
-                self.mean_z0_curve.append(
-                    [float(x) for x in mean_z0] if isinstance(mean_z0, list) else []
-                )
-                self.mean_zt_curve.append(
-                    [float(x) for x in mean_zt] if isinstance(mean_zt, list) else []
-                )
-                if cond_c00 > 1e6:
-                    logger.warning(
-                        "Condition number cond(C00)=%.3e exceeds stability threshold",
-                        cond_c00,
-                    )
-                if cond_ctt > 1e6:
-                    logger.warning(
-                        "Condition number cond(Ctt)=%.3e exceeds stability threshold",
-                        cond_ctt,
-                    )
-                block["epochs"].append(overall_epoch)
-                block["train_loss_curve"].append(train_metrics["loss"])
-                block["train_score_curve"].append(train_metrics["score"])
-                block["val_loss_curve"].append(val_metrics["loss"])
-                block["val_score_curve"].append(val_metrics["score"])
-                block["learning_rate_curve"].append(current_lr)
-                block["grad_norm_mean_curve"].append(train_metrics["grad_norm_mean"])
-                block["grad_norm_max_curve"].append(train_metrics["grad_norm_max"])
-                self._update_best(overall_epoch, tau, val_metrics["score"])
-                if self.cfg.log_every > 0:
-                    if (epoch_idx + 1) % int(
-                        self.cfg.log_every
-                    ) == 0 or epoch_idx + 1 == int(self.cfg.epochs_per_tau):
-                        logger.info(
-                            (
-                                "tau=%d val_tau=%d epoch=%d/%d lr=%.6e "
-                                "train_loss=%.6f val_score=%.6f "
-                                "grad_norm_mean=%.6f grad_norm_max=%.6f"
-                            ),
-                            tau,
-                            self.cfg.val_tau,
-                            epoch_idx + 1,
-                            int(self.cfg.epochs_per_tau),
-                            current_lr,
-                            train_metrics["loss"],
-                            val_metrics["score"],
-                            train_metrics["grad_norm_mean"],
-                            train_metrics["grad_norm_max"],
-                        )
+            self._run_tau_stage(int(tau), loader, val_loader, block, metrics)
+        return metrics
 
-        if self._best_state is not None:
-            self.module.load_state_dict(self._best_state)
+    def _run_tau_stage(
+        self,
+        tau: int,
+        loader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
+        val_loader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
+        block: _TauBlock,
+        metrics: _CurriculumMetrics,
+    ) -> None:
+        logger.info("Starting tau stage tau=%d (val_tau=%d)", tau, self.cfg.val_tau)
+        for epoch_idx in range(int(self.cfg.epochs_per_tau)):
+            current_lr = self._step_scheduler()
+            train_metrics = self._train_one_epoch(loader)
+            val_metrics = self._evaluate(val_loader)
+            overall_epoch = metrics.next_epoch_index()
+            metrics.record_epoch(
+                block, overall_epoch, train_metrics, val_metrics, current_lr
+            )
+            self._record_condition_metrics(train_metrics)
+            self._update_best(overall_epoch, tau, float(val_metrics.get("score", 0.0)))
+            self._maybe_log_tau_progress(
+                tau, epoch_idx, current_lr, train_metrics, val_metrics
+            )
 
+    def _record_condition_metrics(self, train_metrics: Dict[str, object]) -> None:
+        cond_c00 = float(train_metrics.get("cond_c00", 0.0))
+        cond_ctt = float(train_metrics.get("cond_ctt", 0.0))
+        self.cond_c00_curve.append(cond_c00)
+        self.cond_ctt_curve.append(cond_ctt)
+        var_z0 = train_metrics.get("var_z0")
+        var_zt = train_metrics.get("var_zt")
+        mean_z0 = train_metrics.get("mean_z0")
+        mean_zt = train_metrics.get("mean_zt")
+        eig0_min = float(train_metrics.get("eig_c00_min", float("nan")))
+        eig0_max = float(train_metrics.get("eig_c00_max", float("nan")))
+        eigt_min = float(train_metrics.get("eig_ctt_min", float("nan")))
+        eigt_max = float(train_metrics.get("eig_ctt_max", float("nan")))
+        self.c0_eig_min_curve.append(eig0_min)
+        self.c0_eig_max_curve.append(eig0_max)
+        self.ctt_eig_min_curve.append(eigt_min)
+        self.ctt_eig_max_curve.append(eigt_max)
+        self.var_z0_curve.append(
+            [float(x) for x in var_z0] if isinstance(var_z0, list) else []
+        )
+        self.var_zt_curve.append(
+            [float(x) for x in var_zt] if isinstance(var_zt, list) else []
+        )
+        self.mean_z0_curve.append(
+            [float(x) for x in mean_z0] if isinstance(mean_z0, list) else []
+        )
+        self.mean_zt_curve.append(
+            [float(x) for x in mean_zt] if isinstance(mean_zt, list) else []
+        )
+        if cond_c00 > 1e6:
+            logger.warning(
+                "Condition number cond(C00)=%.3e exceeds stability threshold",
+                cond_c00,
+            )
+        if cond_ctt > 1e6:
+            logger.warning(
+                "Condition number cond(Ctt)=%.3e exceeds stability threshold",
+                cond_ctt,
+            )
+
+    def _maybe_log_tau_progress(
+        self,
+        tau: int,
+        epoch_idx: int,
+        current_lr: float,
+        train_metrics: Dict[str, object],
+        val_metrics: Dict[str, float],
+    ) -> None:
+        log_every = int(self.cfg.log_every)
+        if log_every <= 0:
+            return
+        epochs_per_tau = int(self.cfg.epochs_per_tau)
+        epoch_num = epoch_idx + 1
+        if epoch_num % log_every != 0 and epoch_num != epochs_per_tau:
+            return
+        logger.info(
+            (
+                "tau=%d val_tau=%d epoch=%d/%d lr=%.6e "
+                "train_loss=%.6f val_score=%.6f "
+                "grad_norm_mean=%.6f grad_norm_max=%.6f"
+            ),
+            tau,
+            self.cfg.val_tau,
+            epoch_num,
+            epochs_per_tau,
+            current_lr,
+            float(train_metrics.get("loss", 0.0)),
+            float(val_metrics.get("score", 0.0)),
+            float(train_metrics.get("grad_norm_mean", 0.0)),
+            float(train_metrics.get("grad_norm_max", 0.0)),
+        )
+
+    def _build_history(
+        self, metrics: _CurriculumMetrics, start_time: float
+    ) -> Dict[str, object]:
         history: Dict[str, object] = {
             "tau_schedule": [int(t) for t in self.cfg.tau_schedule],
             "val_tau": int(self.cfg.val_tau),
             "epochs_per_tau": int(self.cfg.epochs_per_tau),
-            "loss_curve": overall_train_loss,
-            "objective_curve": overall_train_score,
-            "val_loss_curve": overall_val_loss,
-            "val_score_curve": overall_val_score,
-            "learning_rate_curve": overall_learning_rate,
-            "grad_norm_mean_curve": overall_grad_norm_mean,
-            "grad_norm_max_curve": overall_grad_norm_max,
-            "epochs": overall_epochs,
-            "per_tau": per_tau_blocks,
+            "loss_curve": list(metrics.overall_train_loss),
+            "objective_curve": list(metrics.overall_train_score),
+            "val_loss_curve": list(metrics.overall_val_loss),
+            "val_score_curve": list(metrics.overall_val_score),
+            "learning_rate_curve": list(metrics.overall_learning_rate),
+            "grad_norm_mean_curve": list(metrics.overall_grad_norm_mean),
+            "grad_norm_max_curve": list(metrics.overall_grad_norm_max),
+            "epochs": list(metrics.overall_epochs),
+            "per_tau": metrics.per_tau_blocks,
             "per_tau_objective_curve": {
-                int(block["tau"]): block["val_score_curve"] for block in per_tau_blocks
+                int(block["tau"]): block["val_score_curve"]
+                for block in metrics.per_tau_blocks
             },
             "per_tau_learning_rate_curve": {
                 int(block["tau"]): block["learning_rate_curve"]
-                for block in per_tau_blocks
+                for block in metrics.per_tau_blocks
             },
             "per_tau_grad_norm_mean_curve": {
                 int(block["tau"]): block["grad_norm_mean_curve"]
-                for block in per_tau_blocks
+                for block in metrics.per_tau_blocks
             },
             "per_tau_grad_norm_max_curve": {
                 int(block["tau"]): block["grad_norm_max_curve"]
-                for block in per_tau_blocks
+                for block in metrics.per_tau_blocks
             },
             "pair_diagnostics": {
-                int(block["tau"]): block["diagnostics"] for block in per_tau_blocks
+                int(block["tau"]): block["diagnostics"]
+                for block in metrics.per_tau_blocks
             },
             "cond_c00_curve": [float(x) for x in self.cond_c00_curve],
             "cond_ctt_curve": [float(x) for x in self.cond_ctt_curve],
@@ -417,7 +642,7 @@ class DeepTICACurriculumTrainer:
             "c0_eig_max_curve": [float(x) for x in self.c0_eig_max_curve],
             "ctt_eig_min_curve": [float(x) for x in self.ctt_eig_min_curve],
             "ctt_eig_max_curve": [float(x) for x in self.ctt_eig_max_curve],
-            "grad_norm_curve": list(overall_grad_norm_mean),
+            "grad_norm_curve": list(metrics.overall_grad_norm_mean),
             "best_val_score": (
                 float(self._best_score) if self._best_score > float("-inf") else 0.0
             ),
@@ -425,17 +650,6 @@ class DeepTICACurriculumTrainer:
             "best_tau": int(self._best_tau) if self._best_tau >= 0 else None,
             "wall_time_s": float(max(0.0, time.time() - start_time)),
         }
-
-        self.grad_norm_curve = overall_grad_norm_mean
-
-        csv_path = self._write_metrics_csv(history)
-        if csv_path is not None:
-            history["metrics_csv"] = str(csv_path)
-        if self._best_checkpoint_path is not None:
-            history["best_checkpoint"] = str(self._best_checkpoint_path)
-
-        self.history = history
-        self._attach_history_to_model(history)
         return history
 
     # ------------------------------------------------------------------
@@ -504,21 +718,14 @@ class DeepTICACurriculumTrainer:
         self, loader: DataLoader[tuple[torch.Tensor, torch.Tensor]]
     ) -> Dict[str, float]:
         self.module.train()
-        total_loss = 0.0
-        total_score = 0.0
-        total_weight = 0
-        grad_norms: List[float] = []
-        cond_c00_sum = 0.0
-        cond_ctt_sum = 0.0
-        cond_weight = 0.0
-        var_z0_sum: np.ndarray | None = None
-        var_zt_sum: np.ndarray | None = None
-        mean_z0_sum: np.ndarray | None = None
-        mean_zt_sum: np.ndarray | None = None
-        eig0_min = float("inf")
-        eig0_max = 0.0
-        eigt_min = float("inf")
-        eigt_max = 0.0
+        accumulator = _EpochAccumulator()
+        for outcome in self._iterate_training_batches(loader):
+            accumulator.update(outcome)
+        return accumulator.finalize()  # type: ignore[return-value]
+
+    def _iterate_training_batches(
+        self, loader: DataLoader[tuple[torch.Tensor, torch.Tensor]]
+    ) -> Iterator[_BatchOutcome]:
         max_batches = (
             int(self.cfg.max_batches_per_epoch)
             if self.cfg.max_batches_per_epoch is not None
@@ -548,88 +755,16 @@ class DeepTICACurriculumTrainer:
                     self._trainable_parameters, float(self.cfg.grad_clip_norm)
                 )
             grad_norm = self._grad_norm(self._trainable_parameters)
-            grad_norms.append(grad_norm)
             self.optimizer.step()
-            total_loss += float(loss.item()) * batch_size
-            total_score += float(score.item()) * batch_size
-            total_weight += batch_size
-            metrics = getattr(self.loss_fn, "latest_metrics", {})
-            cond_c00 = float(metrics.get("cond_C00", 0.0))
-            cond_ctt = float(metrics.get("cond_Ctt", 0.0))
-            cond_c00_sum += cond_c00 * batch_size
-            cond_ctt_sum += cond_ctt * batch_size
-            cond_weight += batch_size
-            var_z0 = metrics.get("var_z0")
-            if isinstance(var_z0, list) and var_z0:
-                arr = np.asarray(var_z0, dtype=np.float64)
-                var_z0_sum = (
-                    arr * batch_size
-                    if var_z0_sum is None
-                    else var_z0_sum + arr * batch_size
-                )
-            var_zt = metrics.get("var_zt")
-            if isinstance(var_zt, list) and var_zt:
-                arr = np.asarray(var_zt, dtype=np.float64)
-                var_zt_sum = (
-                    arr * batch_size
-                    if var_zt_sum is None
-                    else var_zt_sum + arr * batch_size
-                )
-            mean_z0 = metrics.get("mean_z0")
-            if isinstance(mean_z0, list) and mean_z0:
-                arr = np.asarray(mean_z0, dtype=np.float64)
-                mean_z0_sum = (
-                    arr * batch_size
-                    if mean_z0_sum is None
-                    else mean_z0_sum + arr * batch_size
-                )
-            mean_zt = metrics.get("mean_zt")
-            if isinstance(mean_zt, list) and mean_zt:
-                arr = np.asarray(mean_zt, dtype=np.float64)
-                mean_zt_sum = (
-                    arr * batch_size
-                    if mean_zt_sum is None
-                    else mean_zt_sum + arr * batch_size
-                )
-            eig0_min = min(eig0_min, float(metrics.get("eig_C00_min", eig0_min)))
-            eig0_max = max(eig0_max, float(metrics.get("eig_C00_max", eig0_max)))
-            eigt_min = min(eigt_min, float(metrics.get("eig_Ctt_min", eigt_min)))
-            eigt_max = max(eigt_max, float(metrics.get("eig_Ctt_max", eigt_max)))
-        if total_weight == 0:
-            return {
-                "loss": 0.0,
-                "score": 0.0,
-                "grad_norm_mean": 0.0,
-                "grad_norm_max": 0.0,
-            }
-        grad_norm_mean = float(np.mean(grad_norms)) if grad_norms else 0.0
-        grad_norm_max = float(np.max(grad_norms)) if grad_norms else 0.0
-        agg: Dict[str, float | List[float]] = {
-            "loss": total_loss / float(total_weight),
-            "score": total_score / float(total_weight),
-            "grad_norm_mean": grad_norm_mean,
-            "grad_norm_max": grad_norm_max,
-        }
-        if cond_weight > 0:
-            agg["cond_c00"] = cond_c00_sum / cond_weight
-            agg["cond_ctt"] = cond_ctt_sum / cond_weight
-        if var_z0_sum is not None and cond_weight > 0:
-            agg["var_z0"] = (var_z0_sum / cond_weight).tolist()
-        if var_zt_sum is not None and cond_weight > 0:
-            agg["var_zt"] = (var_zt_sum / cond_weight).tolist()
-        if mean_z0_sum is not None and cond_weight > 0:
-            agg["mean_z0"] = (mean_z0_sum / cond_weight).tolist()
-        if mean_zt_sum is not None and cond_weight > 0:
-            agg["mean_zt"] = (mean_zt_sum / cond_weight).tolist()
-        if eig0_min != float("inf"):
-            agg["eig_c00_min"] = eig0_min
-        if eig0_max != 0.0:
-            agg["eig_c00_max"] = eig0_max
-        if eigt_min != float("inf"):
-            agg["eig_ctt_min"] = eigt_min
-        if eigt_max != 0.0:
-            agg["eig_ctt_max"] = eigt_max
-        return agg  # type: ignore[return-value]
+            metrics_obj = getattr(self.loss_fn, "latest_metrics", {})
+            metrics = metrics_obj if isinstance(metrics_obj, dict) else {}
+            yield _BatchOutcome(
+                loss=float(loss.item()),
+                score=float(score.item()),
+                batch_size=batch_size,
+                grad_norm=grad_norm,
+                metrics=cast(Dict[str, object], metrics),
+            )
 
     def _evaluate(
         self, loader: DataLoader[tuple[torch.Tensor, torch.Tensor]]

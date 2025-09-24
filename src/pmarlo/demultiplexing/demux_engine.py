@@ -22,6 +22,9 @@ from .demux_plan import DemuxPlan, DemuxSegmentPlan
 logger = logging.getLogger("pmarlo")
 
 
+FillPolicy = Literal["repeat", "skip", "interpolate"]
+
+
 @dataclass
 class DemuxResult:
     """Outcome of streaming demultiplexing.
@@ -44,6 +47,28 @@ class DemuxResult:
     skipped_segments: List[int] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     # Number of real (non-filled) frames obtained per segment, aligned with plan.segments
+    segment_real_frames: List[int] = field(default_factory=list)
+
+
+@dataclass
+class _DemuxContext:
+    plan: DemuxPlan
+    reader: TrajectoryReader
+    writer: TrajectoryWriter
+    fill_policy: FillPolicy
+    checkpoint_interval_segments: Optional[int]
+    flush_between_segments: bool
+    reporter: ProgressReporter
+    topology_path: str | None
+
+
+@dataclass
+class _DemuxState:
+    total_written: int = 0
+    last_written_frame: Optional[np.ndarray] = None
+    repaired_segments: List[int] = field(default_factory=list)
+    skipped_segments: List[int] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
     segment_real_frames: List[int] = field(default_factory=list)
 
 
@@ -152,450 +177,411 @@ def demux_streaming(
     chunk_size: int = 1000,
     progress_callback: Optional[ProgressCB] = None,
 ) -> DemuxResult:
-    """Stream and write demultiplexed frames according to a plan.
+    """Stream and write demultiplexed frames according to a plan."""
 
-    Parameters
-    ----------
-    plan : DemuxPlan
-        Validated plan with per-segment frame windows and expected frame counts.
-    topology_path : str or None
-        Topology path for backends that require it. The provided ``reader``
-        already encapsulates any backend requirement; this parameter is kept
-        for symmetry and parallel workers.
-    reader : TrajectoryReader
-        Streaming reader abstraction used to fetch frames from source files.
-    writer : TrajectoryWriter
-        Append-like writer abstraction used to persist frames in order. Must be
-        opened by the caller and will not be closed by this function.
-    fill_policy : {"repeat", "skip", "interpolate"}, optional
-        How to handle missing frames per segment. ``"repeat"`` duplicates the
-        last written frame; ``"skip"`` omits missing frames; ``"interpolate"``
-        attempts linear interpolation between the last written and the first
-        available frame of the next segment (falls back to repeat).
-    parallel_read_workers : int or None, optional
-        If >1, use a process pool to read segments concurrently while writing in
-        order. ``None`` (default) reads sequentially.
-
-    Returns
-    -------
-    DemuxResult
-        Summary including total frames written, segments repaired/skipped,
-        warnings, and per-segment real frame counts.
-
-    Examples
-    --------
-    Minimal in-memory example using fake reader/writer (no I/O)::
-
-        class FakeReader:
-            def iter_frames(self, path, start, stop, stride=1):
-                import numpy as np
-                for i in range(start, stop):
-                    yield np.zeros((1, 3), dtype=float)
-            def probe_length(self, path):
-                return 10
-
-        class CollectWriter:
-            def __init__(self):
-                self.frames = []
-            def open(self, *a, **k):
-                return self
-            def write_frames(self, coords, box=None):
-                self.frames.append(coords)
-            def close(self):
-                pass
-
-        res = demux_streaming(plan, None, FakeReader(), CollectWriter().open("", None, True))
-        assert res.total_frames_written >= 0
-    """
-
-    total_written = 0
-    repaired_segments: List[int] = []
-    skipped_segments: List[int] = []
-    warnings: List[str] = []
-
-    last_written_frame: Optional[np.ndarray] = None
-
-    def _flush_accum(acc: List[np.ndarray]) -> int:
-        if not acc:
-            return 0
-        try:
-            batch = np.stack(acc, axis=0)
-            try:
-                writer.write_frames(batch)
-            except TrajectoryWriteError as exc:
-                raise DemuxWriterError(
-                    f"Writer failed when flushing batch of {batch.shape[0]} frame(s)"
-                ) from exc
-            return int(batch.shape[0])
-        finally:
-            acc.clear()
-
-    def _consume_segment(
-        i: int, seg: DemuxSegmentPlan, arr: Optional[np.ndarray]
-    ) -> None:
-        nonlocal total_written, last_written_frame
-        planned = int(max(0, seg.expected_frames))
-        got = (
-            int(arr.shape[0])
-            if (arr is not None and arr.size > 0 and arr.ndim == 3)
-            else 0
-        )
-        # Write available frames in chunks
-        if got > 0 and arr is not None:
-            chunk = 1024
-            for ofs in range(0, got, chunk):
-                end = min(got, ofs + chunk)
-                try:
-                    writer.write_frames(arr[ofs:end])
-                except TrajectoryWriteError as exc:
-                    raise DemuxWriterError(
-                        f"Writer failed when writing segment {i} frames {ofs}:{end}"
-                    ) from exc
-                total_written += end - ofs
-                last_written_frame = np.array(arr[end - 1], copy=True)
-        missing = max(0, planned - got)
-        if missing > 0:
-            if fill_policy == "skip":
-                warnings.append(
-                    f"Segment {i} missing {missing} frame(s); skipping due to policy=skip"
-                )
-                skipped_segments.append(i)
-                return
-            if last_written_frame is None:
-                warnings.append(
-                    f"Segment {i} has no frames and cannot fill; skipping {missing}"
-                )
-                skipped_segments.append(i)
-                return
-            if fill_policy == "interpolate":
-                nxt = _peek_next_first_frame(plan, i, reader)
-                if nxt is not None:
-                    fill = _interpolate_frames(last_written_frame, nxt, missing)
-                else:
-                    warnings.append(
-                        f"Segment {i} cannot interpolate (no next frame); repeating last frame for {missing}"
-                    )
-                    fill = _repeat_frames(last_written_frame, missing)
-            else:
-                fill = _repeat_frames(last_written_frame, missing)
-            try:
-                writer.write_frames(fill)
-            except TrajectoryWriteError as exc:
-                raise DemuxWriterError(
-                    f"Writer failed when filling {missing} frame(s) at segment {i}"
-                ) from exc
-            last_written_frame = np.array(fill[-1], copy=True)
-            total_written += int(fill.shape[0])
-            repaired_segments.append(i)
-
-    seg_real_counts: List[int] = [0 for _ in plan.segments]
-    n_segments = len(plan.segments)
     reporter = ProgressReporter(progress_callback)
+    total_segments = len(plan.segments)
     reporter.emit(
         "demux_begin",
-        {"segments": int(n_segments), "current": 0, "total": int(max(1, n_segments))},
+        {
+            "segments": int(total_segments),
+            "current": 0,
+            "total": int(max(1, total_segments)),
+        },
     )
-    # Normalize topology path if not provided
-    topology_path = _canonical_topology_path(topology_path, plan)
 
-    # Parallel path: read segments concurrently but write in order
+    normalized_topology = _canonical_topology_path(topology_path, plan)
+    context = _DemuxContext(
+        plan=plan,
+        reader=reader,
+        writer=writer,
+        fill_policy=fill_policy,
+        checkpoint_interval_segments=checkpoint_interval_segments,
+        flush_between_segments=flush_between_segments,
+        reporter=reporter,
+        topology_path=normalized_topology,
+    )
+    state = _DemuxState(segment_real_frames=[0 for _ in plan.segments])
+
     if parallel_read_workers is not None and int(parallel_read_workers) > 1:
-        import concurrent.futures as _fut
+        _demux_parallel(
+            context,
+            state,
+            max_workers=max(1, int(parallel_read_workers)),
+            window_multiplier=2,
+        )
+    else:
+        _demux_sequential(context, state, max(1, int(chunk_size)))
 
-        max_workers = max(1, int(parallel_read_workers))
-        expected_idx = 0
-        results: dict[int, Optional[np.ndarray]] = {}
-        pending: dict[_fut.Future, int] = {}
-        window = max_workers * 2
+    _finalize_demux(context, state)
+    return DemuxResult(
+        total_frames_written=int(state.total_written),
+        repaired_segments=state.repaired_segments,
+        skipped_segments=state.skipped_segments,
+        warnings=state.warnings,
+        segment_real_frames=state.segment_real_frames,
+    )
 
-        def _drain_ready() -> None:
-            nonlocal expected_idx
-            while expected_idx in results:
-                arr = results.pop(expected_idx)
-                # consume and emit per-segment progress
-                _consume_segment(expected_idx, plan.segments[expected_idx], arr)
-                # Optional forced flush between segments or checkpoints
-                if flush_between_segments:
-                    try:
-                        writer.flush()
-                    except Exception:
-                        pass
+
+def _demux_sequential(
+    context: _DemuxContext, state: _DemuxState, write_chunk: int
+) -> None:
+    for index, segment in enumerate(context.plan.segments):
+        planned = max(0, int(segment.expected_frames))
+
+        handled = _handle_missing_source_segment(
+            context,
+            state,
+            index,
+            segment,
+            planned,
+        )
+        if handled is not None:
+            if handled >= 0:
+                _emit_segment_progress(context, index, handled)
+                _flush_after_segment(context, index)
+            continue
+
+        got = _stream_segment_frames(context, state, index, segment, write_chunk)
+        state.segment_real_counts[index] = got
+        frames_written = _handle_post_read_gap(
+            context,
+            state,
+            index,
+            segment,
+            planned,
+            got,
+        )
+        if frames_written is not None:
+            _emit_segment_progress(context, index, frames_written)
+            _flush_after_segment(context, index)
+
+
+def _demux_parallel(
+    context: _DemuxContext,
+    state: _DemuxState,
+    *,
+    max_workers: int,
+    window_multiplier: int,
+) -> None:
+    import concurrent.futures as fut
+
+    plan = context.plan
+    expected_index = 0
+    pending: dict[fut.Future, int] = {}
+    results: dict[int, Optional[np.ndarray]] = {}
+    window = max_workers * window_multiplier
+
+    def _drain_ready_results() -> None:
+        nonlocal expected_index
+        while expected_index in results:
+            frames = results.pop(expected_index)
+            segment = plan.segments[expected_index]
+            planned = max(0, int(segment.expected_frames))
+            if frames is not None and isinstance(frames, np.ndarray):
+                state.segment_real_counts[expected_index] = int(frames.shape[0])
+            progress_frames = _consume_parallel_segment(
+                context,
+                state,
+                expected_index,
+                segment,
+                planned,
+                frames,
+            )
+            _emit_segment_progress(context, expected_index, progress_frames)
+            _flush_after_segment(context, expected_index)
+            expected_index += 1
+
+    with fut.ProcessPoolExecutor(max_workers=max_workers) as pool:
+        while expected_index < len(plan.segments) or pending:
+            while len(pending) < window and expected_index + len(pending) < len(
+                plan.segments
+            ):
+                seg_idx = expected_index + len(pending)
+                seg = plan.segments[seg_idx]
                 if (
-                    checkpoint_interval_segments
-                    and (expected_idx + 1) % int(checkpoint_interval_segments) == 0
+                    seg.replica_index < 0
+                    or seg.stop_frame <= seg.start_frame
+                    or not seg.source_path
                 ):
-                    try:
-                        writer.flush()
-                    except Exception:
-                        pass
-                frames_written = int(
-                    (arr.shape[0] if isinstance(arr, np.ndarray) else 0)
-                )
-                # Include fills when policy is not skip
-                exp = int(plan.segments[expected_idx].expected_frames)
-                if frames_written < exp and fill_policy != "skip":
-                    frames_written = exp
-                reporter.emit(
-                    "demux_segment",
-                    {
-                        "index": int(expected_idx),
-                        "frames": int(frames_written),
-                        "current": int(expected_idx + 1),
-                        "total": int(max(1, n_segments)),
-                    },
-                )
-                expected_idx += 1
-
-        with _fut.ProcessPoolExecutor(max_workers=max_workers) as ex:
-            for i, seg in enumerate(plan.segments):
-                planned = int(max(0, seg.expected_frames))
-                have = int(max(0, seg.stop_frame - seg.start_frame))
-
-                if seg.replica_index < 0 or not seg.source_path or have <= 0:
-                    # No source for this segment
-                    results[i] = None if planned > 0 else np.zeros((0, 0, 3))
-                    _drain_ready()
+                    results[seg_idx] = None
                     continue
-
-                # Backpressure on submissions
-                while len(pending) >= window:
-                    done_iter = _fut.as_completed(list(pending.keys()), timeout=None)
-                    fut = next(done_iter)
-                    seg_idx = pending.pop(fut)
-                    try:
-                        arr = fut.result()
-                    except Exception as exc:  # worker failed; treat as missing
-                        msg = (
-                            f"Segment {seg_idx} parallel read error for replica={plan.segments[seg_idx].replica_index} "
-                            f"path={plan.segments[seg_idx].source_path} window=[{plan.segments[seg_idx].start_frame},"
-                            f"{plan.segments[seg_idx].stop_frame})]: {exc}"
-                        )
-                        logger.warning(msg)
-                        warnings.append(msg)
-                        arr = None
-                    # Record real frame count if result present
-                    if arr is not None and isinstance(arr, np.ndarray):
-                        seg_real_counts[seg_idx] = int(arr.shape[0])
-                    results[seg_idx] = arr
-                    _drain_ready()
-
-                fut = ex.submit(
+                future = pool.submit(
                     _read_segment_frames_worker,
                     seg.source_path,
                     int(seg.start_frame),
                     int(seg.stop_frame),
                     1,
-                    topology_path,
+                    context.topology_path,
                 )
-                pending[fut] = i
+                pending[future] = seg_idx
 
-            # Drain remaining
-            for fut in _fut.as_completed(list(pending.keys())):
-                seg_idx = pending.pop(fut)
+            if not pending:
+                _drain_ready_results()
+                continue
+
+            done, _ = fut.wait(pending.keys(), return_when=fut.FIRST_COMPLETED)
+            for future in done:
+                seg_idx = pending.pop(future)
                 try:
-                    arr = fut.result()
-                except Exception as exc:
+                    arr = future.result()
+                except Exception as exc:  # noqa: BLE001
                     msg = (
                         f"Segment {seg_idx} parallel read error for replica={plan.segments[seg_idx].replica_index} "
                         f"path={plan.segments[seg_idx].source_path} window=[{plan.segments[seg_idx].start_frame},"
                         f"{plan.segments[seg_idx].stop_frame})]: {exc}"
                     )
                     logger.warning(msg)
-                    warnings.append(msg)
+                    state.warnings.append(msg)
                     arr = None
-                if arr is not None and isinstance(arr, np.ndarray):
-                    seg_real_counts[seg_idx] = int(arr.shape[0])
-                results[seg_idx] = arr
-                _drain_ready()
+                results[seg_idx] = arr if isinstance(arr, np.ndarray) else None
+            _drain_ready_results()
 
-        # Finalize
-        try:
-            writer.flush()
-        except Exception:
-            pass
-        reporter.emit(
-            "demux_end",
-            {
-                "frames": int(total_written),
-                "repaired": int(len(repaired_segments)),
-                "skipped": int(len(skipped_segments)),
-                "current": int(n_segments),
-                "total": int(max(1, n_segments)),
-            },
-        )
-        return DemuxResult(
-            total_frames_written=int(total_written),
-            repaired_segments=repaired_segments,
-            skipped_segments=skipped_segments,
-            warnings=warnings,
-            segment_real_frames=seg_real_counts,
-        )
 
-    # Sequential path
-    for i, seg in enumerate(plan.segments):
-        planned = int(max(0, seg.expected_frames))
-        have = int(max(0, seg.stop_frame - seg.start_frame))
-
-        if seg.replica_index < 0 or not seg.source_path or have <= 0:
-            # Entire segment must be filled or skipped
-            if planned == 0:
-                continue
-            if fill_policy == "skip":
-                msg = f"Segment {i} has no source frames; skipping {planned} planned frame(s)"
-                logger.warning(msg)
-                warnings.append(msg)
-                skipped_segments.append(i)
-                continue
-            if last_written_frame is None:
-                msg = f"Segment {i} lacks source and no previous frame to repeat; skipping {planned} frame(s)"
-                logger.warning(msg)
-                warnings.append(msg)
-                skipped_segments.append(i)
-                continue
-            # repeat or interpolate with no next available -> repeat
-            if fill_policy == "interpolate":
-                nxt = _peek_next_first_frame(plan, i, reader)
-                if nxt is not None:
-                    fill = _interpolate_frames(last_written_frame, nxt, planned)
-                else:
-                    msg = f"Segment {i} cannot interpolate (no next frame); repeating last frame for {planned}"
-                    logger.warning(msg)
-                    warnings.append(msg)
-                    fill = _repeat_frames(last_written_frame, planned)
-            else:
-                fill = _repeat_frames(last_written_frame, planned)
-            writer.write_frames(fill)
-            last_written_frame = np.array(fill[-1], copy=True)
-            total_written += planned
-            repaired_segments.append(i)
-            # Emit per-segment progress (skipped or filled from previous)
-            reporter.emit(
-                "demux_segment",
-                {
-                    "index": int(i),
-                    "frames": int(0 if fill_policy == "skip" else planned),
-                    "current": int(i + 1),
-                    "total": int(max(1, n_segments)),
-                },
-            )
-            continue
-
-        # Stream available frames
-        acc: List[np.ndarray] = []
-        got = 0
-        try:
-            for xyz in reader.iter_frames(
-                seg.source_path,
-                start=int(seg.start_frame),
-                stop=int(seg.stop_frame),
-                stride=1,
-            ):
-                acc.append(np.asarray(xyz))
-                got += 1
-                # Write in moderate batches to limit memory; ~1k frames is typical
-                if len(acc) >= 1024:
-                    total_written += _flush_accum(acc)
-                last_written_frame = np.array(xyz, copy=True)
-        except TrajectoryIOError as exc:
-            msg = (
-                f"Segment {i} read error for replica={seg.replica_index} path={seg.source_path} "
-                f"window=[{seg.start_frame},{seg.stop_frame}): {exc}; will fill remaining if policy allows"
-            )
-            logger.warning(msg)
-            warnings.append(msg)
-        finally:
-            total_written += _flush_accum(acc)
-            seg_real_counts[i] = int(got)
-
-        # Fill remainder if needed
-        missing = max(0, planned - got)
-        if missing > 0:
-            if fill_policy == "skip":
-                msg = f"Segment {i} missing {missing} frame(s); skipping due to policy=skip"
-                logger.warning(msg)
-                warnings.append(msg)
-                skipped_segments.append(i)
-                reporter.emit(
-                    "demux_segment",
-                    {
-                        "index": int(i),
-                        "frames": int(got),
-                        "current": int(i + 1),
-                        "total": int(max(1, n_segments)),
-                    },
-                )
-                continue
-            if last_written_frame is None:
-                msg = f"Segment {i} has no frames and cannot fill; skipping {missing}"
-                logger.warning(msg)
-                warnings.append(msg)
-                skipped_segments.append(i)
-                continue
-            if fill_policy == "interpolate":
-                nxt = _peek_next_first_frame(plan, i, reader)
-                if nxt is not None:
-                    fill = _interpolate_frames(last_written_frame, nxt, missing)
-                else:
-                    msg = f"Segment {i} cannot interpolate (no next frame); repeating last frame for {missing}"
-                    logger.warning(msg)
-                    warnings.append(msg)
-                    fill = _repeat_frames(last_written_frame, missing)
-            else:  # repeat
-                fill = _repeat_frames(last_written_frame, missing)
-            try:
-                writer.write_frames(fill)
-            except TrajectoryWriteError as exc:
-                raise DemuxWriterError(
-                    f"Writer failed when filling {missing} frame(s) at segment {i}"
-                ) from exc
-            last_written_frame = np.array(fill[-1], copy=True)
-            total_written += int(fill.shape[0])
-            repaired_segments.append(i)
-        # Emit per-segment completion with frames written (real + fills when not skip)
-        written_now = int(planned if fill_policy != "skip" else got)
-        reporter.emit(
-            "demux_segment",
-            {
-                "index": int(i),
-                "frames": int(written_now),
-                "current": int(i + 1),
-                "total": int(max(1, n_segments)),
-            },
-        )
-        # Optional flush controls
-        if flush_between_segments:
-            try:
-                writer.flush()
-            except Exception:
-                pass
-        if (
-            checkpoint_interval_segments
-            and (i + 1) % int(checkpoint_interval_segments) == 0
-        ):
-            try:
-                writer.flush()
-            except Exception:
-                pass
-
-    # Finalize
+def _finalize_demux(context: _DemuxContext, state: _DemuxState) -> None:
     try:
-        writer.flush()
+        context.writer.flush()
     except Exception:
         pass
-    reporter.emit(
+    total_segments = len(context.plan.segments)
+    context.reporter.emit(
         "demux_end",
         {
-            "frames": int(total_written),
-            "repaired": int(len(repaired_segments)),
-            "skipped": int(len(skipped_segments)),
-            "current": int(n_segments),
-            "total": int(max(1, n_segments)),
+            "frames": int(state.total_written),
+            "repaired": int(len(state.repaired_segments)),
+            "skipped": int(len(state.skipped_segments)),
+            "current": int(total_segments),
+            "total": int(max(1, total_segments)),
         },
     )
-    return DemuxResult(
-        total_frames_written=int(total_written),
-        repaired_segments=repaired_segments,
-        skipped_segments=skipped_segments,
-        warnings=warnings,
-        segment_real_frames=seg_real_counts,
+
+
+def _handle_missing_source_segment(
+    context: _DemuxContext,
+    state: _DemuxState,
+    index: int,
+    segment: DemuxSegmentPlan,
+    planned: int,
+) -> Optional[int]:
+    if (
+        segment.replica_index >= 0
+        and segment.source_path
+        and segment.stop_frame > segment.start_frame
+    ):
+        return None
+    if planned <= 0:
+        return None
+    if context.fill_policy == "skip":
+        msg = (
+            f"Segment {index} has no source frames; skipping {planned} planned frame(s)"
+        )
+        logger.warning(msg)
+        state.warnings.append(msg)
+        state.skipped_segments.append(index)
+        return None
+    if state.last_written_frame is None:
+        msg = f"Segment {index} lacks source and no previous frame to repeat; skipping {planned} frame(s)"
+        logger.warning(msg)
+        state.warnings.append(msg)
+        state.skipped_segments.append(index)
+        return None
+
+    fill, warning = _build_fill_frames(
+        context,
+        state,
+        index,
+        planned,
+        segment,
     )
+    if warning:
+        logger.warning(warning)
+        state.warnings.append(warning)
+    _write_frames_safe(
+        context.writer,
+        fill,
+        f"Writer failed when filling source-less segment {index}",
+    )
+    state.last_written_frame = np.array(fill[-1], copy=True)
+    state.total_written += int(fill.shape[0])
+    state.repaired_segments.append(index)
+    return planned
+
+
+def _emit_segment_progress(context: _DemuxContext, index: int, frames: int) -> None:
+    context.reporter.emit(
+        "demux_segment",
+        {
+            "index": int(index),
+            "frames": int(frames),
+            "current": int(index + 1),
+            "total": int(max(1, len(context.plan.segments))),
+        },
+    )
+
+
+def _flush_after_segment(context: _DemuxContext, index: int) -> None:
+    if context.flush_between_segments:
+        try:
+            context.writer.flush()
+        except Exception:
+            pass
+    checkpoint = context.checkpoint_interval_segments
+    if checkpoint and (index + 1) % int(checkpoint) == 0:
+        try:
+            context.writer.flush()
+        except Exception:
+            pass
+
+
+def _stream_segment_frames(
+    context: _DemuxContext,
+    state: _DemuxState,
+    index: int,
+    segment: DemuxSegmentPlan,
+    write_chunk: int,
+) -> int:
+    acc: List[np.ndarray] = []
+    got = 0
+    try:
+        for frame in context.reader.iter_frames(
+            segment.source_path,
+            start=int(segment.start_frame),
+            stop=int(segment.stop_frame),
+            stride=1,
+        ):
+            arr = np.asarray(frame)
+            acc.append(arr)
+            got += 1
+            if len(acc) >= write_chunk:
+                state.total_written += _flush_batch(
+                    context,
+                    state,
+                    acc,
+                    index,
+                    "flushing batch",
+                )
+            state.last_written_frame = np.array(arr, copy=True)
+    except TrajectoryIOError as exc:
+        msg = (
+            f"Segment {index} read error for replica={segment.replica_index} path={segment.source_path} "
+            f"window=[{segment.start_frame},{segment.stop_frame}): {exc}; will fill remaining if policy allows"
+        )
+        logger.warning(msg)
+        state.warnings.append(msg)
+    finally:
+        state.total_written += _flush_batch(
+            context,
+            state,
+            acc,
+            index,
+            "flushing batch",
+        )
+    return got
+
+
+def _handle_post_read_gap(
+    context: _DemuxContext,
+    state: _DemuxState,
+    index: int,
+    segment: DemuxSegmentPlan,
+    planned: int,
+    got: int,
+) -> Optional[int]:
+    missing = max(0, planned - got)
+    if missing <= 0:
+        return planned if context.fill_policy != "skip" else got
+    if context.fill_policy == "skip":
+        msg = f"Segment {index} missing {missing} frame(s); skipping due to policy=skip"
+        logger.warning(msg)
+        state.warnings.append(msg)
+        state.skipped_segments.append(index)
+        return got
+    if state.last_written_frame is None:
+        msg = f"Segment {index} has no frames and cannot fill; skipping {missing}"
+        logger.warning(msg)
+        state.warnings.append(msg)
+        state.skipped_segments.append(index)
+        return None
+
+    fill, warning = _build_fill_frames(context, state, index, missing, segment)
+    if warning:
+        logger.warning(warning)
+        state.warnings.append(warning)
+    _write_frames_safe(
+        context.writer,
+        fill,
+        f"Writer failed when filling {missing} frame(s) at segment {index}",
+    )
+    state.last_written_frame = np.array(fill[-1], copy=True)
+    state.total_written += int(fill.shape[0])
+    state.repaired_segments.append(index)
+    return planned
+
+
+def _consume_parallel_segment(
+    context: _DemuxContext,
+    state: _DemuxState,
+    index: int,
+    segment: DemuxSegmentPlan,
+    planned: int,
+    frames: Optional[np.ndarray],
+) -> int:
+    got = 0
+    if frames is not None and isinstance(frames, np.ndarray) and frames.size > 0:
+        _write_frames_safe(
+            context.writer,
+            frames,
+            f"Writer failed when writing segment {index} frames",
+        )
+        got = int(frames.shape[0])
+        state.total_written += got
+        state.last_written_frame = np.array(frames[-1], copy=True)
+    result = _handle_post_read_gap(context, state, index, segment, planned, got)
+    return 0 if result is None else result
+
+
+def _write_frames_safe(
+    writer: TrajectoryWriter, frames: np.ndarray, error_message: str
+) -> None:
+    try:
+        writer.write_frames(frames)
+    except TrajectoryWriteError as exc:
+        raise DemuxWriterError(error_message) from exc
+
+
+def _flush_batch(
+    context: _DemuxContext,
+    state: _DemuxState,
+    batch: List[np.ndarray],
+    index: int,
+    action: str,
+) -> int:
+    if not batch:
+        return 0
+    stacked = np.stack(batch, axis=0)
+    _write_frames_safe(
+        context.writer,
+        stacked,
+        f"Writer failed when {action} for segment {index}",
+    )
+    written = int(stacked.shape[0])
+    state.last_written_frame = np.array(stacked[-1], copy=True)
+    batch.clear()
+    return written
+
+
+def _build_fill_frames(
+    context: _DemuxContext,
+    state: _DemuxState,
+    index: int,
+    count: int,
+    segment: DemuxSegmentPlan,
+) -> tuple[np.ndarray, Optional[str]]:
+    assert state.last_written_frame is not None
+    if context.fill_policy == "interpolate":
+        nxt = _peek_next_first_frame(context.plan, index, context.reader)
+        if nxt is not None:
+            return _interpolate_frames(state.last_written_frame, nxt, count), None
+        warning = f"Segment {index} cannot interpolate (no next frame); repeating last frame for {count}"
+        return _repeat_frames(state.last_written_frame, count), warning
+    return _repeat_frames(state.last_written_frame, count), None

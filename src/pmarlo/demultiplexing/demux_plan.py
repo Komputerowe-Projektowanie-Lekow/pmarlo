@@ -91,6 +91,14 @@ class DemuxPlan:
     total_expected_frames: int
 
 
+@dataclass
+class _PlanState:
+    prev_stop_md: int
+    prev_stop_frame: int
+    common_fps: Optional[int] = None
+    varied_fps: bool = False
+
+
 def _to_indexed_mapping(
     values: Union[Sequence[int], Mapping[int, int]], default: int = 0
 ) -> Dict[int, int]:
@@ -132,192 +140,65 @@ def build_demux_plan(
     default_stride: int,
     replica_strides: Optional[Union[Sequence[int], Mapping[int, int]]] = None,
 ) -> DemuxPlan:
-    """Build a validated demultiplexing plan without touching trajectory data.
+    """Build a validated demultiplexing plan without touching trajectory data."""
 
-    Parameters
-    ----------
-    exchange_history : sequence of sequence of int
-        For each segment (0..S-1) a sequence of temperature-state indices per
-        replica (length R). ``state == k`` means the replica was at
-        ``temperatures[k]`` during that segment.
-    temperatures : sequence of float
-        Temperature schedule (length R). Used to pick the closest index to
-        ``target_temperature``.
-    target_temperature : float
-        Temperature in Kelvin to demultiplex to.
-    exchange_frequency : int
-        MD steps between exchange attempts; sets the segment duration in MD steps.
-    equilibration_offset : int
-        MD steps elapsed before production begins; forms the initial time offset.
-    replica_paths : sequence[str] or mapping[int, str]
-        Mapping or sequence from replica index -> trajectory path.
-    replica_frames : sequence[int] or mapping[int, int]
-        Mapping or sequence from replica index -> available frame count in its
-        trajectory file (0 when missing).
-    default_stride : int
-        Default reporter stride in MD steps per saved frame.
-    replica_strides : sequence[int] or mapping[int, int], optional
-        Optional per-replica stride. When provided, this maps MD steps to frame
-        indices for the corresponding replica; when absent, ``default_stride``
-        is used for all replicas.
-
-    Returns
-    -------
-    DemuxPlan
-        Validated plan containing per-segment frame slices and global summary.
-
-    Notes
-    -----
-    - Never performs file I/O or trajectory loading.
-    - Auto-corrects minor inconsistencies (e.g., negative/zero stride, truncated
-      segments due to insufficient frames) and logs warnings. It does not raise
-      for these conditions.
-    - Uses a global output timeline based on planned frames per segment:
-      ``expected_frames = floor((stop_md-1)/stride)+1 - floor(start_md/stride)``.
-    - ``frames_per_segment`` in the returned plan is 0 when the expected frame
-      count varies across segments (mixed per-replica strides).
-
-    Examples
-    --------
-    Plan for a tiny two-replica, two-segment exchange history (no I/O)::
-
-        plan = build_demux_plan(
-            exchange_history=[[0, 1], [1, 0]],
-            temperatures=[300.0, 310.0],
-            target_temperature=300.0,
-            exchange_frequency=10,
-            equilibration_offset=0,
-            replica_paths=["replica_00.dcd", "replica_01.dcd"],
-            replica_frames=[100, 100],
-            default_stride=2,
-        )
-    """
-
-    if exchange_frequency <= 0:
-        logger.warning("exchange_frequency <= 0; coercing to 1 for planning")
-        exchange_frequency = 1
-    if equilibration_offset < 0:
-        logger.warning("equilibration_offset < 0; coercing to 0 for planning")
-        equilibration_offset = 0
-    if default_stride <= 0:
-        logger.warning("default_stride <= 0; coercing to 1 for planning")
-        default_stride = 1
-
-    paths = _to_path_mapping(replica_paths)
-    frames = _to_indexed_mapping(replica_frames, default=0)
-    strides = (
-        _to_indexed_mapping(replica_strides, default=default_stride)
-        if replica_strides is not None
-        else {k: int(default_stride) for k in paths.keys()}
+    exchange_frequency, equilibration_offset, default_stride = _normalize_plan_inputs(
+        exchange_frequency,
+        equilibration_offset,
+        default_stride,
+    )
+    paths, frames, strides = _prepare_replica_metadata(
+        replica_paths,
+        replica_frames,
+        replica_strides,
+        default_stride,
     )
 
     target_idx = _closest_temperature_index(temperatures, target_temperature)
-    n_segments = len(exchange_history)
-
+    state = _PlanState(prev_stop_md=equilibration_offset, prev_stop_frame=0)
     segments: List[DemuxSegmentPlan] = []
-    expected_global_start = 0  # position in the output timeline (planned frames)
-    common_fps: Optional[int] = None
-    varied_fps: bool = False
 
-    prev_stop_md = int(equilibration_offset)
-    prev_stop_frame: int = 0
-
-    for s, states in enumerate(exchange_history):
-        # Find which replica is at the target temperature during this segment
-        replica_idx = -1
-        for r_idx, temp_state in enumerate(states):
-            if int(temp_state) == int(target_idx):
-                replica_idx = int(r_idx)
-                break
-
-        start_md = int(equilibration_offset + s * exchange_frequency)
-        stop_md = int(equilibration_offset + (s + 1) * exchange_frequency)
-        if start_md < prev_stop_md:
-            logger.warning(
-                "Non-monotonic segment times detected at segment %d: %d < %d",
-                s,
-                start_md,
-                prev_stop_md,
-            )
-        prev_stop_md = stop_md
-
-        # Determine stride for the selected replica (or default when missing)
-        stride = (
-            int(strides.get(replica_idx, default_stride))
-            if replica_idx >= 0
-            else int(default_stride)
+    for segment_index, states in enumerate(exchange_history):
+        replica_idx = _replica_at_target(states, target_idx)
+        start_md, stop_md = _segment_md_window(
+            segment_index,
+            exchange_frequency,
+            equilibration_offset,
         )
-        if stride <= 0:
-            logger.warning(
-                "Stride <= 0 for replica %d; using default_stride=%d",
-                replica_idx,
-                default_stride,
-            )
-            stride = int(default_stride if default_stride > 0 else 1)
+        stride = _resolve_stride(replica_idx, strides, default_stride)
+        start_frame, stop_frame, needs_fill, state.prev_stop_md = _compute_frame_window(
+            segment_index,
+            start_md,
+            stop_md,
+            stride,
+            state.prev_stop_md,
+            state.prev_stop_frame,
+        )
 
-        # Planned frames from MD steps mapped by stride (half-open, ceil mapping)
-        # Use ceil for both boundaries to avoid boundary duplication and backtracks
-        start_frame = max(0, (start_md + stride - 1) // stride)
-        stop_frame = max(0, (stop_md + stride - 1) // stride)
-        needs_fill = False
-        # Enforce monotonicity across segments even with variable per-replica stride
-        if start_frame < prev_stop_frame:
-            logger.warning(
-                "Backward frame index at segment %d (start=%d < expected=%d); adjusting",
-                s,
-                start_frame,
-                prev_stop_frame,
-            )
-            start_frame = prev_stop_frame
-            if stop_frame < start_frame:
-                stop_frame = start_frame
-            needs_fill = True
         expected_frames = max(0, stop_frame - start_frame)
+        state = _update_common_fps(state, expected_frames, segment_index)
 
-        if common_fps is None:
-            common_fps = expected_frames
-        elif expected_frames != common_fps:
-            # Mixed per-replica stride leads to variable frames per segment
-            logger.warning(
-                "Variable frames per segment detected (segment %d has %d, expected %d)",
-                s,
-                expected_frames,
-                common_fps,
-            )
-            varied_fps = True
-
-        # If there is no replica at target temperature for this segment,
-        # mark fill and leave indices as planned; source_path becomes empty.
-        if replica_idx < 0:
-            logger.warning(
-                "No replica at target temperature for segment %d; will require fill",
-                s,
-            )
-            needs_fill = True
-            source_path = ""
-            available = 0
-        else:
-            source_path = paths.get(replica_idx, "")
-            available = int(frames.get(replica_idx, 0))
-
-        # Truncate stop frame to available frames to avoid out-of-range access
-        if stop_frame > available and replica_idx >= 0:
-            if replica_idx >= 0:
-                logger.warning(
-                    "Segment %d truncated by source frames (replica=%d, have=%d, want stop=%d)",
-                    s,
-                    replica_idx,
-                    available,
-                    stop_frame,
-                )
-            stop_frame = max(start_frame, available)
-            needs_fill = True
+        source_path, available, needs_fill = _resolve_source_metadata(
+            replica_idx,
+            paths,
+            frames,
+            needs_fill,
+            segment_index,
+        )
+        start_frame, stop_frame, needs_fill = _truncate_to_available(
+            start_frame,
+            stop_frame,
+            available,
+            needs_fill,
+            segment_index,
+            replica_idx,
+        )
 
         segments.append(
             DemuxSegmentPlan(
-                segment_index=int(s),
+                segment_index=int(segment_index),
                 replica_index=int(replica_idx),
-                source_path=str(source_path),
+                source_path=source_path,
                 start_frame=int(start_frame),
                 stop_frame=int(stop_frame),
                 expected_frames=int(expected_frames),
@@ -325,17 +206,15 @@ def build_demux_plan(
             )
         )
 
-        # Advance the global expected output timeline by the planned frames
-        expected_global_start += int(expected_frames)
-        prev_stop_frame = int(stop_frame)
+        state.prev_stop_frame = int(stop_frame)
 
     total_expected = int(sum(seg.expected_frames for seg in segments))
     frames_per_segment = (
-        int(common_fps) if (common_fps is not None and not varied_fps) else 0
+        int(state.common_fps)
+        if (state.common_fps is not None and not state.varied_fps)
+        else 0
     )
-
-    # If frames-per-segment varied, return 0 as sentinel and log once
-    if frames_per_segment == 0 and n_segments > 0:
+    if frames_per_segment == 0 and segments:
         logger.warning(
             "frames_per_segment is variable across segments; returning 0 in plan"
         )
@@ -346,6 +225,160 @@ def build_demux_plan(
         frames_per_segment=frames_per_segment,
         total_expected_frames=total_expected,
     )
+
+
+def _normalize_plan_inputs(
+    exchange_frequency: int,
+    equilibration_offset: int,
+    default_stride: int,
+) -> tuple[int, int, int]:
+    if exchange_frequency <= 0:
+        logger.warning("exchange_frequency <= 0; coercing to 1 for planning")
+        exchange_frequency = 1
+    if equilibration_offset < 0:
+        logger.warning("equilibration_offset < 0; coercing to 0 for planning")
+        equilibration_offset = 0
+    if default_stride <= 0:
+        logger.warning("default_stride <= 0; coercing to 1 for planning")
+        default_stride = 1
+    return int(exchange_frequency), int(equilibration_offset), int(default_stride)
+
+
+def _prepare_replica_metadata(
+    replica_paths: Union[Sequence[str], Mapping[int, str]],
+    replica_frames: Union[Sequence[int], Mapping[int, int]],
+    replica_strides: Optional[Union[Sequence[int], Mapping[int, int]]],
+    default_stride: int,
+) -> tuple[Dict[int, str], Dict[int, int], Dict[int, int]]:
+    paths = _to_path_mapping(replica_paths)
+    frames = _to_indexed_mapping(replica_frames, default=0)
+    if replica_strides is not None:
+        strides = _to_indexed_mapping(replica_strides, default=default_stride)
+    else:
+        strides = {idx: int(default_stride) for idx in paths.keys()}
+    return paths, frames, strides
+
+
+def _replica_at_target(states: Sequence[int], target_idx: int) -> int:
+    for replica_idx, temp_state in enumerate(states):
+        if int(temp_state) == int(target_idx):
+            return int(replica_idx)
+    return -1
+
+
+def _segment_md_window(
+    segment_index: int,
+    exchange_frequency: int,
+    equilibration_offset: int,
+) -> tuple[int, int]:
+    start_md = int(equilibration_offset + segment_index * exchange_frequency)
+    stop_md = int(equilibration_offset + (segment_index + 1) * exchange_frequency)
+    return start_md, stop_md
+
+
+def _resolve_stride(
+    replica_idx: int,
+    strides: Dict[int, int],
+    default_stride: int,
+) -> int:
+    stride = int(strides.get(replica_idx, default_stride))
+    if stride <= 0:
+        logger.warning(
+            "Stride <= 0 for replica %d; using default_stride=%d",
+            replica_idx,
+            default_stride,
+        )
+        stride = int(default_stride if default_stride > 0 else 1)
+    return stride
+
+
+def _compute_frame_window(
+    segment_index: int,
+    start_md: int,
+    stop_md: int,
+    stride: int,
+    prev_stop_md: int,
+    prev_stop_frame: int,
+) -> tuple[int, int, bool, int]:
+    if start_md < prev_stop_md:
+        logger.warning(
+            "Non-monotonic segment times detected at segment %d: %d < %d",
+            segment_index,
+            start_md,
+            prev_stop_md,
+        )
+    start_frame = max(0, (start_md + stride - 1) // stride)
+    stop_frame = max(0, (stop_md + stride - 1) // stride)
+    needs_fill = False
+    if start_frame < prev_stop_frame:
+        logger.warning(
+            "Backward frame index at segment %d (start=%d < expected=%d); adjusting",
+            segment_index,
+            start_frame,
+            prev_stop_frame,
+        )
+        start_frame = prev_stop_frame
+        if stop_frame < start_frame:
+            stop_frame = start_frame
+        needs_fill = True
+    return start_frame, stop_frame, needs_fill, stop_md
+
+
+def _update_common_fps(
+    state: _PlanState,
+    expected_frames: int,
+    segment_index: int,
+) -> _PlanState:
+    if state.common_fps is None:
+        state.common_fps = expected_frames
+    elif expected_frames != state.common_fps:
+        logger.warning(
+            "Variable frames per segment detected (segment %d has %d, expected %d)",
+            segment_index,
+            expected_frames,
+            state.common_fps,
+        )
+        state.varied_fps = True
+    return state
+
+
+def _resolve_source_metadata(
+    replica_idx: int,
+    paths: Dict[int, str],
+    frames: Dict[int, int],
+    needs_fill: bool,
+    segment_index: int,
+) -> tuple[str, int, bool]:
+    if replica_idx < 0:
+        logger.warning(
+            "No replica at target temperature for segment %d; will require fill",
+            segment_index,
+        )
+        return "", 0, True
+    source_path = paths.get(replica_idx, "")
+    available = int(frames.get(replica_idx, 0))
+    return source_path, available, needs_fill
+
+
+def _truncate_to_available(
+    start_frame: int,
+    stop_frame: int,
+    available: int,
+    needs_fill: bool,
+    segment_index: int,
+    replica_idx: int,
+) -> tuple[int, int, bool]:
+    if replica_idx >= 0 and stop_frame > available:
+        logger.warning(
+            "Segment %d truncated by source frames (replica=%d, have=%d, want stop=%d)",
+            segment_index,
+            replica_idx,
+            available,
+            stop_frame,
+        )
+        stop_frame = max(start_frame, available)
+        needs_fill = True
+    return start_frame, stop_frame, needs_fill
 
 
 def build_demux_frame_windows(
