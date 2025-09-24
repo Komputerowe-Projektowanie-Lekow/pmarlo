@@ -7,7 +7,11 @@ from typing import Any, Dict, Mapping, MutableMapping
 
 import numpy as np
 
-from ..analysis import compute_weighted_fes, prepare_msm_discretization, compute_diagnostics
+from ..analysis import (
+    compute_diagnostics,
+    compute_weighted_fes,
+    prepare_msm_discretization,
+)
 from ..reweight import AnalysisReweightMode, Reweighter
 
 DatasetLike = MutableMapping[str, Any] | Mapping[str, Any]

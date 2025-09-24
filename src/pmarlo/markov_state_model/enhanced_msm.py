@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import importlib.util
 import logging
-from typing import List, Literal, Optional, Sequence, Union
-# Protocol describing the minimal interface used by this module
-from typing import Protocol
-from typing import Any, TYPE_CHECKING
+from pathlib import Path
+from typing import Any, Dict, List, Literal, Optional, Protocol, Sequence, Union, cast
 
 
 class EnhancedMSMProtocol(Protocol):
@@ -17,69 +15,64 @@ class EnhancedMSMProtocol(Protocol):
         stride: int,
         atom_selection: str | Sequence[int] | None,
         chunk_size: int,
-    ) -> None:
-        ...
+    ) -> None: ...
 
     def compute_features(
         self,
-        *,
-        feature_type: str | None = None,
-        feature_stride: int | None = None,
-        tica_lag: int = 0,
-        tica_components: int | None = None,
+        feature_type: str = ...,
+        n_features: Optional[int] = ...,
+        feature_stride: int = ...,
+        tica_lag: int = ...,
+        tica_components: Optional[int] = ...,
         **kwargs: object,
-    ) -> None:
-        ...
+    ) -> None: ...
 
-    def cluster_features(self, *, n_states: int | Literal["auto"]) -> None:
-        ...
+    def cluster_features(self, *, n_states: int | Literal["auto"]) -> None: ...
 
-    def build_msm(self, *, lag_time: int, method: str = "standard") -> None:
-        ...
+    def build_msm(self, *, lag_time: int, method: str = "standard") -> None: ...
 
-    def compute_implied_timescales(self) -> None:
-        ...
+    def compute_implied_timescales(self) -> None: ...
 
-    def generate_free_energy_surface(self, *, cv1_name: str, cv2_name: str) -> None:
-        ...
+    def generate_free_energy_surface(
+        self,
+        cv1_name: str = ...,
+        cv2_name: str = ...,
+        bins: int = ...,
+        temperature: float = ...,
+        **kwargs: object,
+    ) -> Dict[str, Any]: ...
 
-    def create_state_table(self) -> None:
-        ...
+    def create_state_table(self) -> None: ...
 
-    def extract_representative_structures(self) -> None:
-        ...
+    def extract_representative_structures(self) -> None: ...
 
-    def save_analysis_results(self) -> None:
-        ...
+    def save_analysis_results(self) -> None: ...
 
-    def plot_free_energy_surface(self, *, save_file: str) -> None:
-        ...
+    def plot_free_energy_surface(self, *, save_file: str) -> None: ...
 
-    def plot_implied_timescales(self, *, save_file: str) -> None:
-        ...
+    def plot_implied_timescales(self, *, save_file: str) -> None: ...
 
-    def plot_implied_rates(self, *, save_file: str) -> None:
-        ...
+    def plot_implied_rates(self, *, save_file: str) -> None: ...
 
-    def plot_free_energy_profile(self, *, save_file: str) -> None:
-        ...
+    def plot_free_energy_profile(self, *, save_file: str) -> None: ...
 
     def plot_ck_test(
-        self, *, save_file: str, n_macrostates: int, factors: Sequence[int]
-    ) -> None:
-        ...
+        self,
+        save_file: str = ...,
+        n_macrostates: int = ...,
+        factors: Optional[List[int]] = ...,
+        **kwargs: object,
+    ) -> Optional[Path]: ...
+
 
 _SKLEARN_SPEC = importlib.util.find_spec("sklearn")
-
-# Public class alias used in both branches; assigned below
-EnhancedMSM: type[EnhancedMSMProtocol]
 
 if _SKLEARN_SPEC is None:  # pragma: no cover - exercised in minimal test envs
     import numpy as np
 
     logger = logging.getLogger("pmarlo")
 
-    class EnhancedMSM:
+    class _EnhancedMSMStub(EnhancedMSMProtocol):
         """Minimal stub used when scikit-learn is unavailable.
 
         The stub provides enough surface area for unit tests that exercise frame
@@ -89,7 +82,15 @@ if _SKLEARN_SPEC is None:  # pragma: no cover - exercised in minimal test envs
         :meth:`compute_features`.
         """
 
-        def __init__(self, *, output_dir: str | None = None, **_: object) -> None:
+        def __init__(
+            self,
+            *,
+            trajectory_files: Union[str, List[str]] | None = None,
+            topology_file: str | None = None,
+            temperatures: Optional[List[float]] = None,
+            output_dir: str | None = None,
+            **_: object,
+        ) -> None:
             self.output_dir = output_dir
             self.trajectories: list[object] = []
             self._effective_frames = 0
@@ -102,10 +103,11 @@ if _SKLEARN_SPEC is None:  # pragma: no cover - exercised in minimal test envs
 
         def compute_features(
             self,
-            *,
-            feature_stride: int | None = None,
+            feature_type: str = "",
+            n_features: Optional[int] = None,
+            feature_stride: int = 1,
             tica_lag: int = 0,
-            tica_components: int | None = None,
+            tica_components: Optional[int] = None,
             **_: object,
         ) -> None:
             stride = int(feature_stride or 1)
@@ -139,8 +141,9 @@ if _SKLEARN_SPEC is None:  # pragma: no cover - exercised in minimal test envs
             tica_lag: int = 0,
             tica_components: int | None = None,
         ) -> None:
+            stride_value = 1 if feature_stride is None else int(feature_stride)
             self.compute_features(
-                feature_stride=feature_stride,
+                feature_stride=stride_value,
                 tica_lag=tica_lag,
                 tica_components=tica_components,
             )
@@ -167,11 +170,19 @@ if _SKLEARN_SPEC is None:  # pragma: no cover - exercised in minimal test envs
 
         def generate_free_energy_surface(
             self,
-            *,
             cv1_name: str = "CV1",
             cv2_name: str = "CV2",
-        ) -> None:
-            return None
+            bins: int = 100,
+            temperature: float = 300.0,
+            **_: object,
+        ) -> Dict[str, Any]:
+            return {
+                "cv1": cv1_name,
+                "cv2": cv2_name,
+                "bins": int(bins),
+                "temperature": float(temperature),
+                "surface": [],
+            }
 
         def create_state_table(self) -> None:
             return None
@@ -195,9 +206,15 @@ if _SKLEARN_SPEC is None:  # pragma: no cover - exercised in minimal test envs
             return None
 
         def plot_ck_test(
-            self, *, save_file: str, n_macrostates: int, factors: Sequence[int]
-        ) -> None:
+            self,
+            save_file: str = "ck_plot",
+            n_macrostates: int = 3,
+            factors: Optional[List[int]] = None,
+            **_: object,
+        ) -> Optional[Path]:
             return None
+
+    _EnhancedMSMStubClass = cast(type[EnhancedMSMProtocol], _EnhancedMSMStub)
 
     def run_complete_msm_analysis(
         trajectory_files: Union[str, List[str]],
@@ -256,16 +273,17 @@ else:  # pragma: no cover - relies on optional ML stack
         stride: int = 1,
         atom_selection: str | Sequence[int] | None = None,
         chunk_size: int = 1000,
-    ):
+    ) -> EnhancedMSM:
         msm = _initialize_msm(
             trajectory_files=trajectory_files,
             topology_file=topology_file,
             temperatures=temperatures,
             output_dir=output_dir,
         )
+        msm_protocol = cast(EnhancedMSMProtocol, msm)
 
         _load_and_prepare_data(
-            msm=msm,
+            msm=msm_protocol,
             stride=stride,
             atom_selection=atom_selection,
             chunk_size=chunk_size,
@@ -273,13 +291,15 @@ else:  # pragma: no cover - relies on optional ML stack
             n_states=n_states,
         )
 
-        _build_and_analyze_msm(msm=msm, lag_time=lag_time, temperatures=temperatures)
+        _build_and_analyze_msm(
+            msm=msm_protocol, lag_time=lag_time, temperatures=temperatures
+        )
 
-        _compute_optional_fes(msm=msm)
+        _compute_optional_fes(msm=msm_protocol)
 
-        _finalize_and_export(msm=msm)
+        _finalize_and_export(msm=msm_protocol)
 
-        _render_plots_safely(msm=msm)
+        _render_plots_safely(msm=msm_protocol)
 
         return msm
 
@@ -354,3 +374,7 @@ else:  # pragma: no cover - relies on optional ML stack
         except Exception:
             pass
 
+
+# Export unified interface
+if _SKLEARN_SPEC is None:
+    EnhancedMSM = _EnhancedMSMStubClass  # type: ignore[misc,assignment]

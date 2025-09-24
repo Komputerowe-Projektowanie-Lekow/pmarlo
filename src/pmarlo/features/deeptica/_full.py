@@ -352,14 +352,15 @@ class DeepTICAConfig:
             n_out=int(n_out),
             hidden=tuple(int(h) for h in base_hidden),
             dropout_input=float(max(0.0, min(1.0, drop_in))),
-            hidden_dropout=tuple(
-                float(max(0.0, min(1.0, v))) for v in drop_hidden_seq
-            ),
+            hidden_dropout=tuple(float(max(0.0, min(1.0, v))) for v in drop_hidden_seq),
             layer_norm_in=True,
             layer_norm_hidden=True,
         )
         defaults.update(overrides)
-        return cls(**defaults)
+        # Type-safe construction by unpacking the dictionary
+        from typing import cast
+
+        return cls(**cast("dict[str, Any]", defaults))
 
 
 class DeepTICAModel:
@@ -392,8 +393,14 @@ class DeepTICAModel:
         outputs = np.asarray(y, dtype=np.float64)
         history = getattr(self, "training_history", {}) or {}
         mean = history.get("output_mean") if isinstance(history, dict) else None
-        transform = history.get("output_transform") if isinstance(history, dict) else None
-        applied_flag = history.get("output_transform_applied") if isinstance(history, dict) else None
+        transform = (
+            history.get("output_transform") if isinstance(history, dict) else None
+        )
+        applied_flag = (
+            history.get("output_transform_applied")
+            if isinstance(history, dict)
+            else None
+        )
         if mean is not None and transform is not None:
             try:
                 outputs = apply_output_transform(outputs, mean, transform, applied_flag)
@@ -531,6 +538,9 @@ class DeepTICAModel:
         dropout_in = getattr(cfg, "dropout_input", None)
         if dropout_in is None:
             dropout_in = getattr(cfg, "dropout", 0.1)
+        # Ensure dropout_in is not None before converting to float
+        if dropout_in is None:
+            dropout_in = 0.1
         net = _PrePostWrapper(
             core,
             in_dim,
@@ -700,6 +710,9 @@ def train_deeptica(
     dropout_in = getattr(cfg, "dropout_input", None)
     if dropout_in is None:
         dropout_in = getattr(cfg, "dropout", 0.0)
+    # Ensure dropout_in is not None before converting to float
+    if dropout_in is None:
+        dropout_in = 0.0
     dropout_in = float(max(0.0, min(1.0, float(dropout_in))))
     net = _PrePostWrapper(
         core,
@@ -710,9 +723,7 @@ def train_deeptica(
     torch.manual_seed(int(cfg.seed))
 
     tau_schedule = tuple(
-        int(x)
-        for x in (getattr(cfg, "tau_schedule", ()) or ())
-        if int(x) > 0
+        int(x) for x in (getattr(cfg, "tau_schedule", ()) or ()) if int(x) > 0
     )
     if not tau_schedule:
         tau_schedule = (int(cfg.lag),)
@@ -1282,9 +1293,7 @@ def train_deeptica(
             vamp_kwargs = {
                 "eps": float(max(1e-9, getattr(cfg, "vamp_eps", 1e-3))),
                 "eps_abs": float(max(0.0, getattr(cfg, "vamp_eps_abs", 1e-6))),
-                "alpha": float(
-                    min(max(getattr(cfg, "vamp_alpha", 0.15), 0.0), 1.0)
-                ),
+                "alpha": float(min(max(getattr(cfg, "vamp_alpha", 0.15), 0.0), 1.0)),
                 "cond_reg": float(max(0.0, getattr(cfg, "vamp_cond_reg", 1e-4))),
             }
 
@@ -1305,7 +1314,10 @@ def train_deeptica(
                 ):
                     super().__init__()
                     self.inner = inner
-                    self.vamp_loss = VAMP2Loss(**vamp_kwargs)
+                    # Type-safe construction of VAMP2Loss with explicit kwargs
+                    from typing import cast
+
+                    self.vamp_loss = VAMP2Loss(**cast("dict[str, Any]", vamp_kwargs))
                     self._train_loss_accum: list[float] = []
                     self._val_loss_accum: list[float] = []
                     self._val_score_accum: list[float] = []
@@ -1344,12 +1356,6 @@ def train_deeptica(
                     self._last_grad_warning_step: int | None = None
                     self._grad_warning_pending = False
                     self._last_grad_norm: float | None = None
-                    self._train_loss_accum: list[float] = []
-                    self._val_loss_accum: list[float] = []
-                    self._val_score_accum: list[float] = []
-                    self.train_loss_curve: list[float] = []
-                    self.val_loss_curve: list[float] = []
-                    self.val_score_curve: list[float] = []
                     # keep hparams for checkpointing/logging
                     self.save_hyperparameters(
                         {
@@ -1383,12 +1389,14 @@ def train_deeptica(
                         pass
                     # history directory for per-epoch JSONL metric records
                     try:
-                        self.history_dir = (
+                        self.history_dir: Path | None = (
                             Path(history_dir) if history_dir is not None else None
                         )
                         if self.history_dir is not None:
                             self.history_dir.mkdir(parents=True, exist_ok=True)
-                            self.history_file = self.history_dir / "history.jsonl"
+                            self.history_file: Path | None = (
+                                self.history_dir / "history.jsonl"
+                            )
                         else:
                             self.history_file = None
                     except Exception:
@@ -1454,7 +1462,9 @@ def train_deeptica(
                                 "grad_norm_exceeded",
                                 torch.tensor(
                                     float(self._last_grad_norm),
-                                    device=loss.device if hasattr(loss, "device") else None,
+                                    device=(
+                                        loss.device if hasattr(loss, "device") else None
+                                    ),
                                     dtype=torch.float32,
                                 ),
                                 prog_bar=False,
@@ -1480,9 +1490,8 @@ def train_deeptica(
                         grad_norm = 0.0
                     self._grad_norm_accum.append(float(grad_norm))
                     self._last_grad_norm = float(grad_norm)
-                    if (
-                        self.grad_norm_warn is not None
-                        and float(grad_norm) > float(self.grad_norm_warn)
+                    if self.grad_norm_warn is not None and float(grad_norm) > float(
+                        self.grad_norm_warn
                     ):
                         step_idx = None
                         try:
@@ -1817,7 +1826,10 @@ def train_deeptica(
                                 )
                             except Exception:
                                 continue
-                        if comp_tau and float(min(comp_tau)) < self.variance_warn_threshold:
+                        if (
+                            comp_tau
+                            and float(min(comp_tau)) < self.variance_warn_threshold
+                        ):
                             logger.warning(
                                 "Validation lagged variance for some CV dropped below %.2e (min %.2e)",
                                 float(self.variance_warn_threshold),
@@ -1925,8 +1937,7 @@ def train_deeptica(
                         )
                     if self._ctt_eig_min_accum:
                         avg_ctt_min = float(
-                            sum(self._ctt_eig_min_accum)
-                            / len(self._ctt_eig_min_accum)
+                            sum(self._ctt_eig_min_accum) / len(self._ctt_eig_min_accum)
                         )
                         self.ctt_eig_min_curve.append(avg_ctt_min)
                         self.log(
@@ -1938,8 +1949,7 @@ def train_deeptica(
                         )
                     if self._ctt_eig_max_accum:
                         avg_ctt_max = float(
-                            sum(self._ctt_eig_max_accum)
-                            / len(self._ctt_eig_max_accum)
+                            sum(self._ctt_eig_max_accum) / len(self._ctt_eig_max_accum)
                         )
                         self.ctt_eig_max_curve.append(avg_ctt_max)
                         self.log(
@@ -2059,9 +2069,7 @@ def train_deeptica(
                 variance_warn_threshold=float(
                     getattr(cfg, "variance_warn_threshold", 1e-6)
                 ),
-                mean_warn_threshold=float(
-                    getattr(cfg, "mean_warn_threshold", 5.0)
-                ),
+                mean_warn_threshold=float(getattr(cfg, "mean_warn_threshold", 5.0)),
             )
         except Exception:
             # If Lightning is completely unavailable, fall back to model.fit (handled below)
@@ -2225,19 +2233,13 @@ def train_deeptica(
                     [float(v) for v in arr]
                     for arr in getattr(wrapped, "var_zt_curve_components")
                 ]
-            if hasattr(wrapped, "mean_z0_curve") and getattr(
-                wrapped, "mean_z0_curve"
-            ):
+            if hasattr(wrapped, "mean_z0_curve") and getattr(wrapped, "mean_z0_curve"):
                 mean_z0_curve = [
-                    [float(v) for v in arr]
-                    for arr in getattr(wrapped, "mean_z0_curve")
+                    [float(v) for v in arr] for arr in getattr(wrapped, "mean_z0_curve")
                 ]
-            if hasattr(wrapped, "mean_zt_curve") and getattr(
-                wrapped, "mean_zt_curve"
-            ):
+            if hasattr(wrapped, "mean_zt_curve") and getattr(wrapped, "mean_zt_curve"):
                 mean_zt_curve = [
-                    [float(v) for v in arr]
-                    for arr in getattr(wrapped, "mean_zt_curve")
+                    [float(v) for v in arr] for arr in getattr(wrapped, "mean_zt_curve")
                 ]
             if hasattr(wrapped, "cond_c0_curve") and getattr(wrapped, "cond_c0_curve"):
                 cond_c0_curve = [float(x) for x in getattr(wrapped, "cond_c0_curve")]
@@ -2328,7 +2330,7 @@ def train_deeptica(
     if ctt_eig_max_curve is None:
         ctt_eig_max_curve = []
 
-    history = {
+    history: dict[str, Any] = {
         "loss_curve": train_curve,
         "val_loss_curve": val_curve,
         "objective_curve": score_curve,
@@ -2372,9 +2374,7 @@ def train_deeptica(
     if history.get("var_z0_curve_components"):
         history["var_z0_curve_components"][-1] = whitening_info.get("output_variance")
     else:
-        history["var_z0_curve_components"] = [
-            whitening_info.get("output_variance")
-        ]
+        history["var_z0_curve_components"] = [whitening_info.get("output_variance")]
 
     if history.get("var_zt_curve"):
         history["var_zt_curve"][-1] = whitening_info.get("var_zt")
@@ -2458,19 +2458,25 @@ def train_deeptica(
                 "final_metrics": {
                     "output_variance": output_variance,
                     "train_loss_last": (
-                        (history.get("loss_curve") or [None])[-1]
-                        if isinstance(history.get("loss_curve"), list)
-                        else None
+                        (
+                            history.get("loss_curve", [None])
+                            if isinstance(history.get("loss_curve"), list)
+                            else [None]
+                        )[-1]
                     ),
                     "val_loss_last": (
-                        (history.get("val_loss_curve") or [None])[-1]
-                        if isinstance(history.get("val_loss_curve"), list)
-                        else None
+                        (
+                            history.get("val_loss_curve", [None])
+                            if isinstance(history.get("val_loss_curve"), list)
+                            else [None]
+                        )[-1]
                     ),
                     "val_score_last": (
-                        (history.get("val_score_curve") or [None])[-1]
-                        if isinstance(history.get("val_score_curve"), list)
-                        else None
+                        (
+                            history.get("val_score_curve", [None])
+                            if isinstance(history.get("val_score_curve"), list)
+                            else [None]
+                        )[-1]
                     ),
                 },
                 "wall_time_s": float(history.get("wall_time_s", 0.0)),

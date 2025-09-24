@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Mapping, MutableMapping, Sequence
 
-import logging
-
 import numpy as np
-
 from sklearn.cluster import KMeans, MiniBatchKMeans
-
 
 logger = logging.getLogger("pmarlo")
 
@@ -206,9 +203,9 @@ class _GridDiscretizer:
     def centers(self) -> np.ndarray | None:
         if not self.edges:
             return None
-        mesh = np.meshgrid(*[
-            (edges[:-1] + edges[1:]) / 2.0 for edges in self.edges
-        ], indexing="ij")
+        mesh = np.meshgrid(
+            *[(edges[:-1] + edges[1:]) / 2.0 for edges in self.edges], indexing="ij"
+        )
         coords = np.stack([m.ravel() for m in mesh], axis=1)
         return coords
 
@@ -255,7 +252,9 @@ def discretize_dataset(
     cluster_mode: str = "kmeans",
     n_microstates: int = 150,
     lag_time: int = 1,
-    frame_weights: Mapping[str, Sequence[float]] | Sequence[float] | np.ndarray | None = None,
+    frame_weights: (
+        Mapping[str, Sequence[float]] | Sequence[float] | np.ndarray | None
+    ) = None,
     random_state: int | None = None,
 ) -> MSMDiscretizationResult:
     """Discretise continuous CVs into microstates and build MSM statistics."""

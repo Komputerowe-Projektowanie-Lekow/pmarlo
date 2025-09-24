@@ -209,8 +209,12 @@ class ReplicaExchange:
     @classmethod
     def from_config(cls, config: RemdConfig) -> "ReplicaExchange":
         """Construct instance using immutable RemdConfig as single source of truth."""
+        # Normalize pdb_file to str
+        assert config.pdb_file is not None, "pdb_file must be set in config"
+        pdb_file_str = str(config.pdb_file)
+
         return cls(
-            pdb_file=config.pdb_file,
+            pdb_file=pdb_file_str,
             forcefield_files=config.forcefield_files,
             temperatures=config.temperatures,
             output_dir=str(config.output_dir),
@@ -1071,7 +1075,7 @@ class ReplicaExchange:
         *,
         progress_callback: ProgressCB | None = None,
         cancel_token: Callable[[], bool] | None = None,
-    ):
+    ) -> List[str]:
         """
         Run the replica exchange simulation.
 
@@ -1105,9 +1109,9 @@ class ReplicaExchange:
             )
             if cancelled:
                 reporter.emit("finished", {"status": "cancelled"})
-                return
+                return []
         if self._skip_production_if_completed(checkpoint_manager):
-            return
+            return [str(f) for f in self.trajectory_files]
         self._mark_production_started(checkpoint_manager)
         cancelled = self._run_production_phase(
             total_steps,
@@ -1119,7 +1123,7 @@ class ReplicaExchange:
         )
         if cancelled:
             reporter.emit("finished", {"status": "cancelled"})
-            return
+            return []
         self._mark_production_completed(
             total_steps, equilibration_steps, checkpoint_manager
         )
@@ -1134,6 +1138,7 @@ class ReplicaExchange:
         reporter.emit("write_output", {"artifacts": artifacts})
         self.save_results()
         reporter.emit("finished", {"status": "ok"})
+        return [str(f) for f in self.trajectory_files]
 
     # --- Helpers for run_simulation ---
 

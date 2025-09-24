@@ -13,7 +13,7 @@ from __future__ import annotations
 import sys
 from importlib import import_module
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Type
+from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence, Tuple, Type
 
 from .utils.seed import quiet_external_loggers
 
@@ -36,7 +36,10 @@ _MANDATORY_EXPORTS: Dict[str, Tuple[str, str]] = {
     "ShardMeta": ("pmarlo.data.shard", "ShardMeta"),
     "write_shard": ("pmarlo.data.shard", "write_shard"),
     "read_shard": ("pmarlo.data.shard", "read_shard"),
-    "emit_shards_from_trajectories": ("pmarlo.data.emit", "emit_shards_from_trajectories"),
+    "emit_shards_from_trajectories": (
+        "pmarlo.data.emit",
+        "emit_shards_from_trajectories",
+    ),
     "aggregate_and_build": ("pmarlo.data.aggregate", "aggregate_and_build"),
     "DemuxDataset": ("pmarlo.data.demux_dataset", "DemuxDataset"),
     "build_demux_dataset": ("pmarlo.data.demux_dataset", "build_demux_dataset"),
@@ -67,8 +70,8 @@ _OPTIONAL_EXPORTS: Dict[str, Tuple[str, str]] = {
     "generate_2d_fes": ("pmarlo.markov_state_model.free_energy", "generate_2d_fes"),
 }
 
-Pipeline: Optional[Type["PipelineType"]] = None
-MarkovStateModel: Optional[Type["MarkovStateModelType"]] = None
+Pipeline: Optional[Type[Any]] = None
+MarkovStateModel: Optional[Type[Any]] = None
 
 # Attempt to eagerly expose optional exports when their dependencies are
 # available.  Failures are ignored so that ``import pmarlo`` remains usable in
@@ -123,7 +126,7 @@ def _resolve_export(name: str) -> Any:
                 except Exception:  # pragma: no cover - numpy should be available
                     _np = None
 
-                def _trig_expand_periodic(X, periodic):  # type: ignore[override]
+                def _trig_expand_periodic(X: object, periodic: Sequence[bool]) -> tuple[object, object]:  # type: ignore[override]
                     if _np is None:
                         raise ImportError("numpy is required for this helper")
                     arr = _np.asarray(X, dtype=float)

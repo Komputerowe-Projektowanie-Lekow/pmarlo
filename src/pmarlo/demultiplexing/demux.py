@@ -9,7 +9,7 @@ and future refactoring.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Literal, Optional, cast
 
 import numpy as np
 from openmm import unit  # type: ignore
@@ -24,6 +24,9 @@ from .demux_metadata import DemuxIntegrityError, DemuxMetadata, serialize_metada
 from .demux_plan import build_demux_plan
 
 logger = logging.getLogger("pmarlo")
+
+
+FillPolicy = Literal["repeat", "skip", "interpolate"]
 
 
 def demux_trajectories(
@@ -95,7 +98,7 @@ def demux_trajectories(
     if use_streaming:
         try:
             # Build temperature schedule for metadata
-            temp_schedule = {
+            temp_schedule: dict[str, dict[str, float]] = {
                 str(i): {} for i in range(int(remd.n_replicas))
             }
             for s, states in enumerate(remd.exchange_history):
@@ -241,10 +244,15 @@ def demux_trajectories(
             except Exception:
                 pass
             writer = writer.open(str(demux_file), str(remd.pdb_file), overwrite=True)
-            fill_policy = (
-                getattr(remd, "demux_fill_policy", None)
-                or getattr(_cfg, "DEMUX_FILL_POLICY", "repeat")
-            ).lower()
+            raw_fill_policy = getattr(remd, "demux_fill_policy", None) or getattr(
+                _cfg, "DEMUX_FILL_POLICY", "repeat"
+            )
+            if not isinstance(raw_fill_policy, str) or not raw_fill_policy:
+                raw_fill_policy = "repeat"
+            _raw = raw_fill_policy.lower()
+            if _raw not in ("repeat", "skip", "interpolate"):
+                _raw = "repeat"
+            fill_policy_lit: FillPolicy = cast(FillPolicy, _raw)
             # Resolve parallel workers
             parallel_workers = getattr(remd, "demux_parallel_workers", None)
             if parallel_workers is None:
@@ -281,11 +289,7 @@ def demux_trajectories(
                 str(remd.pdb_file),
                 reader,
                 writer,
-                fill_policy=(
-                    fill_policy
-                    if fill_policy in {"repeat", "skip", "interpolate"}
-                    else "repeat"
-                ),
+                fill_policy=fill_policy_lit,
                 parallel_read_workers=parallel_workers,
                 progress_callback=progress_callback,
                 checkpoint_interval_segments=checkpoint_every,
@@ -308,23 +312,23 @@ def demux_trajectories(
 
             counts = Counter(int(seg.expected_frames) for seg in plan.segments)
             fps_mode = int(counts.most_common(1)[0][0]) if counts else 0
-            runtime_info = {
+            runtime_info_streaming: Dict[str, Any] = {
                 "exchange_frequency_steps": int(remd.exchange_frequency),
                 "integration_timestep_ps": timestep_ps,
-                "fill_policy": fill_policy,
+                "fill_policy": fill_policy_lit,
                 "temperature_schedule": temp_schedule,
                 "frames_per_segment": fps_mode,
                 "equilibration_steps_total": int(effective_equil_steps),
                 "overlap_corrections": [],
             }
-            meta_dict = serialize_metadata(result, plan, runtime_info)
+            meta_dict = serialize_metadata(result, plan, runtime_info_streaming)
             # Safety: ensure required v2 keys are present
             if not isinstance(meta_dict, dict):
                 meta_dict = {}
             meta_dict.setdefault("schema_version", 2)
             meta_dict.setdefault("segment_count", len(plan.segments))
             meta_dict.setdefault("frames_per_segment", fps_mode)
-            meta_dict.setdefault("fill_policy", fill_policy)
+            meta_dict.setdefault("fill_policy", fill_policy_lit)
             # Ensure contiguous_blocks present
             try:
                 segs = getattr(plan, "segments", []) or []
@@ -373,9 +377,7 @@ def demux_trajectories(
     # Legacy fallback: build the same plan and use the same engine to ensure a path is returned
     try:
         # Build temperature schedule for metadata
-        temp_schedule = {
-            str(i): {} for i in range(int(remd.n_replicas))
-        }
+        temp_schedule = {str(i): {} for i in range(int(remd.n_replicas))}
         for s, states in enumerate(remd.exchange_history):
             for ridx, tidx in enumerate(states):
                 temp_schedule[str(ridx)][str(s)] = float(remd.temperatures[int(tidx)])
@@ -449,10 +451,15 @@ def demux_trajectories(
         except Exception:
             pass
         writer = writer.open(str(demux_file), str(remd.pdb_file), overwrite=True)
-        _fp = getattr(remd, "demux_fill_policy", None)
-        if not isinstance(_fp, str) or not _fp:
-            _fp = cast(str, getattr(_cfg, "DEMUX_FILL_POLICY", "repeat"))
-        fill_policy = _fp.lower()
+        raw_fill_policy = getattr(remd, "demux_fill_policy", None) or getattr(
+            _cfg, "DEMUX_FILL_POLICY", "repeat"
+        )
+        if not isinstance(raw_fill_policy, str) or not raw_fill_policy:
+            raw_fill_policy = "repeat"
+        _raw = raw_fill_policy.lower()
+        if _raw not in ("repeat", "skip", "interpolate"):
+            _raw = "repeat"
+        legacy_fill_policy: FillPolicy = cast(FillPolicy, _raw)
 
         # Resolve parallel workers even for legacy path for parity; often unused
         parallel_workers = getattr(remd, "demux_parallel_workers", None)
@@ -490,11 +497,7 @@ def demux_trajectories(
             str(remd.pdb_file),
             reader,
             writer,
-            fill_policy=(
-                fill_policy
-                if fill_policy in {"repeat", "skip", "interpolate"}
-                else "repeat"
-            ),
+            fill_policy=legacy_fill_policy,
             parallel_read_workers=parallel_workers,
             progress_callback=progress_callback,
             checkpoint_interval_segments=checkpoint_every,
@@ -514,22 +517,22 @@ def demux_trajectories(
 
         counts = Counter(int(seg.expected_frames) for seg in plan.segments)
         fps_mode = int(counts.most_common(1)[0][0]) if counts else 0
-        runtime_info = {
+        runtime_info_legacy: Dict[str, Any] = {
             "exchange_frequency_steps": int(remd.exchange_frequency),
             "integration_timestep_ps": timestep_ps,
-            "fill_policy": fill_policy,
+            "fill_policy": legacy_fill_policy,
             "temperature_schedule": temp_schedule,
             "frames_per_segment": fps_mode,
             "equilibration_steps_total": int(effective_equil_steps),
             "overlap_corrections": [],
         }
-        meta_dict = serialize_metadata(result, plan, runtime_info)
+        meta_dict = serialize_metadata(result, plan, runtime_info_legacy)
         if not isinstance(meta_dict, dict):
             meta_dict = {}
         meta_dict.setdefault("schema_version", 2)
         meta_dict.setdefault("segment_count", len(plan.segments))
         meta_dict.setdefault("frames_per_segment", fps_mode)
-        meta_dict.setdefault("fill_policy", fill_policy)
+        meta_dict.setdefault("fill_policy", legacy_fill_policy)
         # contiguous blocks
         try:
             segs = getattr(plan, "segments", []) or []

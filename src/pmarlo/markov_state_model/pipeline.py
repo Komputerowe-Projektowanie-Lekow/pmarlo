@@ -1,8 +1,26 @@
 from __future__ import annotations
 
-from typing import List, Literal, Optional, Protocol, Union
+from pathlib import Path
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Literal,
+    Optional,
+    Protocol,
+    Union,
+    cast,
+)
 
+# Runtime import for actual usage
 from .enhanced_msm import EnhancedMSM
+
+if TYPE_CHECKING:
+    # Type-only alias for annotations
+    from .enhanced_msm import EnhancedMSM as EnhancedMSMType
+else:
+    EnhancedMSMType = object
 
 
 class SupportsMSMPipeline(Protocol):
@@ -12,47 +30,55 @@ class SupportsMSMPipeline(Protocol):
         stride: int,
         atom_selection: str | List[int] | None,
         chunk_size: int,
-    ) -> None:
+    ) -> None: ...
+
+    def compute_features(
+        self,
+        feature_type: str = ...,
+        n_features: Optional[int] = ...,
+        feature_stride: int = ...,
+        tica_lag: int = ...,
+        tica_components: Optional[int] = ...,
+        **kwargs: object,
+    ) -> None:  # noqa: D401
         ...
 
-    def compute_features(self, *, feature_type: str) -> None:  # noqa: D401
-        ...
+    def cluster_features(self, *, n_states: int | Literal["auto"]) -> None: ...
 
-    def cluster_features(self, *, n_states: int | Literal["auto"]) -> None:
-        ...
+    def build_msm(self, *, lag_time: int, method: str) -> None: ...
 
-    def build_msm(self, *, lag_time: int, method: str) -> None:
-        ...
+    def compute_implied_timescales(self) -> None: ...
 
-    def compute_implied_timescales(self) -> None:
-        ...
+    def generate_free_energy_surface(
+        self,
+        cv1_name: str = ...,
+        cv2_name: str = ...,
+        bins: int = ...,
+        temperature: float = ...,
+        **kwargs: object,
+    ) -> Dict[str, Any]: ...
 
-    def generate_free_energy_surface(self, *, cv1_name: str, cv2_name: str) -> None:
-        ...
+    def create_state_table(self) -> None: ...
 
-    def create_state_table(self) -> None:
-        ...
+    def extract_representative_structures(self) -> None: ...
 
-    def extract_representative_structures(self) -> None:
-        ...
+    def save_analysis_results(self) -> None: ...
 
-    def save_analysis_results(self) -> None:
-        ...
+    def plot_free_energy_surface(self, *, save_file: str) -> None: ...
 
-    def plot_free_energy_surface(self, *, save_file: str) -> None:
-        ...
+    def plot_implied_timescales(self, *, save_file: str) -> None: ...
 
-    def plot_implied_timescales(self, *, save_file: str) -> None:
-        ...
+    def plot_implied_rates(self, *, save_file: str) -> None: ...
 
-    def plot_implied_rates(self, *, save_file: str) -> None:
-        ...
+    def plot_free_energy_profile(self, *, save_file: str) -> None: ...
 
-    def plot_free_energy_profile(self, *, save_file: str) -> None:
-        ...
-
-    def plot_ck_test(self, *, save_file: str, n_macrostates: int, factors: List[int]) -> None:
-        ...
+    def plot_ck_test(
+        self,
+        save_file: str = ...,
+        n_macrostates: int = ...,
+        factors: Optional[List[int]] = ...,
+        **kwargs: object,
+    ) -> Optional[Path]: ...
 
 
 def run_complete_msm_analysis(
@@ -66,11 +92,14 @@ def run_complete_msm_analysis(
     stride: int = 1,
     atom_selection: str | List[int] | None = None,
     chunk_size: int = 1000,
-) -> EnhancedMSM:
+) -> "EnhancedMSMType":
     msm = _create_msm(trajectory_files, topology_file, temperatures, output_dir)
-    _load_and_featurize(msm, stride, atom_selection, chunk_size, feature_type, n_states)
-    _build_and_analyze(msm, temperatures, lag_time)
-    _emit_plots(msm)
+    msm_pipeline = cast(SupportsMSMPipeline, msm)
+    _load_and_featurize(
+        msm_pipeline, stride, atom_selection, chunk_size, feature_type, n_states
+    )
+    _build_and_analyze(msm_pipeline, temperatures, lag_time)
+    _emit_plots(msm_pipeline)
     return msm
 
 
@@ -79,7 +108,7 @@ def _create_msm(
     topology_file: str,
     temperatures: Optional[List[float]],
     output_dir: str,
-) -> EnhancedMSM:
+) -> "EnhancedMSMType":
     return EnhancedMSM(
         trajectory_files=trajectory_files,
         topology_file=topology_file,

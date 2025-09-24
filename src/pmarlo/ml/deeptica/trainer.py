@@ -19,7 +19,7 @@ from pmarlo.features.deeptica.losses import VAMP2Loss
 logger = logging.getLogger(__name__)
 
 
-#inherit for the typeddict
+# inherit for the typeddict
 class _TauBlock(TypedDict):
     tau: int
     epochs: List[int]
@@ -35,7 +35,10 @@ class _TauBlock(TypedDict):
 
 @torch.no_grad()
 def _clone_state_dict(module: torch.nn.Module) -> Dict[str, torch.Tensor]:
-    return {name: param.detach().cpu().clone() for name, param in module.state_dict().items()}
+    return {
+        name: param.detach().cpu().clone()
+        for name, param in module.state_dict().items()
+    }
 
 
 class _LaggedPairDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
@@ -47,7 +50,9 @@ class _LaggedPairDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
             raise ValueError("sequences must contain at least one array")
         if any(seq.ndim != 2 for seq in self._raw_sequences):
             raise ValueError("each sequence must be two-dimensional")
-        self._tensors = [torch.as_tensor(seq, dtype=torch.float32) for seq in self._raw_sequences]
+        self._tensors = [
+            torch.as_tensor(seq, dtype=torch.float32) for seq in self._raw_sequences
+        ]
         self._tau = 1
         self._pairs = torch.zeros((0, 3), dtype=torch.int64)
         self._pairs_per_shard: List[int] = []
@@ -279,7 +284,8 @@ class DeepTICACurriculumTrainer:
             per_tau_blocks.append(block)
             if len(dataset) == 0:
                 logger.warning(
-                    "No lagged pairs available at tau=%d; skipping curriculum stage", tau
+                    "No lagged pairs available at tau=%d; skipping curriculum stage",
+                    tau,
                 )
                 continue
             loader = self._build_loader(dataset, shuffle=self.cfg.shuffle)
@@ -315,17 +321,27 @@ class DeepTICACurriculumTrainer:
                 self.c0_eig_max_curve.append(eig0_max)
                 self.ctt_eig_min_curve.append(eigt_min)
                 self.ctt_eig_max_curve.append(eigt_max)
-                self.var_z0_curve.append([float(x) for x in var_z0] if isinstance(var_z0, list) else [])
-                self.var_zt_curve.append([float(x) for x in var_zt] if isinstance(var_zt, list) else [])
-                self.mean_z0_curve.append([float(x) for x in mean_z0] if isinstance(mean_z0, list) else [])
-                self.mean_zt_curve.append([float(x) for x in mean_zt] if isinstance(mean_zt, list) else [])
+                self.var_z0_curve.append(
+                    [float(x) for x in var_z0] if isinstance(var_z0, list) else []
+                )
+                self.var_zt_curve.append(
+                    [float(x) for x in var_zt] if isinstance(var_zt, list) else []
+                )
+                self.mean_z0_curve.append(
+                    [float(x) for x in mean_z0] if isinstance(mean_z0, list) else []
+                )
+                self.mean_zt_curve.append(
+                    [float(x) for x in mean_zt] if isinstance(mean_zt, list) else []
+                )
                 if cond_c00 > 1e6:
                     logger.warning(
-                        "Condition number cond(C00)=%.3e exceeds stability threshold", cond_c00
+                        "Condition number cond(C00)=%.3e exceeds stability threshold",
+                        cond_c00,
                     )
                 if cond_ctt > 1e6:
                     logger.warning(
-                        "Condition number cond(Ctt)=%.3e exceeds stability threshold", cond_ctt
+                        "Condition number cond(Ctt)=%.3e exceeds stability threshold",
+                        cond_ctt,
                     )
                 block["epochs"].append(overall_epoch)
                 block["train_loss_curve"].append(train_metrics["loss"])
@@ -337,10 +353,9 @@ class DeepTICACurriculumTrainer:
                 block["grad_norm_max_curve"].append(train_metrics["grad_norm_max"])
                 self._update_best(overall_epoch, tau, val_metrics["score"])
                 if self.cfg.log_every > 0:
-                    if (
-                        (epoch_idx + 1) % int(self.cfg.log_every) == 0
-                        or epoch_idx + 1 == int(self.cfg.epochs_per_tau)
-                    ):
+                    if (epoch_idx + 1) % int(
+                        self.cfg.log_every
+                    ) == 0 or epoch_idx + 1 == int(self.cfg.epochs_per_tau):
                         logger.info(
                             (
                                 "tau=%d val_tau=%d epoch=%d/%d lr=%.6e "
@@ -378,7 +393,8 @@ class DeepTICACurriculumTrainer:
                 int(block["tau"]): block["val_score_curve"] for block in per_tau_blocks
             },
             "per_tau_learning_rate_curve": {
-                int(block["tau"]): block["learning_rate_curve"] for block in per_tau_blocks
+                int(block["tau"]): block["learning_rate_curve"]
+                for block in per_tau_blocks
             },
             "per_tau_grad_norm_mean_curve": {
                 int(block["tau"]): block["grad_norm_mean_curve"]
@@ -402,7 +418,9 @@ class DeepTICACurriculumTrainer:
             "ctt_eig_min_curve": [float(x) for x in self.ctt_eig_min_curve],
             "ctt_eig_max_curve": [float(x) for x in self.ctt_eig_max_curve],
             "grad_norm_curve": list(overall_grad_norm_mean),
-            "best_val_score": float(self._best_score) if self._best_score > float("-inf") else 0.0,
+            "best_val_score": (
+                float(self._best_score) if self._best_score > float("-inf") else 0.0
+            ),
             "best_epoch": int(self._best_epoch) if self._best_epoch >= 0 else None,
             "best_tau": int(self._best_tau) if self._best_tau >= 0 else None,
             "wall_time_s": float(max(0.0, time.time() - start_time)),
@@ -544,25 +562,46 @@ class DeepTICACurriculumTrainer:
             var_z0 = metrics.get("var_z0")
             if isinstance(var_z0, list) and var_z0:
                 arr = np.asarray(var_z0, dtype=np.float64)
-                var_z0_sum = arr * batch_size if var_z0_sum is None else var_z0_sum + arr * batch_size
+                var_z0_sum = (
+                    arr * batch_size
+                    if var_z0_sum is None
+                    else var_z0_sum + arr * batch_size
+                )
             var_zt = metrics.get("var_zt")
             if isinstance(var_zt, list) and var_zt:
                 arr = np.asarray(var_zt, dtype=np.float64)
-                var_zt_sum = arr * batch_size if var_zt_sum is None else var_zt_sum + arr * batch_size
+                var_zt_sum = (
+                    arr * batch_size
+                    if var_zt_sum is None
+                    else var_zt_sum + arr * batch_size
+                )
             mean_z0 = metrics.get("mean_z0")
             if isinstance(mean_z0, list) and mean_z0:
                 arr = np.asarray(mean_z0, dtype=np.float64)
-                mean_z0_sum = arr * batch_size if mean_z0_sum is None else mean_z0_sum + arr * batch_size
+                mean_z0_sum = (
+                    arr * batch_size
+                    if mean_z0_sum is None
+                    else mean_z0_sum + arr * batch_size
+                )
             mean_zt = metrics.get("mean_zt")
             if isinstance(mean_zt, list) and mean_zt:
                 arr = np.asarray(mean_zt, dtype=np.float64)
-                mean_zt_sum = arr * batch_size if mean_zt_sum is None else mean_zt_sum + arr * batch_size
+                mean_zt_sum = (
+                    arr * batch_size
+                    if mean_zt_sum is None
+                    else mean_zt_sum + arr * batch_size
+                )
             eig0_min = min(eig0_min, float(metrics.get("eig_C00_min", eig0_min)))
             eig0_max = max(eig0_max, float(metrics.get("eig_C00_max", eig0_max)))
             eigt_min = min(eigt_min, float(metrics.get("eig_Ctt_min", eigt_min)))
             eigt_max = max(eigt_max, float(metrics.get("eig_Ctt_max", eigt_max)))
         if total_weight == 0:
-            return {"loss": 0.0, "score": 0.0, "grad_norm_mean": 0.0, "grad_norm_max": 0.0}
+            return {
+                "loss": 0.0,
+                "score": 0.0,
+                "grad_norm_mean": 0.0,
+                "grad_norm_max": 0.0,
+            }
         grad_norm_mean = float(np.mean(grad_norms)) if grad_norms else 0.0
         grad_norm_max = float(np.max(grad_norms)) if grad_norms else 0.0
         agg: Dict[str, float | List[float]] = {
@@ -633,10 +672,14 @@ class DeepTICACurriculumTrainer:
             n_frames = int(seq.shape[0])
             if n_frames <= max_tau + 1:
                 logger.debug(
-                    "Skipping sequence with %d frames; requires at least %d", n_frames, max_tau + 2
+                    "Skipping sequence with %d frames; requires at least %d",
+                    n_frames,
+                    max_tau + 2,
                 )
                 continue
-            val_len = max(int(np.ceil(n_frames * float(self.cfg.val_fraction))), max_tau + 1)
+            val_len = max(
+                int(np.ceil(n_frames * float(self.cfg.val_fraction))), max_tau + 1
+            )
             if val_len >= n_frames:
                 val_len = max_tau + 1
             split = n_frames - val_len
@@ -696,7 +739,7 @@ class DeepTICACurriculumTrainer:
                 ]
             )
             per_tau = cast(List[_TauBlock], history.get("per_tau", []))
-            #per tau is a proper List of blocks, prevents int(object) overload
+            # per tau is a proper List of blocks, prevents int(object) overload
             for block in per_tau:
                 tau = int(block["tau"])
                 epochs = block["epochs"]
@@ -717,8 +760,16 @@ class DeepTICACurriculumTrainer:
                             float(val_loss[idx]),
                             float(val_score[idx]),
                             float(lr_curve[idx]) if idx < len(lr_curve) else 0.0,
-                            float(grad_mean_curve[idx]) if idx < len(grad_mean_curve) else 0.0,
-                            float(grad_max_curve[idx]) if idx < len(grad_max_curve) else 0.0,
+                            (
+                                float(grad_mean_curve[idx])
+                                if idx < len(grad_mean_curve)
+                                else 0.0
+                            ),
+                            (
+                                float(grad_max_curve[idx])
+                                if idx < len(grad_max_curve)
+                                else 0.0
+                            ),
                         ]
                     )
         return csv_path

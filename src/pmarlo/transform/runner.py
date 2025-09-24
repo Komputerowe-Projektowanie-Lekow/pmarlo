@@ -146,7 +146,13 @@ class TransformManifest:
         completed_steps = self.data.get("completed_steps", [])
         if not completed_steps:
             return -1
-        return max(s.get("step_index", -1) for s in completed_steps)
+        indices: list[int] = []
+        for step in completed_steps:
+            try:
+                indices.append(int(step.get("step_index", -1)))
+            except Exception:
+                continue
+        return max(indices) if indices else -1
 
 
 def apply_plan(

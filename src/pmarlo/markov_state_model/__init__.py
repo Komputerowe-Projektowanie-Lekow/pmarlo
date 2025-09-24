@@ -79,13 +79,17 @@ def __getattr__(name: str) -> Any:
     except Exception as exc:
         value: Any
         if name == "run_ck":  # pragma: no cover - executed without matplotlib
-            def _missing_run_ck(*_args: object, original_exc=exc, **_kwargs: object) -> None:
+
+            def _missing_run_ck(
+                *_args: object, original_exc=exc, **_kwargs: object
+            ) -> None:
                 raise ImportError(
                     "run_ck requires matplotlib. Install with `pip install 'pmarlo[analysis]'`."
                 ) from original_exc
 
             value = _missing_run_ck
         elif name == "CKRunResult":  # pragma: no cover - executed without matplotlib
+
             class _CKRunResult:  # type: ignore[override]
                 pass
 

@@ -73,7 +73,13 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
                 if name:
                     names.add(str(name).split(".")[0])
             msg = str(err) if err else ""
-            for token in ("lightning", "pytorch_lightning", "torch", "mlcolvar", "sklearn"):
+            for token in (
+                "lightning",
+                "pytorch_lightning",
+                "torch",
+                "mlcolvar",
+                "sklearn",
+            ):
                 if token in msg:
                     names.add(token)
             _recurse(getattr(err, "__cause__", None))
@@ -87,10 +93,13 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
         payload = ",".join(sorted(set(mods))) if mods else "unknown"
         return f"missing_dependency:{payload}"
 
-    def _compute_pairs_metadata(lag_value: int) -> Tuple[List[Dict[str, Any]], int, List[str]]:
+    def _compute_pairs_metadata(
+        lag_value: int,
+    ) -> Tuple[List[Dict[str, Any]], int, List[str]]:
         per: List[Dict[str, Any]] = []
         warnings: List[str] = []
-        for idx, entry in enumerate(shards_meta):
+        entries = shards_meta or []
+        for idx, entry in enumerate(entries):
             start = shard_ranges[idx][0]
             stop = shard_ranges[idx][1]
             frames = max(0, stop - start)
@@ -138,7 +147,9 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
     ) -> Dict[str, Any]:
         summary.setdefault("method", "deeptica")
         summary["lag"] = int(summary.get("lag", tau_requested))
-        summary.setdefault("lag_used", summary["lag"] if summary.get("applied") else None)
+        summary.setdefault(
+            "lag_used", summary["lag"] if summary.get("applied") else None
+        )
         summary.setdefault("n_out", 0)
         summary.setdefault("skipped", not summary.get("applied", False))
         cleaned_per = [
@@ -357,7 +368,7 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
     # Construct contiguous pairs per shard respecting the selected lag
     i_parts: List[np.ndarray] = []
     j_parts: List[np.ndarray] = []
-    for (start, stop) in shard_ranges:
+    for start, stop in shard_ranges:
         length = stop - start
         if length <= tau:
             continue
@@ -481,13 +492,19 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
     output_transform = (
         history.get("output_transform") if isinstance(history, dict) else None
     )
-    history_flag = bool(history.get("output_transform_applied")) if isinstance(
-        history, dict
-    ) else False
+    history_flag = (
+        bool(history.get("output_transform_applied"))
+        if isinstance(history, dict)
+        else False
+    )
     export_transform_applied = bool(
         output_mean is not None and output_transform is not None
     )
     transform_applied_flag = history_flag or export_transform_applied
+    initial_objective_value = history.get("initial_objective")
+    initial_objective_float = (
+        0.0 if initial_objective_value is None else float(initial_objective_value)
+    )
     summary = {
         "applied": True,
         "skipped": False,
@@ -502,9 +519,7 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
         "attempts": attempt_details,
         "wall_time_s": float(history.get("wall_time_s", 0.0)),
         "initial_objective": (
-            float(history.get("initial_objective"))
-            if history.get("initial_objective") is not None
-            else None
+            initial_objective_float if initial_objective_value is not None else None
         ),
         "output_variance": history.get("output_variance"),
         "loss_curve_last": (
@@ -561,16 +576,16 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
 
     if summary.get("output_mean") is not None:
         try:
-            summary["output_mean"] = (
-                np.asarray(summary["output_mean"], dtype=np.float64).tolist()
-            )
+            summary["output_mean"] = np.asarray(
+                summary["output_mean"], dtype=np.float64
+            ).tolist()
         except Exception:
             pass
     if summary.get("output_transform") is not None:
         try:
-            summary["output_transform"] = (
-                np.asarray(summary["output_transform"], dtype=np.float64).tolist()
-            )
+            summary["output_transform"] = np.asarray(
+                summary["output_transform"], dtype=np.float64
+            ).tolist()
         except Exception:
             pass
 
@@ -623,9 +638,9 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
                 ".history.json",
                 ".history.csv",
             ):
-                candidate = base_path.with_suffix(suffix)
-                if candidate.exists():
-                    saved_files.append(str(candidate))
+                candidate_path = base_path.with_suffix(suffix)
+                if candidate_path.exists():
+                    saved_files.append(str(candidate_path))
         except Exception as exc:
             logger.warning("Failed to persist Deep-TICA model: %s", exc)
 
@@ -691,7 +706,7 @@ def replica_initialization(context: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         output_dir=str(output_dir),
     )
 
-    replica_exchange = ReplicaExchange(config)
+    replica_exchange = ReplicaExchange.from_config(config)
     context["replica_exchange"] = replica_exchange
     context["remd_config"] = config
     logger.info(f"Replica exchange initialized with {len(temperatures)} replicas")
@@ -736,15 +751,23 @@ def production_simulation(context: Dict[str, Any], **kwargs) -> Dict[str, Any]:
     """Adapter for production simulation stage."""
     from ..replica_exchange.replica_exchange import run_remd_simulation
 
-    remd_config = context.get("remd_config")
-    if not remd_config:
-        raise ValueError("remd_config required for production simulation")
+    prepared_pdb = context.get("prepared_pdb")
+    if not prepared_pdb:
+        raise ValueError("prepared_pdb required for production simulation")
 
     steps = kwargs.get("steps") or context.get("steps", 1000)
+    output_dir = kwargs.get("output_dir") or context.get("output_dir", "output")
+    temperatures = kwargs.get("temperatures") or context.get("temperatures", [300.0])
 
-    # Run the actual simulation
-    trajectory_files = run_remd_simulation(remd_config, steps=steps)
+    trajectory_file = run_remd_simulation(
+        pdb_file=str(prepared_pdb),
+        output_dir=str(output_dir),
+        total_steps=steps,
+        temperatures=temperatures,
+    )
 
+    # run_remd_simulation returns a single file path or None
+    trajectory_files = [trajectory_file] if trajectory_file else []
     context["trajectory_files"] = trajectory_files
     logger.info(
         f"Production simulation completed, generated {len(trajectory_files)} trajectories"
@@ -789,9 +812,17 @@ def msm_build(context: Dict[str, Any], **kwargs) -> Dict[str, Any]:
     n_states = kwargs.get("n_states") or context.get("n_states", 50)
     output_dir = kwargs.get("output_dir") or context.get("output_dir", "output")
 
+    # Get topology file from context
+    prepared_pdb = context.get("prepared_pdb")
+    if not prepared_pdb:
+        raise ValueError("prepared_pdb required for MSM building (used as topology)")
+
     # Run MSM analysis
     msm_result = run_complete_msm_analysis(
-        trajectory_files=trajectory_files, n_states=n_states, output_dir=str(output_dir)
+        trajectory_files=trajectory_files,
+        topology_file=str(prepared_pdb),
+        n_states=n_states,
+        output_dir=str(output_dir),
     )
 
     context["msm_result"] = msm_result

@@ -84,9 +84,7 @@ class FESResult:
         self.xedges = np.asarray(xedges, dtype=np.float64)
         self.yedges = np.asarray(yedges, dtype=np.float64)
         self.levels_kJmol = (
-            None
-            if levels_kJmol is None
-            else np.asarray(levels_kJmol, dtype=np.float64)
+            None if levels_kJmol is None else np.asarray(levels_kJmol, dtype=np.float64)
         )
 
         meta: dict[str, Any] = dict(metadata or {})

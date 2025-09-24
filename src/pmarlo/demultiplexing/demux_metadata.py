@@ -19,6 +19,7 @@ from typing import (
     NotRequired,
     Optional,
     TypedDict,
+    cast,
 )
 
 logger = logging.getLogger("pmarlo")
@@ -326,12 +327,12 @@ def serialize_metadata(
             int(x) for x in (runtime_info.get("overlap_corrections", []) or [])
         ],
     )
-    d = meta.to_dict()
+    metadata_dict = cast(DemuxMetadataDict, meta.to_dict())
     # Provide a readable summary of warnings if present (non-breaking extra key)
     warnings = list(getattr(result, "warnings", []))
     if warnings:
-        d["warnings"] = [str(w) for w in warnings]
+        metadata_dict["warnings"] = [str(w) for w in warnings]
     # If time_per_frame_ps is None, omit the key to keep round-trips tidy
-    if d.get("time_per_frame_ps", None) is None:
-        d.pop("time_per_frame_ps", None)
-    return d
+    if metadata_dict.get("time_per_frame_ps") is None:
+        metadata_dict.pop("time_per_frame_ps", None)
+    return metadata_dict

@@ -49,7 +49,9 @@ _PROGRESS_ALIAS_KEYS = (
 )
 
 
-def coerce_progress_callback(kwargs: dict[str, Any]) -> Optional[Callable[[str, Mapping[str, Any]], None]]:
+def coerce_progress_callback(
+    kwargs: dict[str, Any],
+) -> Optional[Callable[[str, Mapping[str, Any]], None]]:
     cb: Optional[Callable[[str, Mapping[str, Any]], None]] = None
     for key in _PROGRESS_ALIAS_KEYS:
         value = kwargs.get(key)
@@ -170,7 +172,7 @@ def load_shards_as_dataset(shard_jsons: Sequence[Path]) -> dict:
         # Ensure source is a proper dict for type safety
         source_attr = getattr(meta, "source", {})
         source_dict = dict(source_attr) if isinstance(source_attr, dict) else {}
-        
+
         info = {
             "id": str(uid),  # prefer unique ID to avoid collisions
             "legacy_id": str(getattr(meta, "shard_id", p.stem)),

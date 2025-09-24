@@ -8,13 +8,14 @@ import numpy as np
 
 from .project_cv import apply_whitening_from_metadata
 
-
 DatasetLike = MutableMapping[str, Any]
 
 _KB_KJ_PER_MOL = 0.00831446261815324
 
 
-def _normalise_weights(n_frames: int, weights: np.ndarray | None) -> tuple[np.ndarray, float, float]:
+def _normalise_weights(
+    n_frames: int, weights: np.ndarray | None
+) -> tuple[np.ndarray, float, float]:
     if weights is None:
         if n_frames <= 0:
             raise ValueError("Cannot normalise weights with zero frames")
@@ -39,17 +40,12 @@ def _normalise_weights(n_frames: int, weights: np.ndarray | None) -> tuple[np.nd
 
 
 def _resolve_kde_bins(bins: int | Sequence[int]) -> tuple[int, int]:
-    if np.isscalar(bins):
-        if isinstance(bins, int):
-            count = bins
-        else:
-            # bins is a sequence, but we're in the scalar branch, so this shouldn't happen
-            # But if it does, we'll take the first element
-            count = int(bins[0]) if len(bins) > 0 else 10
+    if isinstance(bins, int):
+        count = bins
         if count < 2:
             raise ValueError("KDE FES requires at least two bins per dimension")
         return count, count
-    if isinstance(bins, Sequence):
+    elif isinstance(bins, Sequence):
         if len(bins) != 2:
             raise ValueError("KDE FES expects a sequence of two bin counts")
         x = int(bins[0])
@@ -57,7 +53,15 @@ def _resolve_kde_bins(bins: int | Sequence[int]) -> tuple[int, int]:
         if x < 2 or y < 2:
             raise ValueError("KDE FES requires at least two bins per dimension")
         return x, y
-    raise TypeError("Unsupported bins specification for KDE FES")
+    else:
+        # Handle other scalar types (like numpy scalars)
+        try:
+            count = int(bins)
+            if count < 2:
+                raise ValueError("KDE FES requires at least two bins per dimension")
+            return count, count
+        except (TypeError, ValueError) as exc:
+            raise TypeError("Unsupported bins specification for KDE FES") from exc
 
 
 def _compute_bandwidth(
@@ -101,7 +105,9 @@ def _compute_kde_surface(
     bandwidth: str | float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
     n_frames = coord_x.shape[0]
-    w_norm, total_weight, ess = _normalise_weights(n_frames, None if weights is None else weights)
+    w_norm, total_weight, ess = _normalise_weights(
+        n_frames, None if weights is None else weights
+    )
 
     nx, ny = _resolve_kde_bins(bins)
     bw_x = _compute_bandwidth(coord_x, w_norm, ess, bandwidth)
@@ -171,8 +177,8 @@ def _compute_histogram_surface(
                 hist *= raw_total / current_total
 
     metadata: dict[str, Any] = {
-        "min_count_per_bin": int(min_count_per_bin),
-        "smoothed_bins": int(smoothed_bins),
+        "min_count_per_bin": min_count_per_bin,
+        "smoothed_bins": smoothed_bins,
     }
     if smoothed_bins > 0:
         metadata["smoothing"] = "neighbor_average"
@@ -220,13 +226,17 @@ def ensure_fes_inputs_whitened(dataset: DatasetLike | Mapping[str, Any]) -> bool
     if not isinstance(summary, (MutableMapping, dict)):
         return False
 
-    whitened, applied = apply_whitening_from_metadata(np.asarray(X, dtype=np.float64), summary)
+    whitened, applied = apply_whitening_from_metadata(
+        np.asarray(X, dtype=np.float64), summary
+    )
     if applied:
         dataset["X"] = whitened  # type: ignore[index]
     return applied
 
 
-def _select_split(dataset: Mapping[str, Any], split: str | None) -> tuple[str, Mapping[str, Any]]:
+def _select_split(
+    dataset: Mapping[str, Any], split: str | None
+) -> tuple[str, Mapping[str, Any]]:
     splits = dataset.get("splits")
     if isinstance(splits, Mapping) and splits:
         if split is not None and split in splits:
@@ -285,7 +295,11 @@ def compute_weighted_fes(
             fw = dataset.get("frame_weights")
             if isinstance(fw, Mapping):
                 candidate = fw.get(split_name)
-        weights_arr = None if candidate is None else np.asarray(candidate, dtype=np.float64).reshape(-1)
+        weights_arr = (
+            None
+            if candidate is None
+            else np.asarray(candidate, dtype=np.float64).reshape(-1)
+        )
     else:
         weights_arr = np.asarray(weights, dtype=np.float64).reshape(-1)
 

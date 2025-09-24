@@ -4,7 +4,8 @@
 import math
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from tempfile import NamedTemporaryFile
+from typing import Any, Dict, Optional, cast
 
 try:  # pragma: no cover - optional dependency import
     from pdbfixer import PDBFixer as _RealPDBFixer
@@ -12,7 +13,7 @@ except Exception:  # pragma: no cover - optional dependency missing
     _RealPDBFixer = None
 
 from openmm import unit
-from openmm.app import HBonds, ForceField, Modeller, PDBFile, PME
+from openmm.app import PME, ForceField, HBonds, Modeller, PDBFile
 from rdkit import Chem
 from rdkit.Chem import Descriptors
 from rdkit.Chem.rdMolDescriptors import CalcExactMolWt
@@ -41,6 +42,8 @@ _STANDARD_RESIDUES = {
 }
 _WATER_RESIDUES = {"HOH", "H2O", "WAT"}
 
+
+_PDBFixer: type[Any]
 
 if _RealPDBFixer is None:
 
@@ -104,16 +107,16 @@ if _RealPDBFixer is None:
             self._modeller.addSolvent(self._forcefield, padding=padding)
             self._sync()
 
-
-    PDBFixer = _StubPDBFixer
-    HAS_PDBFIXER = True
+    _PDBFixer = _StubPDBFixer
     HAS_NATIVE_PDBFIXER = False
     USING_PDBFIXER_STUB = True
 else:
-    PDBFixer: type[Any] = _RealPDBFixer
-    HAS_PDBFIXER = True
+    _PDBFixer = _RealPDBFixer
     HAS_NATIVE_PDBFIXER = True
     USING_PDBFIXER_STUB = False
+
+HAS_PDBFIXER = True
+PDBFixer = cast(type[Any], _PDBFixer)
 
 
 class Protein:
@@ -392,8 +395,7 @@ class Protein:
         # Optionally solvate the system if no waters are present
         if solvate:
             has_water = any(
-                res.name in _WATER_RESIDUES
-                for res in self.fixer.topology.residues()
+                res.name in _WATER_RESIDUES for res in self.fixer.topology.residues()
             )
             if not has_water:
                 self.fixer.addSolvent(padding=solvent_padding * unit.nanometer)
@@ -405,6 +407,23 @@ class Protein:
         self._calculate_properties()
 
         return self
+
+    def prepare_structure(self, **kwargs: Any) -> str:
+        """Prepare the protein structure and write it to a temporary PDB file.
+
+        Returns the path to the prepared PDB file.
+        """
+
+        self.prepare(**kwargs)
+
+        if self.topology is None or self.positions is None:
+            raise RuntimeError(
+                "Protein topology or positions not available after preparation"
+            )
+
+        with NamedTemporaryFile("w", suffix=".pdb", delete=False) as handle:
+            PDBFile.writeFile(self.topology, self.positions, handle)
+            return handle.name
 
     def _load_protein_data(self):
         """Load protein data from the prepared structure."""

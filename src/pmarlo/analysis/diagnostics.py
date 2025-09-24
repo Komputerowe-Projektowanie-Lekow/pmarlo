@@ -36,7 +36,9 @@ def _extract_optional_inputs(split: Mapping[str, Any]) -> np.ndarray | None:
     return None
 
 
-def _canonical_correlations(X: np.ndarray, Y: np.ndarray, *, regularisation: float = 1e-8) -> list[float]:
+def _canonical_correlations(
+    X: np.ndarray, Y: np.ndarray, *, regularisation: float = 1e-8
+) -> list[float]:
     n = min(X.shape[0], Y.shape[0])
     if n < 2:
         return []
@@ -82,7 +84,12 @@ def _autocorrelation_curve(X: np.ndarray, taus: Sequence[int]) -> list[float]:
         numerator = np.sum(a * b, axis=0)
         denominator = np.sum(a * a, axis=0)
         with np.errstate(divide="ignore", invalid="ignore"):
-            rho = np.divide(numerator, denominator, out=np.zeros_like(numerator), where=denominator > 0)
+            rho = np.divide(
+                numerator,
+                denominator,
+                out=np.zeros_like(numerator),
+                where=denominator > 0,
+            )
         if rho.size == 0:
             curve.append(float("nan"))
         else:
