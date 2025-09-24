@@ -155,39 +155,49 @@ class FESResult:
                 return value.tolist()
             return value
 
-        payload: dict[str, Any] = {
-            "version": self.version,
-            "free_energy": _serialize(self.F),
-            "xedges": _serialize(self.xedges),
-            "yedges": _serialize(self.yedges),
-        }
-        if self.levels_kJmol is not None:
-            payload["levels_kJmol"] = _serialize(self.levels_kJmol)
-        if self.counts is not None:
-            payload["counts"] = _serialize(self.counts)
-        if self.temperature is not None:
-            payload["temperature"] = float(self.temperature)
-        if self.cv1_name is not None:
-            payload["cv1_name"] = self.cv1_name
-        if self.cv2_name is not None:
-            payload["cv2_name"] = self.cv2_name
+        payload: dict[str, Any] = {"version": self.version}
 
-        extra_meta: dict[str, Any] = {}
-        for key, value in self.metadata.items():
-            if key in {"counts", "temperature", "cv1_name", "cv2_name"}:
-                continue
-            extra_meta[key] = _serialize(value)
-        if extra_meta:
-            payload["metadata"] = extra_meta
-        if metadata_only:
-            # When metadata_only=True ensure primary arrays expose metadata form
-            payload["free_energy"] = _serialize(self.F)
-            payload["xedges"] = _serialize(self.xedges)
-            payload["yedges"] = _serialize(self.yedges)
-            if self.levels_kJmol is not None:
-                payload["levels_kJmol"] = _serialize(self.levels_kJmol)
-            if self.counts is not None:
-                payload["counts"] = _serialize(self.counts)
+        primary_arrays = {
+            "free_energy": self.F,
+            "xedges": self.xedges,
+            "yedges": self.yedges,
+        }
+        payload.update(
+            {key: _serialize(value) for key, value in primary_arrays.items()}
+        )
+
+        optional_arrays = {
+            key: value
+            for key, value in {
+                "levels_kJmol": self.levels_kJmol,
+                "counts": self.counts,
+            }.items()
+            if value is not None
+        }
+        payload.update(
+            {key: _serialize(value) for key, value in optional_arrays.items()}
+        )
+
+        optional_scalars = {
+            "temperature": (
+                float(self.temperature) if self.temperature is not None else None
+            ),
+            "cv1_name": self.cv1_name,
+            "cv2_name": self.cv2_name,
+        }
+        payload.update(
+            {key: value for key, value in optional_scalars.items() if value is not None}
+        )
+
+        excluded_keys = {"counts", "temperature", "cv1_name", "cv2_name"}
+        metadata = {
+            key: _serialize(value)
+            for key, value in self.metadata.items()
+            if key not in excluded_keys
+        }
+        if metadata:
+            payload["metadata"] = metadata
+
         return payload
 
     @classmethod

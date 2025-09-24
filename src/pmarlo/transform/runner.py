@@ -155,6 +155,94 @@ class TransformManifest:
         return max(indices) if indices else -1
 
 
+def _initialize_manifest(
+    plan: TransformPlan,
+    checkpoint_dir: Optional[str | Path],
+    run_id: Optional[str],
+) -> Optional[TransformManifest]:
+    if not checkpoint_dir:
+        return None
+    manifest = TransformManifest(Path(checkpoint_dir))
+    manifest.load()
+    if manifest.data and manifest.data.get("plan_hash") == manifest._hash_plan(plan):
+        logger.info(f"Resuming existing run {manifest.data.get('run_id')}")
+    else:
+        manifest.init_run(plan, run_id)
+    return manifest
+
+
+def _should_skip_step(
+    manifest: Optional[TransformManifest],
+    idx: int,
+    step_name: str,
+    start_index: int,
+) -> bool:
+    if manifest is None:
+        return False
+    if idx < start_index:
+        logger.info(f"Skipping completed step {idx}: {step_name}")
+        return True
+    if manifest.is_step_completed(step_name):
+        logger.info(f"Step {step_name} already completed, skipping")
+        return True
+    return False
+
+
+def _execute_step_with_retries(
+    current_data: Any,
+    step: TransformStep,
+    idx: int,
+    total_steps: int,
+    *,
+    manifest: Optional[TransformManifest],
+    reporter: ProgressReporter,
+    max_retries: int,
+) -> Any:
+    retry_count = 0
+    while retry_count <= max_retries:
+        try:
+            t0 = time.time()
+            reporter.emit(
+                "aggregate_step_start",
+                {"step_name": step.name, "index": idx + 1, "total_steps": total_steps},
+            )
+            if manifest:
+                manifest.mark_step_start(idx, step.name, step.params)
+            result = apply_transform_plan(current_data, TransformPlan(steps=(step,)))
+            duration_s = round(time.time() - t0, 3)
+            if manifest:
+                manifest.mark_step_complete(idx, step.name, {"duration_s": duration_s})
+            reporter.emit(
+                "aggregate_step_end",
+                {
+                    "step_name": step.name,
+                    "index": idx + 1,
+                    "total_steps": total_steps,
+                    "duration_s": duration_s,
+                    "current_step": idx + 1,
+                    "total_steps": total_steps,
+                },
+            )
+            return result
+        except Exception as exc:
+            retry_count += 1
+            logger.error(
+                "Step %s failed (attempt %d/%d): %s",
+                step.name,
+                retry_count,
+                max_retries + 1,
+                exc,
+            )
+            if manifest:
+                manifest.mark_step_failed(idx, step.name, str(exc))
+            if retry_count > max_retries:
+                reporter.emit("aggregate_end", {"status": "failed", "error": str(exc)})
+                raise RuntimeError(
+                    f"Step {step.name} failed after {max_retries} retries: {exc}"
+                )
+            time.sleep(min(2**retry_count, 30))
+
+
 def apply_plan(
     plan: TransformPlan,
     data: Any,
@@ -182,19 +270,7 @@ def apply_plan(
     reporter = ProgressReporter(progress_callback)
     steps: list[TransformStep] = list(plan.steps)
 
-    # Initialize checkpointing if requested
-    manifest = None
-    if checkpoint_dir:
-        manifest = TransformManifest(Path(checkpoint_dir))
-        manifest.load()
-
-        # Check if we can resume an existing run
-        if manifest.data and manifest.data.get("plan_hash") == manifest._hash_plan(
-            plan
-        ):
-            logger.info(f"Resuming existing run {manifest.data.get('run_id')}")
-        else:
-            manifest.init_run(plan, run_id)
+    manifest = _initialize_manifest(plan, checkpoint_dir, run_id)
 
     reporter.emit(
         "aggregate_begin",
@@ -202,76 +278,22 @@ def apply_plan(
     )
 
     out = data
-    n = len(steps)
+    total_steps = len(steps)
     start_index = manifest.get_last_completed_index() + 1 if manifest else 0
 
     for idx, step in enumerate(steps):
-        if idx < start_index:
-            logger.info(f"Skipping completed step {idx}: {step.name}")
+        if _should_skip_step(manifest, idx, step.name, start_index):
             continue
+        out = _execute_step_with_retries(
+            out,
+            step,
+            idx,
+            total_steps,
+            manifest=manifest,
+            reporter=reporter,
+            max_retries=max_retries,
+        )
 
-        step_name = step.name
-
-        # Check if step is already completed (idempotence)
-        if manifest and manifest.is_step_completed(step_name):
-            logger.info(f"Step {step_name} already completed, skipping")
-            continue
-
-        retry_count = 0
-        while retry_count <= max_retries:
-            try:
-                t0 = time.time()
-                reporter.emit(
-                    "aggregate_step_start",
-                    {"step_name": step_name, "index": idx + 1, "total_steps": n},
-                )
-
-                if manifest:
-                    manifest.mark_step_start(idx, step_name, step.params)
-
-                # Apply the step
-                out = apply_transform_plan(out, TransformPlan(steps=(step,)))
-
-                duration_s = round(time.time() - t0, 3)
-
-                if manifest:
-                    manifest.mark_step_complete(
-                        idx, step_name, {"duration_s": duration_s}
-                    )
-
-                reporter.emit(
-                    "aggregate_step_end",
-                    {
-                        "step_name": step_name,
-                        "index": idx + 1,
-                        "total_steps": n,
-                        "duration_s": duration_s,
-                        "current_step": idx + 1,
-                        "total_steps": n,
-                    },
-                )
-                break  # Success, exit retry loop
-
-            except Exception as e:
-                retry_count += 1
-                error_msg = f"Step {step_name} failed (attempt {retry_count}/{max_retries + 1}): {str(e)}"
-                logger.error(error_msg)
-
-                if manifest:
-                    manifest.mark_step_failed(idx, step_name, str(e))
-
-                if retry_count > max_retries:
-                    reporter.emit(
-                        "aggregate_end", {"status": "failed", "error": str(e)}
-                    )
-                    raise RuntimeError(
-                        f"Step {step_name} failed after {max_retries} retries: {str(e)}"
-                    )
-
-                # Wait before retry
-                time.sleep(min(2**retry_count, 30))  # Exponential backoff, max 30s
-
-    # Mark run as completed
     if manifest:
         manifest.data["status"] = "completed"
         manifest.data["completed_at"] = datetime.now().isoformat()

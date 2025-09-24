@@ -11,6 +11,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
+import numpy as np
+
 from pmarlo.io.catalog import (
     ShardCatalog,
     build_catalog_from_paths,
@@ -173,67 +175,87 @@ def validate_fes_quality(
     }
 
     try:
-        # Extract FES data
-        fes_values = fes_data.get("fes", fes_data.get("values"))
-        if fes_values is None:
-            validation_results["errors"].append("No FES values found in data")
-            validation_results["is_valid"] = False
-            return validation_results
-
-        # Check for NaN values
-        import numpy as np
-
-        fes_array = np.asarray(fes_values)
-        nan_count = np.isnan(fes_array).sum()
-        if nan_count > 0:
-            nan_ratio = nan_count / fes_array.size
-            validation_results["warnings"].append(
-                f"FES contains {nan_count} NaN values ({nan_ratio:.1%} of total)"
-            )
-
-        # Check for empty bins (very high values indicating no sampling)
-        if hasattr(fes_array, "shape") and len(fes_array.shape) == 2:
-            # Assume high values indicate empty bins
-            max_reasonable_energy = 100.0  # kT units
-            empty_bins = np.sum(fes_array > max_reasonable_energy)
-            if empty_bins > 0:
-                empty_ratio = empty_bins / fes_array.size
-                validation_results["metrics"]["empty_bins_ratio"] = empty_ratio
-
-                if empty_ratio >= 0.5:
-                    validation_results["warnings"].append(
-                        f"High fraction of empty FES bins ({empty_ratio:.1%}) - "
-                        "consider increasing sampling or adjusting bin ranges"
-                    )
-                elif empty_ratio >= 0.1:
-                    validation_results["warnings"].append(
-                        f"empty FES bins detected ({empty_ratio:.1%}) - check sampling quality"
-                    )
-                else:
-                    validation_results["messages"].append(
-                        f"Low empty FES bin ratio detected ({empty_ratio:.1%})"
-                    )
-
-        # Check data range
-        finite_values = fes_array[np.isfinite(fes_array)]
-        if len(finite_values) > 0:
-            fes_range = np.ptp(finite_values)  # peak-to-peak
-            validation_results["metrics"]["fes_range"] = float(fes_range)
-
-            if fes_range < 1.0:
-                validation_results["warnings"].append(
-                    f"Narrow FES range ({fes_range:.1f} kT) - check if data covers sufficient phase space"
-                )
+        fes_array = _extract_fes_array(fes_data)
+        _evaluate_nan_metrics(fes_array, validation_results)
+        _evaluate_empty_bins(fes_array, validation_results)
+        _assess_fes_range(fes_array, validation_results)
 
         # Overall assessment
         validation_results["messages"].append("FES quality validation completed")
 
+    except ValueError as e:
+        validation_results["is_valid"] = False
+        validation_results["errors"].append(str(e))
+        return validation_results
     except Exception as e:
         validation_results["is_valid"] = False
         validation_results["errors"].append(f"FES validation failed: {e}")
         logger.exception("FES quality validation failed")
 
     return validation_results
+
+
+def _extract_fes_array(fes_data: Dict[str, Any]) -> np.ndarray:
+    fes_values = fes_data.get("fes", fes_data.get("values"))
+    if fes_values is None:
+        raise ValueError("No FES values found in data")
+    return np.asarray(fes_values)
+
+
+def _evaluate_nan_metrics(
+    fes_array: np.ndarray, validation_results: Dict[str, Any]
+) -> None:
+    nan_count = int(np.isnan(fes_array).sum())
+    if nan_count <= 0 or fes_array.size == 0:
+        return
+    nan_ratio = nan_count / fes_array.size
+    validation_results["warnings"].append(
+        f"FES contains {nan_count} NaN values ({nan_ratio:.1%} of total)"
+    )
+
+
+def _evaluate_empty_bins(
+    fes_array: np.ndarray, validation_results: Dict[str, Any]
+) -> None:
+    if not hasattr(fes_array, "shape") or len(fes_array.shape) != 2:
+        return
+
+    max_reasonable_energy = 100.0  # kT units
+    empty_bins = int(np.sum(fes_array > max_reasonable_energy))
+    if empty_bins <= 0 or fes_array.size == 0:
+        return
+
+    empty_ratio = empty_bins / fes_array.size
+    validation_results["metrics"]["empty_bins_ratio"] = empty_ratio
+
+    if empty_ratio >= 0.5:
+        validation_results["warnings"].append(
+            f"High fraction of empty FES bins ({empty_ratio:.1%}) - "
+            "consider increasing sampling or adjusting bin ranges"
+        )
+    elif empty_ratio >= 0.1:
+        validation_results["warnings"].append(
+            f"empty FES bins detected ({empty_ratio:.1%}) - check sampling quality"
+        )
+    else:
+        validation_results["messages"].append(
+            f"Low empty FES bin ratio detected ({empty_ratio:.1%})"
+        )
+
+
+def _assess_fes_range(
+    fes_array: np.ndarray, validation_results: Dict[str, Any]
+) -> None:
+    finite_values = fes_array[np.isfinite(fes_array)]
+    if finite_values.size == 0:
+        return
+
+    fes_range = float(np.ptp(finite_values))  # peak-to-peak
+    validation_results["metrics"]["fes_range"] = fes_range
+    if fes_range < 1.0:
+        validation_results["warnings"].append(
+            f"Narrow FES range ({fes_range:.1f} kT) - check if data covers sufficient phase space"
+        )
 
 
 def _extract_used_canonical_ids(build_result: Dict[str, Any]) -> Set[str]:

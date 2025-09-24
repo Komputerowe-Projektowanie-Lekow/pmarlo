@@ -9,7 +9,7 @@ system preparation.
 """
 
 from collections import defaultdict
-from typing import Any, Optional
+from typing import Any, Callable, Dict, Optional
 
 import mdtraj as md
 import numpy as np
@@ -372,55 +372,86 @@ class Simulation:
         features : dict
             Dictionary of extracted features
         """
-        if feature_specs is None:
-            feature_specs = [
-                {"type": "distances", "indices": [[0, 1]]},
-                {"type": "angles", "indices": [[0, 1, 2]]},
-            ]
+        feature_specs = self._resolve_feature_specs(feature_specs)
 
-        # Load trajectory
         trajectory_file = f"{self.output_dir}/trajectory.dcd"
         topology_file = self.pdb_file
 
-        try:
-            traj = md.load(trajectory_file, top=topology_file)
-        except Exception as e:
-            print(f"Warning: Could not load trajectory: {e}")
+        traj = self._load_trajectory(trajectory_file, topology_file)
+        if traj is None:
             return {}
 
-        features = {}
+        features: Dict[str, Any] = {}
+        handlers: Dict[
+            str, Callable[[md.Trajectory, Dict[str, Any]], Dict[str, Any]]
+        ] = {
+            "distances": self._extract_distance_features,
+            "angles": self._extract_angle_features,
+            "dihedrals": self._extract_dihedral_features,
+            "ramachandran": self._extract_ramachandran_features,
+        }
 
         for spec in feature_specs:
-            if spec["type"] == "distances":
-                distances = md.compute_distances(traj, spec["indices"])
-                features["distances"] = distances
-
-            elif spec["type"] == "angles":
-                angles = md.compute_angles(traj, spec["indices"])
-                features["angles"] = angles
-
-            elif spec["type"] == "dihedrals":
-                dihedrals = md.compute_dihedrals(traj, spec["indices"])
-                features["dihedrals"] = dihedrals
-
-            elif spec["type"] == "ramachandran":
-                # Compute phi/psi angles for all residues
-                phi_indices, psi_indices = [], []
-                for residue in traj.topology.residues:
-                    phi_atoms = [
-                        atom.index
-                        for atom in residue.atoms
-                        if atom.name in ["C", "N", "CA", "C"]
-                    ]
-                    if len(phi_atoms) == 4:
-                        phi_indices.append(phi_atoms)
-
-                if phi_indices:
-                    phi_angles = md.compute_dihedrals(traj, phi_indices)
-                    psi_angles = md.compute_dihedrals(traj, psi_indices)
-                    features["ramachandran"] = {"phi": phi_angles, "psi": psi_angles}
+            feature_type = spec.get("type")
+            handler = handlers.get(feature_type)
+            if handler is None:
+                continue
+            result = handler(traj, spec)
+            if result:
+                features.update(result)
 
         return features
+
+    def _resolve_feature_specs(self, feature_specs):
+        if feature_specs is None:
+            return [
+                {"type": "distances", "indices": [[0, 1]]},
+                {"type": "angles", "indices": [[0, 1, 2]]},
+            ]
+        return feature_specs
+
+    def _load_trajectory(self, trajectory_file: str, topology_file: str):
+        try:
+            return md.load(trajectory_file, top=topology_file)
+        except Exception as e:  # pragma: no cover - log-and-continue path
+            print(f"Warning: Could not load trajectory: {e}")
+            return None
+
+    def _extract_distance_features(
+        self, traj: md.Trajectory, spec: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        indices = spec.get("indices")
+        if not indices:
+            return {}
+        distances = md.compute_distances(traj, indices)
+        return {"distances": distances}
+
+    def _extract_angle_features(
+        self, traj: md.Trajectory, spec: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        indices = spec.get("indices")
+        if not indices:
+            return {}
+        angles = md.compute_angles(traj, indices)
+        return {"angles": angles}
+
+    def _extract_dihedral_features(
+        self, traj: md.Trajectory, spec: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        indices = spec.get("indices")
+        if not indices:
+            return {}
+        dihedrals = md.compute_dihedrals(traj, indices)
+        return {"dihedrals": dihedrals}
+
+    def _extract_ramachandran_features(
+        self, traj: md.Trajectory, _spec: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        _, phi_angles = md.compute_phi(traj)
+        _, psi_angles = md.compute_psi(traj)
+        if phi_angles.size == 0 and psi_angles.size == 0:
+            return {}
+        return {"ramachandran": {"phi": phi_angles, "psi": psi_angles}}
 
     def build_transition_model(self, features, n_states=50, lag_time=1):
         """
