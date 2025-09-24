@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 _HAS_SKLEARN = importlib.util.find_spec("sklearn") is not None
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from ..replica_exchange.config import RemdConfig
+    pass
 
 if _HAS_SKLEARN:  # pragma: no cover - depends on optional ML stack
     from ..replica_exchange.config import RemdConfig as _RemdConfig

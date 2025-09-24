@@ -9,12 +9,11 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple, cast
+from typing import Any, Dict, List, Optional, Set
 
 from pmarlo.io.catalog import (
     ShardCatalog,
     build_catalog_from_paths,
-    validate_shard_usage,
 )
 
 logger = logging.getLogger(__name__)

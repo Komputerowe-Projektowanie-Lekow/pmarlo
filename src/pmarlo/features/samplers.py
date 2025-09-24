@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Samplers for balanced batch selection across temperatures."""
 
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 

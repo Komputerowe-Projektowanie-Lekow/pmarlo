@@ -37,8 +37,7 @@ class MDAnalysisDCDWriter:
 
     def _require(self):
         try:
-            import MDAnalysis as mda  # type: ignore
-            from MDAnalysis.coordinates.DCD import DCDWriter  # type: ignore
+            pass  # type: ignore
         except Exception as exc:  # pragma: no cover - dependency optional
             raise TrajectoryWriteError(
                 "MDAnalysis is required for backend='mdanalysis'. Install extra 'pmarlo[mdanalysis]' or 'MDAnalysis'."
@@ -82,7 +81,6 @@ class MDAnalysisDCDWriter:
             )
         if c.size == 0:
             return
-        import MDAnalysis as mda  # type: ignore
         from MDAnalysis.coordinates.DCD import DCDWriter  # type: ignore
 
         if self._n_atoms is None:

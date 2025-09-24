@@ -25,7 +25,6 @@ from typing import (
 logger = logging.getLogger("pmarlo")
 
 # Backward-compatibility: alias project-specific error in this module
-from pmarlo.utils.errors import DemuxIntegrityError  # noqa: E402
 
 if TYPE_CHECKING:  # pragma: no cover - typing-only imports
     from .demux_engine import DemuxResult

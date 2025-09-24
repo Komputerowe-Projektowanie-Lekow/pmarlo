@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Mapping, Optional, Sequence, Union
 
 logger = logging.getLogger("pmarlo")
 
@@ -388,7 +388,6 @@ def build_demux_frame_windows(
       previous stop, it is clamped up to the previous stop.
     - Drops empty segments (where stop_frame <= start_frame).
     """
-    import math
 
     tot = int(max(0, total_md_steps))
     eq_pre = int(max(0, equilibration_steps_pre))

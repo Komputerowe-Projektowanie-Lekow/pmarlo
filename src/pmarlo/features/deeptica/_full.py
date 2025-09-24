@@ -40,7 +40,7 @@ class PmarloApiIncompatibilityError(RuntimeError):
 
 # Official DeepTICA import and helpers (mlcolvar>=1.2)
 try:  # pragma: no cover - optional extra
-    import mlcolvar as _mlc  # type: ignore
+    pass  # type: ignore
 except Exception as e:  # pragma: no cover - optional extra
     raise ImportError("Install optional extra pmarlo[mlcv] to use Deep-TICA") from e
 try:  # pragma: no cover - optional extra

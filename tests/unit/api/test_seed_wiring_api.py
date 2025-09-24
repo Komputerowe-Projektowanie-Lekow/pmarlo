@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import types
 from pathlib import Path
-from typing import Any, List, Tuple
-
-import pytest
+from typing import Any
 
 
 def test_run_replica_exchange_propagates_seed(monkeypatch, tmp_path: Path):
