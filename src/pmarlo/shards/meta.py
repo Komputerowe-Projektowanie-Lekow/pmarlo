@@ -9,6 +9,7 @@ from .schema import FeatureSpec, ShardMeta
 
 __all__ = ["load_shard_meta"]
 
+# Included in the agents.md
 
 def load_shard_meta(json_path: Path) -> ShardMeta:
     """Load shard metadata strictly with no filename heuristics."""

@@ -22,6 +22,8 @@ from typing import (
     cast,
 )
 
+from ..utils.errors import DemuxIntegrityError
+
 logger = logging.getLogger("pmarlo")
 
 # Backward-compatibility: alias project-specific error in this module

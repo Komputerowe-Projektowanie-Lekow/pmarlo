@@ -136,7 +136,7 @@ def _read_segment_frames_worker(
     ):
         acc.append(_np.asarray(xyz))
     if acc:
-        return _np.concatenate(acc, axis=0)
+        return _np.stack(acc, axis=0)
     return _np.zeros((0, 0, 3), dtype=_np.float32)
 
 
@@ -243,7 +243,7 @@ def _demux_sequential(
             continue
 
         got = _stream_segment_frames(context, state, index, segment, write_chunk)
-        state.segment_real_counts[index] = got
+        state.segment_real_frames[index] = got
         frames_written = _handle_post_read_gap(
             context,
             state,
@@ -279,7 +279,7 @@ def _demux_parallel(
             segment = plan.segments[expected_index]
             planned = max(0, int(segment.expected_frames))
             if frames is not None and isinstance(frames, np.ndarray):
-                state.segment_real_counts[expected_index] = int(frames.shape[0])
+                state.segment_real_frames[expected_index] = int(frames.shape[0])
             progress_frames = _consume_parallel_segment(
                 context,
                 state,
