@@ -15,11 +15,15 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
+    TYPE_CHECKING,
 )
 
 import mdtraj as md  # type: ignore
 import numpy as np
 
+
+if TYPE_CHECKING:
+    from .io.trajectory_writer import MDTrajDCDWriter
 from .config import JOINT_USE_REWEIGHT
 from .data.aggregate import aggregate_and_build as _aggregate_and_build
 from .features import get_feature
@@ -2070,7 +2074,6 @@ def demultiplex_run(
     from pathlib import Path
 
     from .io.trajectory_reader import MDTrajReader
-    from .io.trajectory_writer import MDTrajDCDWriter
     from .replica_exchange.demux_compat import (
         parse_exchange_log,
         parse_temperature_ladder,
@@ -2116,6 +2119,7 @@ def demultiplex_run(
         dst_positions,
         segments_per_temp,
         dt_ps,
+        topology_path=topo_path,
     )
 
 
@@ -2203,6 +2207,8 @@ def _open_demux_writers(
     fmt: str,
 ) -> tuple[list[MDTrajDCDWriter], list[Path]]:
     """Open one trajectory writer per temperature and return their paths."""
+
+    from .io.trajectory_writer import MDTrajDCDWriter
 
     writers: list[MDTrajDCDWriter] = []
     paths: list[Path] = []
@@ -2298,15 +2304,37 @@ def _write_demux_manifests(
     dst_positions: Sequence[int],
     segments_per_temp: Sequence[Sequence[Dict[str, Any]]],
     dt_ps: float,
+    topology_path: Path | None = None,
 ) -> list[str]:
     """Write JSON manifests for each demultiplexed temperature trajectory."""
+
+    def _compute_digest(traj_path: Path) -> str:
+        if topology_path is None:
+            return hashlib.sha256(traj_path.read_bytes()).hexdigest()
+        try:
+            from .io.trajectory_reader import MDTrajReader
+
+            reader = MDTrajReader(topology_path=str(topology_path))
+            total = reader.probe_length(str(traj_path))
+            if total <= 0:
+                return hashlib.sha256(b"").hexdigest()
+            digest = hashlib.sha256()
+            for frame in reader.iter_frames(
+                str(traj_path), start=0, stop=total, stride=1
+            ):
+                data = np.ascontiguousarray(np.asarray(frame, dtype=np.float32))
+                digest.update(data.tobytes())
+            return digest.hexdigest()
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            logger.debug("Falling back to file digest for %s: %s", traj_path, exc)
+            return hashlib.sha256(traj_path.read_bytes()).hexdigest()
 
     json_paths: list[str] = []
     run_id_str = str(run_id)
     dt_ps_value = float(dt_ps)
     for temp_index, temp in enumerate(temperatures):
         dcd_path = dcd_paths[temp_index]
-        digest = hashlib.sha256(dcd_path.read_bytes()).hexdigest()
+        digest = _compute_digest(dcd_path)
         metadata = {
             "schema_version": "2.0",
             "kind": "demux",

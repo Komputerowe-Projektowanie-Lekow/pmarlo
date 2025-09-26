@@ -2,7 +2,7 @@
 Try to avoid the complexity at all cost. It's currently overbloated and in a need of the refactor after it starts working correctly. So after any changes look at the LoC changes and think if those changes are really needed and couldn't be created more compacted.
 
 1. ## General developer notes
-2. 
+2.
 3. Install Poetry & run `poetry install --with dev`.
 2. Run `pre-commit install` once.
 3. Make changes; all hooks should pass before pushing.

@@ -12,4 +12,3 @@ So after you make a change at specific module I want you to test only that becas
 
 The biggest test suite is the unit test suite that is located in the tests/unit directory.
 There you can find the tests for each module that is in the pmarlo package.
-
