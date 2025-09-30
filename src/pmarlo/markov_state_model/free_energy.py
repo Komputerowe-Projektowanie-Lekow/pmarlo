@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import logging
 import warnings
-from dataclasses import dataclass, field
-from typing import Any, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, ClassVar, Optional, Tuple
 
 import numpy as np
 from numpy.typing import NDArray
@@ -26,7 +26,7 @@ class PMFResult:
         return tuple(int(n) for n in self.F.shape)
 
 
-@dataclass
+@dataclass(init=False)
 class FESResult:
     """Result of a two-dimensional free-energy surface calculation.
 
@@ -44,16 +44,82 @@ class FESResult:
         serialisable.
     """
 
+    version: ClassVar[str] = "2.0"
     F: NDArray[np.float64]
     xedges: NDArray[np.float64]
     yedges: NDArray[np.float64]
-    levels_kJmol: NDArray[np.float64] | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
+    levels_kJmol: NDArray[np.float64] | None
+    metadata: dict[str, Any]
+    counts: NDArray[np.float64] | None
+    cv1_name: str | None
+    cv2_name: str | None
+    temperature: float | None
+
+    def __init__(
+        self,
+        F: NDArray[np.float64] | None = None,
+        *,
+        free_energy: NDArray[np.float64] | None = None,
+        xedges: NDArray[np.float64],
+        yedges: NDArray[np.float64],
+        levels_kJmol: NDArray[np.float64] | None = None,
+        metadata: dict[str, Any] | None = None,
+        counts: NDArray[np.float64] | None = None,
+        cv1_name: str | None = None,
+        cv2_name: str | None = None,
+        temperature: float | None = None,
+    ) -> None:
+        if F is None and free_energy is None:
+            raise TypeError(
+                "FESResult requires either 'F' or 'free_energy' to be provided"
+            )
+        if F is not None and free_energy is not None:
+            warnings.warn(
+                "Both 'F' and 'free_energy' were provided; using 'F'",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        array_F = F if F is not None else free_energy
+        self.F = np.asarray(array_F, dtype=np.float64)
+        self.xedges = np.asarray(xedges, dtype=np.float64)
+        self.yedges = np.asarray(yedges, dtype=np.float64)
+        self.levels_kJmol = (
+            None if levels_kJmol is None else np.asarray(levels_kJmol, dtype=np.float64)
+        )
+
+        meta: dict[str, Any] = dict(metadata or {})
+
+        counts_value = counts if counts is not None else meta.get("counts")
+        self.counts = (
+            None if counts_value is None else np.asarray(counts_value, dtype=np.float64)
+        )
+        if self.counts is not None:
+            meta["counts"] = self.counts
+
+        self.cv1_name = cv1_name if cv1_name is not None else meta.get("cv1_name")
+        self.cv2_name = cv2_name if cv2_name is not None else meta.get("cv2_name")
+        if self.cv1_name is not None:
+            meta.setdefault("cv1_name", self.cv1_name)
+        if self.cv2_name is not None:
+            meta.setdefault("cv2_name", self.cv2_name)
+
+        temp_val = temperature if temperature is not None else meta.get("temperature")
+        self.temperature = None if temp_val is None else float(temp_val)
+        if self.temperature is not None:
+            meta["temperature"] = self.temperature
+
+        self.metadata = meta
 
     @property
     def output_shape(self) -> tuple[int, int]:
         """Shape of the free-energy surface grid."""
         return (int(self.F.shape[0]), int(self.F.shape[1]))
+
+    @property
+    def free_energy(self) -> NDArray[np.float64]:  # pragma: no cover - alias
+        """Alias for the free-energy surface array for legacy consumers."""
+
+        return self.F
 
     def __getitem__(self, key: str) -> Any:  # pragma: no cover - compatibility shim
         """Dictionary-style access with deprecation warning.
@@ -78,6 +144,101 @@ class FESResult:
         if key in mapping:
             return mapping[key]
         raise KeyError(key)
+
+    def to_dict(self, metadata_only: bool = False) -> dict[str, Any]:
+        """Serialize the FES result to a JSON-friendly dictionary."""
+
+        def _serialize(value: Any) -> Any:
+            if isinstance(value, np.ndarray):
+                if metadata_only:
+                    return {"shape": list(value.shape), "dtype": str(value.dtype)}
+                return value.tolist()
+            return value
+
+        payload: dict[str, Any] = {"version": self.version}
+
+        primary_arrays = {
+            "free_energy": self.F,
+            "xedges": self.xedges,
+            "yedges": self.yedges,
+        }
+        payload.update(
+            {key: _serialize(value) for key, value in primary_arrays.items()}
+        )
+
+        optional_arrays = {
+            key: value
+            for key, value in {
+                "levels_kJmol": self.levels_kJmol,
+                "counts": self.counts,
+            }.items()
+            if value is not None
+        }
+        payload.update(
+            {key: _serialize(value) for key, value in optional_arrays.items()}
+        )
+
+        optional_scalars = {
+            "temperature": (
+                float(self.temperature) if self.temperature is not None else None
+            ),
+            "cv1_name": self.cv1_name,
+            "cv2_name": self.cv2_name,
+        }
+        payload.update(
+            {key: value for key, value in optional_scalars.items() if value is not None}
+        )
+
+        excluded_keys = {"counts", "temperature", "cv1_name", "cv2_name"}
+        metadata = {
+            key: _serialize(value)
+            for key, value in self.metadata.items()
+            if key not in excluded_keys
+        }
+        if metadata:
+            payload["metadata"] = metadata
+
+        return payload
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FESResult":
+        """Reconstruct an :class:`FESResult` from serialized metadata."""
+
+        raw = dict(data)
+        version = raw.pop("version", cls.version)
+        if version not in {"1.0", "2.0"}:
+            raise ValueError(f"Version mismatch: {version} != {cls.version}")
+
+        def _restore(value: Any) -> Any:
+            if isinstance(value, dict) and {"shape", "dtype"}.issubset(value.keys()):
+                shape = tuple(int(x) for x in value["shape"])
+                dtype = np.dtype(value.get("dtype", "float64"))
+                return np.zeros(shape, dtype=dtype)
+            if isinstance(value, list):
+                return np.asarray(value)
+            return value
+
+        metadata_extra = raw.pop("metadata", {}) or {}
+        counts = raw.pop("counts", None)
+        cv1_name = raw.pop("cv1_name", None) or metadata_extra.get("cv1_name")
+        cv2_name = raw.pop("cv2_name", None) or metadata_extra.get("cv2_name")
+        temperature = raw.pop("temperature", None)
+        if temperature is None:
+            temperature = metadata_extra.get("temperature")
+
+        levels = raw.pop("levels_kJmol", None)
+        restored = cls(
+            F=_restore(raw.pop("free_energy")),
+            xedges=_restore(raw.pop("xedges")),
+            yedges=_restore(raw.pop("yedges")),
+            levels_kJmol=None if levels is None else _restore(levels),
+            counts=None if counts is None else _restore(counts),
+            metadata={k: _restore(v) for k, v in metadata_extra.items()},
+            cv1_name=cv1_name,
+            cv2_name=cv2_name,
+            temperature=temperature,
+        )
+        return restored
 
 
 def _kT_kJ_per_mol(temperature_kelvin: float) -> float:
@@ -340,6 +501,7 @@ def generate_2d_fes(  # noqa: C901
     mask: NDArray[np.bool_] = H_counts < min_count
 
     kde_density: NDArray[np.float64] = np.zeros_like(H_density, dtype=np.float64)
+    grid_shape = H_density.shape
     # Adaptive smoothing/inpainting decision based on occupancy
     total_bins = float(H_density.size)
     occupied = float(np.count_nonzero(H_counts >= max(1, min_count)))
@@ -363,7 +525,7 @@ def generate_2d_fes(  # noqa: C901
         if all(periodic):
             bw_rad = (np.radians(kde_bw_deg[0]), np.radians(kde_bw_deg[1]))
             kde_density = periodic_kde_2d(
-                np.radians(x), np.radians(y), bw=bw_rad, gridsize=bins
+                np.radians(x), np.radians(y), bw=bw_rad, gridsize=grid_shape
             )
         else:
             mode = tuple("wrap" if p else "reflect" for p in periodic)

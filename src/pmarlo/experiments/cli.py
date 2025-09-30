@@ -3,9 +3,6 @@ import json
 import logging
 from pathlib import Path
 
-from .msm import MSMConfig, run_msm_experiment
-from .replica_exchange import ReplicaExchangeConfig, run_replica_exchange_experiment
-from .simulation import SimulationConfig, run_simulation_experiment
 from .utils import default_output_root, tests_data_dir
 
 # CLI sets logging level; modules themselves do not configure basicConfig
@@ -99,6 +96,8 @@ def main():
     )
 
     if args.cmd == "simulation":
+        from .simulation import SimulationConfig, run_simulation_experiment
+
         cfg = SimulationConfig(
             pdb_file=args.pdb,
             output_dir=args.out,
@@ -107,6 +106,11 @@ def main():
         )
         result = run_simulation_experiment(cfg)
     elif args.cmd == "remd":
+        from .replica_exchange import (
+            ReplicaExchangeConfig,
+            run_replica_exchange_experiment,
+        )
+
         cfg = ReplicaExchangeConfig(
             pdb_file=args.pdb,
             output_dir=args.out,
@@ -120,6 +124,8 @@ def main():
         )
         result = run_replica_exchange_experiment(cfg)
     else:
+        from .msm import MSMConfig, run_msm_experiment
+
         cfg = MSMConfig(
             trajectory_files=args.traj,
             topology_file=args.top,

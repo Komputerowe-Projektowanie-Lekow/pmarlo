@@ -26,9 +26,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypedDict
 
-from .msm import MSMConfig, run_msm_experiment
-from .replica_exchange import ReplicaExchangeConfig, run_replica_exchange_experiment
-from .simulation import SimulationConfig, run_simulation_experiment
 from .utils import default_output_root, tests_data_dir
 
 AlgorithmName = Literal["simulation", "remd", "msm"]
@@ -131,6 +128,8 @@ def run_suite_case(index: int) -> SuiteResult:
     c = cases[index]
 
     if c.algorithm == "simulation":
+        from .simulation import SimulationConfig, run_simulation_experiment
+
         sim_cfg = SimulationConfig(
             pdb_file=_tests_pdb(),
             # Keep algorithm root stable; per-run timestamped subdir is created
@@ -141,6 +140,11 @@ def run_suite_case(index: int) -> SuiteResult:
         )
         res = run_simulation_experiment(sim_cfg)
     elif c.algorithm == "remd":
+        from .replica_exchange import (
+            ReplicaExchangeConfig,
+            run_replica_exchange_experiment,
+        )
+
         remd_cfg = ReplicaExchangeConfig(
             pdb_file=_tests_pdb(),
             total_steps=int(c.remd_steps or 800),
@@ -152,6 +156,8 @@ def run_suite_case(index: int) -> SuiteResult:
         )
         res = run_replica_exchange_experiment(remd_cfg)
     else:
+        from .msm import MSMConfig, run_msm_experiment
+
         msm_cfg = MSMConfig(
             trajectory_files=_tests_traj(),
             topology_file=_tests_pdb(),

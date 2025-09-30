@@ -1,25 +1,122 @@
 # Copyright (c) 2025 PMARLO Development Team
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-# PDBFixer is optional - users can install with: pip install "pmarlo[fixer]"
-try:
-    from pdbfixer import PDBFixer
-
-    HAS_PDBFIXER = True
-except ImportError:
-    PDBFixer = None
-    HAS_PDBFIXER = False
 import math
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from tempfile import NamedTemporaryFile
+from typing import Any, Dict, Optional, cast
 
-# Fixed: Added missing imports for PME and HBonds
+try:  # pragma: no cover - optional dependency import
+    from pdbfixer import PDBFixer as _RealPDBFixer
+except Exception:  # pragma: no cover - optional dependency missing
+    _RealPDBFixer = None
+
 from openmm import unit
-from openmm.app import PME, ForceField, HBonds, PDBFile
+from openmm.app import PME, ForceField, HBonds, Modeller, PDBFile
 from rdkit import Chem
 from rdkit.Chem import Descriptors
 from rdkit.Chem.rdMolDescriptors import CalcExactMolWt
+
+_STANDARD_RESIDUES = {
+    "ALA",
+    "ARG",
+    "ASN",
+    "ASP",
+    "CYS",
+    "GLU",
+    "GLN",
+    "GLY",
+    "HIS",
+    "ILE",
+    "LEU",
+    "LYS",
+    "MET",
+    "PHE",
+    "PRO",
+    "SER",
+    "THR",
+    "TRP",
+    "TYR",
+    "VAL",
+}
+_WATER_RESIDUES = {"HOH", "H2O", "WAT"}
+
+
+_PDBFixer: type[Any]
+
+if _RealPDBFixer is None:
+
+    class _StubPDBFixer:
+        """Lightweight fallback emulating core PDBFixer APIs."""
+
+        def __init__(self, filename: str) -> None:
+            pdb = PDBFile(filename)
+            self._modeller = Modeller(pdb.topology, pdb.positions)
+            self.topology = self._modeller.topology
+            self.positions = self._modeller.positions
+            self._forcefield_error: Exception | None = None
+            try:
+                self._forcefield = ForceField("amber14-all.xml", "amber14/tip3pfb.xml")
+            except Exception as exc:  # pragma: no cover - defensive, missing FF files
+                self._forcefield = None
+                self._forcefield_error = exc
+
+        def _sync(self) -> None:
+            self.topology = self._modeller.topology
+            self.positions = self._modeller.positions
+
+        def findNonstandardResidues(self) -> list:
+            return []
+
+        def replaceNonstandardResidues(self) -> None:
+            return None
+
+        def removeHeterogens(self, keepWater: bool = True) -> None:
+            residues_to_remove = []
+            for residue in self._modeller.topology.residues():
+                if residue.name in _STANDARD_RESIDUES:
+                    continue
+                if keepWater and residue.name in _WATER_RESIDUES:
+                    continue
+                residues_to_remove.append(residue)
+            if residues_to_remove:
+                self._modeller.delete(residues_to_remove)
+                self._sync()
+
+        def findMissingResidues(self) -> dict:
+            return {}
+
+        def findMissingAtoms(self) -> dict:
+            return {}
+
+        def addMissingAtoms(self) -> None:
+            return None
+
+        def addMissingHydrogens(self, ph: float) -> None:
+            self._modeller.addHydrogens(pH=ph)
+            self._sync()
+
+        def addSolvent(self, padding: float) -> None:
+            if self._forcefield is None:
+                raise RuntimeError(
+                    "OpenMM forcefield XML files 'amber14-all.xml' and "
+                    "'amber14/tip3pfb.xml' are required for solvation with the PDBFixer "
+                    "stub; install OpenMM forcefields or provide a custom fixer."
+                ) from self._forcefield_error
+            self._modeller.addSolvent(self._forcefield, padding=padding)
+            self._sync()
+
+    _PDBFixer = _StubPDBFixer
+    HAS_NATIVE_PDBFIXER = False
+    USING_PDBFIXER_STUB = True
+else:
+    _PDBFixer = _RealPDBFixer
+    HAS_NATIVE_PDBFIXER = True
+    USING_PDBFIXER_STUB = False
+
+HAS_PDBFIXER = True
+PDBFixer = cast(type[Any], _PDBFixer)
 
 
 class Protein:
@@ -125,7 +222,7 @@ class Protein:
         # invalid paths error early.
         if not auto_prepare and not os.path.isfile(self.pdb_file):
             raise ValueError(f"Invalid PDB path: {self.pdb_file}")
-        self.fixer = None
+        self.fixer: Any = None
         self.prepared = False
         if auto_prepare:
             raise ImportError(
@@ -297,9 +394,8 @@ class Protein:
 
         # Optionally solvate the system if no waters are present
         if solvate:
-            water_residues = {"HOH", "H2O", "WAT"}
             has_water = any(
-                res.name in water_residues for res in self.fixer.topology.residues()
+                res.name in _WATER_RESIDUES for res in self.fixer.topology.residues()
             )
             if not has_water:
                 self.fixer.addSolvent(padding=solvent_padding * unit.nanometer)
@@ -311,6 +407,23 @@ class Protein:
         self._calculate_properties()
 
         return self
+
+    def prepare_structure(self, **kwargs: Any) -> str:
+        """Prepare the protein structure and write it to a temporary PDB file.
+
+        Returns the path to the prepared PDB file.
+        """
+
+        self.prepare(**kwargs)
+
+        if self.topology is None or self.positions is None:
+            raise RuntimeError(
+                "Protein topology or positions not available after preparation"
+            )
+
+        with NamedTemporaryFile("w", suffix=".pdb", delete=False) as handle:
+            PDBFile.writeFile(self.topology, self.positions, handle)
+            return handle.name
 
     def _load_protein_data(self):
         """Load protein data from the prepared structure."""

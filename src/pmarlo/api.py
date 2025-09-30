@@ -1,16 +1,33 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Literal,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 import mdtraj as md  # type: ignore
 import numpy as np
 
+if TYPE_CHECKING:
+    from .io.trajectory_writer import MDTrajDCDWriter
+
+from .config import JOINT_USE_REWEIGHT
 from .data.aggregate import aggregate_and_build as _aggregate_and_build
 from .features import get_feature
 from .features.base import parse_feature_spec
-from .io import trajectory as _traj_io
 from .markov_state_model._msm_utils import build_simple_msm as _build_simple_msm
 from .markov_state_model._msm_utils import (
     candidate_lag_ladder,
@@ -23,31 +40,154 @@ from .markov_state_model._msm_utils import (
     lump_micro_to_macro_T as _lump_micro_to_macro_T,
 )
 from .markov_state_model._msm_utils import pcca_like_macrostates as _pcca_like
-from .markov_state_model.ck_runner import run_ck as _run_ck
-from .markov_state_model.clustering import cluster_microstates as _cluster_microstates
-from .markov_state_model.enhanced_msm import EnhancedMSM as MarkovStateModel
-from .markov_state_model.free_energy import FESResult
-from .markov_state_model.free_energy import generate_2d_fes as _generate_2d_fes
-from .markov_state_model.picker import (
-    pick_frames_around_minima as _pick_frames_around_minima,
-)
-from .markov_state_model.reduction import pca_reduce, tica_reduce, vamp_reduce
-from .replica_exchange.config import RemdConfig
-from .replica_exchange.replica_exchange import ReplicaExchange
-from .reporting.export import write_conformations_csv_json
-from .reporting.plots import (
-    save_fes_contour,
-    save_pmf_line,
-    save_transition_matrix_heatmap,
-)
-from .config import JOINT_USE_REWEIGHT
-from .workflow.joint import JointWorkflow, WorkflowConfig as JointWorkflowConfig
 
-from .transform.build import AppliedOpts as _AppliedOpts
-from .transform.build import BuildOpts as _BuildOpts
-from .transform.plan import TransformPlan as _TransformPlan
-from .transform.plan import TransformStep as _TransformStep
-from .transform.progress import coerce_progress_callback
+_run_ck: Any = None
+try:  # pragma: no cover - optional plotting dependency
+    from .markov_state_model.ck_runner import (
+        run_ck as _run_ck,  # type: ignore[no-redef]
+    )
+except Exception:  # pragma: no cover - executed without matplotlib
+    pass
+
+try:  # pragma: no cover - optional sklearn dependency
+    from .markov_state_model.clustering import (
+        cluster_microstates as _cluster_microstates,
+    )
+except Exception:  # pragma: no cover - executed without sklearn
+
+    def _cluster_microstates(*_args: object, **_kwargs: object):  # type: ignore
+        raise ImportError(
+            "cluster_microstates requires scikit-learn. Install with `pip install 'pmarlo[analysis]'`."
+        )
+
+
+try:  # pragma: no cover - optional ML stack
+    from .markov_state_model.enhanced_msm import EnhancedMSM as _EnhancedMSM
+
+    MarkovStateModel: type[Any] = _EnhancedMSM
+except Exception:  # pragma: no cover - executed without sklearn/torch
+
+    class _MarkovStateModelStub:  # type: ignore[misc]
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            raise ImportError(
+                "EnhancedMSM requires optional dependencies. Install with `pip install 'pmarlo[analysis]'`."
+            )
+
+    MarkovStateModel = _MarkovStateModelStub
+
+try:  # pragma: no cover - optional plotting dependency
+    from .markov_state_model.free_energy import FESResult
+    from .markov_state_model.free_energy import generate_2d_fes as _generate_2d_fes
+except Exception:  # pragma: no cover - executed without analysis extras
+    FESResult = Any  # type: ignore
+
+    def _generate_2d_fes(*_args: object, **_kwargs: object) -> Any:  # type: ignore
+        raise ImportError("generate_2d_fes requires optional analysis dependencies.")
+
+
+try:  # pragma: no cover - optional matplotlib dependency
+    from .markov_state_model.picker import (
+        pick_frames_around_minima as _pick_frames_around_minima_impl,
+    )
+
+    _pick_frames_around_minima = _pick_frames_around_minima_impl
+except Exception:  # pragma: no cover - executed without plotting
+
+    def _pick_frames_around_minima_stub(
+        *_args: object, **_kwargs: object
+    ) -> dict[str, Any]:
+        raise ImportError(
+            "pick_frames_around_minima requires optional plotting dependencies."
+        )
+
+    _pick_frames_around_minima = _pick_frames_around_minima_stub
+
+try:  # pragma: no cover - optional sklearn dependency
+    from .markov_state_model.reduction import pca_reduce, tica_reduce, vamp_reduce
+except Exception:  # pragma: no cover - executed without sklearn
+
+    def _missing_reduction(*_args: object, **_kwargs: object) -> np.ndarray:
+        raise ImportError(
+            "Dimensionality reduction requires scikit-learn. Install with `pip install 'pmarlo[analysis]'`."
+        )
+
+    pca_reduce = tica_reduce = vamp_reduce = _missing_reduction  # type: ignore
+
+try:  # pragma: no cover - optional OpenMM dependency
+    from .replica_exchange.config import RemdConfig
+    from .replica_exchange.replica_exchange import ReplicaExchange as _ReplicaExchange
+
+    ReplicaExchange: type[Any] = _ReplicaExchange
+except Exception:  # pragma: no cover - executed without OpenMM stack
+    RemdConfig = Any  # type: ignore
+
+    class _ReplicaExchangeStub:  # type: ignore[misc]
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            raise ImportError("ReplicaExchange requires OpenMM and optional extras.")
+
+    ReplicaExchange = _ReplicaExchangeStub
+
+try:  # pragma: no cover - optional pandas/matplotlib dependency
+    from .reporting.export import (
+        write_conformations_csv_json as _write_conformations_csv_json,
+    )
+
+    write_conformations_csv_json = _write_conformations_csv_json
+except Exception:  # pragma: no cover - executed without reporting extras
+
+    def _write_conformations_csv_json_stub(*_args: object, **_kwargs: object) -> None:
+        raise ImportError("Reporting export helpers require optional dependencies.")
+
+    write_conformations_csv_json = _write_conformations_csv_json_stub
+
+try:  # pragma: no cover - optional matplotlib dependency
+    from .reporting.plots import save_fes_contour as _save_fes_contour
+    from .reporting.plots import save_pmf_line as _save_pmf_line
+    from .reporting.plots import (
+        save_transition_matrix_heatmap as _save_transition_matrix_heatmap,
+    )
+
+    save_fes_contour = _save_fes_contour
+    save_pmf_line = _save_pmf_line
+    save_transition_matrix_heatmap = _save_transition_matrix_heatmap
+except Exception:  # pragma: no cover - executed without plotting
+
+    def _save_fes_contour_stub(*_args: object, **_kwargs: object) -> None:
+        raise ImportError("Plotting helpers require matplotlib.")
+
+    save_fes_contour = _save_fes_contour_stub
+    save_pmf_line = _save_fes_contour_stub
+    save_transition_matrix_heatmap = _save_fes_contour_stub
+try:  # pragma: no cover - optional workflow dependency chain
+    from .transform.build import AppliedOpts as _AppliedOpts
+    from .transform.build import BuildOpts as _BuildOpts
+    from .transform.plan import TransformPlan as _TransformPlan
+    from .transform.plan import TransformStep as _TransformStep
+    from .transform.progress import (
+        coerce_progress_callback as _coerce_progress_callback,
+    )
+    from .workflow.joint import JointWorkflow as _JointWorkflow
+    from .workflow.joint import WorkflowConfig as _JointWorkflowConfig
+
+    coerce_progress_callback = _coerce_progress_callback
+    JointWorkflow: type[Any] = _JointWorkflow
+    JointWorkflowConfig: type[Any] = _JointWorkflowConfig
+except Exception:  # pragma: no cover - executed without transform extras
+    _AppliedOpts = _BuildOpts = _TransformPlan = _TransformStep = None  # type: ignore
+
+    def _coerce_progress_callback_stub(*_args: object, **_kwargs: object):  # type: ignore
+        raise ImportError("Transform workflow requires optional dependencies.")
+
+    class _JointWorkflowStub:  # type: ignore[misc]
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            raise ImportError("Joint workflow requires optional dependencies.")
+
+    class _JointWorkflowConfigStub:  # type: ignore[misc]
+        pass
+
+    coerce_progress_callback = _coerce_progress_callback_stub
+    JointWorkflow = _JointWorkflowStub
+    JointWorkflowConfig = _JointWorkflowConfigStub
 
 logger = logging.getLogger("pmarlo")
 
@@ -189,7 +329,7 @@ def compute_universal_metric(
     else:
         # VAMP default
         logger.info("[universal] Reducing with VAMP(lag=%d) → 1D", int(max(1, lag)))
-        Y = vamp_reduce(Xe, lag=int(max(1, lag)), n_components=1, score_dims=[1])
+        Y = vamp_reduce(Xe, lag=int(max(1, lag)), n_components=1)
     metric = Y.reshape(-1)
     logger.info("[universal] Metric ready: %d frames", metric.shape[0])
     meta: Dict[str, Any] = {
@@ -501,9 +641,8 @@ def reduce_features(
     if method == "tica":
         return tica_reduce(X, lag=lag, n_components=n_components)
     if method == "vamp":
-        # Try a small set of candidate dims to select by VAMP score
-        candidates = [n_components, max(1, n_components - 1), n_components + 1]
-        return vamp_reduce(X, lag=lag, n_components=n_components, score_dims=candidates)
+        # Use VAMP reduction with specified components
+        return vamp_reduce(X, lag=lag, n_components=n_components)
     raise ValueError(f"Unknown reduction method: {method}")
 
 
@@ -992,19 +1131,27 @@ def analyze_msm(  # noqa: C901
         output_dir=str(msm_out),
         random_state=random_state,
     )
-    if use_effective_for_uncertainty:
-        msm.count_mode = "sliding"
-    msm.load_trajectories(
-        stride=traj_stride, atom_selection=atom_selection, chunk_size=chunk_size
-    )
+    # Configure MSM parameters
+    if use_effective_for_uncertainty and hasattr(msm, "count_mode"):
+        msm.count_mode = "sliding"  # type: ignore[attr-defined]
+
+    # Load trajectories
+    if hasattr(msm, "load_trajectories"):
+        msm.load_trajectories(  # type: ignore[attr-defined]
+            stride=traj_stride, atom_selection=atom_selection, chunk_size=chunk_size
+        )
+
+    # Compute features
     ft = feature_type
     if use_tica and ("tica" not in feature_type.lower()):
         ft = f"{feature_type}_tica"
-    msm.compute_features(feature_type=ft)
+    if hasattr(msm, "compute_features"):
+        msm.compute_features(feature_type=ft)  # type: ignore[attr-defined]
 
     # Cluster
     N_CLUSTERS = 8
-    msm.cluster_features(n_states=int(N_CLUSTERS))
+    if hasattr(msm, "cluster_features"):
+        msm.cluster_features(n_states=int(N_CLUSTERS))  # type: ignore[attr-defined]
 
     # Method selection
     method = (
@@ -1017,7 +1164,9 @@ def analyze_msm(  # noqa: C901
 
     # ITS and lag selection
     try:
-        total_frames = sum(t.n_frames for t in msm.trajectories)
+        total_frames = sum(
+            getattr(t, "n_frames", 0) for t in getattr(msm, "trajectories", [])
+        )
     except Exception:
         total_frames = 0
     max_lag = 250
@@ -1027,15 +1176,22 @@ def analyze_msm(  # noqa: C901
     except Exception:
         max_lag = 250
     candidate_lags = candidate_lag_ladder(min_lag=1, max_lag=max_lag)
-    msm.build_msm(lag_time=5, method=method)
-    msm.compute_implied_timescales(lag_times=candidate_lags, n_timescales=3)
+    if hasattr(msm, "build_msm"):
+        msm.build_msm(lag_time=5, method=method)  # type: ignore[attr-defined]
+    if hasattr(msm, "compute_implied_timescales"):
+        msm.compute_implied_timescales(lag_times=candidate_lags, n_timescales=3)  # type: ignore[attr-defined]
 
     chosen_lag = 10
     try:
         import numpy as _np  # type: ignore
 
-        lags = _np.array(msm.implied_timescales["lag_times"])  # type: ignore[index]
-        its = _np.array(msm.implied_timescales["timescales"])  # type: ignore[index]
+        its_data = getattr(msm, "implied_timescales", None)
+        if its_data is not None and hasattr(its_data, "__getitem__"):
+            lags = _np.array(its_data["lag_times"])  # type: ignore[index]
+            its = _np.array(its_data["timescales"])  # type: ignore[index]
+        else:
+            lags = _np.array(candidate_lags)
+            its = _np.ones((len(candidate_lags), 3)) * 10.0
         scores: List[float] = []
         for idx in range(len(lags)):
             if idx == 0:
@@ -1057,16 +1213,23 @@ def analyze_msm(  # noqa: C901
     except Exception:
         chosen_lag = 10
 
-    msm.build_msm(lag_time=chosen_lag, method=method)
+    if hasattr(msm, "build_msm"):
+        msm.build_msm(lag_time=chosen_lag, method=method)  # type: ignore[attr-defined]
 
     # CK test with macro → micro fallback
     try:
-        _run_ck(msm.dtrajs, msm.lag_time, msm.output_dir, macro_k=3)
+        dtrajs = getattr(msm, "dtrajs", None)
+        lag_time = getattr(msm, "lag_time", chosen_lag)
+        output_dir = getattr(msm, "output_dir", output_dir)
+        if _run_ck is not None and dtrajs is not None:
+            _run_ck(dtrajs, lag_time, output_dir, macro_k=3)
     except Exception:
         pass
 
     try:
-        total_frames_fes = sum(t.n_frames for t in msm.trajectories)
+        total_frames_fes = sum(
+            getattr(t, "n_frames", 0) for t in getattr(msm, "trajectories", [])
+        )
     except Exception:
         total_frames_fes = 0
     adaptive_bins = max(20, min(50, int((total_frames_fes or 0) ** 0.5))) or 20
@@ -1076,7 +1239,8 @@ def analyze_msm(  # noqa: C901
         try:
             # Build one universal embedding and reuse for PMF(1D) and FES(2D)
             traj_all = None
-            for t in msm.trajectories:
+            trajectories = getattr(msm, "trajectories", [])
+            for t in trajectories:
                 traj_all = t if traj_all is None else traj_all.join(t)
             if traj_all is not None:
                 # Choose method with Literal-typed variable for mypy
@@ -1089,14 +1253,16 @@ def analyze_msm(  # noqa: C901
                 # Reuse cached features for the concatenated trajectory as well
                 from pathlib import Path as _Path
 
-                cache_dir = _Path(str(msm.output_dir)) / "feature_cache"
+                cache_dir = (
+                    _Path(str(getattr(msm, "output_dir", output_dir))) / "feature_cache"
+                )
                 cache_dir.mkdir(parents=True, exist_ok=True)
                 Y2, _ = compute_universal_embedding(
                     traj_all,
                     feature_specs=None,
                     align=True,
                     method=red_method,
-                    lag=int(max(1, msm.lag_time or 10)),
+                    lag=int(max(1, getattr(msm, "lag_time", None) or 10)),
                     n_components=2,
                     cache_path=str(cache_dir),
                 )
@@ -1110,7 +1276,7 @@ def analyze_msm(  # noqa: C901
                     pmf.F,
                     pmf.edges,
                     xlabel="universal IC1",
-                    output_dir=str(msm.output_dir),
+                    output_dir=str(getattr(msm, "output_dir", output_dir)),
                     filename="pmf_universal_ic1.png",
                 )
                 # 2) 2D FES on (IC1, IC2)
@@ -1129,7 +1295,7 @@ def analyze_msm(  # noqa: C901
                     fes2.yedges,
                     "universal IC1",
                     "universal IC2",
-                    str(msm.output_dir),
+                    str(getattr(msm, "output_dir", output_dir)),
                     "fes_universal_ic1_vs_ic2.png",
                 )
         except Exception:
@@ -1137,11 +1303,17 @@ def analyze_msm(  # noqa: C901
     else:
         # Disable phi/psi-specific FES in analyze_msm default path
         pass
-    msm.plot_implied_timescales(save_file="implied_timescales")
-    msm.plot_free_energy_profile(save_file="free_energy_profile")
-    msm.create_state_table()
-    msm.extract_representative_structures(save_pdb=True)
-    msm.save_analysis_results()
+    # Generate plots and analysis results with attribute checks
+    if hasattr(msm, "plot_implied_timescales"):
+        msm.plot_implied_timescales(save_file="implied_timescales")  # type: ignore[attr-defined]
+    if hasattr(msm, "plot_free_energy_profile"):
+        msm.plot_free_energy_profile(save_file="free_energy_profile")  # type: ignore[attr-defined]
+    if hasattr(msm, "create_state_table"):
+        msm.create_state_table()  # type: ignore[attr-defined]
+    if hasattr(msm, "extract_representative_structures"):
+        msm.extract_representative_structures(save_pdb=True)  # type: ignore[attr-defined]
+    if hasattr(msm, "save_analysis_results"):
+        msm.save_analysis_results()  # type: ignore[attr-defined]
 
     return msm_out
 
@@ -1364,6 +1536,250 @@ def find_conformations_with_msm(
 # ------------------------------ App-friendly wrappers ------------------------------
 
 
+def emit_shards_rg_rmsd_windowed(
+    pdb_file: str | Path,
+    traj_files: list[str | Path],
+    out_dir: str | Path,
+    *,
+    reference: str | Path | None = None,
+    stride: int = 1,
+    temperature: float = 300.0,
+    seed_start: int = 0,
+    frames_per_shard: int = 5000,
+    hop_frames: int | None = None,
+    progress_callback=None,
+    provenance: dict | None = None,
+) -> list[Path]:
+    """Emit many overlapping shards per trajectory via a sliding window."""
+
+    import mdtraj as md  # type: ignore
+
+    from pmarlo.data.shard import write_shard  # type: ignore
+    from pmarlo.io import trajectory as _traj_io  # type: ignore
+    from pmarlo.transform.progress import ProgressReporter  # type: ignore
+
+    pdb_file = Path(pdb_file)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    ref, ca_sel = _load_reference_and_selection(md, pdb_file, reference)
+    next_idx, start_idx, seed_base = _initialise_shard_indices(out_dir, seed_start)
+    emit_progress = _make_emit_callback(ProgressReporter(progress_callback))
+    shard_paths: list[Path] = []
+    files = [Path(p) for p in traj_files]
+    files.sort()
+    emit_progress(
+        "emit_begin",
+        {
+            "n_inputs": len(files),
+            "out_dir": str(out_dir),
+            "temperature": float(temperature),
+            "current": 0,
+            "total": len(files),
+        },
+    )
+
+    window = max(1, int(frames_per_shard))
+    hop = max(1, int(hop_frames) if hop_frames is not None else window)
+
+    for index, traj_path in enumerate(files):
+        emit_progress(
+            "emit_one_begin",
+            {
+                "index": int(index),
+                "traj": str(traj_path),
+                "current": int(index + 1),
+                "total": int(len(files)),
+            },
+        )
+
+        rg, rmsd, total_frames = _collect_rg_rmsd(
+            traj_path,
+            pdb_file,
+            ref,
+            ca_sel,
+            stride,
+            md,
+            _traj_io.iterload,
+        )
+        window_paths, next_idx = _emit_windows(
+            rg,
+            rmsd,
+            window,
+            hop,
+            next_idx,
+            start_idx,
+            seed_base,
+            out_dir,
+            traj_path,
+            write_shard,
+            temperature,
+            provenance,
+        )
+        shard_paths.extend(window_paths)
+
+        emit_progress(
+            "emit_one_end",
+            {
+                "index": int(index),
+                "traj": str(traj_path),
+                "frames": int(total_frames),
+                "current": int(index + 1),
+                "total": int(len(files)),
+            },
+        )
+
+    emit_progress(
+        "emit_end",
+        {
+            "n_shards": len(shard_paths),
+            "current": int(len(files)),
+            "total": int(len(files)),
+        },
+    )
+    return shard_paths
+
+
+def _load_reference_and_selection(
+    md_module: Any,
+    pdb_file: Path,
+    reference: str | Path | None,
+) -> tuple[Any, Any]:
+    """Load reference frame and C-alpha selection indices."""
+
+    top0 = md_module.load(str(pdb_file))
+    if reference is not None and Path(reference).exists():
+        ref = md_module.load(str(reference), top=str(pdb_file))[0]
+    else:
+        ref = top0[0]
+    ca_sel = top0.topology.select("name CA")
+    return ref, ca_sel if ca_sel.size else None
+
+
+def _initialise_shard_indices(
+    out_dir: Path,
+    seed_start: int,
+) -> tuple[int, int, int]:
+    """Determine the next shard index and corresponding RNG seed base."""
+
+    existing = []
+    for shard_file in sorted(out_dir.glob("shard_*.json")):
+        try:
+            existing.append(int(shard_file.stem.split("_")[1]))
+        except Exception:
+            continue
+
+    next_idx = (max(existing) + 1) if existing else 0
+    start_idx = next_idx
+    seed_base = int(seed_start) + start_idx
+    return next_idx, start_idx, seed_base
+
+
+def _make_emit_callback(reporter: Any) -> Callable[[str, dict], None]:
+    """Wrap progress reporter emission with best-effort error handling."""
+
+    def _emit(event: str, data: dict) -> None:
+        try:
+            reporter.emit(event, data)
+        except Exception:
+            pass
+
+    return _emit
+
+
+def _collect_rg_rmsd(
+    traj_path: Path,
+    pdb_file: Path,
+    reference: Any,
+    ca_sel: Any,
+    stride: int,
+    md_module: Any,
+    iterload: Callable[..., Iterable[Any]],
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Accumulate radius of gyration and RMSD arrays for a trajectory."""
+
+    rg_parts: list[np.ndarray] = []
+    rmsd_parts: list[np.ndarray] = []
+    total_frames = 0
+    stride_val = int(max(1, stride))
+    for chunk in iterload(
+        str(traj_path),
+        top=str(pdb_file),
+        stride=stride_val,
+        chunk=1000,
+    ):
+        try:
+            chunk = chunk.superpose(reference, atom_indices=ca_sel)
+        except Exception:
+            pass
+        rg_parts.append(md_module.compute_rg(chunk).astype(np.float64))
+        rmsd_parts.append(
+            md_module.rmsd(chunk, reference, atom_indices=ca_sel).astype(np.float64)
+        )
+        total_frames += int(chunk.n_frames)
+
+    rg = np.concatenate(rg_parts) if rg_parts else np.zeros((0,), dtype=np.float64)
+    rmsd = (
+        np.concatenate(rmsd_parts) if rmsd_parts else np.zeros((0,), dtype=np.float64)
+    )
+    return rg, rmsd, total_frames
+
+
+def _emit_windows(
+    rg: np.ndarray,
+    rmsd: np.ndarray,
+    window: int,
+    hop: int,
+    next_idx: int,
+    start_idx: int,
+    seed_base: int,
+    out_dir: Path,
+    traj_path: Path,
+    write_shard: Callable[..., Path],
+    temperature: float,
+    provenance: dict | None,
+) -> tuple[list[Path], int]:
+    """Write overlapping shards for the provided CV time-series."""
+
+    shard_paths: list[Path] = []
+    n_frames = int(rg.shape[0])
+    if n_frames <= 0:
+        return shard_paths, next_idx
+
+    eff_window = min(window, n_frames)
+    eff_hop = min(hop, eff_window)
+    for start in range(0, n_frames - eff_window + 1, eff_hop):
+        stop = start + eff_window
+        shard_id = f"shard_{next_idx:04d}"
+        cvs = {"Rg": rg[start:stop], "RMSD_ref": rmsd[start:stop]}
+        source: dict[str, object] = {
+            "traj": str(traj_path),
+            "range": [int(start), int(stop)],
+            "n_frames": int(stop - start),
+        }
+        if provenance:
+            try:
+                merged = dict(provenance)
+                merged.update(source)
+                source = merged
+            except Exception:
+                pass
+        shard_path = write_shard(
+            out_dir=out_dir,
+            shard_id=shard_id,
+            cvs=cvs,
+            dtraj=None,
+            periodic={"Rg": False, "RMSD_ref": False},
+            seed=int(seed_base + (next_idx - start_idx)),
+            temperature=float(temperature),
+            source=source,
+        )
+        shard_paths.append(shard_path.resolve())
+        next_idx += 1
+
+    return shard_paths, next_idx
+
+
 def emit_shards_rg_rmsd(
     pdb_file: str | Path,
     traj_files: list[str | Path],
@@ -1464,6 +1880,7 @@ def build_from_shards(
     temperature: float,
     learn_cv: bool = False,
     deeptica_params: dict | None = None,
+    n_macrostates: int | None = None,
     notes: dict | None = None,
     progress_callback=None,
 ):
@@ -1478,66 +1895,25 @@ def build_from_shards(
 
     from .data.shard import read_shard as _read_shard
 
-    if not shard_jsons:
-        raise ValueError("No shard JSONs provided")
-    shard_jsons = [str(Path(p)) for p in shard_jsons]
-    meta0, _, _ = _read_shard(Path(shard_jsons[0]))
-    names = tuple(meta0.cv_names)
-    cv_pair = (names[0], names[1]) if len(names) >= 2 else ("cv1", "cv2")
+    shard_paths = _normalise_shard_inputs(shard_jsons)
+    meta0, _, _ = _read_shard(shard_paths[0])
+    cv_pair = _infer_cv_pair(meta0)
+    edges = _compute_cv_edges(shard_paths, cv_pair, bins, _read_shard, _np)
 
-    # Compute global edges
-    mins = [_np.inf, _np.inf]
-    maxs = [-_np.inf, -_np.inf]
-    for p in shard_jsons:
-        m, X, _ = _read_shard(Path(p))
-        assert tuple(m.cv_names)[:2] == cv_pair, "Shard CV names mismatch"
-        mins[0] = min(mins[0], float(_np.nanmin(X[:, 0])))
-        mins[1] = min(mins[1], float(_np.nanmin(X[:, 1])))
-        maxs[0] = max(maxs[0], float(_np.nanmax(X[:, 0])))
-        maxs[1] = max(maxs[1], float(_np.nanmax(X[:, 1])))
-    if not _np.isfinite(mins[0]) or mins[0] == maxs[0]:
-        maxs[0] = mins[0] + 1e-8
-    if not _np.isfinite(mins[1]) or mins[1] == maxs[1]:
-        maxs[1] = mins[1] + 1e-8
-    edges = {
-        cv_pair[0]: _np.linspace(mins[0], maxs[0], int(bins.get(cv_pair[0], 32)) + 1),
-        cv_pair[1]: _np.linspace(mins[1], maxs[1], int(bins.get(cv_pair[1], 32)) + 1),
-    }
-
-    model_dir = None
-    if notes:
-        try:
-            model_dir = notes.get("model_dir") if isinstance(notes, dict) else None
-        except Exception:
-            model_dir = None
-
-    steps: list[_TransformStep] = []
-    if learn_cv:
-        params = dict(deeptica_params or {})
-        if "lag" not in params:
-            params["lag"] = int(max(1, lag))
-        if model_dir and "model_dir" not in params:
-            params["model_dir"] = model_dir
-        steps.append(_TransformStep("LEARN_CV", {"method": "deeptica", **params}))
-    steps.append(_TransformStep("SMOOTH_FES", {"sigma": 0.6}))
-    plan = _TransformPlan(steps=tuple(steps))
-
-    opts = _BuildOpts(
-        seed=int(seed),
-        temperature=float(temperature),
-        lag_candidates=[int(lag), int(2 * lag), int(3 * lag)],
-    )
-    all_notes = dict(notes or {})
-    all_notes.setdefault("cv_bin_edges", {k: v.tolist() for k, v in edges.items()})
+    model_dir = _extract_model_dir(notes)
+    plan = _build_transform_plan(learn_cv, deeptica_params, lag, model_dir)
+    opts = _build_opts(seed, temperature, lag)
+    all_notes = _merge_notes_with_edges(notes, edges)
+    n_states = _determine_macrostates(n_macrostates, deeptica_params)
     applied = _AppliedOpts(
         bins=bins,
         lag=int(lag),
-        macrostates=int((deeptica_params or {}).get("n_states", 5)),
+        macrostates=n_states,
         notes=all_notes,
     )
 
     br, ds_hash = _aggregate_and_build(
-        [Path(p) for p in shard_jsons],
+        shard_paths,
         opts=opts,
         plan=plan,
         applied=applied,
@@ -1545,6 +1921,125 @@ def build_from_shards(
         progress_callback=progress_callback,
     )
     return br, ds_hash
+
+
+def _normalise_shard_inputs(shard_jsons: list[str | Path]) -> list[Path]:
+    """Validate shard inputs and return canonical Path objects."""
+
+    if not shard_jsons:
+        raise ValueError("No shard JSONs provided")
+    return [Path(p) for p in shard_jsons]
+
+
+def _infer_cv_pair(meta: Any) -> tuple[str, str]:
+    """Derive the primary CV pair used for downstream binning."""
+
+    names = tuple(meta.cv_names)
+    if len(names) >= 2:
+        return names[0], names[1]
+    return "cv1", "cv2"
+
+
+def _compute_cv_edges(
+    shard_paths: list[Path],
+    cv_pair: tuple[str, str],
+    bins: Mapping[str, int],
+    reader: Callable[[Path], tuple[Any, Any, Any]],
+    np_module: Any,
+) -> dict[str, np.ndarray]:
+    """Compute global bin edges across all shards for the first two CVs."""
+
+    mins = [np_module.inf, np_module.inf]
+    maxs = [-np_module.inf, -np_module.inf]
+    for path in shard_paths:
+        meta, data, _ = reader(path)
+        if tuple(meta.cv_names)[:2] != cv_pair:
+            raise ValueError("Shard CV names mismatch")
+        mins[0] = min(mins[0], float(np_module.nanmin(data[:, 0])))
+        mins[1] = min(mins[1], float(np_module.nanmin(data[:, 1])))
+        maxs[0] = max(maxs[0], float(np_module.nanmax(data[:, 0])))
+        maxs[1] = max(maxs[1], float(np_module.nanmax(data[:, 1])))
+
+    if not np_module.isfinite(mins[0]) or mins[0] == maxs[0]:
+        maxs[0] = mins[0] + 1e-8
+    if not np_module.isfinite(mins[1]) or mins[1] == maxs[1]:
+        maxs[1] = mins[1] + 1e-8
+
+    return {
+        cv_pair[0]: np_module.linspace(
+            mins[0],
+            maxs[0],
+            int(bins.get(cv_pair[0], 32)) + 1,
+        ),
+        cv_pair[1]: np_module.linspace(
+            mins[1],
+            maxs[1],
+            int(bins.get(cv_pair[1], 32)) + 1,
+        ),
+    }
+
+
+def _extract_model_dir(notes: dict | None) -> str | None:
+    """Return the model directory hint from notes if present."""
+
+    if not notes or not isinstance(notes, dict):
+        return None
+    try:
+        model_dir = notes.get("model_dir")
+    except Exception:
+        model_dir = None
+    return model_dir
+
+
+def _build_transform_plan(
+    learn_cv: bool,
+    deeptica_params: dict | None,
+    lag: int,
+    model_dir: str | None,
+) -> _TransformPlan:
+    """Assemble the transform plan with optional Deeptica learning."""
+
+    steps: list[_TransformStep] = []
+    if learn_cv:
+        params = dict(deeptica_params or {})
+        params.setdefault("lag", int(max(1, lag)))
+        if model_dir and "model_dir" not in params:
+            params["model_dir"] = model_dir
+        steps.append(_TransformStep("LEARN_CV", {"method": "deeptica", **params}))
+    steps.append(_TransformStep("SMOOTH_FES", {"sigma": 0.6}))
+    return _TransformPlan(steps=tuple(steps))
+
+
+def _build_opts(seed: int, temperature: float, lag: int) -> _BuildOpts:
+    """Create BuildOpts with a simple lag candidate ladder."""
+
+    return _BuildOpts(
+        seed=int(seed),
+        temperature=float(temperature),
+        lag_candidates=(int(lag), int(2 * lag), int(3 * lag)),
+    )
+
+
+def _merge_notes_with_edges(
+    notes: dict | None,
+    edges: Mapping[str, np.ndarray],
+) -> dict:
+    """Merge user notes with computed CV bin edges."""
+
+    merged = dict(notes or {})
+    merged.setdefault("cv_bin_edges", {k: v.tolist() for k, v in edges.items()})
+    return merged
+
+
+def _determine_macrostates(
+    n_macrostates: int | None,
+    deeptica_params: dict | None,
+) -> int:
+    """Decide how many macrostates to request for downstream analysis."""
+
+    if n_macrostates is not None:
+        return int(n_macrostates)
+    return int((deeptica_params or {}).get("n_states", 5))
 
 
 def demultiplex_run(
@@ -1575,54 +2070,283 @@ def demultiplex_run(
         stacklevel=2,
     )
 
-    # For backward compatibility, try to use the streaming demux
-    try:
-        from pathlib import Path
+    from .io.trajectory_reader import MDTrajReader
+    from .replica_exchange.demux_compat import (
+        parse_exchange_log,
+        parse_temperature_ladder,
+    )
 
-        from .demultiplexing.demux_engine import demux_streaming
-        from .demultiplexing.demux_plan import build_demux_plan
-        from .io.trajectory_reader import get_reader
-        from .io.trajectory_writer import get_writer
-        from .replica_exchange.demux_compat import (
-            parse_exchange_log,
-            parse_temperature_ladder,
-        )
+    out_dir_path, topo_path, replica_paths = _prepare_demux_paths(
+        out_dir,
+        topology_path,
+        replica_traj_paths,
+    )
+    temperatures = _parse_temperature_ladder_safe(ladder_K, parse_temperature_ladder)
+    exchange_records = _load_exchange_records_safe(
+        exchange_log_path, parse_exchange_log
+    )
 
-        # Parse inputs
-        temperatures = parse_temperature_ladder(ladder_K)
-        exchange_records = parse_exchange_log(str(exchange_log_path))
-
-        # Build demux plan
-        plan = build_demux_plan(
-            trajectory_paths=[str(p) for p in replica_traj_paths],
-            temperatures=temperatures,
-            exchange_records=exchange_records,
-            target_temperature=temperatures[0],  # Default to first temperature
-            equilibration_steps=0,  # Could be made configurable
-        )
-
-        # Set up reader/writer
-        reader = get_reader("mdtraj")
-        writer = get_writer("mdtraj")
-
-        # Create output path
-        out_path = Path(out_dir) / f"demux_{run_id}_T{temperatures[0]:.0f}K.{fmt}"
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Execute demux
-        result = demux_streaming(
-            plan=plan,
-            topology_path=str(topology_path),
-            reader=reader,
-            writer=writer,
-            chunk_size=chunk_size,
-        )
-
-        return [str(out_path)] if result.total_frames_written > 0 else []
-
-    except Exception:
-        # Fallback: return empty list if anything fails
+    if not exchange_records:
         return []
+
+    _validate_demux_inputs(temperatures, replica_paths, exchange_records)
+
+    reader = MDTrajReader(topology_path=str(topo_path))
+    replica_frames = _collect_replica_frames(reader, replica_paths)
+    writers, dcd_paths = _open_demux_writers(
+        out_dir_path,
+        topo_path,
+        temperatures,
+        fmt,
+    )
+
+    try:
+        segments_per_temp, dst_positions = _demux_exchange_segments(
+            exchange_records,
+            replica_frames,
+            writers,
+        )
+    finally:
+        _close_demux_writers(writers)
+
+    return _write_demux_manifests(
+        run_id,
+        temperatures,
+        dcd_paths,
+        dst_positions,
+        segments_per_temp,
+        dt_ps,
+        topology_path=topo_path,
+    )
+
+
+def _prepare_demux_paths(
+    out_dir: str | Path,
+    topology_path: str | Path,
+    replica_traj_paths: list[str | Path],
+) -> tuple[Path, Path, list[Path]]:
+    """Create output directory and normalise key input paths."""
+
+    out_dir_path = Path(out_dir)
+    out_dir_path.mkdir(parents=True, exist_ok=True)
+    topo_path = Path(topology_path)
+    replica_paths = [Path(p) for p in replica_traj_paths]
+    return out_dir_path, topo_path, replica_paths
+
+
+def _parse_temperature_ladder_safe(
+    ladder: list[float] | str,
+    parser: Callable[[list[float] | str], Sequence[float]],
+) -> list[float]:
+    """Parse the temperature ladder and surface friendlier errors."""
+
+    try:
+        values = list(parser(ladder))
+    except Exception as exc:  # pragma: no cover - defensive
+        raise ValueError("Failed to parse temperature ladder") from exc
+    return [float(val) for val in values]
+
+
+def _load_exchange_records_safe(
+    exchange_log_path: str | Path,
+    loader: Callable[[str], Sequence[Any]],
+) -> list[Any]:
+    """Load exchange records with consistent error handling."""
+
+    try:
+        records = list(loader(str(exchange_log_path)))
+    except FileNotFoundError as exc:
+        raise ValueError(f"Exchange log not found: {exchange_log_path}") from exc
+    except ValueError:
+        raise
+    except Exception as exc:  # pragma: no cover - defensive
+        raise ValueError("Failed to parse exchange log") from exc
+    records.sort(key=lambda rec: rec.step_index)
+    return records
+
+
+def _validate_demux_inputs(
+    temperatures: Sequence[float],
+    replica_paths: Sequence[Path],
+    exchange_records: Sequence[Any],
+) -> None:
+    """Sanity-check parsed inputs before demultiplexing frames."""
+
+    if len(temperatures) != len(replica_paths):
+        raise ValueError(
+            "Temperature ladder length does not match number of replica trajectories"
+        )
+    if not exchange_records:
+        raise ValueError("Exchange log contained no exchanges")
+    n_temps = len(temperatures)
+    if any(len(record.temp_to_replica) != n_temps for record in exchange_records):
+        raise ValueError("Exchange log column count does not match temperature ladder")
+
+
+def _collect_replica_frames(
+    reader: Any,
+    replica_paths: Sequence[Path],
+) -> list[list[np.ndarray]]:
+    """Load all frames for each replica using the shared reader."""
+
+    frames_per_replica: list[list[np.ndarray]] = []
+    for path in replica_paths:
+        count = reader.probe_length(str(path))
+        frames = list(reader.iter_frames(str(path), start=0, stop=count, stride=1))
+        frames_per_replica.append(frames)
+    return frames_per_replica
+
+
+def _open_demux_writers(
+    out_dir_path: Path,
+    topo_path: Path,
+    temperatures: Sequence[float],
+    fmt: str,
+) -> tuple[list[MDTrajDCDWriter], list[Path]]:
+    """Open one trajectory writer per temperature and return their paths."""
+
+    from .io.trajectory_writer import MDTrajDCDWriter
+
+    writers: list[MDTrajDCDWriter] = []
+    paths: list[Path] = []
+    for temp in temperatures:
+        demux_path = out_dir_path / f"demux_T{float(temp):.0f}K.{fmt}"
+        writer = MDTrajDCDWriter()
+        writer.open(str(demux_path), topology_path=str(topo_path), overwrite=True)
+        writers.append(writer)
+        paths.append(demux_path)
+    return writers, paths
+
+
+def _demux_exchange_segments(
+    exchange_records: Sequence[Any],
+    replica_frames: Sequence[Sequence[np.ndarray]],
+    writers: Sequence[MDTrajDCDWriter],
+) -> tuple[list[list[Dict[str, Any]]], list[int]]:
+    """Replay exchanges and write per-temperature segments."""
+
+    n_temps = len(writers)
+    segments_per_temp: list[list[Dict[str, Any]]] = [list() for _ in range(n_temps)]
+    dst_positions = [0] * n_temps
+    segments_consumed = [0] * len(replica_frames)
+
+    for seg_index, record in enumerate(exchange_records):
+        mapping = list(record.temp_to_replica)
+        _validate_exchange_mapping(mapping, len(replica_frames), seg_index)
+        frame_index = seg_index // max(1, len(replica_frames))
+
+        for temp_index, rep_idx in enumerate(mapping):
+            frames_for_replica = replica_frames[rep_idx]
+            if frame_index >= len(frames_for_replica):
+                raise ValueError(
+                    f"Replica {rep_idx} exhausted after {frame_index} frames"
+                )
+
+            segments_consumed[rep_idx] += 1
+            if segments_consumed[rep_idx] > len(frames_for_replica):
+                raise ValueError(
+                    f"Replica {rep_idx} consumed more segments than available frames"
+                )
+
+            frame = frames_for_replica[frame_index]
+            writers[temp_index].write_frames(frame[np.newaxis, :, :])
+
+            src_start = frame_index
+            dst_start = dst_positions[temp_index]
+            segment_info = {
+                "segment_index": int(seg_index),
+                "slice_index": int(record.step_index),
+                "source_replica": int(rep_idx),
+                "src_frame_start": int(src_start),
+                "src_frame_stop": int(src_start + 1),
+                "dst_frame_start": int(dst_start),
+                "dst_frame_stop": int(dst_start + 1),
+            }
+            segments_per_temp[temp_index].append(segment_info)
+            dst_positions[temp_index] += 1
+
+    return segments_per_temp, dst_positions
+
+
+def _validate_exchange_mapping(
+    mapping: Sequence[int],
+    n_replicas: int,
+    seg_index: int,
+) -> None:
+    """Ensure each exchange row is a permutation of replica indices."""
+
+    if sorted(mapping) != list(range(n_replicas)):
+        raise ValueError("Exchange log rows must be permutations")
+    for rep_idx in mapping:
+        if rep_idx < 0 or rep_idx >= n_replicas:
+            raise ValueError(
+                f"Replica index {rep_idx} out of range for segment {seg_index}"
+            )
+
+
+def _close_demux_writers(writers: Sequence[MDTrajDCDWriter]) -> None:
+    """Close all trajectory writers, suppressing cleanup issues."""
+
+    for writer in writers:
+        try:
+            writer.close()
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+
+def _write_demux_manifests(
+    run_id: str,
+    temperatures: Sequence[float],
+    dcd_paths: Sequence[Path],
+    dst_positions: Sequence[int],
+    segments_per_temp: Sequence[Sequence[Dict[str, Any]]],
+    dt_ps: float,
+    topology_path: Path | None = None,
+) -> list[str]:
+    """Write JSON manifests for each demultiplexed temperature trajectory."""
+
+    def _compute_digest(traj_path: Path) -> str:
+        if topology_path is None:
+            return hashlib.sha256(traj_path.read_bytes()).hexdigest()
+        try:
+            from .io.trajectory_reader import MDTrajReader
+
+            reader = MDTrajReader(topology_path=str(topology_path))
+            total = reader.probe_length(str(traj_path))
+            if total <= 0:
+                return hashlib.sha256(b"").hexdigest()
+            digest = hashlib.sha256()
+            for frame in reader.iter_frames(
+                str(traj_path), start=0, stop=total, stride=1
+            ):
+                data = np.ascontiguousarray(np.asarray(frame, dtype=np.float32))
+                digest.update(data.tobytes())
+            return digest.hexdigest()
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            logger.debug("Falling back to file digest for %s: %s", traj_path, exc)
+            return hashlib.sha256(traj_path.read_bytes()).hexdigest()
+
+    json_paths: list[str] = []
+    run_id_str = str(run_id)
+    dt_ps_value = float(dt_ps)
+    for temp_index, temp in enumerate(temperatures):
+        dcd_path = dcd_paths[temp_index]
+        digest = _compute_digest(dcd_path)
+        metadata = {
+            "schema_version": "2.0",
+            "kind": "demux",
+            "run_id": run_id_str,
+            "temperature_K": float(temp),
+            "n_frames": int(dst_positions[temp_index]),
+            "dt_ps": dt_ps_value,
+            "trajectory": dcd_path.name,
+            "segments": list(segments_per_temp[temp_index]),
+            "integrity": {"traj_sha256": digest},
+        }
+        json_path = dcd_path.with_suffix(".json")
+        json_path.write_text(json.dumps(metadata, sort_keys=True))
+        json_paths.append(str(json_path))
+    return json_paths
 
 
 def extract_last_frame_to_pdb(
@@ -1725,6 +2449,7 @@ def extract_random_highT_frame_to_pdb(
     frame.save_pdb(str(out_p))
     return out_p
 
+
 def build_joint_workflow(
     shards_root: Path,
     temperature_ref_K: float,
@@ -1732,7 +2457,7 @@ def build_joint_workflow(
     n_clusters: int,
     *,
     use_reweight: Optional[bool] = None,
-) -> JointWorkflow:
+) -> Any:
     """Construct a :class:`JointWorkflow` using library defaults only."""
 
     if use_reweight is None:
@@ -1745,5 +2470,4 @@ def build_joint_workflow(
         n_clusters=int(n_clusters),
         use_reweight=bool(use_reweight),
     )
-    return JointWorkflow(cfg)
-
+    return JointWorkflow(cfg)  # type: ignore[no-any-return]

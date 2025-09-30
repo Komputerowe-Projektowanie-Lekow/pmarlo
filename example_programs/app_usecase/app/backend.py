@@ -21,13 +21,10 @@ while keeping the logic reusable for non-UI automation in the future.
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 import shutil
-from typing import Any, Dict, Iterable, List, Optional, Sequence
-
-from pmarlo.api import build_from_shards, emit_shards_rg_rmsd, run_replica_exchange
-from pmarlo.data.shard import read_shard
-from pmarlo.transform.build import BuildResult, _sanitize_artifacts
+from typing import Any, Dict, Iterable, List, Optional, Sequence, TYPE_CHECKING, cast
 
 try:  # Package-relative when imported as module
     from .state import StateManager
@@ -55,6 +52,59 @@ __all__ = [
 ]
 
 
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from pmarlo.transform.build import BuildResult as _BuildResult
+
+
+@lru_cache(maxsize=1)
+def _pmarlo_handles() -> Dict[str, Any]:
+    """Import heavyweight PMARLO helpers on demand."""
+
+    from pmarlo.api import (
+        build_from_shards as _build_from_shards,
+        emit_shards_rg_rmsd_windowed as _emit_shards,
+        run_replica_exchange as _run_replica_exchange,
+    )
+    from pmarlo.data.shard import read_shard as _read_shard
+    from pmarlo.transform.build import (
+        BuildResult as _BuildResultRuntime,
+        _sanitize_artifacts as _sanitize,
+    )
+
+    return {
+        "build_from_shards": _build_from_shards,
+        "emit_shards_rg_rmsd_windowed": _emit_shards,
+        "run_replica_exchange": _run_replica_exchange,
+        "read_shard": _read_shard,
+        "BuildResult": _BuildResultRuntime,
+        "_sanitize_artifacts": _sanitize,
+    }
+
+
+def _build_result_cls() -> "_BuildResult":
+    return cast("_BuildResult", _pmarlo_handles()["BuildResult"])
+
+
+def _sanitize_artifacts(data: Any) -> Any:
+    return _pmarlo_handles()["_sanitize_artifacts"](data)
+
+
+def build_from_shards(*args: Any, **kwargs: Any) -> Any:
+    return _pmarlo_handles()["build_from_shards"](*args, **kwargs)
+
+
+def emit_shards_rg_rmsd_windowed(*args: Any, **kwargs: Any) -> Any:
+    return _pmarlo_handles()["emit_shards_rg_rmsd_windowed"](*args, **kwargs)
+
+
+def run_replica_exchange(*args: Any, **kwargs: Any) -> Any:
+    return _pmarlo_handles()["run_replica_exchange"](*args, **kwargs)
+
+
+def read_shard(*args: Any, **kwargs: Any) -> Any:
+    return _pmarlo_handles()["read_shard"](*args, **kwargs)
+
+
 def _timestamp() -> str:
     return datetime.now().strftime("%Y%m%d-%H%M%S")
 
@@ -74,7 +124,7 @@ def _slugify(label: Optional[str]) -> Optional[str]:
 def choose_sim_seed(mode: str, *, fixed: Optional[int] = None) -> Optional[int]:
     """Choose simulation seed based on mode."""
     import random
-    
+
     if mode == "none":
         return None
     elif mode == "fixed":
@@ -107,7 +157,7 @@ def run_short_sim(
         state_path=workspace / "output" / "state.json",
     )
     layout.ensure()
-    
+
     backend = WorkflowBackend(layout)
     config = SimulationConfig(
         pdb_path=pdb_path,
@@ -194,6 +244,8 @@ class ShardRequest:
     temperature: float = 300.0
     reference: Optional[Path] = None
     seed_start: int = 0
+    frames_per_shard: int = 5000
+    hop_frames: Optional[int] = None
 
 
 @dataclass
@@ -205,6 +257,8 @@ class ShardResult:
     n_shards: int
     temperature: float
     stride: int
+    frames_per_shard: int
+    hop_frames: Optional[int]
     created_at: str
 
 
@@ -217,6 +271,9 @@ class TrainingConfig:
     hidden: Sequence[int] = (128, 128)
     max_epochs: int = 200
     early_stopping: int = 25
+    tau_schedule: Sequence[int] = (2, 5, 10, 20)
+    val_tau: int = 20
+    epochs_per_tau: int = 15
 
     def deeptica_params(self) -> Dict[str, Any]:
         return {
@@ -225,6 +282,9 @@ class TrainingConfig:
             "hidden": tuple(int(h) for h in self.hidden),
             "max_epochs": int(self.max_epochs),
             "early_stopping": int(self.early_stopping),
+            "tau_schedule": tuple(int(t) for t in self.tau_schedule),
+            "val_tau": int(self.val_tau),
+            "epochs_per_tau": int(self.epochs_per_tau),
             "reweight_mode": "scaled_time",
         }
 
@@ -246,6 +306,13 @@ class BuildConfig:
     learn_cv: bool = False
     deeptica_params: Optional[Dict[str, Any]] = None
     notes: Dict[str, Any] = field(default_factory=dict)
+    apply_cv_whitening: bool = True
+    cluster_mode: str = "kmeans"
+    n_microstates: int = 150
+    reweight_mode: str = "MBAR"
+    fes_method: str = "kde"
+    fes_bandwidth: str | float = "scott"
+    fes_min_count_per_bin: int = 1
 
 
 @dataclass
@@ -329,7 +396,7 @@ class WorkflowBackend:
         }
         if provenance:
             note.update(provenance)
-        shard_paths = emit_shards_rg_rmsd(
+        shard_paths = emit_shards_rg_rmsd_windowed(
             pdb_file=simulation.pdb_path,
             traj_files=[str(p) for p in simulation.traj_files],
             out_dir=str(shard_dir),
@@ -337,6 +404,12 @@ class WorkflowBackend:
             stride=int(max(1, request.stride)),
             temperature=float(request.temperature),
             seed_start=int(max(0, request.seed_start)),
+            frames_per_shard=int(max(1, request.frames_per_shard)),
+            hop_frames=(
+                int(request.hop_frames)
+                if request.hop_frames is not None and request.hop_frames > 0
+                else None
+            ),
             provenance=note,
         )
         shard_paths = _coerce_path_list(shard_paths)
@@ -356,6 +429,12 @@ class WorkflowBackend:
             n_shards=len(shard_paths),
             temperature=float(request.temperature),
             stride=int(max(1, request.stride)),
+            frames_per_shard=int(max(1, request.frames_per_shard)),
+            hop_frames=(
+                int(request.hop_frames)
+                if request.hop_frames is not None and request.hop_frames > 0
+                else None
+            ),
             created_at=created,
         )
         self.state.append_shards(
@@ -367,6 +446,12 @@ class WorkflowBackend:
                 "stride": int(max(1, request.stride)),
                 "n_shards": len(shard_paths),
                 "n_frames": int(n_frames),
+                "frames_per_shard": int(max(1, request.frames_per_shard)),
+                "hop_frames": (
+                    int(request.hop_frames)
+                    if request.hop_frames is not None and request.hop_frames > 0
+                    else None
+                ),
                 "created_at": created,
             }
         )
@@ -381,9 +466,17 @@ class WorkflowBackend:
         return sorted(self.layout.shards_dir.rglob("*.json"))
 
     def shard_summaries(self) -> List[Dict[str, Any]]:
+        # Return only shard batches that have existing files; trim missing paths.
         info: List[Dict[str, Any]] = []
         for entry in self.state.shards:
-            info.append(dict(entry))
+            paths = [str(p) for p in entry.get("paths", []) if Path(p).exists()]
+            if not paths:
+                # Skip batches that no longer have files on disk
+                continue
+            e = dict(entry)
+            e["paths"] = paths
+            e["n_shards"] = len(paths)
+            info.append(e)
         return info
 
     # ------------------------------------------------------------------
@@ -431,6 +524,12 @@ class WorkflowBackend:
                 "bins": dict(config.bins),
                 "seed": int(config.seed),
                 "temperature": float(config.temperature),
+                "hidden": [int(h) for h in config.hidden],
+                "max_epochs": int(config.max_epochs),
+                "early_stopping": int(config.early_stopping),
+                "tau_schedule": [int(t) for t in config.tau_schedule],
+                "val_tau": int(config.val_tau),
+                "epochs_per_tau": int(config.epochs_per_tau),
                 "created_at": stamp,
                 "metrics": _sanitize_artifacts(br.artifacts.get("mlcv_deeptica", {})),
             }
@@ -450,6 +549,18 @@ class WorkflowBackend:
         analysis_notes = dict(config.notes or {})
         if config.learn_cv and "model_dir" not in analysis_notes:
             analysis_notes["model_dir"] = str(self.layout.models_dir)
+        analysis_notes["apply_cv_whitening_requested"] = bool(
+            config.apply_cv_whitening
+        )
+        analysis_notes["apply_cv_whitening_enforced"] = True
+        analysis_notes["analysis_overrides"] = {
+            "cluster_mode": str(config.cluster_mode),
+            "n_microstates": int(config.n_microstates),
+            "reweight_mode": str(config.reweight_mode),
+            "fes_method": str(config.fes_method),
+            "fes_bandwidth": config.fes_bandwidth,
+            "fes_min_count_per_bin": int(config.fes_min_count_per_bin),
+        }
 
         br, ds_hash = build_from_shards(
             shard_jsons=shards,
@@ -462,6 +573,24 @@ class WorkflowBackend:
             deeptica_params=config.deeptica_params,
             notes=analysis_notes,
         )
+        try:
+            flags = dict(br.flags or {})
+        except Exception:
+            flags = {}
+        overrides = {
+            "cluster_mode": str(config.cluster_mode),
+            "n_microstates": int(config.n_microstates),
+            "reweight_mode": str(config.reweight_mode),
+            "fes_method": str(config.fes_method),
+            "fes_bandwidth": config.fes_bandwidth,
+            "fes_min_count_per_bin": int(config.fes_min_count_per_bin),
+            "apply_whitening": bool(config.apply_cv_whitening),
+        }
+        flags.setdefault("analysis_overrides", overrides)
+        flags.setdefault("analysis_reweight_mode", str(config.reweight_mode))
+        flags.setdefault("analysis_apply_whitening", bool(config.apply_cv_whitening))
+        br.flags = flags  # type: ignore[assignment]
+
         artifact = BuildArtifact(
             bundle_path=bundle_path.resolve(),
             dataset_hash=ds_hash,
@@ -477,9 +606,17 @@ class WorkflowBackend:
                 "seed": int(config.seed),
                 "temperature": float(config.temperature),
                 "learn_cv": bool(config.learn_cv),
+                "deeptica_params": _sanitize_artifacts(config.deeptica_params) if config.deeptica_params else None,
                 "created_at": stamp,
                 "flags": _sanitize_artifacts(br.flags),
                 "mlcv": _sanitize_artifacts(br.artifacts.get("mlcv_deeptica", {})),
+                "apply_cv_whitening": bool(config.apply_cv_whitening),
+                "cluster_mode": str(config.cluster_mode),
+                "n_microstates": int(config.n_microstates),
+                "reweight_mode": str(config.reweight_mode),
+                "fes_method": str(config.fes_method),
+                "fes_bandwidth": config.fes_bandwidth,
+                "fes_min_count_per_bin": int(config.fes_min_count_per_bin),
             }
         )
         return artifact
@@ -501,7 +638,41 @@ class WorkflowBackend:
         return [dict(entry) for entry in self.state.builds]
 
     def sidebar_summary(self) -> Dict[str, int]:
-        return self.state.summary()
+        # Reconcile stale shard entries first
+        self._reconcile_shard_state()
+
+        # Count shard files on disk for accuracy
+        try:
+            shard_files = len(self.discover_shards())
+        except Exception:
+            shard_files = len(self.state.shards)
+
+        return {
+            "runs": len(self.state.runs),
+            "shards": int(shard_files),
+            "models": len(self.state.models),
+            "builds": len(self.state.builds),
+        }
+
+    def _reconcile_shard_state(self) -> None:
+        """Remove shard batches from state if all referenced files are missing."""
+        try:
+            to_delete: List[int] = []
+            for i, entry in enumerate(list(self.state.shards)):
+                paths = [Path(p) for p in entry.get("paths", [])]
+                existing = [p for p in paths if p.exists()]
+                if len(existing) == 0:
+                    to_delete.append(i)
+            for i in reversed(to_delete):
+                # Best-effort removal (also attempts to clean empty dirs)
+                if not self.delete_shard_batch(i):
+                    try:
+                        self.state.remove_shards(i)
+                    except Exception:
+                        pass
+        except Exception:
+            # Non-fatal; leave state as-is
+            pass
 
     # ------------------------------------------------------------------
     # Rehydrate existing assets
@@ -552,6 +723,183 @@ class WorkflowBackend:
             created_at=created_at,
         )
 
+    def load_model(self, index: int) -> Optional[TrainingResult]:
+        if index < 0 or index >= len(self.state.models):
+            return None
+        entry = dict(self.state.models[index])
+        return self._load_model_from_entry(entry)
+
+    def load_analysis_bundle(self, index: int) -> Optional[BuildArtifact]:
+        if index < 0 or index >= len(self.state.builds):
+            return None
+        entry = dict(self.state.builds[index])
+        return self._load_analysis_from_entry(entry)
+
+    def build_config_from_entry(self, entry: Dict[str, Any]) -> BuildConfig:
+        bins_raw = entry.get("bins")
+        bins = dict(bins_raw) if isinstance(bins_raw, dict) else {"Rg": 64, "RMSD_ref": 64}
+        deeptica_params = self._coerce_deeptica_params(entry.get("deeptica_params"))
+        notes = {}
+        entry_notes = entry.get("notes")
+        if isinstance(entry_notes, dict):
+            notes.update(entry_notes)
+        apply_whitening = bool(entry.get("apply_cv_whitening", True))
+        cluster_mode = str(entry.get("cluster_mode", "kmeans"))
+        n_microstates = int(entry.get("n_microstates", 150))
+        reweight_mode = str(entry.get("reweight_mode", "MBAR"))
+        fes_method = str(entry.get("fes_method", "kde"))
+        bw_raw = entry.get("fes_bandwidth", "scott")
+        try:
+            fes_bandwidth = float(bw_raw)
+        except (TypeError, ValueError):
+            fes_bandwidth = bw_raw if bw_raw is not None else "scott"
+        min_count = int(entry.get("fes_min_count_per_bin", 1))
+        return BuildConfig(
+            lag=int(entry.get("lag", 10)),
+            bins=bins,
+            seed=int(entry.get("seed", 2025)),
+            temperature=float(entry.get("temperature", 300.0)),
+            learn_cv=bool(entry.get("learn_cv", False)),
+            deeptica_params=deeptica_params,
+            notes=notes,
+            apply_cv_whitening=apply_whitening,
+            cluster_mode=cluster_mode,
+            n_microstates=n_microstates,
+            reweight_mode=reweight_mode,
+            fes_method=fes_method,
+            fes_bandwidth=fes_bandwidth,
+            fes_min_count_per_bin=min_count,
+        )
+
+    def training_config_from_entry(self, entry: Dict[str, Any]) -> TrainingConfig:
+        bins_raw = entry.get("bins")
+        bins = dict(bins_raw) if isinstance(bins_raw, dict) else {"Rg": 64, "RMSD_ref": 64}
+        hidden = self._coerce_hidden_layers(entry.get("hidden"))
+        tau_raw = entry.get("tau_schedule")
+        tau_schedule = self._coerce_tau_schedule(tau_raw)
+        if not tau_schedule:
+            tau_schedule = (int(entry.get("lag", 5)),)
+        val_tau_entry = entry.get("val_tau")
+        val_tau = int(val_tau_entry) if val_tau_entry is not None else (tau_schedule[-1] if tau_schedule else int(entry.get("lag", 5)))
+        epochs_per_tau = int(entry.get("epochs_per_tau", 15))
+        return TrainingConfig(
+            lag=int(entry.get("lag", 5)),
+            bins=bins,
+            seed=int(entry.get("seed", 1337)),
+            temperature=float(entry.get("temperature", 300.0)),
+            hidden=hidden,
+            max_epochs=int(entry.get("max_epochs", 200)),
+            early_stopping=int(entry.get("early_stopping", 25)),
+            tau_schedule=tau_schedule,
+            val_tau=val_tau,
+            epochs_per_tau=epochs_per_tau,
+        )
+
+    def _coerce_deeptica_params(self, raw: Any) -> Optional[Dict[str, Any]]:
+        if raw is None:
+            return None
+        if isinstance(raw, dict):
+            return {str(k): v for k, v in raw.items()}
+        return None
+
+    @staticmethod
+    def _coerce_hidden_layers(raw: Any) -> tuple[int, ...]:
+        layers: List[int] = []
+        if isinstance(raw, (list, tuple)):
+            for item in raw:
+                try:
+                    layers.append(int(item))
+                except (TypeError, ValueError):
+                    continue
+        elif isinstance(raw, str):
+            for token in raw.split(","):
+                token = token.strip()
+                if not token:
+                    continue
+                try:
+                    layers.append(int(token))
+                except ValueError:
+                    continue
+        if layers:
+            return tuple(layers)
+        return (128, 128)
+
+    @staticmethod
+    def _coerce_tau_schedule(raw: Any) -> tuple[int, ...]:
+        values: List[int] = []
+        if isinstance(raw, (list, tuple)):
+            for item in raw:
+                try:
+                    v = int(item)
+                    if v > 0:
+                        values.append(v)
+                except (TypeError, ValueError):
+                    continue
+        elif isinstance(raw, str):
+            tokens = raw.replace(";", ",").split(",")
+            for token in tokens:
+                token = token.strip()
+                if not token:
+                    continue
+                try:
+                    v = int(token)
+                    if v > 0:
+                        values.append(v)
+                except ValueError:
+                    continue
+        if not values:
+            return ()
+        return tuple(sorted(set(values)))
+
+    @staticmethod
+    def _load_build_result_from_path(path: Path) -> Optional["_BuildResult"]:
+        try:
+            bundle_path = Path(path)
+        except TypeError:
+            return None
+        if not bundle_path.exists():
+            return None
+        try:
+            text = bundle_path.read_text(encoding="utf-8")
+        except Exception:
+            return None
+        try:
+            return _build_result_cls().from_json(text)
+        except Exception:
+            return None
+
+    def _load_model_from_entry(self, entry: Dict[str, Any]) -> Optional[TrainingResult]:
+        bundle_path = Path(entry.get("bundle", ""))
+        br = self._load_build_result_from_path(bundle_path)
+        if br is None:
+            return None
+        dataset_hash = str(entry.get("dataset_hash", "")) or (
+            str(getattr(br.metadata, "dataset_hash", "")) if br.metadata else ""
+        )
+        created_at = str(entry.get("created_at", "")) or _timestamp()
+        return TrainingResult(
+            bundle_path=bundle_path.resolve(),
+            dataset_hash=dataset_hash,
+            build_result=br,
+            created_at=created_at,
+        )
+
+    def _load_analysis_from_entry(self, entry: Dict[str, Any]) -> Optional[BuildArtifact]:
+        bundle_path = Path(entry.get("bundle", ""))
+        br = self._load_build_result_from_path(bundle_path)
+        if br is None:
+            return None
+        dataset_hash = str(entry.get("dataset_hash", "")) or (
+            str(getattr(br.metadata, "dataset_hash", "")) if br.metadata else ""
+        )
+        created_at = str(entry.get("created_at", "")) or _timestamp()
+        return BuildArtifact(
+            bundle_path=bundle_path.resolve(),
+            dataset_hash=dataset_hash,
+            build_result=br,
+            created_at=created_at,
+        )
+
     # ------------------------------------------------------------------
     # Asset deletion methods
     # ------------------------------------------------------------------
@@ -560,13 +908,13 @@ class WorkflowBackend:
         entry = self.state.remove_run(index)
         if entry is None:
             return False
-        
+
         try:
             # Delete simulation directory
             run_dir = Path(entry.get("run_dir", ""))
             if run_dir.exists() and run_dir.is_dir():
                 shutil.rmtree(run_dir)
-            
+
             # Also remove any associated shards
             run_id = entry.get("run_id", "")
             if run_id:
@@ -575,11 +923,11 @@ class WorkflowBackend:
                 for i, shard_entry in enumerate(self.state.shards):
                     if shard_entry.get("run_id") == run_id:
                         shards_to_remove.append(i)
-                
+
                 # Remove in reverse order to maintain indices
                 for i in reversed(shards_to_remove):
                     self.delete_shard_batch(i)
-            
+
             return True
         except Exception:
             return False
@@ -589,7 +937,7 @@ class WorkflowBackend:
         entry = self.state.remove_shards(index)
         if entry is None:
             return False
-        
+
         try:
             # Delete individual shard files
             paths = entry.get("paths", [])
@@ -601,7 +949,7 @@ class WorkflowBackend:
                     npz_path = path.with_suffix('.npz')
                     if npz_path.exists():
                         npz_path.unlink()
-            
+
             # Delete shard directory if empty
             directory = Path(entry.get("directory", ""))
             if directory.exists() and directory.is_dir():
@@ -609,7 +957,7 @@ class WorkflowBackend:
                     directory.rmdir()  # Only removes if empty
                 except OSError:
                     pass  # Directory not empty, that's OK
-            
+
             return True
         except Exception:
             return False
@@ -619,19 +967,19 @@ class WorkflowBackend:
         entry = self.state.remove_model(index)
         if entry is None:
             return False
-        
+
         try:
             # Delete model bundle file and associated files
             bundle_path = Path(entry.get("bundle", ""))
             if bundle_path.exists():
                 base_name = bundle_path.stem
                 model_dir = bundle_path.parent
-                
+
                 # Find and delete related files (history, json, pt files)
                 for file_path in model_dir.glob(f"{base_name}.*"):
                     if file_path.is_file():
                         file_path.unlink()
-            
+
             return True
         except Exception:
             return False
@@ -641,13 +989,13 @@ class WorkflowBackend:
         entry = self.state.remove_build(index)
         if entry is None:
             return False
-        
+
         try:
             # Delete bundle file
             bundle_path = Path(entry.get("bundle", ""))
             if bundle_path.exists():
                 bundle_path.unlink()
-            
+
             return True
         except Exception:
             return False

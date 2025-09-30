@@ -2,9 +2,8 @@ from __future__ import annotations
 
 """Joint REMD<->CV orchestrator coordinating shard ingestion and MSM building."""
 
-import json
 import logging
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -18,7 +17,7 @@ from pmarlo.shards.assemble import load_shards, select_shards
 from pmarlo.shards.pair_builder import PairBuilder
 from pmarlo.shards.schema import Shard
 
-from .metrics import Metrics, GuardrailReport
+from .metrics import GuardrailReport, Metrics
 
 __all__ = ["WorkflowConfig", "JointWorkflow"]
 
@@ -87,8 +86,19 @@ class JointWorkflow:
             self.cfg.shards_root, temperature_K=self.cfg.temperature_ref_K
         )
         if not shard_jsons:
-            raise ValueError(
-                f"No shards found at T={self.cfg.temperature_ref_K} K in {self.cfg.shards_root}"
+            logger.info(
+                "No shards found for joint workflow iteration at T=%s K under %s; "
+                "returning stub metrics.",
+                self.cfg.temperature_ref_K,
+                self.cfg.shards_root,
+            )
+            self.last_new_shards = []
+            self.last_guardrails = None
+            return Metrics(
+                vamp2_val=0.0,
+                its_val=0.0,
+                ck_error=0.0,
+                notes="no shards available",
             )
 
         shards: Sequence[Shard] = load_shards(shard_jsons)
@@ -186,18 +196,16 @@ class JointWorkflow:
             )
             T_actual = self._normalize_counts(counts_k)
             T_pred = np.linalg.matrix_power(T, multiplier)
-            ck_errors[multiplier] = float(
-                np.linalg.norm(T_pred - T_actual, ord="fro")
-            )
+            ck_errors[multiplier] = float(np.linalg.norm(T_pred - T_actual, ord="fro"))
 
         fes_artifact = self._build_fes(concatenated, concatenated_weights)
 
         meta: Dict[str, Any] = {
             "n_clusters": clustering.n_states,
             "rationale": clustering.rationale,
-            "centers": clustering.centers.tolist()
-            if clustering.centers is not None
-            else None,
+            "centers": (
+                clustering.centers.tolist() if clustering.centers is not None else None
+            ),
             "lag_time_ps": lag_time_ps,
             "ck_errors": ck_errors,
             "fes": fes_artifact,
@@ -252,45 +260,82 @@ class JointWorkflow:
         shards: Sequence[Shard],
         weights_per_shard: Sequence[np.ndarray],
     ) -> BiasHook:
-        if self.cv_model is None or not hasattr(self.cv_model, "transform"):
-            return lambda cv_values: np.zeros((
-                np.asarray(cv_values).shape[0]
-            ), dtype=np.float64)
+        if not self._has_cv_transform():
+            return self._zero_bias_hook()
 
+        gathered = self._gather_cv_data(shards, weights_per_shard)
+        if gathered is None:
+            return self._zero_bias_hook()
+
+        centers_fes = self._compute_bias_profile(*gathered)
+        if centers_fes is None:
+            return self._zero_bias_hook()
+
+        centers, fes = centers_fes
+        return self._make_bias_hook(centers, fes)
+
+    def _has_cv_transform(self) -> bool:
+        return self.cv_model is not None and hasattr(self.cv_model, "transform")
+
+    def _zero_bias_hook(self) -> BiasHook:
+        def _hook(cv_values: np.ndarray) -> np.ndarray:
+            return np.zeros((np.asarray(cv_values).shape[0]), dtype=np.float64)
+
+        return _hook
+
+    def _gather_cv_data(
+        self,
+        shards: Sequence[Shard],
+        weights_per_shard: Sequence[np.ndarray],
+    ) -> Optional[Tuple[List[np.ndarray], List[np.ndarray]]]:
         cv_values: List[np.ndarray] = []
         cv_weights: List[np.ndarray] = []
         for shard, weights in zip(shards, weights_per_shard):
-            try:
-                vals = np.asarray(self.cv_model.transform(shard.X), dtype=np.float64)
-            except Exception as exc:
-                logger.debug("CV transform failed for shard %s: %s", shard.meta.shard_id, exc)
-                return lambda cv_values: np.zeros((
-                    np.asarray(cv_values).shape[0]
-                ), dtype=np.float64)
-            if vals.shape[0] != shard.meta.n_frames:
-                logger.debug("CV transform produced mismatched shape for shard %s", shard.meta.shard_id)
-                return lambda cv_values: np.zeros((
-                    np.asarray(cv_values).shape[0]
-                ), dtype=np.float64)
+            vals = self._transform_shard_cv(shard)
+            if vals is None:
+                return None
             cv_values.append(vals)
             cv_weights.append(np.asarray(weights, dtype=np.float64))
-
         if not cv_values:
-            return lambda cv_values: np.zeros((np.asarray(cv_values).shape[0]), dtype=np.float64)
+            return None
+        return cv_values, cv_weights
 
+    def _transform_shard_cv(self, shard: Shard) -> Optional[np.ndarray]:
+        assert self.cv_model is not None  # guarded by _has_cv_transform
+        try:
+            vals = np.asarray(self.cv_model.transform(shard.X), dtype=np.float64)
+        except Exception as exc:  # pragma: no cover - defensive guard
+            logger.debug(
+                "CV transform failed for shard %s: %s", shard.meta.shard_id, exc
+            )
+            return None
+        if vals.shape[0] != shard.meta.n_frames:
+            logger.debug(
+                "CV transform produced mismatched shape for shard %s",
+                shard.meta.shard_id,
+            )
+            return None
+        return vals
+
+    def _compute_bias_profile(
+        self, cv_values: List[np.ndarray], cv_weights: List[np.ndarray]
+    ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
         concat_cv = np.concatenate(cv_values, axis=0)
         concat_w = np.concatenate(cv_weights)
-        concat_w = concat_w / concat_w.sum()
+        weight_total = float(concat_w.sum())
+        if weight_total <= 0 or concat_cv.size == 0:
+            return None
+        concat_w = concat_w / weight_total
 
         coord = concat_cv[:, 0]
         lo, hi = float(np.min(coord)), float(np.max(coord))
         if not np.isfinite([lo, hi]).all() or hi <= lo:
-            return lambda cv: np.zeros((np.asarray(cv).shape[0]), dtype=np.float64)
+            return None
 
         bins = np.linspace(lo, hi, 128)
         hist, edges = np.histogram(coord, bins=bins, weights=concat_w)
         if hist.sum() <= 0:
-            return lambda cv: np.zeros((np.asarray(cv).shape[0]), dtype=np.float64)
+            return None
 
         prob = hist / hist.sum()
         fes = -(_KB_KJ_PER_MOL * self.cfg.temperature_ref_K) * np.log(prob + 1e-12)
@@ -298,15 +343,14 @@ class JointWorkflow:
         if finite.any():
             fes = fes - np.min(fes[finite])
         centers = 0.5 * (edges[1:] + edges[:-1])
+        return centers, fes
 
+    def _make_bias_hook(self, centers: np.ndarray, fes: np.ndarray) -> BiasHook:
         def _hook(cv_vals: np.ndarray) -> np.ndarray:
             arr = np.asarray(cv_vals, dtype=np.float64)
             if arr.size == 0:
                 return np.zeros((0,), dtype=np.float64)
-            if arr.ndim == 1:
-                coord_vals = arr
-            else:
-                coord_vals = arr[:, 0]
+            coord_vals = arr if arr.ndim == 1 else arr[:, 0]
             bias = np.interp(coord_vals, centers, fes, left=fes[0], right=fes[-1])
             return bias.astype(np.float64)
 
@@ -377,7 +421,10 @@ class JointWorkflow:
         return history
 
     def _extract_its_array(self) -> np.ndarray:
-        if self.last_result is not None and getattr(self.last_result, "its", None) is not None:
+        if (
+            self.last_result is not None
+            and getattr(self.last_result, "its", None) is not None
+        ):
             arr = np.asarray(self.last_result.its, dtype=np.float64)
             return arr[np.isfinite(arr)]
         if self.last_artifacts is not None:

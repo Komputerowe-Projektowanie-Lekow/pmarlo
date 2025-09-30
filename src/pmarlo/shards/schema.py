@@ -46,7 +46,7 @@ class ShardMeta:
     provenance: Dict[str, Any]
 
     def __post_init__(self) -> None:  # pragma: no cover - dataclass hook
-        _require(self.schema_version, "schema_version is required")
+        _require(bool(self.schema_version), "schema_version is required")
         _require(self.temperature_K > 0.0, "temperature_K must be positive")
         _require(self.beta > 0.0, "beta must be positive")
         _require(self.n_frames > 0, "n_frames must be positive")

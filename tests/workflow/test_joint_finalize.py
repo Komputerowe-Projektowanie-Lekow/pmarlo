@@ -4,9 +4,9 @@ from pathlib import Path
 
 import numpy as np
 
-from pmarlo.workflow.joint import JointWorkflow, WorkflowConfig
 from pmarlo.shards.format import write_shard
 from pmarlo.shards.schema import FeatureSpec, Shard, ShardMeta
+from pmarlo.workflow.joint import JointWorkflow, WorkflowConfig
 
 
 def _make_demo_shard(shard_id: str, temperature: float, n_frames: int) -> Shard:

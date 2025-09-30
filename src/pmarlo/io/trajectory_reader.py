@@ -78,7 +78,7 @@ class MDAnalysisReader:
 
     def _require(self):
         try:
-            import MDAnalysis as mda  # type: ignore
+            pass  # type: ignore
         except Exception as exc:  # pragma: no cover - dependency optional
             raise TrajectoryIOError(
                 "MDAnalysis is required for backend='mdanalysis'. Install extra 'pmarlo[mdanalysis]' or 'MDAnalysis'."

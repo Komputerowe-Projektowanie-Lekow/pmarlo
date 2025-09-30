@@ -10,7 +10,6 @@ from typing import Any, ClassVar, Dict, List, Optional, Type, TypeVar
 import numpy as np
 
 # Import the unified FESResult from free_energy module
-from .free_energy import FESResult
 
 logger = logging.getLogger("pmarlo")
 

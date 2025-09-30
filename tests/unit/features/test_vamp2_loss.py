@@ -18,7 +18,6 @@ if "mlcolvar" not in sys.modules:
     sys.modules["mlcolvar.utils"] = _utils
     sys.modules["mlcolvar.utils.timelagged"] = _timelagged
 
-import math
 from typing import Tuple
 
 import numpy as np

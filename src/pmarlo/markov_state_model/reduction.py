@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 from typing import List, Optional, cast
 
 import numpy as np
@@ -102,9 +103,7 @@ def tica_reduce(
     try:
         import pyemma
 
-        tica = pyemma.coordinates.tica(
-            [X_prep], lag=lag, dim=n_components
-        )
+        tica = pyemma.coordinates.tica([X_prep], lag=lag, dim=n_components)
         return tica.get_output()[0]
     except ImportError:
         pass
@@ -291,23 +290,15 @@ def get_available_methods() -> List[str]:
     methods = ["pca"]  # Always available (numpy fallback)
 
     # Check for deeptime
-    try:
-        import deeptime
-
+    if importlib.util.find_spec("deeptime") is not None:
         methods.extend(["tica", "vamp"])
-    except ImportError:
-        pass
 
     # Check for pyemma (fallback)
-    try:
-        import pyemma
-
+    if importlib.util.find_spec("pyemma") is not None:
         if "tica" not in methods:
             methods.append("tica")
         if "vamp" not in methods:
             methods.append("vamp")
-    except ImportError:
-        pass
 
     # Manual implementations always available as fallback
     if "tica" not in methods:

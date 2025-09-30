@@ -35,8 +35,6 @@ from typing import Any, Dict, Iterable, Tuple
 
 import numpy as np
 
-from pmarlo.io.shard_id import ShardId
-
 
 @dataclass(frozen=True)
 class ShardMeta:
@@ -105,28 +103,11 @@ def generate_canonical_shard_id_from_meta(meta: ShardMeta, json_path: Path) -> s
 
         if source_path_str:
             source_path = Path(source_path_str)
-            # Try to parse canonical ID from source path
             try:
-                shard_id = ShardId(
-                    run_id=source.get("run_id") or source.get("run_uid") or "",
-                    source_kind=(
-                        "demux" if "demux" in str(source_path).lower() else "replica"
-                    ),
-                    temperature_K=(
-                        int(meta.temperature) if meta.temperature != 300.0 else None
-                    ),
-                    replica_index=None,  # Will be determined by parsing
-                    local_index=0,  # Placeholder, will be computed
-                    source_path=source_path,
-                    dataset_hash="",  # Not available from meta
-                )
-
-                # Use the parsing function to get proper local_index
                 from pmarlo.io.shard_id import parse_shard_id
 
-                parsed_id = parse_shard_id(source_path)
-                return parsed_id.canonical()
-
+                canonical_id = parse_shard_id(source_path).canonical()
+                return canonical_id
             except Exception:
                 pass
 

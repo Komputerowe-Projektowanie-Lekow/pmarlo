@@ -10,7 +10,7 @@ filenames as opaque.
 
 import json
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, List, Tuple
 
 from pmarlo.io.shard_id import parse_shard_id
 
@@ -181,7 +181,6 @@ def discover_shards(root: Path | str) -> List[BaseShard]:
     shards: List[BaseShard] = []
     for p in root.rglob("*.json"):
         # heuristic: shard JSONs typically have sibling NPZ; prefer those
-        npz = p.with_suffix("")
         if not (p.with_suffix(".npz").exists() or p.name.startswith("shard_")):
             # skip unrelated JSON files
             continue
