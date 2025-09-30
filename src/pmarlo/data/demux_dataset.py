@@ -100,86 +100,15 @@ def build_demux_dataset(
         If mixing temperatures is detected or no shards match the target.
     """
     tsel = float(target_temperature_K)
-    # 1) filter to DEMUX and exact temperature
-    chosen: List[Any] = []
-    temps_seen: List[float] = []
-    for s in shards:
-        if not _is_demux(s):
-            continue
-        t = _temperature_of(s)
-        if t is None:
-            raise TemperatureConsistencyError("DEMUX shard missing temperature_K")
-        temps_seen.append(float(t))
-        if abs(float(t) - tsel) <= 1e-6:
-            chosen.append(s)
-
-    if not chosen:
-        raise TemperatureConsistencyError(
-            f"No DEMUX shards at target temperature {tsel} K"
-        )
-
-    # 2) ensure dt_ps identical (or all None)
-    dt_vals = [_dt_ps_of(s) for s in chosen]
-    dt_set = {round(float(x), 12) for x in dt_vals if x is not None}
-    dt_ps = None
-    if len(dt_set) > 1:
-        raise TemperatureConsistencyError(
-            f"Mismatched dt_ps across shards: {sorted(dt_set)}"
-        )
-    if len(dt_set) == 1:
-        dt_ps = float(next(iter(dt_set)))
-
-    # 3) build X per shard and construct within-shard pairs/weights
-    X_list: List[np.ndarray] = []
-    idx_t_parts: List[np.ndarray] = []
-    idx_tau_parts: List[np.ndarray] = []
-    w_parts: List[np.ndarray] = []
-    offset = 0
-
-    for s in chosen:
-        X = np.asarray(feature_fn(s), dtype=np.float64)
-        if X.ndim != 2 or X.shape[0] <= 1:
-            raise ValueError("feature_fn must return a 2D array with >=2 frames")
-        n = int(X.shape[0])
-        X_list.append(X)
-        # per-frame weights
-        w_frame = None
-        if bias_to_weights_fn is not None:
-            w_frame = np.asarray(bias_to_weights_fn(s, tsel), dtype=np.float64).reshape(
-                -1
-            )
-            if w_frame.shape[0] != n:
-                raise ValueError("bias_to_weights_fn length must match frames in X")
-            if np.any(w_frame <= 0) or not np.all(np.isfinite(w_frame)):
-                raise ValueError("weights must be positive and finite")
-            logw = np.log(w_frame)
-        else:
-            logw = None
-        i, j = scaled_time_pairs(n, logw, tau_scaled=float(lag_steps))
-        if i.size:
-            idx_t_parts.append(offset + i)
-            idx_tau_parts.append(offset + j)
-            # pair weights: geometric mean of per-frame weights; default ones
-            if w_frame is None:
-                w_parts.append(np.ones_like(i, dtype=np.float64))
-            else:
-                w_parts.append(
-                    np.sqrt(w_frame[i] * w_frame[j]).astype(np.float64, copy=False)
-                )
-        offset += n
-
-    if idx_t_parts:
-        idx_t = np.concatenate(idx_t_parts).astype(np.int64, copy=False)
-        idx_tau = np.concatenate(idx_tau_parts).astype(np.int64, copy=False)
-        pairs = np.column_stack([idx_t, idx_tau]).astype(np.int64, copy=False)
-        weights = (
-            np.concatenate(w_parts).astype(np.float64, copy=False)
-            if w_parts
-            else np.ones((idx_t.shape[0],), dtype=np.float64)
-        )
-    else:
-        pairs = np.empty((0, 2), dtype=np.int64)
-        weights = np.empty((0,), dtype=np.float64)
+    chosen = _select_target_shards(shards, tsel)
+    dt_ps = _extract_dt_ps(chosen)
+    X_list, pairs, weights = _assemble_pairs_and_weights(
+        chosen,
+        tsel,
+        lag_steps,
+        feature_fn,
+        bias_to_weights_fn,
+    )
 
     return DemuxDataset(
         temperature_K=tsel,
@@ -188,6 +117,131 @@ def build_demux_dataset(
         pairs=pairs,
         weights=weights,
         dt_ps=dt_ps,
+    )
+
+
+def _select_target_shards(shards: Sequence[Any], target_K: float) -> list[Any]:
+    """Return DEMUX shards at the target temperature, enforcing presence."""
+
+    chosen: list[Any] = []
+    for shard in shards:
+        if not _is_demux(shard):
+            continue
+        temperature = _temperature_of(shard)
+        if temperature is None:
+            raise TemperatureConsistencyError("DEMUX shard missing temperature_K")
+        if abs(float(temperature) - target_K) <= 1e-6:
+            chosen.append(shard)
+
+    if not chosen:
+        raise TemperatureConsistencyError(
+            f"No DEMUX shards at target temperature {target_K} K"
+        )
+    return chosen
+
+
+def _extract_dt_ps(shards: Sequence[Any]) -> float | None:
+    """Ensure the per-shard dt_ps values agree."""
+
+    dt_vals = [_dt_ps_of(shard) for shard in shards]
+    dt_set = {round(float(val), 12) for val in dt_vals if val is not None}
+    if len(dt_set) > 1:
+        raise TemperatureConsistencyError(
+            f"Mismatched dt_ps across shards: {sorted(dt_set)}"
+        )
+    if dt_set:
+        return float(next(iter(dt_set)))
+    return None
+
+
+def _assemble_pairs_and_weights(
+    shards: Sequence[Any],
+    temperature_K: float,
+    lag_steps: int,
+    feature_fn: Callable[[Any], np.ndarray],
+    bias_to_weights_fn: Optional[Callable[[Any, float], np.ndarray]],
+) -> tuple[list[np.ndarray], np.ndarray, np.ndarray]:
+    """Compute features, index pairs, and pair weights for each shard."""
+
+    X_list: list[np.ndarray] = []
+    idx_t_parts: list[np.ndarray] = []
+    idx_tau_parts: list[np.ndarray] = []
+    weight_parts: list[np.ndarray] = []
+    offset = 0
+
+    for shard in shards:
+        X = np.asarray(feature_fn(shard), dtype=np.float64)
+        if X.ndim != 2 or X.shape[0] <= 1:
+            raise ValueError("feature_fn must return a 2D array with >=2 frames")
+        X_list.append(X)
+
+        frame_weights, log_weights = _compute_frame_weights(
+            shard,
+            temperature_K,
+            X.shape[0],
+            bias_to_weights_fn,
+        )
+
+        idx_t, idx_tau = scaled_time_pairs(
+            int(X.shape[0]),
+            log_weights,
+            tau_scaled=float(lag_steps),
+        )
+        if idx_t.size:
+            idx_t_parts.append(offset + idx_t)
+            idx_tau_parts.append(offset + idx_tau)
+            weight_parts.append(_pair_weights(frame_weights, idx_t, idx_tau))
+        offset += int(X.shape[0])
+
+    if idx_t_parts:
+        idx_t_all = np.concatenate(idx_t_parts).astype(np.int64, copy=False)
+        idx_tau_all = np.concatenate(idx_tau_parts).astype(np.int64, copy=False)
+        pairs = np.column_stack([idx_t_all, idx_tau_all]).astype(np.int64, copy=False)
+        weights = (
+            np.concatenate(weight_parts).astype(np.float64, copy=False)
+            if weight_parts
+            else np.ones((idx_t_all.shape[0],), dtype=np.float64)
+        )
+    else:
+        pairs = np.empty((0, 2), dtype=np.int64)
+        weights = np.empty((0,), dtype=np.float64)
+
+    return X_list, pairs, weights
+
+
+def _compute_frame_weights(
+    shard: Any,
+    temperature_K: float,
+    n_frames: int,
+    bias_to_weights_fn: Optional[Callable[[Any, float], np.ndarray]],
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Return per-frame weights and their logarithms when biasing is requested."""
+
+    if bias_to_weights_fn is None:
+        return None, None
+
+    weights = np.asarray(
+        bias_to_weights_fn(shard, temperature_K),
+        dtype=np.float64,
+    ).reshape(-1)
+    if weights.shape[0] != n_frames:
+        raise ValueError("bias_to_weights_fn length must match frames in X")
+    if np.any(weights <= 0) or not np.all(np.isfinite(weights)):
+        raise ValueError("weights must be positive and finite")
+    return weights, np.log(weights)
+
+
+def _pair_weights(
+    frame_weights: np.ndarray | None,
+    idx_t: np.ndarray,
+    idx_tau: np.ndarray,
+) -> np.ndarray:
+    """Return geometric-mean pair weights, or ones if weights are absent."""
+
+    if frame_weights is None:
+        return np.ones_like(idx_t, dtype=np.float64)
+    return np.sqrt(frame_weights[idx_t] * frame_weights[idx_tau]).astype(
+        np.float64, copy=False
     )
 
 

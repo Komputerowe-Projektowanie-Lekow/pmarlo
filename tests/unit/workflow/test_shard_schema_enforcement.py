@@ -54,6 +54,30 @@ def test_demux_only_single_temperature_pass(tmp_path: Path):
     )
 
 
+def test_demux_filename_without_keyword_is_accepted(tmp_path: Path):
+    t300 = _make_file(tmp_path / "run-20250101-000000" / "segment_T300_part0.dcd")
+    out_dir = tmp_path / "shards"
+    jsons = emit_shards_from_trajectories(
+        traj_files=[t300],
+        out_dir=out_dir,
+        extract_cvs=_extractor_with_traj_ref(),
+        temperature=300.0,
+        periodic_by_cv={"a": False, "b": False},
+    )
+    plan = TransformPlan(steps=(TransformStep("SMOOTH_FES", {"sigma": 0.4}),))
+    opts = BuildOpts(seed=3, temperature=300.0, lag_candidates=[2, 4])
+    applied = AppliedOpts(bins={"a": 12, "b": 12}, lag=2, macrostates=4)
+
+    # Should not raise despite the trajectory filename lacking a demux hint
+    aggregate_and_build(
+        jsons,
+        opts=opts,
+        plan=plan,
+        applied=applied,
+        out_bundle=tmp_path / "bundle_demuxless.json",
+    )
+
+
 def test_mixed_kinds_are_rejected(tmp_path: Path):
     dmx = _make_file(tmp_path / "run-20250101-000000" / "demux_T300K.dcd")
     rep = _make_file(tmp_path / "run-20250101-000000" / "replica_00.dcd")

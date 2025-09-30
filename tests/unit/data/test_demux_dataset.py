@@ -8,7 +8,6 @@ import pytest
 from pmarlo.data.demux_dataset import build_demux_dataset, validate_demux_coverage
 from pmarlo.data.shard import read_shard, write_shard
 from pmarlo.data.shard_io import load_shard_meta
-from pmarlo.utils.errors import TemperatureConsistencyError
 
 
 def _mk_src(traj_path: Path, run_id: str | None = None) -> dict:

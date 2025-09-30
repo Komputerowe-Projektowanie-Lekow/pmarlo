@@ -12,13 +12,13 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import numpy as np
-
 from ..markov_state_model.enhanced_msm import EnhancedMSM as MarkovStateModel
-from ..markov_state_model.enhanced_msm import run_complete_msm_analysis
+from ..markov_state_model.enhanced_msm import (
+    EnhancedMSMProtocol,
+)
 from ..protein.protein import Protein
 from ..replica_exchange.config import RemdConfig
-from ..replica_exchange.replica_exchange import ReplicaExchange, run_remd_simulation
+from ..replica_exchange.replica_exchange import ReplicaExchange
 from ..replica_exchange.simulation import Simulation
 from ..utils.seed import set_global_seed
 from .plan import TransformPlan, TransformStep
@@ -92,7 +92,7 @@ class Pipeline:
         self.protein: Optional[Protein] = None
         self.replica_exchange: Optional[ReplicaExchange] = None
         self.simulation: Optional[Simulation] = None
-        self.markov_state_model: Optional[MarkovStateModel] = None
+        self.markov_state_model: Optional[EnhancedMSMProtocol] = None
 
         # Paths
         self.prepared_pdb: Optional[Path] = None
@@ -252,7 +252,7 @@ class Pipeline:
         logger.info(f"Simulation setup at {self.temperatures[0]}K")
         return self.simulation
 
-    def setup_msm_analysis(self) -> MarkovStateModel:
+    def setup_msm_analysis(self) -> EnhancedMSMProtocol:
         """
         Setup Markov state model analysis.
 

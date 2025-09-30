@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Samplers for balanced batch selection across temperatures."""
 
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -60,7 +60,9 @@ class BalancedTempSampler:
         self._frame_weights.clear()
         self._occupancy.clear()
 
-    def sample_batch(self, pairs_per_temperature: int) -> List[Tuple[Shard, np.ndarray]]:
+    def sample_batch(
+        self, pairs_per_temperature: int
+    ) -> List[Tuple[Shard, np.ndarray]]:
         if pairs_per_temperature <= 0:
             raise ValueError("pairs_per_temperature must be positive")
 
@@ -87,9 +89,7 @@ class BalancedTempSampler:
             if weights is None:
                 idx = self._rng.choice(pairs.shape[0], size=k, replace=False)
             else:
-                idx = self._rng.choice(
-                    pairs.shape[0], size=k, replace=False, p=weights
-                )
+                idx = self._rng.choice(pairs.shape[0], size=k, replace=False, p=weights)
             chosen = pairs[idx]
         self._update_occupancy(shard, temperature, chosen)
         return chosen

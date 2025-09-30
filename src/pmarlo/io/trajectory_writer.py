@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Protocol, Self
+from typing import Any, Optional, Protocol, Self
 
 import numpy as np
 
@@ -37,8 +37,7 @@ class MDAnalysisDCDWriter:
 
     def _require(self):
         try:
-            import MDAnalysis as mda  # type: ignore
-            from MDAnalysis.coordinates.DCD import DCDWriter  # type: ignore
+            pass  # type: ignore
         except Exception as exc:  # pragma: no cover - dependency optional
             raise TrajectoryWriteError(
                 "MDAnalysis is required for backend='mdanalysis'. Install extra 'pmarlo[mdanalysis]' or 'MDAnalysis'."
@@ -82,7 +81,6 @@ class MDAnalysisDCDWriter:
             )
         if c.size == 0:
             return
-        import MDAnalysis as mda  # type: ignore
         from MDAnalysis.coordinates.DCD import DCDWriter  # type: ignore
 
         if self._n_atoms is None:
@@ -96,7 +94,7 @@ class MDAnalysisDCDWriter:
         assert writer is not None
         # MDAnalysis DCD expects Angstroms; we write raw floats as-is to avoid implicit unit conversions
         for i in range(c.shape[0]):
-            writer.write_next_timestep(c[i, :, :])  # type: ignore[arg-type]
+            writer.write_next_timestep(c[i, :, :])  # type: ignore[arg-type,attr-defined]
 
     def close(self) -> None:
         if not self._is_open:
@@ -104,7 +102,7 @@ class MDAnalysisDCDWriter:
         try:
             if self._writer is not None:
                 try:
-                    self._writer.close()  # type: ignore[call-arg]
+                    self._writer.close()  # type: ignore[call-arg,attr-defined]
                 except Exception:
                     pass
         finally:
@@ -275,61 +273,74 @@ class MDTrajDCDWriter:
         self._ensure_open()
         assert self._path is not None
 
-        # Concatenate buffered frames
         new_chunk = np.concatenate(self._buffer, axis=0)
         self._buffer.clear()
-        total_new = int(new_chunk.shape[0])
-        # If no persisted frames exist, write directly
-        if self._total_persisted == 0 and not Path(self._path).exists():
-            self._rewrite_all(new_chunk)
-            self._total_persisted += total_new
-            return
-        # Rewrite: stream old frames, then append new ones into a single file
-        # using a safe temp path swap.
-        tmp_path = str(Path(self._path).with_suffix(".tmp.dcd"))
-        try:
-            old_path = str(self._path)
-            # Read old frames via streaming
-            reader = MDTrajReader(topology_path=self.topology_path)
-            old_len = reader.probe_length(old_path)
-            # Build an mdtraj Trajectory from streaming old frames and new frames
-            import mdtraj as md  # type: ignore
 
-            # Need topology object for Trajectory
-            topo = md.load_topology(self.topology_path)
-            # Accumulate frames in a memory efficient way for small to medium sizes
-            # First old frames
-            joined: Optional[md.Trajectory] = None
-            if old_len > 0:
-                chunk_list: list[md.Trajectory] = []
-                for xyz in reader.iter_frames(
-                    old_path, start=0, stop=old_len, stride=1
-                ):
-                    chunk_list.append(md.Trajectory(xyz[np.newaxis, ...], topo))
-                    # Periodically join to keep memory reasonable
-                    if len(chunk_list) >= 256:
-                        part = md.join(chunk_list)
-                        joined = part if joined is None else joined.join(part)
-                        chunk_list.clear()
-                if chunk_list:
-                    part = md.join(chunk_list)
-                    joined = part if joined is None else joined.join(part)
-            # Then new frames
-            new_traj = md.Trajectory(new_chunk, topo)
-            if joined is None:
-                final = new_traj
-            else:
-                final = joined.join(new_traj)
-            final.save_dcd(tmp_path)
-            # Atomic replace
-            Path(tmp_path).replace(self._path)
-            self._total_persisted = old_len + total_new
+        if self._should_create_new_file():
+            self._write_new_file(new_chunk)
+            return
+        self._rewrite_with_append(new_chunk)
+
+    def _should_create_new_file(self) -> bool:
+        assert self._path is not None
+        return self._total_persisted == 0 and not Path(self._path).exists()
+
+    def _write_new_file(self, coords: np.ndarray) -> None:
+        self._rewrite_all(coords)
+        self._total_persisted += int(coords.shape[0])
+
+    def _rewrite_with_append(self, new_chunk: np.ndarray) -> None:
+        assert self._path is not None
+        tmp_path = Path(self._path).with_suffix(".tmp.dcd")
+        tmp_str = str(tmp_path)
+        try:
+            reader = MDTrajReader(topology_path=self.topology_path)
+            old_len = reader.probe_length(str(self._path))
+            final = self._assemble_trajectory(reader, old_len, new_chunk)
+            final.save_dcd(tmp_str)
+            tmp_path.replace(self._path)
+            self._total_persisted = old_len + int(new_chunk.shape[0])
         except Exception as exc:  # pragma: no cover - defensive
             try:
-                Path(tmp_path).unlink(missing_ok=True)  # type: ignore[arg-type]
+                tmp_path.unlink(missing_ok=True)
             except Exception:
                 pass
             raise TrajectoryWriteError(f"Failed to flush buffer: {exc}") from exc
+
+    def _assemble_trajectory(
+        self,
+        reader: MDTrajReader,
+        old_len: int,
+        new_chunk: np.ndarray,
+    ):
+        import mdtraj as md  # type: ignore
+
+        topo = md.load_topology(self.topology_path)
+        joined: Optional[md.Trajectory] = None
+        if old_len > 0:
+            joined = self._join_existing_frames(reader, old_len, topo)
+        new_traj = md.Trajectory(new_chunk, topo)
+        return new_traj if joined is None else joined.join(new_traj)
+
+    def _join_existing_frames(
+        self, reader: MDTrajReader, old_len: int, topo: Any
+    ):
+        import mdtraj as md  # type: ignore
+
+        chunk_list: list[md.Trajectory] = []
+        joined: Optional[md.Trajectory] = None
+        for xyz in reader.iter_frames(
+            str(self._path), start=0, stop=old_len, stride=1
+        ):
+            chunk_list.append(md.Trajectory(xyz[np.newaxis, ...], topo))
+            if len(chunk_list) >= 256:
+                part = md.join(chunk_list)
+                joined = part if joined is None else joined.join(part)
+                chunk_list.clear()
+        if chunk_list:
+            part = md.join(chunk_list)
+            joined = part if joined is None else joined.join(part)
+        return joined
 
     def _rewrite_all(self, coords: np.ndarray) -> None:
         assert self._path is not None

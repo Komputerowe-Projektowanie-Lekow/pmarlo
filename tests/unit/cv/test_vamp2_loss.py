@@ -21,6 +21,7 @@ assert _spec.loader is not None
 _spec.loader.exec_module(losses_module)
 VAMP2Loss = losses_module.VAMP2Loss
 
+
 def test_vamp2_loss_float64_smoke() -> None:
     loss_fn = VAMP2Loss()
     z0 = _torch.randn(64, 3, dtype=_torch.float32, requires_grad=True)

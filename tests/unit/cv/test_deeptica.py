@@ -10,13 +10,13 @@ torch = pytest.importorskip("torch")
 
 from pmarlo.features.deeptica import DeepTICAConfig
 
+
 def test_deeptica_config_linear_head_flag():
     cfg_default = DeepTICAConfig(lag=5)
     assert cfg_default.hidden == (32, 16)
     assert cfg_default.linear_head is False
     cfg_linear = DeepTICAConfig(lag=5, linear_head=True)
     assert cfg_linear.linear_head is True
-
 
 
 def test_deeptica_train_transform_export_and_snippet(tmp_path: Path):
@@ -48,13 +48,19 @@ def test_deeptica_train_transform_export_and_snippet(tmp_path: Path):
     history = model.training_history or {}
     loss_curve = history.get("loss_curve") or []
     assert isinstance(loss_curve, list) and loss_curve, "Expected non-empty loss curve"
-    assert np.isfinite(np.asarray(loss_curve)).all(), "Loss curve contains non-finite values"
+    assert np.isfinite(
+        np.asarray(loss_curve)
+    ).all(), "Loss curve contains non-finite values"
     val_curve = history.get("val_loss_curve")
     if isinstance(val_curve, list) and val_curve:
-        assert np.isfinite(np.asarray(val_curve)).all(), "Validation loss curve contains non-finite values"
+        assert np.isfinite(
+            np.asarray(val_curve)
+        ).all(), "Validation loss curve contains non-finite values"
     score_curve = history.get("val_score_curve") or history.get("val_score")
     if isinstance(score_curve, list) and score_curve:
-        assert np.isfinite(np.asarray(score_curve)).all(), "Validation score curve contains non-finite values"
+        assert np.isfinite(
+            np.asarray(score_curve)
+        ).all(), "Validation score curve contains non-finite values"
 
     # Transform full concatenated features
     X_concat = np.concatenate(X_list, axis=0)

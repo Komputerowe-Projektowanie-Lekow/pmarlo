@@ -8,7 +8,9 @@ import numpy as np
 
 from pmarlo.shards.schema import Shard
 
-from . import _tram  # noqa: F401  # imported to signal dependency for future integration
+from . import (  # noqa: F401  # imported to signal dependency for future integration
+    _tram,
+)
 
 __all__ = ["Reweighter"]
 

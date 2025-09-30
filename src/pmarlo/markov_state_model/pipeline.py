@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from typing import List, Literal, Optional, Union
 
-from .enhanced_msm import EnhancedMSM
+# Runtime import for actual usage
+from .enhanced_msm import EnhancedMSM, EnhancedMSMProtocol
+
+SupportsMSMPipeline = EnhancedMSMProtocol
 
 
 def run_complete_msm_analysis(
@@ -16,11 +19,14 @@ def run_complete_msm_analysis(
     stride: int = 1,
     atom_selection: str | List[int] | None = None,
     chunk_size: int = 1000,
-) -> EnhancedMSM:
+) -> EnhancedMSMProtocol:
     msm = _create_msm(trajectory_files, topology_file, temperatures, output_dir)
-    _load_and_featurize(msm, stride, atom_selection, chunk_size, feature_type, n_states)
-    _build_and_analyze(msm, temperatures, lag_time)
-    _emit_plots(msm)
+    msm_pipeline: SupportsMSMPipeline = msm
+    _load_and_featurize(
+        msm_pipeline, stride, atom_selection, chunk_size, feature_type, n_states
+    )
+    _build_and_analyze(msm_pipeline, temperatures, lag_time)
+    _emit_plots(msm_pipeline)
     return msm
 
 
@@ -29,7 +35,7 @@ def _create_msm(
     topology_file: str,
     temperatures: Optional[List[float]],
     output_dir: str,
-) -> EnhancedMSM:
+) -> SupportsMSMPipeline:
     return EnhancedMSM(
         trajectory_files=trajectory_files,
         topology_file=topology_file,
@@ -39,7 +45,7 @@ def _create_msm(
 
 
 def _load_and_featurize(
-    msm: EnhancedMSM,
+    msm: SupportsMSMPipeline,
     stride: int,
     atom_selection: str | List[int] | None,
     chunk_size: int,
@@ -54,7 +60,7 @@ def _load_and_featurize(
 
 
 def _build_and_analyze(
-    msm: EnhancedMSM,
+    msm: SupportsMSMPipeline,
     temperatures: Optional[List[float]],
     lag_time: int,
 ) -> None:
@@ -70,7 +76,7 @@ def _build_and_analyze(
     msm.save_analysis_results()
 
 
-def _emit_plots(msm: EnhancedMSM) -> None:
+def _emit_plots(msm: SupportsMSMPipeline) -> None:
     for fn in (
         lambda: msm.plot_free_energy_surface(save_file="free_energy_surface"),
         lambda: msm.plot_implied_timescales(save_file="implied_timescales"),

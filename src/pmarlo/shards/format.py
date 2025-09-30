@@ -2,9 +2,9 @@ from __future__ import annotations
 
 """NPZ/JSON serialization helpers for PMARLO shards."""
 
-from pathlib import Path
-import json
 import hashlib
+import json
+from pathlib import Path
 from typing import Tuple
 
 import numpy as np
@@ -20,7 +20,9 @@ __all__ = [
 ]
 
 
-def write_shard_npz_json(shard: Shard, npz_path: Path, json_path: Path) -> Tuple[Path, Path]:
+def write_shard_npz_json(
+    shard: Shard, npz_path: Path, json_path: Path
+) -> Tuple[Path, Path]:
     """Persist shard arrays/metadata to disk in the canonical layout."""
 
     npz_path = Path(npz_path)

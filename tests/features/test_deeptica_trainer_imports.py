@@ -14,7 +14,6 @@ if "mlcolvar" not in sys.modules:
     utils.create_timelagged_dataset = lambda *a, **k: None
     sys.modules["mlcolvar.utils.timelagged"] = utils
 
-import numpy as np
 
 from pmarlo.features.deeptica_trainer import DeepTICATrainer, TrainerConfig
 

@@ -169,14 +169,14 @@ def console_progress_cb(  # noqa: C901
                 segments = d.get("segments", tot if tot else "?")
                 msg = f"demux: begin segments={segments}"
             elif ev == "demux_segment":
-                msg = f"demux: {cur:>6d}/{tot:<6d} ETA {eta}s (segment {d.get('index','?')})"
+                msg = f"demux: {cur:>6d}/{tot:<6d} ETA {eta}s (segment {d.get('index', '?')})"
             elif ev == "demux_gap_fill":
                 msg = (
                     f"demux: gap+{d.get('frames', '?')} {cur:>6d}/{tot:<6d} ETA {eta}s"
                 )
             elif ev == "demux_error":
                 msg = (
-                    f"demux: error at segment {d.get('index','?')} - {d.get('error','?')} "
+                    f"demux: error at segment {d.get('index', '?')} - {d.get('error', '?')} "
                     f"{cur:>6d}/{tot:<6d} ETA {eta}s"
                 )
             elif ev == "demux_end":
@@ -195,11 +195,11 @@ def console_progress_cb(  # noqa: C901
                 maybe_frames = d.get("frames")
                 if maybe_frames is not None:
                     msg = (
-                        f"emit: {cur:>6d}/{tot:<6d} ETA {eta}s done {d.get('traj','?')}"
-                        f" -> {d.get('shard','?')} frames={maybe_frames}"
+                        f"emit: {cur:>6d}/{tot:<6d} ETA {eta}s done {d.get('traj', '?')}"
+                        f" -> {d.get('shard', '?')} frames={maybe_frames}"
                     )
                 else:
-                    msg = f"emit: {cur:>6d}/{tot:<6d} ETA {eta}s done {d.get('traj','?')} -> {d.get('shard','?')}"
+                    msg = f"emit: {cur:>6d}/{tot:<6d} ETA {eta}s done {d.get('traj', '?')} -> {d.get('shard', '?')}"
             elif ev == "emit_end":
                 msg = f"emit: n_shards={d.get('n_shards', '?')}"
         elif ev.startswith("aggregate_"):

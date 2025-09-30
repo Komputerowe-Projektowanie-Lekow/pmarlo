@@ -6,8 +6,8 @@ import numpy as np
 
 from pmarlo.demultiplexing.demux_metadata import DemuxMetadata
 from pmarlo.markov_state_model.enhanced_msm import EnhancedMSM
-from pmarlo.replica_exchange.replica_exchange import ReplicaExchange
 from pmarlo.markov_state_model.results import ITSResult
+from pmarlo.replica_exchange.replica_exchange import ReplicaExchange
 
 matplotlib.use("Agg")
 
