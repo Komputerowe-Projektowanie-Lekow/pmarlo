@@ -3,6 +3,7 @@
 import json
 import logging
 import os as _os
+import random
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable, List, Optional, Tuple
@@ -17,8 +18,17 @@ logger = logging.getLogger(__name__)
 
 
 def set_all_seeds(seed: int = 2024) -> None:
-    """Compatibility wrapper around the core RNG seeding helper."""
-    _core_set_all_seeds(int(seed))
+    """Set RNG seeds across Python, NumPy, and Torch (CPU/GPU)."""
+    random.seed(int(seed))
+    np.random.seed(int(seed))
+    torch.manual_seed(int(seed))
+    if (
+        hasattr(torch, "cuda") and torch.cuda.is_available()
+    ):  # pragma: no cover - optional
+        try:
+            torch.cuda.manual_seed_all(int(seed))
+        except Exception:
+            pass
 
 
 class PmarloApiIncompatibilityError(RuntimeError):
@@ -43,30 +53,6 @@ from sklearn.preprocessing import StandardScaler  # type: ignore
 
 from pmarlo.ml.deeptica.whitening import apply_output_transform
 
-from .core.dataset import DatasetBundle, create_dataset, create_loaders
-from .core.history import (
-    LossHistory,
-    collect_history_metrics,
-    project_model,
-    summarize_history,
-    vamp2_proxy,
-)
-from .core.inputs import FeaturePrep, prepare_features
-from .core.model import (
-    PrePostWrapper as _CorePrePostWrapper,
-    WhitenWrapper as _CoreWhitenWrapper,
-    apply_output_whitening as core_apply_output_whitening,
-    construct_deeptica_core as core_construct_deeptica_core,
-    normalize_hidden_dropout as core_normalize_hidden_dropout,
-    override_core_mlp as core_override_core_mlp,
-    resolve_activation_module as core_resolve_activation_module,
-    resolve_hidden_layers as core_resolve_hidden_layers,
-    resolve_input_dropout as core_resolve_input_dropout,
-    strip_batch_norm as core_strip_batch_norm,
-    wrap_with_preprocessing_layers as core_wrap_with_preprocessing_layers,
-)
-from .core.pairs import PairInfo, build_pair_info
-from .core.utils import safe_float as core_safe_float, set_all_seeds as _core_set_all_seeds
 from .losses import VAMP2Loss
 
 
@@ -75,23 +61,58 @@ torch.set_default_dtype(torch.float32)
 
 
 def _resolve_activation_module(name: str):
-    return core_resolve_activation_module(name)
+    import torch.nn as _nn  # type: ignore
+
+    key = (name or "").strip().lower()
+    if key in {"gelu", "gaussian"}:
+        return _nn.GELU()
+    if key in {"relu", "relu+"}:
+        return _nn.ReLU()
+    if key in {"elu"}:
+        return _nn.ELU()
+    if key in {"selu"}:
+        return _nn.SELU()
+    if key in {"leaky_relu", "lrelu"}:
+        return _nn.LeakyReLU()
+    return _nn.Tanh()
 
 
 def _coerce_dropout_sequence(spec: Any) -> List[float]:
     if spec is None:
         return []
+    if isinstance(spec, (int, float)) and not isinstance(spec, bool):
+        return [float(spec)]
+    if isinstance(spec, str):
+        return [_safe_float(spec)]
     if isinstance(spec, Iterable) and not isinstance(spec, (bytes, str)):
-        return [core_safe_float(item) for item in spec]
-    return [core_safe_float(spec)]
+        return [_safe_float(item) for item in spec]
+    return [_safe_float(spec)]
 
 
 def _safe_float(value: Any) -> float:
-    return core_safe_float(value)
+    try:
+        return float(value)
+    except Exception:
+        return 0.0
 
 
 def _normalize_hidden_dropout(spec: Any, num_hidden: int) -> List[float]:
-    return list(core_normalize_hidden_dropout(spec, int(num_hidden)))
+    """Expand a dropout specification to match the number of hidden transitions."""
+
+    if num_hidden <= 0:
+        return []
+
+    values = _coerce_dropout_sequence(spec)
+    if not values:
+        values = [0.0]
+
+    if len(values) < num_hidden:
+        last = values[-1]
+        values = values + [last] * (num_hidden - len(values))
+    elif len(values) > num_hidden:
+        values = values[:num_hidden]
+
+    return [float(max(0.0, min(1.0, v))) for v in values]
 
 
 def _override_core_mlp(
@@ -103,31 +124,114 @@ def _override_core_mlp(
     hidden_dropout: Any = None,
     layer_norm_hidden: bool = False,
 ) -> None:
-    core_override_core_mlp(
-        core,
-        layers,
-        activation_name,
-        linear_head,
-        hidden_dropout=hidden_dropout,
-        layer_norm_hidden=layer_norm_hidden,
-    )
+    """Override core MLP configuration with custom activations/dropout."""
+
+    if linear_head or len(layers) <= 2:
+        return
+    try:
+        import torch.nn as _nn  # type: ignore
+    except Exception:
+        return
+
+    hidden_transitions = max(0, len(layers) - 2)
+    dropout_values = _normalize_hidden_dropout(hidden_dropout, hidden_transitions)
+
+    modules: list[_nn.Module] = []
+    for idx in range(len(layers) - 1):
+        in_features = int(layers[idx])
+        out_features = int(layers[idx + 1])
+        modules.append(_nn.Linear(in_features, out_features))
+        if idx < len(layers) - 2:
+            if layer_norm_hidden:
+                modules.append(_nn.LayerNorm(out_features))
+            modules.append(_resolve_activation_module(activation_name))
+            drop_p = dropout_values[idx] if idx < len(dropout_values) else 0.0
+            if drop_p > 0.0:
+                modules.append(_nn.Dropout(p=float(drop_p)))
+
+    if modules:
+        core.nn = _nn.Sequential(*modules)  # type: ignore[attr-defined]
 
 
 def _apply_output_whitening(
-    net,
-    Z,
-    idx_tau,
-    *,
-    apply: bool = False,
-    eig_floor: float = 1e-4,
+    net, Z, idx_tau, *, apply: bool = False, eig_floor: float = 1e-4
 ):
-    return core_apply_output_whitening(
-        net,
-        Z,
-        idx_tau,
-        apply=apply,
-        eig_floor=eig_floor,
-    )
+    import torch
+
+    tensor = torch.as_tensor(Z, dtype=torch.float32)
+    with torch.no_grad():
+        outputs = net(tensor)
+        if isinstance(outputs, torch.Tensor):
+            outputs = outputs.detach().cpu().numpy()
+    if outputs is None or outputs.size == 0:
+        info: dict[str, Any] = {
+            "output_variance": [],
+            "var_zt": [],
+            "cond_c00": None,
+            "cond_ctt": None,
+            "mean": [],
+            "transform": [],
+            "transform_applied": bool(apply),
+        }
+        return net, info
+
+    mean = np.mean(outputs, axis=0)
+    centered = outputs - mean
+    n = max(1, centered.shape[0] - 1)
+    C0 = (centered.T @ centered) / float(n)
+
+    def _regularize(mat: np.ndarray) -> np.ndarray:
+        sym = 0.5 * (mat + mat.T)
+        dim = sym.shape[0]
+        eye = np.eye(dim, dtype=np.float64)
+        trace = float(np.trace(sym))
+        trace = max(trace, 1e-12)
+        mu = trace / float(max(1, dim))
+        ridge = mu * 1e-5
+        alpha = 0.02
+        return (1.0 - alpha) * sym + (alpha * mu + ridge) * eye
+
+    C0_reg = _regularize(C0)
+    eigvals, eigvecs = np.linalg.eigh(C0_reg)
+    eigvals = np.clip(eigvals, max(eig_floor, 1e-8), None)
+    inv_sqrt = eigvecs @ np.diag(1.0 / np.sqrt(eigvals)) @ eigvecs.T
+    output_var = centered.var(axis=0, ddof=1).astype(float).tolist()
+    cond_c00 = float(eigvals.max() / eigvals.min())
+
+    var_zt = None
+    cond_ctt = None
+    if idx_tau is not None and len(Z) > 0:
+        tau_tensor = torch.as_tensor(Z[idx_tau], dtype=torch.float32)
+        with torch.no_grad():
+            base = net if not isinstance(net, _WhitenWrapper) else net.inner
+            tau_out = base(tau_tensor)
+            if isinstance(tau_out, torch.Tensor):
+                tau_out = tau_out.detach().cpu().numpy()
+        tau_center = tau_out - mean
+        var_zt = tau_center.var(axis=0, ddof=1).astype(float).tolist()
+        n_tau = max(1, tau_center.shape[0] - 1)
+        Ct = (tau_center.T @ tau_center) / float(n_tau)
+        Ct_reg = _regularize(Ct)
+        eig_ct = np.linalg.eigvalsh(Ct_reg)
+        eig_ct = np.clip(eig_ct, max(eig_floor, 1e-8), None)
+        cond_ctt = float(eig_ct.max() / eig_ct.min())
+
+    if var_zt is None:
+        var_zt = output_var
+
+    transform = inv_sqrt if apply else np.eye(inv_sqrt.shape[0], dtype=np.float64)
+    wrapped = _WhitenWrapper(net, mean, transform) if apply else net
+
+    info = {
+        "output_variance": output_var,
+        "var_zt": var_zt,
+        "cond_c00": cond_c00,
+        "cond_ctt": cond_ctt,
+        "mean": mean.astype(float).tolist(),
+        "transform": inv_sqrt.astype(float).tolist(),
+        "transform_applied": bool(apply),
+    }
+    return wrapped, info
 
 
 # Provide a module-level whitening wrapper so helper functions can reference it
@@ -373,23 +477,69 @@ def _load_scaler_checkpoint(path: Path) -> StandardScaler:
 
 
 def _construct_deeptica_core(cfg: Any, scaler: StandardScaler):
-    return core_construct_deeptica_core(cfg, scaler)
+    in_dim = int(np.asarray(getattr(scaler, "mean_", []), dtype=np.float64).shape[0])
+    hidden_layers = _resolve_hidden_layers(cfg)
+    layers = [in_dim, *hidden_layers, int(getattr(cfg, "n_out", 2))]
+    activation_name = str(getattr(cfg, "activation", "gelu")).lower().strip() or "gelu"
+    hidden_dropout_cfg: Any = getattr(cfg, "hidden_dropout", ())
+    layer_norm_hidden = bool(getattr(cfg, "layer_norm_hidden", False))
+    linear_head = bool(getattr(cfg, "linear_head", False))
+    try:
+        core = DeepTICA(
+            layers=layers,
+            n_cvs=int(getattr(cfg, "n_out", 2)),
+            activation=activation_name,
+            options={"norm_in": False},
+        )
+    except TypeError:
+        core = DeepTICA(
+            layers=layers,
+            n_cvs=int(getattr(cfg, "n_out", 2)),
+            options={"norm_in": False},
+        )
+    _override_core_mlp(
+        core,
+        layers,
+        activation_name,
+        linear_head,
+        hidden_dropout=hidden_dropout_cfg,
+        layer_norm_hidden=layer_norm_hidden,
+    )
+    _strip_batch_norm(core)
+    return core
 
 
 def _resolve_hidden_layers(cfg: Any) -> tuple[int, ...]:
-    return core_resolve_hidden_layers(cfg)
+    hidden_cfg = tuple(int(h) for h in getattr(cfg, "hidden", ()) or ())
+    if bool(getattr(cfg, "linear_head", False)):
+        return ()
+    return hidden_cfg if hidden_cfg else (32, 16)
 
 
 def _wrap_with_preprocessing_layers(core: Any, cfg: Any, scaler: StandardScaler):
-    return core_wrap_with_preprocessing_layers(core, cfg, scaler)
+    import torch.nn as _nn  # type: ignore
+
+    in_dim = int(scaler.mean_.shape[0])
+    dropout_in = _resolve_input_dropout(cfg)
+    ln_in = bool(getattr(cfg, "layer_norm_in", True))
+    return _PrePostWrapper(core, in_dim, ln_in=ln_in, p_drop=float(dropout_in))
 
 
 def _resolve_input_dropout(cfg: Any) -> float:
-    return core_resolve_input_dropout(cfg)
+    dropout_in = getattr(cfg, "dropout_input", None)
+    if dropout_in is None:
+        dropout_in = getattr(cfg, "dropout", 0.1)
+    return float(dropout_in if dropout_in is not None else 0.1)
 
 
 def _strip_batch_norm(module: Any) -> None:
-    core_strip_batch_norm(module)
+    import torch.nn as _nn  # type: ignore
+
+    for name, child in module.named_children():
+        if isinstance(child, _nn.modules.batchnorm._BatchNorm):
+            setattr(module, name, _nn.Identity())
+        else:
+            _strip_batch_norm(child)
 
 
 class _PrePostWrapper(torch.nn.Module):  # type: ignore[misc]
