@@ -1,3 +1,4 @@
+import functools
 import logging
 import sys
 from dataclasses import dataclass
@@ -14,8 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class StepHandler(Protocol):
-    def __call__(self, context: Dict[str, Any], **kwargs: Any) -> Dict[str, Any]:
-        ...
+    def __call__(self, context: Dict[str, Any], **kwargs: Any) -> Dict[str, Any]: ...
 
 
 def smooth_fes(dataset, **kwargs):
@@ -259,28 +259,31 @@ def _prepare_learn_cv_arrays(dataset: Dict[str, Any]) -> Tuple[
 
 
 def _collect_lag_candidates(params: Dict[str, Any], tau_requested: int) -> List[int]:
-    candidate_sequence: List[int] = []
-    primary_lag = params.get("lag", tau_requested)
-    try:
-        candidate_sequence.append(int(primary_lag))
-    except Exception:
-        candidate_sequence.append(tau_requested)
-
-    fallback_raw = params.get("lag_fallback")
-    if isinstance(fallback_raw, (list, tuple)):
-        for value in fallback_raw:
-            try:
-                candidate_sequence.append(int(value))
-            except Exception:
-                continue
-    elif fallback_raw is not None:
+    def _coerce_one(value: Any) -> Optional[int]:
         try:
-            candidate_sequence.append(int(fallback_raw))
+            coerced = int(value)
         except Exception:
-            pass
-    if not candidate_sequence:
-        candidate_sequence = [tau_requested]
-    return candidate_sequence
+            return None
+        return coerced if coerced > 0 else None
+
+    candidates: List[int] = []
+    primary = _coerce_one(params.get("lag", tau_requested))
+    candidates.append(primary or tau_requested)
+
+    fallback = params.get("lag_fallback")
+    if isinstance(fallback, (list, tuple)):
+        for entry in fallback:
+            coerced = _coerce_one(entry)
+            if coerced is not None:
+                candidates.append(coerced)
+    elif fallback is not None:
+        coerced = _coerce_one(fallback)
+        if coerced is not None:
+            candidates.append(coerced)
+
+    if not candidates:
+        candidates = [tau_requested]
+    return candidates
 
 
 @dataclass
@@ -412,7 +415,6 @@ def _build_pair_indices(
 def _resolve_model_loader(
     params: Dict[str, Any], train_deeptica: Any
 ) -> Callable[..., Any]:
-    model_dir = params.get("model_dir")
     try:
         from . import build as build_mod  # Local import to avoid circular dependency
 
@@ -675,13 +677,17 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
     """Train learned CVs (Deep-TICA) and replace dataset features."""
 
     dataset, uses_data_key = _extract_learn_cv_dataset(context)
-
-    method = str(params.get("method", "deeptica")).lower()
-    if method != "deeptica":
-        raise RuntimeError(f"LEARN_CV method '{method}' is not supported")
+    _require_deeptica_method(params)
 
     X_all, shards_meta, shard_ranges, X_list = _prepare_learn_cv_arrays(dataset)
     total_frames = int(X_all.shape[0])
+    finalize = functools.partial(
+        _finalize_learn_cv_context,
+        context,
+        dataset,
+        uses_data_key,
+        total_frames,
+    )
 
     tau_requested = int(max(1, params.get("lag", 5)))
     per_shard_info, pairs_estimate, warnings = _compute_pairs_metadata(
@@ -697,9 +703,7 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
             pairs_estimate=pairs_estimate,
         )
     except _LearnCVAbort as abort:
-        return _finalize_learn_cv_context(
-            context, dataset, uses_data_key, total_frames, abort.outcome
-        )
+        return finalize(abort.outcome)
 
     DeepTICAConfig = deeptica_mod.DeepTICAConfig
     train_deeptica = getattr(deeptica_mod, "train_deeptica")
@@ -713,38 +717,88 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
         total_frames=total_frames,
     )
 
-    warnings_list = list(selection.warnings)
     lag_value = int(getattr(selection.cfg, "lag", selection.tau))
-    if selection.seen_lags and lag_value != int(selection.seen_lags[0]):
-        warnings_list.append(f"lag_fallback_used:{lag_value}")
-    selection.warnings = warnings_list
+    warnings_list = _prepare_selection_warnings(selection, lag_value)
 
     if selection.pairs_estimate <= 0:
         outcome = _build_no_pairs_outcome(
             cfg=selection.cfg, selection=selection, extra_warnings=["no_pairs"]
         )
-        return _finalize_learn_cv_context(
-            context, dataset, uses_data_key, total_frames, outcome
-        )
+        return finalize(outcome)
 
     pair_indices = _build_pair_indices(shard_ranges, selection.tau)
     if pair_indices is None:
         outcome = _build_no_pairs_outcome(
             cfg=selection.cfg, selection=selection, extra_warnings=["no_pairs"]
         )
-        return _finalize_learn_cv_context(
-            context, dataset, uses_data_key, total_frames, outcome
-        )
-
-    idx_t, idx_tau = pair_indices
-
-    load_model = _resolve_model_loader(params, train_deeptica)
+        return finalize(outcome)
 
     try:
-        model = load_model(
-            X_list,
-            (idx_t, idx_tau),
+        model = _train_deeptica_model(
+            params,
+            train_deeptica,
             selection.cfg,
+            X_list,
+            pair_indices,
+            warnings_list,
+            selection,
+        )
+    except _LearnCVAbort as abort:
+        return finalize(abort.outcome)
+
+    Y = _transform_features_with_model(model, X_all)
+    n_out = _store_transformed_features(dataset, Y)
+
+    history = _ensure_training_history(model)
+    metrics = _collect_history_metrics(history)
+
+    summary = _build_success_summary(
+        selection,
+        lag_value,
+        pair_indices,
+        n_out,
+        metrics,
+    )
+    _attach_model_artifacts(summary, model, params)
+
+    outcome = _LearnCVOutcome(
+        summary,
+        selection.per_shard_info,
+        warnings_list,
+        int(pair_indices[0].shape[0]),
+    )
+    return finalize(outcome)
+
+
+def _require_deeptica_method(params: Dict[str, Any]) -> None:
+    method = str(params.get("method", "deeptica")).lower()
+    if method != "deeptica":
+        raise RuntimeError(f"LEARN_CV method '{method}' is not supported")
+
+
+def _prepare_selection_warnings(selection: _LagSelection, lag_value: int) -> List[str]:
+    warnings_list = list(selection.warnings)
+    if selection.seen_lags and lag_value != int(selection.seen_lags[0]):
+        warnings_list.append(f"lag_fallback_used:{lag_value}")
+    selection.warnings = warnings_list
+    return warnings_list
+
+
+def _train_deeptica_model(
+    params: Dict[str, Any],
+    train_deeptica: Any,
+    cfg: Any,
+    X_list: List[np.ndarray],
+    pair_indices: Tuple[np.ndarray, np.ndarray],
+    warnings_list: List[str],
+    selection: _LagSelection,
+):
+    load_model = _resolve_model_loader(params, train_deeptica)
+    try:
+        return load_model(
+            X_list,
+            pair_indices,
+            cfg,
             weights=None,
             model_dir=params.get("model_dir"),
             model_prefix=params.get("model_prefix"),
@@ -752,34 +806,46 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
         )
     except Exception as exc:  # pragma: no cover - exercised via tests
         outcome = _make_training_failure_outcome(
-            cfg=selection.cfg, selection=selection, warnings=warnings_list, exc=exc
+            cfg=cfg, selection=selection, warnings=warnings_list, exc=exc
         )
-        return _finalize_learn_cv_context(
-            context, dataset, uses_data_key, total_frames, outcome
-        )
+        raise _LearnCVAbort(outcome) from exc
 
+
+def _transform_features_with_model(model: Any, X_all: np.ndarray) -> np.ndarray:
     try:
-        Y = model.transform(X_all).astype(np.float64, copy=False)
+        transformed = model.transform(X_all).astype(np.float64, copy=False)
     except Exception as exc:
         raise RuntimeError(
             f"Failed to transform CVs with Deep-TICA model: {exc}"
         ) from exc
-
-    if Y.ndim != 2 or Y.shape[0] != X_all.shape[0]:
+    if transformed.ndim != 2 or transformed.shape[0] != X_all.shape[0]:
         raise RuntimeError("Deep-TICA returned invalid transformed features")
-
-    n_out = int(Y.shape[1]) if Y.ndim == 2 else 0
-    if n_out < 2:
+    if transformed.shape[1] < 2:
         raise RuntimeError("Deep-TICA produced fewer than two components; expected >=2")
+    return transformed
 
+
+def _store_transformed_features(dataset: Dict[str, Any], Y: np.ndarray) -> int:
+    n_out = int(Y.shape[1])
     dataset["X"] = Y
     dataset["cv_names"] = tuple(f"DeepTICA_{i+1}" for i in range(n_out))
     dataset["periodic"] = tuple(False for _ in range(n_out))
+    return n_out
 
+
+def _ensure_training_history(model: Any) -> Dict[str, Any]:
     history = dict(getattr(model, "training_history", {}) or {})
     setattr(model, "training_history", history)
-    metrics = _collect_history_metrics(history)
+    return history
 
+
+def _build_success_summary(
+    selection: _LagSelection,
+    lag_value: int,
+    pair_indices: Tuple[np.ndarray, np.ndarray],
+    n_out: int,
+    metrics: Dict[str, Any],
+) -> Dict[str, Any]:
     summary = {
         "applied": True,
         "skipped": False,
@@ -788,13 +854,18 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
         "lag": lag_value,
         "lag_used": lag_value,
         "n_out": n_out,
-        "pairs_total": int(idx_t.shape[0]),
+        "pairs_total": int(pair_indices[0].shape[0]),
         "lag_candidates": [int(v) for v in selection.seen_lags],
         "lag_fallback": [int(v) for v in selection.seen_lags],
         "attempts": selection.attempt_details,
     }
     summary.update(metrics)
+    return summary
 
+
+def _attach_model_artifacts(
+    summary: Dict[str, Any], model: Any, params: Dict[str, Any]
+) -> None:
     saved_prefix, saved_files = _save_trained_model(
         model, model_dir=params.get("model_dir"), params=params
     )
@@ -803,16 +874,6 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
     if saved_files:
         summary["model_files"] = saved_files
         summary["files"] = list(saved_files)
-
-    outcome = _LearnCVOutcome(
-        summary,
-        selection.per_shard_info,
-        warnings_list,
-        int(idx_t.shape[0]),
-    )
-    return _finalize_learn_cv_context(
-        context, dataset, uses_data_key, total_frames, outcome
-    )
 
 
 # Pipeline stage adapters

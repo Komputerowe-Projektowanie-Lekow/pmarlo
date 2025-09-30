@@ -12,11 +12,10 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..markov_state_model.enhanced_msm import EnhancedMSM as MarkovStateModel
 from ..markov_state_model.enhanced_msm import (
-    EnhancedMSM as MarkovStateModel,
     EnhancedMSMProtocol,
 )
-
 from ..protein.protein import Protein
 from ..replica_exchange.config import RemdConfig
 from ..replica_exchange.replica_exchange import ReplicaExchange

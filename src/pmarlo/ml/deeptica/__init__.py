@@ -11,13 +11,9 @@ the public API surface for downstream users that rely on it.
 from __future__ import annotations
 
 from importlib import import_module
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from .whitening import apply_output_transform
-
-if TYPE_CHECKING:  # pragma: no cover - typing-only imports
-    from .trainer import CurriculumConfig as _CurriculumConfig
-    from .trainer import DeepTICACurriculumTrainer as _DeepTICACurriculumTrainer
 
 __all__ = [
     "apply_output_transform",

@@ -114,31 +114,55 @@ class _EpochAccumulator:
 
     def finalize(self) -> Dict[str, float | List[float]]:
         if self.total_weight == 0:
-            return {
-                "loss": 0.0,
-                "score": 0.0,
-                "grad_norm_mean": 0.0,
-                "grad_norm_max": 0.0,
-            }
-        grad_norm_mean = float(np.mean(self.grad_norms)) if self.grad_norms else 0.0
-        grad_norm_max = float(np.max(self.grad_norms)) if self.grad_norms else 0.0
-        agg: Dict[str, float | List[float]] = {
-            "loss": self.total_loss / float(self.total_weight),
-            "score": self.total_score / float(self.total_weight),
-            "grad_norm_mean": grad_norm_mean,
-            "grad_norm_max": grad_norm_max,
+            return self._empty_epoch()
+        metrics = self._base_epoch_metrics()
+        self._append_condition_metrics_summary(metrics)
+        self._append_eigenvalue_summary(metrics)
+        return metrics
+
+    def _empty_epoch(self) -> Dict[str, float]:
+        return {
+            "loss": 0.0,
+            "score": 0.0,
+            "grad_norm_mean": 0.0,
+            "grad_norm_max": 0.0,
         }
-        if self.cond_weight > 0:
-            agg["cond_c00"] = self.cond_c00_sum / self.cond_weight
-            agg["cond_ctt"] = self.cond_ctt_sum / self.cond_weight
-        if self.var_z0_sum is not None and self.cond_weight > 0:
-            agg["var_z0"] = (self.var_z0_sum / self.cond_weight).tolist()
-        if self.var_zt_sum is not None and self.cond_weight > 0:
-            agg["var_zt"] = (self.var_zt_sum / self.cond_weight).tolist()
-        if self.mean_z0_sum is not None and self.cond_weight > 0:
-            agg["mean_z0"] = (self.mean_z0_sum / self.cond_weight).tolist()
-        if self.mean_zt_sum is not None and self.cond_weight > 0:
-            agg["mean_zt"] = (self.mean_zt_sum / self.cond_weight).tolist()
+
+    def _grad_norm_stats(self) -> tuple[float, float]:
+        if not self.grad_norms:
+            return 0.0, 0.0
+        return float(np.mean(self.grad_norms)), float(np.max(self.grad_norms))
+
+    def _base_epoch_metrics(self) -> Dict[str, float | List[float]]:
+        grad_mean, grad_max = self._grad_norm_stats()
+        total_weight = float(self.total_weight)
+        return {
+            "loss": self.total_loss / total_weight,
+            "score": self.total_score / total_weight,
+            "grad_norm_mean": grad_mean,
+            "grad_norm_max": grad_max,
+        }
+
+    def _append_condition_metrics_summary(
+        self, agg: Dict[str, float | List[float]]
+    ) -> None:
+        if self.cond_weight <= 0:
+            return
+        divisor = self.cond_weight
+        agg["cond_c00"] = self.cond_c00_sum / divisor
+        agg["cond_ctt"] = self.cond_ctt_sum / divisor
+        if self.var_z0_sum is not None:
+            agg["var_z0"] = (self.var_z0_sum / divisor).tolist()
+        if self.var_zt_sum is not None:
+            agg["var_zt"] = (self.var_zt_sum / divisor).tolist()
+        if self.mean_z0_sum is not None:
+            agg["mean_z0"] = (self.mean_z0_sum / divisor).tolist()
+        if self.mean_zt_sum is not None:
+            agg["mean_zt"] = (self.mean_zt_sum / divisor).tolist()
+
+    def _append_eigenvalue_summary(
+        self, agg: Dict[str, float | List[float]]
+    ) -> None:
         if self.eig0_min != float("inf"):
             agg["eig_c00_min"] = self.eig0_min
         if self.eig0_max != 0.0:
@@ -147,7 +171,6 @@ class _EpochAccumulator:
             agg["eig_ctt_min"] = self.eigt_min
         if self.eigt_max != 0.0:
             agg["eig_ctt_max"] = self.eigt_max
-        return agg
 
     def _update_condition_metrics(self, outcome: _BatchOutcome) -> None:
         metrics: MetricMapping = outcome.metrics

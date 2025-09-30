@@ -272,7 +272,6 @@ else:
         def _make_scheduler(self):
             if self.cfg.scheduler.lower() != "cosine":
                 return None
-            warmup = int(max(0, self.cfg.scheduler_warmup_steps))
             total_steps = self.cfg.scheduler_total_steps
             if total_steps is None:
                 raise ValueError(

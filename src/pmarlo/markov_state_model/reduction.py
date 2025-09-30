@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 from typing import List, Optional, cast
 
 import numpy as np
@@ -289,23 +290,15 @@ def get_available_methods() -> List[str]:
     methods = ["pca"]  # Always available (numpy fallback)
 
     # Check for deeptime
-    try:
-        import deeptime
-
+    if importlib.util.find_spec("deeptime") is not None:
         methods.extend(["tica", "vamp"])
-    except ImportError:
-        pass
 
     # Check for pyemma (fallback)
-    try:
-        import pyemma
-
+    if importlib.util.find_spec("pyemma") is not None:
         if "tica" not in methods:
             methods.append("tica")
         if "vamp" not in methods:
             methods.append("vamp")
-    except ImportError:
-        pass
 
     # Manual implementations always available as fallback
     if "tica" not in methods:

@@ -7,7 +7,7 @@ time‑lagged pairs across the current dataset shards.
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -79,153 +79,206 @@ def diagnose_deeptica_pairs(dataset: Any, lag: int) -> PairDiagReport:
     ``"__shards__"``.
     """
     shards = _collect_shards_info(dataset)
-    X_all = None
-    try:
-        X_all = (
-            np.asarray(dataset.get("X"), dtype=np.float64)
-            if isinstance(dataset, dict)
-            else None
-        )
-    except Exception:
-        X_all = None
+    features = _extract_feature_matrix(dataset)
 
+    from pmarlo.features.pairs import scaled_time_pairs  # local import
+
+    if shards:
+        summary = _diagnose_with_shards(shards, lag, scaled_time_pairs)
+    else:
+        summary = _diagnose_without_shards(features, lag, scaled_time_pairs)
+
+    return PairDiagReport(**summary)
+
+
+def _extract_feature_matrix(dataset: Any) -> Optional[np.ndarray]:
+    if not isinstance(dataset, dict) or "X" not in dataset:
+        return None
+    try:
+        matrix = np.asarray(dataset.get("X"), dtype=np.float64)
+    except Exception:
+        return None
+    return matrix
+
+
+def _diagnose_with_shards(
+    shards: List[Dict[str, Any]],
+    lag: int,
+    pair_fn: Any,
+) -> Dict[str, Any]:
     per: List[PairDiagItem] = []
     frames_total = 0
     pairs_total = 0
     pairs_total_uniform = 0
     shards_with_bias = 0
+    too_short_count = 0
 
-    from pmarlo.features.pairs import (  # local import; light dependency
-        scaled_time_pairs,
+    for shard in shards:
+        item, stats = _evaluate_shard(shard, lag, pair_fn)
+        per.append(item)
+        frames_total += stats.frames
+        pairs_total += stats.pairs
+        pairs_total_uniform += stats.pairs_uniform
+        shards_with_bias += stats.bias_flag
+        too_short_count += stats.short_flag
+
+    duplicates = _find_duplicates(per)
+    message = _format_shard_message(
+        shards,
+        lag,
+        pairs_total,
+        pairs_total_uniform,
+        shards_with_bias,
+        too_short_count,
+        duplicates,
     )
+    return {
+        "lag_used": lag,
+        "n_shards": len(shards),
+        "frames_total": frames_total,
+        "pairs_total": pairs_total,
+        "per_shard": per,
+        "message": message,
+        "scaled_time_used": shards_with_bias > 0,
+        "shards_with_bias": shards_with_bias,
+        "too_short_count": too_short_count,
+        "pairs_total_uniform": pairs_total_uniform,
+        "duplicates": duplicates,
+    }
 
-    if shards:
-        # Use shard metadata for precise diagnostics
-        duplicates: List[str] = []
-        too_short_count = 0
-        for s in shards:
-            s_id = str(s.get("id", "unknown"))
-            frames = int(s.get("frames", 0))
-            frames_total += frames
-            bias = s.get("bias_potential")
-            temp_k = s.get("temperature")
-            has_bias = bias is not None and temp_k is not None
-            if has_bias:
-                shards_with_bias += 1
-                # Compute scaled-time pairs
-                logw = None
-                if bias is not None and temp_k is not None:
-                    # Convert bias to log-weights
-                    try:
-                        beta = 1.0 / (
-                            0.008314462618 / float(temp_k)
-                        )  # kJ/mol/K to 1/kJ/mol
-                        logw = beta * np.asarray(bias, dtype=np.float64)
-                    except Exception:
-                        logw = None
-                i_scaled, j_scaled = scaled_time_pairs(
-                    frames, logw, float(lag), jitter=0.0
-                )
-                pairs_scaled = int(len(i_scaled))
-                pairs_total += pairs_scaled
-            else:
-                # Uniform pairs (no bias)
-                pairs_scaled = max(0, frames - lag) if frames > lag else 0
-                pairs_total += pairs_scaled
 
-            # Always compute uniform baseline
-            i_uniform, j_uniform = scaled_time_pairs(frames, None, float(lag))
-            pairs_uniform = int(len(i_uniform))
-            pairs_total_uniform += pairs_uniform
+@dataclass
+class _ShardStats:
+    frames: int
+    pairs: int
+    pairs_uniform: int
+    bias_flag: int
+    short_flag: int
 
-            frames_leq_lag = frames <= lag
-            if frames_leq_lag:
-                too_short_count += 1
 
-            per.append(
-                PairDiagItem(
-                    id=s_id,
-                    frames=frames,
-                    pairs=pairs_scaled,
-                    pairs_uniform=pairs_uniform,
-                    has_bias=has_bias,
-                    temperature=temp_k,
-                    frames_leq_lag=frames_leq_lag,
-                )
-            )
+def _evaluate_shard(
+    shard: Dict[str, Any],
+    lag: int,
+    pair_fn: Any,
+) -> Tuple[PairDiagItem, _ShardStats]:
+    shard_id = str(shard.get("id", "unknown"))
+    frames = int(shard.get("frames", 0))
+    bias = shard.get("bias_potential")
+    temp_k = shard.get("temperature")
+    has_bias = bias is not None and temp_k is not None
+    logw = _resolve_log_weights(bias, temp_k) if has_bias else None
 
-        # Deduplicate shard IDs for summary
-        seen = set()
-        duplicates = []
-        for item in per:
-            if item.id in seen:
-                duplicates.append(item.id)
-            else:
-                seen.add(item.id)
-
-        # Construct diagnostic message
-        scaled_time_used = shards_with_bias > 0
-        if scaled_time_used:
-            message = (
-                f"Scaled-time pairs: {pairs_total} total across {len(shards)} shards "
-                f"({shards_with_bias} with bias). "
-                f"Uniform baseline: {pairs_total_uniform} pairs."
-            )
-        else:
-            message = f"Uniform pairs: {pairs_total} total across {len(shards)} shards."
-
-        if too_short_count > 0:
-            message += f" {too_short_count} shards too short for lag={lag}."
-        if duplicates:
-            message += f" {len(duplicates)} duplicate shard IDs found."
-
+    if logw is not None:
+        scaled_indices = pair_fn(frames, logw, float(lag), jitter=0.0)
     else:
-        # Fallback: use concatenated X if no shard metadata
-        if X_all is not None:
-            n_frames = int(X_all.shape[0])
-            frames_total = n_frames
-            i_scaled, j_scaled = scaled_time_pairs(n_frames, None, float(lag))
-            pairs_scaled = int(len(i_scaled))
-            pairs_total = pairs_scaled
-            pairs_total_uniform = pairs_scaled  # same as scaled when no bias
-            scaled_time_used = False
-            too_short_count = 1 if n_frames <= lag else 0
-            duplicates = []
+        scaled_indices = pair_fn(frames, None, float(lag))
+    pairs_scaled = int(len(scaled_indices[0])) if scaled_indices else 0
+    if not has_bias:
+        pairs_scaled = max(0, frames - lag) if frames > lag else 0
 
-            per.append(
-                PairDiagItem(
-                    id="concatenated",
-                    frames=n_frames,
-                    pairs=pairs_scaled,
-                    pairs_uniform=pairs_scaled,
-                    has_bias=False,
-                    temperature=None,
-                    frames_leq_lag=n_frames <= lag,
-                )
-            )
+    i_uniform, _ = pair_fn(frames, None, float(lag))
+    pairs_uniform = int(len(i_uniform))
+    frames_leq_lag = frames <= lag
 
-            message = (
-                f"No shard metadata found. Using concatenated X ({n_frames} frames): "
-                f"{pairs_scaled} pairs at lag={lag}."
-            )
-            if too_short_count > 0:
-                message += " Dataset too short for requested lag."
-            shards_with_bias = 0
-        else:
-            raise ValueError(
-                "No dataset provided or dataset lacks both '__shards__' metadata and 'X' array"
-            )
-
-    return PairDiagReport(
-        lag_used=lag,
-        n_shards=len(shards) if shards else 1,
-        frames_total=frames_total,
-        pairs_total=pairs_total,
-        per_shard=per,
-        message=message,
-        scaled_time_used=scaled_time_used,
-        shards_with_bias=shards_with_bias,
-        too_short_count=too_short_count,
-        pairs_total_uniform=pairs_total_uniform,
-        duplicates=duplicates,
+    item = PairDiagItem(
+        id=shard_id,
+        frames=frames,
+        pairs=pairs_scaled,
+        pairs_uniform=pairs_uniform,
+        has_bias=has_bias,
+        temperature=temp_k,
+        frames_leq_lag=frames_leq_lag,
     )
+    stats = _ShardStats(
+        frames=frames,
+        pairs=pairs_scaled,
+        pairs_uniform=pairs_uniform,
+        bias_flag=1 if has_bias else 0,
+        short_flag=1 if frames_leq_lag else 0,
+    )
+    return item, stats
+
+
+def _resolve_log_weights(bias: Any, temp_k: Any) -> Optional[np.ndarray]:
+    try:
+        beta = 1.0 / (0.008314462618 / float(temp_k))
+        return beta * np.asarray(bias, dtype=np.float64)
+    except Exception:
+        return None
+
+
+def _find_duplicates(items: List[PairDiagItem]) -> List[str]:
+    seen: set[str] = set()
+    duplicates: List[str] = []
+    for item in items:
+        if item.id in seen:
+            duplicates.append(item.id)
+        else:
+            seen.add(item.id)
+    return duplicates
+
+
+def _format_shard_message(
+    shards: List[Dict[str, Any]],
+    lag: int,
+    pairs_total: int,
+    pairs_uniform: int,
+    shards_with_bias: int,
+    too_short_count: int,
+    duplicates: List[str],
+) -> str:
+    shard_count = len(shards)
+    if shards_with_bias > 0:
+        message = (
+            f"Scaled-time pairs: {pairs_total} total across {shard_count} shards "
+            f"({shards_with_bias} with bias). Uniform baseline: {pairs_uniform} pairs."
+        )
+    else:
+        message = f"Uniform pairs: {pairs_total} total across {shard_count} shards."
+    if too_short_count > 0:
+        message += f" {too_short_count} shards too short for lag={lag}."
+    if duplicates:
+        message += f" {len(duplicates)} duplicate shard IDs found."
+    return message
+
+
+def _diagnose_without_shards(
+    features: Optional[np.ndarray],
+    lag: int,
+    pair_fn: Any,
+) -> Dict[str, Any]:
+    if features is None:
+        raise ValueError(
+            "No dataset provided or dataset lacks both '__shards__' metadata and 'X' array"
+        )
+    n_frames = int(features.shape[0])
+    indices = pair_fn(n_frames, None, float(lag))
+    pairs_scaled = int(len(indices[0])) if indices else 0
+    item = PairDiagItem(
+        id="concatenated",
+        frames=n_frames,
+        pairs=pairs_scaled,
+        pairs_uniform=pairs_scaled,
+        has_bias=False,
+        temperature=None,
+        frames_leq_lag=n_frames <= lag,
+    )
+    message = (
+        f"No shard metadata found. Using concatenated X ({n_frames} frames): "
+        f"{pairs_scaled} pairs at lag={lag}."
+    )
+    if n_frames <= lag:
+        message += " Dataset too short for requested lag."
+    return {
+        "lag_used": lag,
+        "n_shards": 1,
+        "frames_total": n_frames,
+        "pairs_total": pairs_scaled,
+        "per_shard": [item],
+        "message": message,
+        "scaled_time_used": False,
+        "shards_with_bias": 0,
+        "too_short_count": 1 if n_frames <= lag else 0,
+        "pairs_total_uniform": pairs_scaled,
+        "duplicates": [],
+    }

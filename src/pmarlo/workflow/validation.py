@@ -413,8 +413,17 @@ def format_validation_report(validation_results: Dict[str, Any]) -> str:
                 else shard["source_path"]
             )
 
+            row_template = (
+                "  {canonical:<32} | {run_id:<15} | {kind:<5} | {temp:<10} | {path}"
+            )
             lines.append(
-                f"  {canonical:<32} | {run_id:<15} | {shard['source_kind']:<5} | {shard['temp_or_replica']:<10} | {path}"
+                row_template.format(
+                    canonical=canonical,
+                    run_id=run_id,
+                    kind=shard["source_kind"],
+                    temp=shard["temp_or_replica"],
+                    path=path,
+                )
             )
 
         if len(shard_table) > 10:
