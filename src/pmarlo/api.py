@@ -1553,7 +1553,6 @@ def emit_shards_rg_rmsd_windowed(
     """Emit many overlapping shards per trajectory via a sliding window."""
 
     import mdtraj as md  # type: ignore
-    import numpy as np
 
     from pmarlo.data.shard import write_shard  # type: ignore
     from pmarlo.io import trajectory as _traj_io  # type: ignore
@@ -2070,8 +2069,6 @@ def demultiplex_run(
         DeprecationWarning,
         stacklevel=2,
     )
-
-    from pathlib import Path
 
     from .io.trajectory_reader import MDTrajReader
     from .replica_exchange.demux_compat import (

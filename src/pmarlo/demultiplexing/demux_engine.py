@@ -264,78 +264,115 @@ def _demux_parallel(
     max_workers: int,
     window_multiplier: int,
 ) -> None:
-    import concurrent.futures as fut
+    _ParallelDemuxer(context, state, max_workers, window_multiplier).run()
 
-    plan = context.plan
-    expected_index = 0
-    pending: dict[fut.Future, int] = {}
-    results: dict[int, Optional[np.ndarray]] = {}
-    window = max_workers * window_multiplier
 
-    def _drain_ready_results() -> None:
-        nonlocal expected_index
-        while expected_index in results:
-            frames = results.pop(expected_index)
-            segment = plan.segments[expected_index]
+class _ParallelDemuxer:
+    def __init__(
+        self,
+        context: _DemuxContext,
+        state: _DemuxState,
+        max_workers: int,
+        window_multiplier: int,
+    ) -> None:
+        self.context = context
+        self.state = state
+        self.plan = context.plan
+        self.max_workers = max(1, max_workers)
+        self.window = self.max_workers * window_multiplier
+        self.next_to_submit = 0
+        self.next_to_consume = 0
+        self.pending: dict[object, int] = {}
+        self.buffered: dict[int, Optional[np.ndarray]] = {}
+
+    def run(self) -> None:
+        import concurrent.futures as fut
+
+        with fut.ProcessPoolExecutor(max_workers=self.max_workers) as pool:
+            while self._has_work():
+                self._schedule(pool)
+                self._drain_ready()
+                if not self._has_pending():
+                    continue
+                self._collect_completed()
+                self._drain_ready()
+
+    def _has_work(self) -> bool:
+        return self.next_to_consume < len(self.plan.segments)
+
+    def _has_pending(self) -> bool:
+        return bool(self.pending) and self._has_work()
+
+    def _schedule(self, pool) -> None:
+        while (
+            len(self.pending) < self.window
+            and self.next_to_submit < len(self.plan.segments)
+        ):
+            seg_idx = self.next_to_submit
+            segment = self.plan.segments[seg_idx]
+            self.next_to_submit += 1
+            if not self._segment_has_source(segment):
+                self.buffered[seg_idx] = None
+                continue
+            future = pool.submit(
+                _read_segment_frames_worker,
+                segment.source_path,
+                int(segment.start_frame),
+                int(segment.stop_frame),
+                1,
+                self.context.topology_path,
+            )
+            self.pending[future] = seg_idx
+
+    def _segment_has_source(self, segment: DemuxSegmentPlan) -> bool:
+        return (
+            segment.replica_index >= 0
+            and segment.source_path
+            and segment.stop_frame > segment.start_frame
+        )
+
+    def _collect_completed(self) -> None:
+        import concurrent.futures as fut
+
+        if not self.pending:
+            return
+        done, _ = fut.wait(self.pending.keys(), return_when=fut.FIRST_COMPLETED)
+        for future in done:
+            seg_idx = self.pending.pop(future)
+            self.buffered[seg_idx] = self._resolve_future_result(seg_idx, future)
+
+    def _resolve_future_result(self, seg_idx: int, future) -> Optional[np.ndarray]:
+        try:
+            arr = future.result()
+        except Exception as exc:  # noqa: BLE001
+            segment = self.plan.segments[seg_idx]
+            msg = (
+                f"Segment {seg_idx} parallel read error for replica={segment.replica_index} "
+                f"path={segment.source_path} window=[{segment.start_frame},{segment.stop_frame})]: {exc}"
+            )
+            logger.warning(msg)
+            self.state.warnings.append(msg)
+            return None
+        return arr if isinstance(arr, np.ndarray) else None
+
+    def _drain_ready(self) -> None:
+        while self.next_to_consume in self.buffered:
+            frames = self.buffered.pop(self.next_to_consume)
+            segment = self.plan.segments[self.next_to_consume]
             planned = max(0, int(segment.expected_frames))
             if frames is not None and isinstance(frames, np.ndarray):
-                state.segment_real_frames[expected_index] = int(frames.shape[0])
+                self.state.segment_real_frames[self.next_to_consume] = int(frames.shape[0])
             progress_frames = _consume_parallel_segment(
-                context,
-                state,
-                expected_index,
+                self.context,
+                self.state,
+                self.next_to_consume,
                 segment,
                 planned,
                 frames,
             )
-            _emit_segment_progress(context, expected_index, progress_frames)
-            _flush_after_segment(context, expected_index)
-            expected_index += 1
-
-    with fut.ProcessPoolExecutor(max_workers=max_workers) as pool:
-        while expected_index < len(plan.segments) or pending:
-            while len(pending) < window and expected_index + len(pending) < len(
-                plan.segments
-            ):
-                seg_idx = expected_index + len(pending)
-                seg = plan.segments[seg_idx]
-                if (
-                    seg.replica_index < 0
-                    or seg.stop_frame <= seg.start_frame
-                    or not seg.source_path
-                ):
-                    results[seg_idx] = None
-                    continue
-                future = pool.submit(
-                    _read_segment_frames_worker,
-                    seg.source_path,
-                    int(seg.start_frame),
-                    int(seg.stop_frame),
-                    1,
-                    context.topology_path,
-                )
-                pending[future] = seg_idx
-
-            if not pending:
-                _drain_ready_results()
-                continue
-
-            done, _ = fut.wait(pending.keys(), return_when=fut.FIRST_COMPLETED)
-            for future in done:
-                seg_idx = pending.pop(future)
-                try:
-                    arr = future.result()
-                except Exception as exc:  # noqa: BLE001
-                    msg = (
-                        f"Segment {seg_idx} parallel read error for replica={plan.segments[seg_idx].replica_index} "
-                        f"path={plan.segments[seg_idx].source_path} window=[{plan.segments[seg_idx].start_frame},"
-                        f"{plan.segments[seg_idx].stop_frame})]: {exc}"
-                    )
-                    logger.warning(msg)
-                    state.warnings.append(msg)
-                    arr = None
-                results[seg_idx] = arr if isinstance(arr, np.ndarray) else None
-            _drain_ready_results()
+            _emit_segment_progress(self.context, self.next_to_consume, progress_frames)
+            _flush_after_segment(self.context, self.next_to_consume)
+            self.next_to_consume += 1
 
 
 def _finalize_demux(context: _DemuxContext, state: _DemuxState) -> None:

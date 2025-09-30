@@ -138,49 +138,65 @@ def prune_workspace(
     root = Path(root)
     rep = PruneReport(root=root)
 
-    # 1) Per-run candidates
     for run in _iter_runs(root):
-        # Only prune runs that have shards or bundles at workspace level
-        shards_dir = root / "shards" / run.name
-        bundles_dir = root / "bundles"
-        have_shards = shards_dir.exists() and any(shards_dir.glob("*.json"))
-        have_bundles = bundles_dir.exists() and any(bundles_dir.glob("*.json"))
-        if not (have_shards or have_bundles):
-            # Skip runs with no downstream artifacts; user may still need DCDs
+        if not _has_downstream_artifacts(root, run):
             rep.kept.append(run)
             continue
-        for c in _collect_candidates(run, keep_demux_meta=True):
-            if dry_run:
-                rep.kept.append(c)
-            else:
-                _safe_remove(c, rep)
+        _prune_run_candidates(run, dry_run, rep)
 
     if mode == "aggressive":
-        # 2) Keep only newest 3 bundles; remove older ones
-        bundles = sorted(
-            (root / "bundles").glob("*.json"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        for old in bundles[3:]:
-            if dry_run:
-                rep.kept.append(old)
-            else:
-                _safe_remove(old, rep)
-        # 3) Model artifacts older than 7 days
-        import time
-
-        cutoff = time.time() - 7 * 24 * 3600
-        models_root = root / "models"
-        if models_root.exists():
-            for p in models_root.rglob("*"):
-                try:
-                    if p.is_file() and p.stat().st_mtime < cutoff:
-                        if dry_run:
-                            rep.kept.append(p)
-                        else:
-                            _safe_remove(p, rep)
-                except Exception:
-                    continue
+        _prune_old_bundles(root, dry_run, rep)
+        _prune_stale_models(root, dry_run, rep)
 
     return rep
+
+
+def _has_downstream_artifacts(root: Path, run: Path) -> bool:
+    shards_dir = root / "shards" / run.name
+    bundles_dir = root / "bundles"
+    have_shards = shards_dir.exists() and any(shards_dir.glob("*.json"))
+    have_bundles = bundles_dir.exists() and any(bundles_dir.glob("*.json"))
+    return have_shards or have_bundles
+
+
+def _prune_run_candidates(run: Path, dry_run: bool, report: PruneReport) -> None:
+    for candidate in _collect_candidates(run, keep_demux_meta=True):
+        if dry_run:
+            report.kept.append(candidate)
+        else:
+            _safe_remove(candidate, report)
+
+
+def _prune_old_bundles(root: Path, dry_run: bool, report: PruneReport) -> None:
+    bundles_dir = root / "bundles"
+    if not bundles_dir.exists():
+        return
+    bundles = sorted(
+        bundles_dir.glob("*.json"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for old in bundles[3:]:
+        if dry_run:
+            report.kept.append(old)
+        else:
+            _safe_remove(old, report)
+
+
+def _prune_stale_models(root: Path, dry_run: bool, report: PruneReport) -> None:
+    import time
+
+    models_root = root / "models"
+    if not models_root.exists():
+        return
+    cutoff = time.time() - 7 * 24 * 3600
+    for artifact in models_root.rglob("*"):
+        try:
+            if not artifact.is_file() or artifact.stat().st_mtime >= cutoff:
+                continue
+        except Exception:
+            continue
+        if dry_run:
+            report.kept.append(artifact)
+        else:
+            _safe_remove(artifact, report)

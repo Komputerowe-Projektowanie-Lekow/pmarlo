@@ -180,7 +180,9 @@ def _resolve_export(name: str) -> Any:
         module, exc = _import_or_none(module_name)
         if module is None:
             if exc is None:
-                raise ImportError(f"Could not import module {module_name!r} for {name!r}")
+                raise ImportError(
+                    f"Could not import module {module_name!r} for {name!r}"
+                )
             if name != "api":  # pragma: no cover - defensive guard for other modules
                 raise exc
             module = _build_api_stub(module_name, exc)

@@ -17,7 +17,6 @@ from ..analysis import compute_diagnostics
 from ..analysis.fes import ensure_fes_inputs_whitened
 from ..analysis.msm import ensure_msm_inputs_whitened
 from ..markov_state_model._msm_utils import build_simple_msm
-from ..utils.seed import set_global_seed
 from .plan import TransformPlan, TransformStep
 from .progress import ProgressCB
 from .runner import apply_plan as _apply_plan
@@ -624,38 +623,51 @@ def _record_deeptica_notes(artifacts: Dict[str, Any], applied: AppliedOpts) -> N
 
 def _record_cv_bins(working_dataset: Any, applied: AppliedOpts) -> None:
     try:
-        if not isinstance(working_dataset, dict) or "X" not in working_dataset:
+        matrix = _extract_feature_matrix(working_dataset)
+        if matrix is None:
             return
-        X_arr = np.asarray(working_dataset.get("X"), dtype=float)
-        if X_arr.ndim != 2 or X_arr.shape[1] < 2 or X_arr.shape[0] <= 0:
-            return
-        cv1 = X_arr[:, 0]
-        cv2 = X_arr[:, 1]
-        n1 = 32
-        n2 = 32
-        if isinstance(applied.bins, dict):
-            try:
-                n1 = int(applied.bins.get("cv1", n1))
-                n2 = int(applied.bins.get("cv2", n2))
-            except Exception:
-                n1, n2 = 32, 32
-
-        def _bounds(arr: np.ndarray) -> Tuple[float, float]:
-            a_min = float(np.nanmin(arr))
-            a_max = float(np.nanmax(arr))
-            if not np.isfinite(a_min) or not np.isfinite(a_max) or a_max <= a_min:
-                return -1.0, 1.0
-            return a_min, a_max
-
-        a_min, a_max = _bounds(cv1)
-        b_min, b_max = _bounds(cv2)
-        e1 = np.linspace(a_min, a_max, int(max(2, n1)) + 1).astype(float).tolist()
-        e2 = np.linspace(b_min, b_max, int(max(2, n2)) + 1).astype(float).tolist()
+        cv1, cv2 = matrix[:, 0], matrix[:, 1]
+        n1, n2 = _resolve_bin_counts(applied)
+        edges = {
+            "cv1": _compute_bin_edges(cv1, n1),
+            "cv2": _compute_bin_edges(cv2, n2),
+        }
         if applied.notes is None:
             applied.notes = {}
-        applied.notes["cv_bin_edges"] = {"cv1": e1, "cv2": e2}
+        applied.notes["cv_bin_edges"] = edges
     except Exception:
         pass
+
+
+def _extract_feature_matrix(working_dataset: Any) -> Optional[np.ndarray]:
+    if not isinstance(working_dataset, dict):
+        return None
+    raw = working_dataset.get("X")
+    matrix = np.asarray(raw, dtype=float)
+    if matrix.ndim != 2 or matrix.shape[1] < 2 or matrix.shape[0] <= 0:
+        return None
+    return matrix
+
+
+def _resolve_bin_counts(applied: AppliedOpts) -> Tuple[int, int]:
+    default = (32, 32)
+    if not isinstance(applied.bins, dict):
+        return default
+    try:
+        n1 = int(applied.bins.get("cv1", default[0]))
+        n2 = int(applied.bins.get("cv2", default[1]))
+        return max(2, n1), max(2, n2)
+    except Exception:
+        return default
+
+
+def _compute_bin_edges(values: np.ndarray, count: int) -> List[float]:
+    finite_min = float(np.nanmin(values))
+    finite_max = float(np.nanmax(values))
+    if not np.isfinite(finite_min) or not np.isfinite(finite_max) or finite_max <= finite_min:
+        finite_min, finite_max = -1.0, 1.0
+    bins = int(max(2, count)) + 1
+    return np.linspace(finite_min, finite_max, bins).astype(float).tolist()
 
 
 def _build_msm_payload(
@@ -678,38 +690,60 @@ def _build_fes_payload(
     logger.info("Building FES...")
     fes_raw = _build_fes(working_dataset, opts, applied)
     if isinstance(fes_raw, dict) and "result" in fes_raw:
-        result_obj = fes_raw.get("result")
-        names = tuple(
-            x for x in (fes_raw.get("cv1_name"), fes_raw.get("cv2_name")) if x
-        )
-        bins_tuple: Optional[Tuple[int, ...]] = None
-        if isinstance(applied.bins, dict) and names:
-            candidate: List[int] = []
-            for name in names:
-                key = str(name)
-                value = applied.bins.get(key) if applied.bins else None
-                if value is None and applied.bins:
-                    value = applied.bins.get(key.lower())
-                if value is None:
-                    candidate = []
-                    break
-                candidate.append(int(value))
-            if candidate and all(v > 0 for v in candidate):
-                bins_tuple = tuple(candidate)
-        if bins_tuple is None and isinstance(applied.bins, dict):
-            ordered = [int(v) for v in applied.bins.values() if int(v) > 0]
-            if names and len(ordered) >= len(names):
-                bins_tuple = tuple(ordered[: len(names)])
+        result = fes_raw.get("result")
+        names = _extract_fes_names(fes_raw)
+        bins_tuple = _derive_fes_bins(applied, names)
         metadata.fes = {
             "bins": bins_tuple,
             "names": names,
             "temperature": opts.temperature,
         }
-        return result_obj
+        return result
     metadata.fes = None
     if isinstance(fes_raw, dict) and fes_raw.get("skipped"):
         return None
     return fes_raw
+
+
+def _extract_fes_names(fes_payload: dict[str, Any]) -> Tuple[str, ...]:
+    raw = (fes_payload.get("cv1_name"), fes_payload.get("cv2_name"))
+    return tuple(name for name in raw if isinstance(name, str) and name)
+
+
+def _derive_fes_bins(
+    applied: AppliedOpts, names: Tuple[str, ...]
+) -> Optional[Tuple[int, ...]]:
+    if not names or not isinstance(applied.bins, dict):
+        return None
+    direct = _lookup_named_bins(applied.bins, names)
+    if direct is not None:
+        return direct
+    ordered = [int(v) for v in applied.bins.values() if _is_positive_int(v)]
+    if len(ordered) >= len(names):
+        return tuple(ordered[: len(names)])
+    return None
+
+
+def _lookup_named_bins(
+    bins_cfg: dict[str, Any], names: Tuple[str, ...]
+) -> Optional[Tuple[int, ...]]:
+    candidate: List[int] = []
+    for name in names:
+        key = str(name)
+        value = bins_cfg.get(key)
+        if value is None:
+            value = bins_cfg.get(key.lower())
+        if not _is_positive_int(value):
+            return None
+        candidate.append(int(value))
+    return tuple(candidate)
+
+
+def _is_positive_int(value: Any) -> bool:
+    try:
+        return int(value) > 0
+    except Exception:
+        return False
 
 
 def _build_tram_payload(

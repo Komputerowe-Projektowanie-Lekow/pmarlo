@@ -13,9 +13,6 @@ import numpy as np
 # Standardize math defaults to float32 end-to-end
 import torch  # type: ignore
 
-torch.set_float32_matmul_precision("high")
-torch.set_default_dtype(torch.float32)
-
 
 logger = logging.getLogger(__name__)
 
@@ -40,15 +37,13 @@ class PmarloApiIncompatibilityError(RuntimeError):
 
 # Official DeepTICA import and helpers (mlcolvar>=1.2)
 try:  # pragma: no cover - optional extra
-    pass  # type: ignore
-except Exception as e:  # pragma: no cover - optional extra
-    raise ImportError("Install optional extra pmarlo[mlcv] to use Deep-TICA") from e
-try:  # pragma: no cover - optional extra
     from mlcolvar.cvs import DeepTICA  # type: ignore
     from mlcolvar.utils.timelagged import (
         create_timelagged_dataset as _create_timelagged_dataset,  # type: ignore
     )
 except Exception as e:  # pragma: no cover - optional extra
+    if isinstance(e, ImportError):
+        raise ImportError("Install optional extra pmarlo[mlcv] to use Deep-TICA") from e
     raise PmarloApiIncompatibilityError(
         "mlcolvar installed but DeepTICA not found in expected locations"
     ) from e
@@ -59,6 +54,10 @@ from sklearn.preprocessing import StandardScaler  # type: ignore
 from pmarlo.ml.deeptica.whitening import apply_output_transform
 
 from .losses import VAMP2Loss
+
+
+torch.set_float32_matmul_precision("high")
+torch.set_default_dtype(torch.float32)
 
 
 def _resolve_activation_module(name: str):
@@ -78,40 +77,34 @@ def _resolve_activation_module(name: str):
     return _nn.Tanh()
 
 
+def _coerce_dropout_sequence(spec: Any) -> List[float]:
+    if spec is None:
+        return []
+    if isinstance(spec, (int, float)) and not isinstance(spec, bool):
+        return [float(spec)]
+    if isinstance(spec, str):
+        return [_safe_float(spec)]
+    if isinstance(spec, Iterable) and not isinstance(spec, (bytes, str)):
+        return [_safe_float(item) for item in spec]
+    return [_safe_float(spec)]
+
+
+def _safe_float(value: Any) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return 0.0
+
+
 def _normalize_hidden_dropout(spec: Any, num_hidden: int) -> List[float]:
     """Expand a dropout specification to match the number of hidden transitions."""
 
     if num_hidden <= 0:
         return []
 
-    values: List[float]
-    if spec is None:
-        values = [0.0] * num_hidden
-    elif isinstance(spec, (int, float)) and not isinstance(spec, bool):
-        values = [float(spec)] * num_hidden
-    elif isinstance(spec, str):
-        try:
-            scalar = float(spec)
-        except ValueError:
-            scalar = 0.0
-        values = [scalar] * num_hidden
-    else:
-        values = []
-        if isinstance(spec, Iterable) and not isinstance(spec, (bytes, str)):
-            for item in spec:
-                try:
-                    values.append(float(item))
-                except Exception:
-                    values.append(0.0)
-        else:
-            try:
-                scalar = float(spec)
-            except Exception:
-                scalar = 0.0
-            values = [scalar] * num_hidden
-
+    values = _coerce_dropout_sequence(spec)
     if not values:
-        values = [0.0] * num_hidden
+        values = [0.0]
 
     if len(values) < num_hidden:
         last = values[-1]
@@ -455,109 +448,124 @@ class DeepTICAModel:
     @classmethod
     def load(cls, path: Path) -> "DeepTICAModel":
         path = Path(path)
-        cfg = DeepTICAConfig(
-            **json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
-        )
-        scaler_ckpt = torch.load(path.with_suffix(".scaler.pt"), map_location="cpu")
-        scaler = StandardScaler(with_mean=True, with_std=True)
-        # Rehydrate the necessary attributes for transform()
-        scaler.mean_ = np.asarray(scaler_ckpt["mean"], dtype=np.float64)
-        scaler.scale_ = np.asarray(scaler_ckpt["std"], dtype=np.float64)
-        # Some sklearn versions also check these, so set conservatively if missing
-        try:  # pragma: no cover - attribute presence varies across versions
-            scaler.n_features_in_ = int(scaler.mean_.shape[0])  # type: ignore[attr-defined]
-        except Exception:
-            pass
-        # Rebuild network using the official constructor, then wrap with pre/post layers
-        in_dim = int(scaler.mean_.shape[0])
-        hidden_cfg = tuple(int(h) for h in getattr(cfg, "hidden", ()) or ())
-        if bool(getattr(cfg, "linear_head", False)):
-            hidden_layers: tuple[int, ...] = ()
-        else:
-            hidden_layers = hidden_cfg if hidden_cfg else (32, 16)
-        layers = [in_dim, *hidden_layers, int(cfg.n_out)]
-        activation_name = (
-            str(getattr(cfg, "activation", "gelu")).lower().strip() or "gelu"
-        )
-        hidden_dropout_cfg: Any = getattr(cfg, "hidden_dropout", ())
-        layer_norm_hidden = bool(getattr(cfg, "layer_norm_hidden", False))
-        try:
-            core = DeepTICA(
-                layers=layers,
-                n_cvs=int(cfg.n_out),
-                activation=activation_name,
-                options={"norm_in": False},
-            )
-        except TypeError:
-            core = DeepTICA(
-                layers=layers,
-                n_cvs=int(cfg.n_out),
-                options={"norm_in": False},
-            )
-            _override_core_mlp(
-                core,
-                layers,
-                activation_name,
-                bool(getattr(cfg, "linear_head", False)),
-                hidden_dropout=hidden_dropout_cfg,
-                layer_norm_hidden=layer_norm_hidden,
-            )
-        else:
-            _override_core_mlp(
-                core,
-                layers,
-                activation_name,
-                bool(getattr(cfg, "linear_head", False)),
-                hidden_dropout=hidden_dropout_cfg,
-                layer_norm_hidden=layer_norm_hidden,
-            )
-        import torch.nn as _nn  # type: ignore
-
-        def _strip_batch_norm(module: _nn.Module) -> None:
-            for name, child in module.named_children():
-                if isinstance(child, _nn.modules.batchnorm._BatchNorm):
-                    setattr(module, name, _nn.Identity())
-                else:
-                    _strip_batch_norm(child)
-
-        class _PrePostWrapper(_nn.Module):  # type: ignore[misc]
-            def __init__(self, inner, in_features: int, *, ln_in: bool, p_drop: float):
-                super().__init__()
-                self.ln = _nn.LayerNorm(in_features) if ln_in else _nn.Identity()
-                p = float(max(0.0, min(1.0, p_drop)))
-                self.drop_in = _nn.Dropout(p=p) if p > 0 else _nn.Identity()
-                self.inner = inner
-                self.drop_out = _nn.Identity()
-
-            def forward(self, x):  # type: ignore[override]
-                x = self.ln(x)
-                x = self.drop_in(x)
-                return self.inner(x)
-
-        _strip_batch_norm(core)
-        dropout_in = getattr(cfg, "dropout_input", None)
-        if dropout_in is None:
-            dropout_in = getattr(cfg, "dropout", 0.1)
-        # Ensure dropout_in is not None before converting to float
-        if dropout_in is None:
-            dropout_in = 0.1
-        net = _PrePostWrapper(
-            core,
-            in_dim,
-            ln_in=bool(getattr(cfg, "layer_norm_in", True)),
-            p_drop=float(dropout_in),
-        )
+        cfg = _load_deeptica_config(path)
+        scaler = _load_scaler_checkpoint(path)
+        core = _construct_deeptica_core(cfg, scaler)
+        net = _wrap_with_preprocessing_layers(core, cfg, scaler)
         state = torch.load(path.with_suffix(".pt"), map_location="cpu")
         net.load_state_dict(state["state_dict"])  # type: ignore[index]
         net.eval()
-        history: dict | None = None
-        history_path = path.with_suffix(".history.json")
-        if history_path.exists():
-            try:
-                history = json.loads(history_path.read_text(encoding="utf-8"))
-            except Exception:
-                history = None
+        history = _load_training_history(path)
         return cls(cfg, scaler, net, training_history=history)
+
+
+def _load_deeptica_config(path: Path) -> DeepTICAConfig:
+    data = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+    return DeepTICAConfig(**data)
+
+
+def _load_scaler_checkpoint(path: Path) -> StandardScaler:
+    scaler_ckpt = torch.load(path.with_suffix(".scaler.pt"), map_location="cpu")
+    scaler = StandardScaler(with_mean=True, with_std=True)
+    scaler.mean_ = np.asarray(scaler_ckpt["mean"], dtype=np.float64)
+    scaler.scale_ = np.asarray(scaler_ckpt["std"], dtype=np.float64)
+    try:  # pragma: no cover - attribute presence varies across versions
+        scaler.n_features_in_ = int(scaler.mean_.shape[0])  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    return scaler
+
+
+def _construct_deeptica_core(cfg: Any, scaler: StandardScaler):
+    in_dim = int(np.asarray(getattr(scaler, "mean_", []), dtype=np.float64).shape[0])
+    hidden_layers = _resolve_hidden_layers(cfg)
+    layers = [in_dim, *hidden_layers, int(getattr(cfg, "n_out", 2))]
+    activation_name = str(getattr(cfg, "activation", "gelu")).lower().strip() or "gelu"
+    hidden_dropout_cfg: Any = getattr(cfg, "hidden_dropout", ())
+    layer_norm_hidden = bool(getattr(cfg, "layer_norm_hidden", False))
+    linear_head = bool(getattr(cfg, "linear_head", False))
+    try:
+        core = DeepTICA(
+            layers=layers,
+            n_cvs=int(getattr(cfg, "n_out", 2)),
+            activation=activation_name,
+            options={"norm_in": False},
+        )
+    except TypeError:
+        core = DeepTICA(
+            layers=layers,
+            n_cvs=int(getattr(cfg, "n_out", 2)),
+            options={"norm_in": False},
+        )
+    _override_core_mlp(
+        core,
+        layers,
+        activation_name,
+        linear_head,
+        hidden_dropout=hidden_dropout_cfg,
+        layer_norm_hidden=layer_norm_hidden,
+    )
+    _strip_batch_norm(core)
+    return core
+
+
+def _resolve_hidden_layers(cfg: Any) -> tuple[int, ...]:
+    hidden_cfg = tuple(int(h) for h in getattr(cfg, "hidden", ()) or ())
+    if bool(getattr(cfg, "linear_head", False)):
+        return ()
+    return hidden_cfg if hidden_cfg else (32, 16)
+
+
+def _wrap_with_preprocessing_layers(core: Any, cfg: Any, scaler: StandardScaler):
+    import torch.nn as _nn  # type: ignore
+
+    in_dim = int(scaler.mean_.shape[0])
+    dropout_in = _resolve_input_dropout(cfg)
+    ln_in = bool(getattr(cfg, "layer_norm_in", True))
+    return _PrePostWrapper(core, in_dim, ln_in=ln_in, p_drop=float(dropout_in))
+
+
+def _resolve_input_dropout(cfg: Any) -> float:
+    dropout_in = getattr(cfg, "dropout_input", None)
+    if dropout_in is None:
+        dropout_in = getattr(cfg, "dropout", 0.1)
+    return float(dropout_in if dropout_in is not None else 0.1)
+
+
+def _strip_batch_norm(module: Any) -> None:
+    import torch.nn as _nn  # type: ignore
+
+    for name, child in module.named_children():
+        if isinstance(child, _nn.modules.batchnorm._BatchNorm):
+            setattr(module, name, _nn.Identity())
+        else:
+            _strip_batch_norm(child)
+
+
+class _PrePostWrapper(torch.nn.Module):  # type: ignore[misc]
+    def __init__(self, inner: Any, in_features: int, *, ln_in: bool, p_drop: float):
+        super().__init__()
+        import torch.nn as _nn  # type: ignore
+
+        self.ln = _nn.LayerNorm(in_features) if ln_in else _nn.Identity()
+        prob = float(max(0.0, min(1.0, p_drop)))
+        self.drop_in = _nn.Dropout(p=prob) if prob > 0 else _nn.Identity()
+        self.inner = inner
+
+    def forward(self, x):  # type: ignore[override]
+        x = self.ln(x)
+        x = self.drop_in(x)
+        return self.inner(x)
+
+
+def _load_training_history(path: Path) -> Optional[dict]:
+    history_path = path.with_suffix(".history.json")
+    if not history_path.exists():
+        return None
+    try:
+        return json.loads(history_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
 
     def to_torchscript(self, path: Path) -> Path:
         path = Path(path)
@@ -565,31 +573,10 @@ class DeepTICAModel:
         self.net.eval()
         # Trace with single precision (typical for inference)
         example = torch.zeros(1, int(self.scaler.mean_.shape[0]), dtype=torch.float32)
-        # Work around LightningModule property access during JIT introspection
-        try:
-
-            def _mark_scripting_safe(mod):
-                try:
-                    if hasattr(mod, "_jit_is_scripting"):
-                        setattr(mod, "_jit_is_scripting", True)
-                except Exception:
-                    pass
-                try:
-                    for _name, _child in getattr(mod, "named_modules", lambda: [])():
-                        try:
-                            if hasattr(_child, "_jit_is_scripting"):
-                                setattr(_child, "_jit_is_scripting", True)
-                        except Exception:
-                            continue
-                except Exception:
-                    pass
-
-            _mark_scripting_safe(self.net)
-            base = getattr(self.net, "inner", None)
-            if base is not None:
-                _mark_scripting_safe(base)
-        except Exception:
-            pass
+        _mark_module_scripting_safe(self.net)
+        base = getattr(self.net, "inner", None)
+        if base is not None:
+            _mark_module_scripting_safe(base)
         ts = torch.jit.trace(self.net.to(torch.float32), example)
         out = path.with_suffix(".ts")
         try:
@@ -598,6 +585,20 @@ class DeepTICAModel:
             # Fallback to torch.jit.save for broader compatibility
             torch.jit.save(ts, str(out))
         return out
+
+
+def _mark_module_scripting_safe(module: Any) -> None:
+    try:
+        if hasattr(module, "_jit_is_scripting"):
+            setattr(module, "_jit_is_scripting", True)
+    except Exception:
+        return
+    try:
+        iterator = getattr(module, "named_modules", lambda: [])()
+    except Exception:
+        return
+    for _name, child in iterator:
+        _mark_module_scripting_safe(child)
 
     def plumed_snippet(self, model_path: Path) -> str:
         ts = Path(model_path).with_suffix(".ts").name
@@ -934,7 +935,7 @@ def train_deeptica(
                     raise ValueError(
                         "Invalid training weights: mean(weight) must be > 0"
                     )
-        except Exception as _chk_e:
+        except Exception:
             # Surface the error early with a clear message
             raise
 

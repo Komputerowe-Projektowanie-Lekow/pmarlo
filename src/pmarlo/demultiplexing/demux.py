@@ -12,7 +12,7 @@ import json
 import logging
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Mapping, Optional, cast
+from typing import Any, Dict, Literal, Mapping, Optional, cast
 
 import numpy as np
 from openmm import unit  # type: ignore

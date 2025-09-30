@@ -116,6 +116,7 @@ all = ["torch", "mlcolvar", "deeptime", "streamlit", "plotly", "matplotlib", "sc
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^3.7"
 mypy = "^1.11"
+isort = "^6.0.1"
 
 [tool.poetry.group.tests.dependencies]
 pytest = "^8.2"
