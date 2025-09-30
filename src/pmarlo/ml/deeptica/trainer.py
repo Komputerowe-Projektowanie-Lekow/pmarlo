@@ -5,10 +5,11 @@ from __future__ import annotations
 import csv
 import logging
 import math
+import numbers
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Sequence, TypedDict, cast
+from typing import Dict, Iterator, List, Mapping, Optional, Sequence, TypedDict, cast
 
 import numpy as np
 import torch
@@ -17,6 +18,46 @@ from torch.utils.data import DataLoader, Dataset
 from pmarlo.features.deeptica.losses import VAMP2Loss
 
 logger = logging.getLogger(__name__)
+
+MetricMapping = Mapping[str, object]
+
+
+def _metric_scalar(metrics: MetricMapping, key: str, default: float = 0.0) -> float:
+    """Extract a numeric scalar from a metrics mapping, guarding conversions."""
+
+    value = metrics.get(key, default)
+    if isinstance(value, numbers.Real):
+        return float(value)
+    if isinstance(value, np.generic):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return float(default)
+    return float(default)
+
+
+def _metric_vector(metrics: MetricMapping, key: str) -> list[float]:
+    """Extract a sequence of floats from the metrics mapping when available."""
+
+    value = metrics.get(key)
+    if isinstance(value, np.ndarray):
+        array = np.asarray(value, dtype=np.float64)
+        return cast(list[float], array.tolist())
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        result: list[float] = []
+        for item in value:
+            if isinstance(item, numbers.Real):
+                result.append(float(item))
+            elif isinstance(item, str):
+                try:
+                    result.append(float(item))
+                except ValueError:
+                    continue
+        return result
+    empty: list[float] = []
+    return empty
 
 
 # inherit for the typeddict
@@ -109,10 +150,10 @@ class _EpochAccumulator:
         return agg
 
     def _update_condition_metrics(self, outcome: _BatchOutcome) -> None:
-        metrics = outcome.metrics
+        metrics: MetricMapping = outcome.metrics
         batch_size = float(outcome.batch_size)
-        cond_c00 = float(metrics.get("cond_C00", 0.0))
-        cond_ctt = float(metrics.get("cond_Ctt", 0.0))
+        cond_c00 = _metric_scalar(metrics, "cond_C00")
+        cond_ctt = _metric_scalar(metrics, "cond_Ctt")
         self.cond_c00_sum += cond_c00 * batch_size
         self.cond_ctt_sum += cond_ctt * batch_size
         self.cond_weight += batch_size
@@ -129,16 +170,16 @@ class _EpochAccumulator:
             self.mean_zt_sum, metrics.get("mean_zt"), batch_size
         )
         self.eig0_min = min(
-            self.eig0_min, float(metrics.get("eig_C00_min", self.eig0_min))
+            self.eig0_min, _metric_scalar(metrics, "eig_C00_min", self.eig0_min)
         )
         self.eig0_max = max(
-            self.eig0_max, float(metrics.get("eig_C00_max", self.eig0_max))
+            self.eig0_max, _metric_scalar(metrics, "eig_C00_max", self.eig0_max)
         )
         self.eigt_min = min(
-            self.eigt_min, float(metrics.get("eig_Ctt_min", self.eigt_min))
+            self.eigt_min, _metric_scalar(metrics, "eig_Ctt_min", self.eigt_min)
         )
         self.eigt_max = max(
-            self.eigt_max, float(metrics.get("eig_Ctt_max", self.eigt_max))
+            self.eigt_max, _metric_scalar(metrics, "eig_Ctt_max", self.eigt_max)
         )
 
     @staticmethod
@@ -190,16 +231,16 @@ class _CurriculumMetrics:
         self,
         block: _TauBlock,
         overall_epoch: int,
-        train_metrics: Dict[str, object],
-        val_metrics: Dict[str, float],
+        train_metrics: MetricMapping,
+        val_metrics: MetricMapping,
         lr: float,
     ) -> None:
-        train_loss = float(train_metrics.get("loss", 0.0))
-        train_score = float(train_metrics.get("score", 0.0))
-        grad_norm_mean = float(train_metrics.get("grad_norm_mean", 0.0))
-        grad_norm_max = float(train_metrics.get("grad_norm_max", 0.0))
-        val_loss = float(val_metrics.get("loss", 0.0))
-        val_score = float(val_metrics.get("score", 0.0))
+        train_loss = _metric_scalar(train_metrics, "loss")
+        train_score = _metric_scalar(train_metrics, "score")
+        grad_norm_mean = _metric_scalar(train_metrics, "grad_norm_mean")
+        grad_norm_max = _metric_scalar(train_metrics, "grad_norm_max")
+        val_loss = _metric_scalar(val_metrics, "loss")
+        val_score = _metric_scalar(val_metrics, "score")
         block["epochs"].append(overall_epoch)
         block["train_loss_curve"].append(train_loss)
         block["train_score_curve"].append(train_score)
@@ -519,40 +560,28 @@ class DeepTICACurriculumTrainer:
                 block, overall_epoch, train_metrics, val_metrics, current_lr
             )
             self._record_condition_metrics(train_metrics)
-            self._update_best(overall_epoch, tau, float(val_metrics.get("score", 0.0)))
+            self._update_best(overall_epoch, tau, _metric_scalar(val_metrics, "score"))
             self._maybe_log_tau_progress(
                 tau, epoch_idx, current_lr, train_metrics, val_metrics
             )
 
-    def _record_condition_metrics(self, train_metrics: Dict[str, object]) -> None:
-        cond_c00 = float(train_metrics.get("cond_c00", 0.0))
-        cond_ctt = float(train_metrics.get("cond_ctt", 0.0))
+    def _record_condition_metrics(self, train_metrics: MetricMapping) -> None:
+        cond_c00 = _metric_scalar(train_metrics, "cond_c00")
+        cond_ctt = _metric_scalar(train_metrics, "cond_ctt")
         self.cond_c00_curve.append(cond_c00)
         self.cond_ctt_curve.append(cond_ctt)
-        var_z0 = train_metrics.get("var_z0")
-        var_zt = train_metrics.get("var_zt")
-        mean_z0 = train_metrics.get("mean_z0")
-        mean_zt = train_metrics.get("mean_zt")
-        eig0_min = float(train_metrics.get("eig_c00_min", float("nan")))
-        eig0_max = float(train_metrics.get("eig_c00_max", float("nan")))
-        eigt_min = float(train_metrics.get("eig_ctt_min", float("nan")))
-        eigt_max = float(train_metrics.get("eig_ctt_max", float("nan")))
+        eig0_min = _metric_scalar(train_metrics, "eig_c00_min", float("nan"))
+        eig0_max = _metric_scalar(train_metrics, "eig_c00_max", float("nan"))
+        eigt_min = _metric_scalar(train_metrics, "eig_ctt_min", float("nan"))
+        eigt_max = _metric_scalar(train_metrics, "eig_ctt_max", float("nan"))
         self.c0_eig_min_curve.append(eig0_min)
         self.c0_eig_max_curve.append(eig0_max)
         self.ctt_eig_min_curve.append(eigt_min)
         self.ctt_eig_max_curve.append(eigt_max)
-        self.var_z0_curve.append(
-            [float(x) for x in var_z0] if isinstance(var_z0, list) else []
-        )
-        self.var_zt_curve.append(
-            [float(x) for x in var_zt] if isinstance(var_zt, list) else []
-        )
-        self.mean_z0_curve.append(
-            [float(x) for x in mean_z0] if isinstance(mean_z0, list) else []
-        )
-        self.mean_zt_curve.append(
-            [float(x) for x in mean_zt] if isinstance(mean_zt, list) else []
-        )
+        self.var_z0_curve.append(_metric_vector(train_metrics, "var_z0"))
+        self.var_zt_curve.append(_metric_vector(train_metrics, "var_zt"))
+        self.mean_z0_curve.append(_metric_vector(train_metrics, "mean_z0"))
+        self.mean_zt_curve.append(_metric_vector(train_metrics, "mean_zt"))
         if cond_c00 > 1e6:
             logger.warning(
                 "Condition number cond(C00)=%.3e exceeds stability threshold",
@@ -569,8 +598,8 @@ class DeepTICACurriculumTrainer:
         tau: int,
         epoch_idx: int,
         current_lr: float,
-        train_metrics: Dict[str, object],
-        val_metrics: Dict[str, float],
+        train_metrics: MetricMapping,
+        val_metrics: MetricMapping,
     ) -> None:
         log_every = int(self.cfg.log_every)
         if log_every <= 0:
@@ -590,10 +619,10 @@ class DeepTICACurriculumTrainer:
             epoch_num,
             epochs_per_tau,
             current_lr,
-            float(train_metrics.get("loss", 0.0)),
-            float(val_metrics.get("score", 0.0)),
-            float(train_metrics.get("grad_norm_mean", 0.0)),
-            float(train_metrics.get("grad_norm_max", 0.0)),
+            _metric_scalar(train_metrics, "loss"),
+            _metric_scalar(val_metrics, "score"),
+            _metric_scalar(train_metrics, "grad_norm_mean"),
+            _metric_scalar(train_metrics, "grad_norm_max"),
         )
 
     def _build_history(
@@ -716,12 +745,12 @@ class DeepTICACurriculumTrainer:
 
     def _train_one_epoch(
         self, loader: DataLoader[tuple[torch.Tensor, torch.Tensor]]
-    ) -> Dict[str, float]:
+    ) -> Dict[str, object]:
         self.module.train()
         accumulator = _EpochAccumulator()
         for outcome in self._iterate_training_batches(loader):
             accumulator.update(outcome)
-        return accumulator.finalize()  # type: ignore[return-value]
+        return cast(Dict[str, object], accumulator.finalize())
 
     def _iterate_training_batches(
         self, loader: DataLoader[tuple[torch.Tensor, torch.Tensor]]

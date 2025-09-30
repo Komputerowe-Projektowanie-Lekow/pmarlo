@@ -149,8 +149,8 @@ MarkovStateModel: Optional[Type[Any]] = None
 for _name in ("Pipeline", "MarkovStateModel"):
     module_name, attr_name = _OPTIONAL_EXPORTS[_name]
     try:
-        module = import_module(module_name)
-        value = getattr(module, attr_name)
+        loaded_module = import_module(module_name)
+        value = getattr(loaded_module, attr_name)
     except Exception:  # pragma: no cover - optional dependency missing
         continue
     else:
@@ -165,11 +165,11 @@ for optional in ("Pipeline", "MarkovStateModel"):
 # Free-energy exports are appended to ``__all__`` only when import succeeds.
 for optional in ("FESResult", "PMFResult", "generate_1d_pmf", "generate_2d_fes"):
     module_name, attr_name = _OPTIONAL_EXPORTS[optional]
-    module, exc = _import_or_none(module_name)
-    if module is None:
+    optional_module, exc = _import_or_none(module_name)
+    if optional_module is None:
         _warn_stub(optional, exc)
         continue
-    value = getattr(module, attr_name)
+    value = getattr(optional_module, attr_name)
     _bind_export(optional, value)
     __all__.append(optional)
 
@@ -179,6 +179,8 @@ def _resolve_export(name: str) -> Any:
         module_name = _MODULE_EXPORTS[name]
         module, exc = _import_or_none(module_name)
         if module is None:
+            if exc is None:
+                raise ImportError(f"Could not import module {module_name!r} for {name!r}")
             if name != "api":  # pragma: no cover - defensive guard for other modules
                 raise exc
             module = _build_api_stub(module_name, exc)
@@ -196,6 +198,8 @@ def _resolve_export(name: str) -> Any:
     module, exc = _import_or_none(module_name)
     if module is None:
         _warn_stub(name, exc)
+        if exc is None:
+            raise ImportError(f"Could not import optional dependency for {name!r}")
         raise ImportError(f"Could not import optional dependency for {name!r}") from exc
     value = getattr(module, attr_name)
     _bind_export(name, value)

@@ -5,6 +5,7 @@ import json
 import logging
 from pathlib import Path
 from typing import (
+    TYPE_CHECKING,
     Any,
     Callable,
     Dict,
@@ -15,15 +16,14 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
-    TYPE_CHECKING,
 )
 
 import mdtraj as md  # type: ignore
 import numpy as np
 
-
 if TYPE_CHECKING:
     from .io.trajectory_writer import MDTrajDCDWriter
+
 from .config import JOINT_USE_REWEIGHT
 from .data.aggregate import aggregate_and_build as _aggregate_and_build
 from .features import get_feature

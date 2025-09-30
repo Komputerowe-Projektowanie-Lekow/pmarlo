@@ -10,14 +10,12 @@ simulation, and Markov state model analysis using the transform runner system.
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional
 
-from ..markov_state_model.enhanced_msm import EnhancedMSM as MarkovStateModel
-
-if TYPE_CHECKING:
-    from ..markov_state_model.enhanced_msm import EnhancedMSM as MarkovStateModelType
-else:
-    MarkovStateModelType = object  # runtime stub; only used for annotations
+from ..markov_state_model.enhanced_msm import (
+    EnhancedMSM as MarkovStateModel,
+    EnhancedMSMProtocol,
+)
 
 from ..protein.protein import Protein
 from ..replica_exchange.config import RemdConfig
@@ -95,7 +93,7 @@ class Pipeline:
         self.protein: Optional[Protein] = None
         self.replica_exchange: Optional[ReplicaExchange] = None
         self.simulation: Optional[Simulation] = None
-        self.markov_state_model: Optional["MarkovStateModelType"] = None
+        self.markov_state_model: Optional[EnhancedMSMProtocol] = None
 
         # Paths
         self.prepared_pdb: Optional[Path] = None
@@ -255,7 +253,7 @@ class Pipeline:
         logger.info(f"Simulation setup at {self.temperatures[0]}K")
         return self.simulation
 
-    def setup_msm_analysis(self) -> "MarkovStateModelType":
+    def setup_msm_analysis(self) -> EnhancedMSMProtocol:
         """
         Setup Markov state model analysis.
 
@@ -267,11 +265,7 @@ class Pipeline:
         msm_output_dir = self.output_dir / "msm_analysis"
         msm_output_dir.mkdir(parents=True, exist_ok=True)
 
-        msm_ctor = cast(Any, MarkovStateModel)
-        self.markov_state_model = cast(
-            "MarkovStateModelType",
-            msm_ctor(output_dir=str(msm_output_dir)),
-        )
+        self.markov_state_model = MarkovStateModel(output_dir=str(msm_output_dir))
 
         logger.info(f"MSM setup for {self.n_states} states")
         return self.markov_state_model
