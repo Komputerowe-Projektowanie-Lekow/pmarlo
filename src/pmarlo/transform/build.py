@@ -6,6 +6,7 @@ import logging
 import math
 import os
 from dataclasses import asdict, dataclass, field, is_dataclass, replace
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union, cast
@@ -597,7 +598,10 @@ def _extract_artifacts_dict(dataset: Any) -> Dict[str, Any]:
     if isinstance(dataset, dict):
         raw = dataset.get("__artifacts__")
         if isinstance(raw, dict):
-            return _sanitize_artifacts(raw)
+            sanitized = _sanitize_artifacts(raw)
+            if isinstance(sanitized, dict):
+                return cast(Dict[str, Any], sanitized)
+            return {}
     return {}
 
 

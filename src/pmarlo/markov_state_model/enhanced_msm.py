@@ -4,10 +4,33 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Protocol, Sequence, Union, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    List,
+    Literal,
+    Optional,
+    Protocol,
+    Sequence,
+    Union,
+    cast,
+)
 
 
 class EnhancedMSMProtocol(Protocol):
+    def __init__(
+        self,
+        *,
+        trajectory_files: str | Sequence[str] | None = ...,
+        topology_file: str | None = ...,
+        temperatures: Sequence[float] | None = ...,
+        output_dir: str | None = ...,
+        **kwargs: object,
+    ) -> None:
+        ...
+
     def load_trajectories(
         self,
         *,
@@ -66,14 +89,39 @@ class EnhancedMSMProtocol(Protocol):
 
 _SKLEARN_SPEC = importlib.util.find_spec("sklearn")
 
-if _SKLEARN_SPEC is None:  # pragma: no cover - exercised in minimal test envs
-    from ._enhanced_stub import EnhancedMSMStub as _EnhancedMSMStub
-    from ._enhanced_stub import run_complete_msm_analysis as _run_complete_msm_analysis
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from ._enhanced_impl import EnhancedMSM as _EnhancedMSMImpl
+    from ._enhanced_impl import run_complete_msm_analysis as _run_complete_msm_analysis
+else:
+    if _SKLEARN_SPEC is None:  # pragma: no cover - exercised in minimal test envs
+        from ._enhanced_stub import EnhancedMSMStub as _EnhancedMSMImpl
+        from ._enhanced_stub import run_complete_msm_analysis as _run_complete_msm_analysis
+    else:  # pragma: no cover - relies on optional ML stack
+        from ._enhanced_impl import EnhancedMSM as _EnhancedMSMImpl
+        from ._enhanced_impl import run_complete_msm_analysis as _run_complete_msm_analysis
 
-    EnhancedMSM = cast(type[EnhancedMSMProtocol], _EnhancedMSMStub)
-    run_complete_msm_analysis = _run_complete_msm_analysis
-else:  # pragma: no cover - relies on optional ML stack
-    from ._enhanced_impl import EnhancedMSM, run_complete_msm_analysis
+
+class _RunAnalysisProto(Protocol):
+    def __call__(
+        self,
+        trajectory_files: str | List[str],
+        topology_file: str,
+        output_dir: str = ...,
+        n_states: int | Literal["auto"] = ...,
+        lag_time: int = ...,
+        feature_type: str = ...,
+        temperatures: Optional[List[float]] = ...,
+        stride: int = ...,
+        atom_selection: str | Sequence[int] | None = ...,
+        chunk_size: int = ...,
+    ) -> EnhancedMSMProtocol:
+        ...
+
+
+EnhancedMSM: type[EnhancedMSMProtocol] = cast(type[EnhancedMSMProtocol], _EnhancedMSMImpl)
+run_complete_msm_analysis: _RunAnalysisProto = cast(
+    _RunAnalysisProto, _run_complete_msm_analysis
+)
 
 
 __all__ = ["EnhancedMSMProtocol", "EnhancedMSM", "run_complete_msm_analysis"]

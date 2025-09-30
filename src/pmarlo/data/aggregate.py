@@ -176,28 +176,74 @@ def _safe_load_meta(path: Path) -> Any | None:
         return None
 
 
+def _normalise_kind_value(value: Any) -> str | None:
+    if isinstance(value, str):
+        trimmed = value.strip().lower()
+        if trimmed in {"demux", "replica"}:
+            return trimmed
+    return None
+
+
+def _maybe_kind_from_replica(replica_idx: Any) -> str | None:
+    if replica_idx is None:
+        return None
+    try:
+        if int(replica_idx) >= 0:
+            return "replica"
+    except (TypeError, ValueError):
+        return None
+    return None
+
+
+def _maybe_kind_from_temperature(temp: Any) -> str | None:
+    if temp is None:
+        return None
+    try:
+        temp_val = float(temp)
+    except (TypeError, ValueError):
+        return None
+    from math import isnan
+
+    if isnan(temp_val):
+        return None
+    return "demux"
+
+
+def _maybe_kind_from_source_path(source_info: Mapping[str, Any]) -> str | None:
+    raw_path = (
+        source_info.get("traj")
+        or source_info.get("path")
+        or source_info.get("file")
+        or source_info.get("source_path")
+        or ""
+    )
+    lower = str(raw_path).lower()
+    if "demux" in lower:
+        return "demux"
+    if "replica" in lower:
+        return "replica"
+    return None
+
+
 def _infer_shard_kind(meta: Any) -> list[str]:
-    kinds: list[str] = []
-    meta_kind = getattr(meta, "kind", None)
-    if meta_kind:
-        kinds.append(str(meta_kind))
-        return kinds
+    kind = _normalise_kind_value(getattr(meta, "kind", None))
+    if kind:
+        return [kind]
 
     source_info = getattr(meta, "source", {})
-    if isinstance(source_info, dict):
-        raw_path = (
-            source_info.get("traj")
-            or source_info.get("path")
-            or source_info.get("file")
-            or source_info.get("source_path")
-            or ""
-        )
-        lower = str(raw_path).lower()
-        if "demux" in lower:
-            kinds.append("demux")
-        elif lower:
-            kinds.append("replica")
-    return kinds
+    if not isinstance(source_info, dict):
+        return []
+
+    candidates = (
+        _normalise_kind_value(source_info.get("kind")),
+        _maybe_kind_from_replica(source_info.get("replica_index")),
+        _maybe_kind_from_temperature(source_info.get("temperature_K")),
+        _maybe_kind_from_source_path(source_info),
+    )
+    for candidate in candidates:
+        if candidate:
+            return [candidate]
+    return []
 
 
 def _maybe_temperature(meta: Any) -> float | None:

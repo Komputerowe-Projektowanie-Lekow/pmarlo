@@ -3,7 +3,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Tuple, cast
 
 import numpy as np
 
@@ -11,6 +11,11 @@ from ..experiments.benchmark_utils import get_environment_info
 from .plan import TransformPlan
 
 logger = logging.getLogger(__name__)
+
+
+class StepHandler(Protocol):
+    def __call__(self, context: Dict[str, Any], **kwargs: Any) -> Dict[str, Any]:
+        ...
 
 
 def smooth_fes(dataset, **kwargs):
@@ -1092,25 +1097,28 @@ def reduce_step(context: Dict[str, Any], **kwargs) -> Dict[str, Any]:
     return context
 
 
-_STEP_HANDLERS = {
-    "SMOOTH_FES": smooth_fes,
-    "LEARN_CV": learn_cv_step,
-    "REDUCE": reduce_step,
-    "REORDER_STATES": reorder_states,
-    "FILL_GAPS": fill_gaps,
-    "PROTEIN_PREPARATION": protein_preparation,
-    "SYSTEM_SETUP": system_setup,
-    "REPLICA_INITIALIZATION": replica_initialization,
-    "ENERGY_MINIMIZATION": energy_minimization,
-    "GRADUAL_HEATING": gradual_heating,
-    "EQUILIBRATION": equilibration,
-    "PRODUCTION_SIMULATION": production_simulation,
-    "TRAJECTORY_DEMUX": trajectory_demux,
-    "TRAJECTORY_ANALYSIS": trajectory_analysis,
-    "MSM_BUILD": msm_build,
-    "BUILD_ANALYSIS": build_analysis,
-    "BUILD": build_step,
-}
+_STEP_HANDLERS: Dict[str, StepHandler] = cast(
+    Dict[str, StepHandler],
+    {
+        "SMOOTH_FES": smooth_fes,
+        "LEARN_CV": learn_cv_step,
+        "REDUCE": reduce_step,
+        "REORDER_STATES": reorder_states,
+        "FILL_GAPS": fill_gaps,
+        "PROTEIN_PREPARATION": protein_preparation,
+        "SYSTEM_SETUP": system_setup,
+        "REPLICA_INITIALIZATION": replica_initialization,
+        "ENERGY_MINIMIZATION": energy_minimization,
+        "GRADUAL_HEATING": gradual_heating,
+        "EQUILIBRATION": equilibration,
+        "PRODUCTION_SIMULATION": production_simulation,
+        "TRAJECTORY_DEMUX": trajectory_demux,
+        "TRAJECTORY_ANALYSIS": trajectory_analysis,
+        "MSM_BUILD": msm_build,
+        "BUILD_ANALYSIS": build_analysis,
+        "BUILD": build_step,
+    },
+)
 
 
 def apply_transform_plan(dataset, plan: TransformPlan):

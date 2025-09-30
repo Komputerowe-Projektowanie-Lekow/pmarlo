@@ -1,84 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Dict,
-    List,
-    Literal,
-    Optional,
-    Protocol,
-    Union,
-    cast,
-)
+from typing import Any, Dict, List, Literal, Optional, Union
 
 # Runtime import for actual usage
-from .enhanced_msm import EnhancedMSM
-
-if TYPE_CHECKING:
-    # Type-only alias for annotations
-    from .enhanced_msm import EnhancedMSM as EnhancedMSMType
-else:
-    EnhancedMSMType = object
+from .enhanced_msm import EnhancedMSM, EnhancedMSMProtocol
 
 
-class SupportsMSMPipeline(Protocol):
-    def load_trajectories(
-        self,
-        *,
-        stride: int,
-        atom_selection: str | List[int] | None,
-        chunk_size: int,
-    ) -> None: ...
-
-    def compute_features(
-        self,
-        feature_type: str = ...,
-        n_features: Optional[int] = ...,
-        feature_stride: int = ...,
-        tica_lag: int = ...,
-        tica_components: Optional[int] = ...,
-        **kwargs: object,
-    ) -> None:  # noqa: D401
-        ...
-
-    def cluster_features(self, *, n_states: int | Literal["auto"]) -> None: ...
-
-    def build_msm(self, *, lag_time: int, method: str) -> None: ...
-
-    def compute_implied_timescales(self) -> None: ...
-
-    def generate_free_energy_surface(
-        self,
-        cv1_name: str = ...,
-        cv2_name: str = ...,
-        bins: int = ...,
-        temperature: float = ...,
-        **kwargs: object,
-    ) -> Dict[str, Any]: ...
-
-    def create_state_table(self) -> None: ...
-
-    def extract_representative_structures(self) -> None: ...
-
-    def save_analysis_results(self) -> None: ...
-
-    def plot_free_energy_surface(self, *, save_file: str) -> None: ...
-
-    def plot_implied_timescales(self, *, save_file: str) -> None: ...
-
-    def plot_implied_rates(self, *, save_file: str) -> None: ...
-
-    def plot_free_energy_profile(self, *, save_file: str) -> None: ...
-
-    def plot_ck_test(
-        self,
-        save_file: str = ...,
-        n_macrostates: int = ...,
-        factors: Optional[List[int]] = ...,
-        **kwargs: object,
-    ) -> Optional[Path]: ...
+SupportsMSMPipeline = EnhancedMSMProtocol
 
 
 def run_complete_msm_analysis(
@@ -92,9 +20,9 @@ def run_complete_msm_analysis(
     stride: int = 1,
     atom_selection: str | List[int] | None = None,
     chunk_size: int = 1000,
-) -> "EnhancedMSMType":
+) -> EnhancedMSMProtocol:
     msm = _create_msm(trajectory_files, topology_file, temperatures, output_dir)
-    msm_pipeline = cast(SupportsMSMPipeline, msm)
+    msm_pipeline: SupportsMSMPipeline = msm
     _load_and_featurize(
         msm_pipeline, stride, atom_selection, chunk_size, feature_type, n_states
     )
@@ -108,7 +36,7 @@ def _create_msm(
     topology_file: str,
     temperatures: Optional[List[float]],
     output_dir: str,
-) -> "EnhancedMSMType":
+) -> SupportsMSMPipeline:
     return EnhancedMSM(
         trajectory_files=trajectory_files,
         topology_file=topology_file,

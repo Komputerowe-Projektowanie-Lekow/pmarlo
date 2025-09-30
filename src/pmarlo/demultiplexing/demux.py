@@ -12,7 +12,7 @@ import json
 import logging
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, cast
+from typing import Any, Dict, List, Literal, Mapping, Optional, cast
 
 import numpy as np
 from openmm import unit  # type: ignore
@@ -23,7 +23,7 @@ from pmarlo.transform.progress import ProgressCB
 
 from ..replica_exchange import config as _cfg
 from .demux_engine import demux_streaming
-from .demux_metadata import DemuxIntegrityError, serialize_metadata
+from .demux_metadata import DemuxIntegrityError, DemuxMetadataDict, serialize_metadata
 from .demux_plan import build_demux_plan
 
 logger = logging.getLogger("pmarlo")
@@ -199,7 +199,7 @@ def _run_streaming_demux(
         temp_schedule,
         timestep_ps,
     )
-    meta_dict = serialize_metadata(result, plan, runtime_info)
+    meta_dict: DemuxMetadataDict = serialize_metadata(result, plan, runtime_info)
     meta_dict = _finalize_metadata_dict(
         meta_dict, plan, result, fill_policy, frames_mode
     )
@@ -267,7 +267,7 @@ def _run_legacy_demux(
         temp_schedule,
         timestep_ps,
     )
-    meta_dict = serialize_metadata(result, plan, runtime_info)
+    meta_dict: DemuxMetadataDict = serialize_metadata(result, plan, runtime_info)
     meta_dict = _finalize_metadata_dict(
         meta_dict, plan, result, fill_policy, frames_mode
     )
@@ -462,7 +462,7 @@ def _build_runtime_info(
 ) -> tuple[Dict[str, Any], int]:
     counts = Counter(int(seg.expected_frames) for seg in plan.segments)
     frames_mode = int(counts.most_common(1)[0][0]) if counts else 0
-    runtime_info = {
+    runtime_info: Dict[str, Any] = {
         "exchange_frequency_steps": int(remd.exchange_frequency),
         "integration_timestep_ps": timestep_ps,
         "fill_policy": fill_policy,
@@ -480,11 +480,11 @@ def _finalize_metadata_dict(
     result: Any,
     fill_policy: FillPolicy,
     frames_mode: int,
-) -> Dict[str, Any]:
-    if not isinstance(meta_dict, dict):
-        meta = {}
+) -> DemuxMetadataDict:
+    if isinstance(meta_dict, dict):
+        meta: Dict[str, Any] = dict(meta_dict)
     else:
-        meta = dict(meta_dict)
+        meta = {}
     meta.setdefault("schema_version", 2)
     meta.setdefault("segment_count", len(getattr(plan, "segments", []) or []))
     meta.setdefault("frames_per_segment", frames_mode)
@@ -514,11 +514,11 @@ def _finalize_metadata_dict(
             meta.setdefault("contiguous_blocks", blocks)
     except Exception:
         pass
-    return meta
+    return cast(DemuxMetadataDict, meta)
 
 
 def _write_metadata_file(
-    demux_file: Path, metadata: Dict[str, Any], *, mode: str
+    demux_file: Path, metadata: Mapping[str, Any], *, mode: str
 ) -> None:
     meta_path = demux_file.with_suffix(".meta.json")
     meta_path.write_text(json.dumps(metadata, indent=2))
