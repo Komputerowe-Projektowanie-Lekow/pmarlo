@@ -28,9 +28,6 @@ class PmarloApiIncompatibilityError(RuntimeError):
 # Official DeepTICA import and helpers (mlcolvar>=1.2)
 try:  # pragma: no cover - optional extra
     from mlcolvar.cvs import DeepTICA  # type: ignore
-    from mlcolvar.utils.timelagged import (
-        create_timelagged_dataset as _create_timelagged_dataset,  # type: ignore
-    )
 except Exception as e:  # pragma: no cover - optional extra
     if isinstance(e, ImportError):
         raise ImportError("Install optional extra pmarlo[mlcv] to use Deep-TICA") from e
@@ -391,23 +388,6 @@ def _resolve_input_dropout(cfg: Any) -> float:
 def _strip_batch_norm(module: Any) -> None:
     core_strip_batch_norm(module)
 
-
-class _PrePostWrapper(torch.nn.Module):  # type: ignore[misc]
-    def __init__(self, inner: Any, in_features: int, *, ln_in: bool, p_drop: float):
-        super().__init__()
-        import torch.nn as _nn  # type: ignore
-
-        self.ln = _nn.LayerNorm(in_features) if ln_in else _nn.Identity()
-        prob = float(max(0.0, min(1.0, p_drop)))
-        self.drop_in = _nn.Dropout(p=prob) if prob > 0 else _nn.Identity()
-        self.inner = inner
-
-    def forward(self, x):  # type: ignore[override]
-        x = self.ln(x)
-        x = self.drop_in(x)
-        return self.inner(x)
-
-
 def _load_training_history(path: Path) -> Optional[dict]:
     history_path = path.with_suffix(".history.json")
     if not history_path.exists():
@@ -492,85 +472,9 @@ def train_deeptica(
     # Transform, then switch to float32 for training
     Z = scaler.transform(np.asarray(X, dtype=np.float64)).astype(np.float32, copy=False)
 
-    # Build network with official constructor; disable internal normalization
-    in_dim = int(Z.shape[1])
-    hidden_cfg = tuple(int(h) for h in getattr(cfg, "hidden", ()) or ())
-    if bool(getattr(cfg, "linear_head", False)):
-        hidden_layers: tuple[int, ...] = ()
-    else:
-        hidden_layers = hidden_cfg if hidden_cfg else (32, 16)
-    layers = [in_dim, *hidden_layers, int(cfg.n_out)]
-    activation_name = str(getattr(cfg, "activation", "gelu")).lower().strip() or "gelu"
-    hidden_dropout_cfg: Any = getattr(cfg, "hidden_dropout", ())
-    layer_norm_hidden = bool(getattr(cfg, "layer_norm_hidden", False))
-    try:
-        core = DeepTICA(
-            layers=layers,
-            n_cvs=int(cfg.n_out),
-            activation=activation_name,
-            options={"norm_in": False},
-        )
-    except TypeError:
-        core = DeepTICA(
-            layers=layers,
-            n_cvs=int(cfg.n_out),
-            options={"norm_in": False},
-        )
-        _override_core_mlp(
-            core,
-            layers,
-            activation_name,
-            bool(getattr(cfg, "linear_head", False)),
-            hidden_dropout=hidden_dropout_cfg,
-            layer_norm_hidden=layer_norm_hidden,
-        )
-    else:
-        _override_core_mlp(
-            core,
-            layers,
-            activation_name,
-            bool(getattr(cfg, "linear_head", False)),
-            hidden_dropout=hidden_dropout_cfg,
-            layer_norm_hidden=layer_norm_hidden,
-        )
-    # Wrap with input LayerNorm and light dropout for stability on tiny nets
-    import torch.nn as _nn  # type: ignore
-
-    def _strip_batch_norm(module: _nn.Module) -> None:
-        for name, child in module.named_children():
-            if isinstance(child, _nn.modules.batchnorm._BatchNorm):
-                setattr(module, name, _nn.Identity())
-            else:
-                _strip_batch_norm(child)
-
-    class _PrePostWrapper(_nn.Module):  # type: ignore[misc]
-        def __init__(self, inner, in_features: int, *, ln_in: bool, p_drop: float):
-            super().__init__()
-            self.ln = _nn.LayerNorm(in_features) if ln_in else _nn.Identity()
-            p = float(max(0.0, min(1.0, p_drop)))
-            self.drop_in = _nn.Dropout(p=p) if p > 0 else _nn.Identity()
-            self.inner = inner
-            self.drop_out = _nn.Identity()
-
-        def forward(self, x):  # type: ignore[override]
-            x = self.ln(x)
-            x = self.drop_in(x)
-            return self.inner(x)
-
-    _strip_batch_norm(core)
-    dropout_in = getattr(cfg, "dropout_input", None)
-    if dropout_in is None:
-        dropout_in = getattr(cfg, "dropout", 0.0)
-    # Ensure dropout_in is not None before converting to float
-    if dropout_in is None:
-        dropout_in = 0.0
-    dropout_in = float(max(0.0, min(1.0, float(dropout_in))))
-    net = _PrePostWrapper(
-        core,
-        in_dim,
-        ln_in=bool(getattr(cfg, "layer_norm_in", False)),
-        p_drop=dropout_in,
-    )
+    # Build the DeepTICA core via the shared implementation
+    core_model, _ = core_construct_deeptica_core(cfg, scaler)
+    net = core_wrap_with_preprocessing_layers(core_model, cfg, scaler)
     torch.manual_seed(int(cfg.seed))
 
     tau_schedule = tuple(
@@ -578,103 +482,34 @@ def train_deeptica(
     )
     if not tau_schedule:
         tau_schedule = (int(cfg.lag),)
+    pair_info = build_pair_info(
+        [np.asarray(block) for block in X_list],
+        tau_schedule,
+        pairs=pairs,
+        weights=weights,
+    )
+    idx_t = np.asarray(pair_info.idx_t, dtype=np.int64)
+    idx_tlag = np.asarray(pair_info.idx_tau, dtype=np.int64)
+    weights_arr = np.asarray(pair_info.weights, dtype=np.float32)
+    pair_diagnostics = dict(pair_info.diagnostics)
 
-    idx_t, idx_tlag = pairs
-
-    # Validate or construct per-shard pairs to ensure x_t != x_{t+tau}
-    def _build_uniform_pairs_per_shard(
-        blocks: List[np.ndarray], lag: int
-    ) -> tuple[np.ndarray, np.ndarray]:
-        L = max(1, int(lag))
-        i_parts: List[np.ndarray] = []
-        j_parts: List[np.ndarray] = []
-        off = 0
-        for b in blocks:
-            n = int(np.asarray(b).shape[0])
-            if n > L:
-                i = np.arange(0, n - L, dtype=np.int64)
-                j = i + L
-                i_parts.append(off + i)
-                j_parts.append(off + j)
-            off += n
-        if not i_parts:
-            return np.asarray([], dtype=np.int64), np.asarray([], dtype=np.int64)
-        return (
-            np.concatenate(i_parts).astype(np.int64, copy=False),
-            np.concatenate(j_parts).astype(np.int64, copy=False),
-        )
-
-    def _needs_repair(i: np.ndarray | None, j: np.ndarray | None) -> bool:
-        if i is None or j is None:
-            return True
-        if i.size == 0 or j.size == 0:
-            return True
-        try:
-            d = np.asarray(j, dtype=np.int64) - np.asarray(i, dtype=np.int64)
-            if d.size == 0:
-                return True
-            return bool(np.min(d) <= 0)
-        except Exception:
-            return True
-
-    if len(tau_schedule) > 1:
-        idx_parts: List[np.ndarray] = []
-        j_parts: List[np.ndarray] = []
-        for tau_val in tau_schedule:
-            i_tau, j_tau = _build_uniform_pairs_per_shard(X_list, int(tau_val))
-            if i_tau.size and j_tau.size:
-                idx_parts.append(i_tau)
-                j_parts.append(j_tau)
-        if idx_parts:
-            idx_t = np.concatenate(idx_parts).astype(np.int64, copy=False)
-            idx_tlag = np.concatenate(j_parts).astype(np.int64, copy=False)
-        else:
-            idx_t = np.asarray([], dtype=np.int64)
-            idx_tlag = np.asarray([], dtype=np.int64)
-    else:
-        if _needs_repair(idx_t, idx_tlag):
-            idx_t, idx_tlag = _build_uniform_pairs_per_shard(
-                X_list, int(tau_schedule[0])
-            )
-
-    idx_t = np.asarray(idx_t, dtype=np.int64)
-    idx_tlag = np.asarray(idx_tlag, dtype=np.int64)
-
-    shard_lengths = [int(np.asarray(b).shape[0]) for b in X_list]
-    max_tau = int(max(tau_schedule)) if tau_schedule else int(cfg.lag)
-    min_required = max_tau + 1
-    short_shards = [
-        idx for idx, length in enumerate(shard_lengths) if length < min_required
-    ]
-    total_possible = sum(max(0, length - max_tau) for length in shard_lengths)
-    usable_pairs = int(min(idx_t.shape[0], idx_tlag.shape[0]))
-    coverage = float(usable_pairs / total_possible) if total_possible else 0.0
-    offsets = np.cumsum([0, *shard_lengths])
-    pairs_by_shard = []
-    for start, end in zip(offsets[:-1], offsets[1:]):
-        mask = (idx_t >= start) & (idx_t < end)
-        pairs_by_shard.append(int(np.count_nonzero(mask)))
-
-    pair_diagnostics = {
-        "usable_pairs": usable_pairs,
-        "pairs_by_shard": pairs_by_shard,
-        "short_shards": short_shards,
-        "pair_coverage": coverage,
-        "total_possible_pairs": int(total_possible),
-        "lag_used": int(max_tau),
-    }
+    usable_pairs = int(pair_diagnostics.get("usable_pairs", idx_t.shape[0]))
+    coverage = float(pair_diagnostics.get("pair_coverage", 0.0))
+    short_shards = list(pair_diagnostics.get("short_shards", []))
+    total_possible = int(pair_diagnostics.get("total_possible_pairs", 0))
+    lag_used = int(pair_diagnostics.get("lag_used", tau_schedule[-1]))
 
     if short_shards:
         logger.warning(
             "%d/%d shards too short for lag %d",
             len(short_shards),
-            len(shard_lengths),
-            int(max_tau),
+            len(X_list),
+            int(lag_used),
         )
     if usable_pairs == 0:
         logger.warning(
             "No usable lagged pairs remain after constructing curriculum with lag %d",
-            int(max_tau),
+            int(lag_used),
         )
     elif coverage < 0.5:
         logger.warning(
@@ -724,136 +559,27 @@ def train_deeptica(
         Y0, np.asarray(idx_t, dtype=int), np.asarray(idx_tlag, dtype=int)
     )
 
-    # Build time-lagged dataset for training
-    ds = None
-    try:
-        # Normalize index arrays and construct default weights (ones) when not provided
-        if idx_t is None or idx_tlag is None or (len(idx_t) == 0 or len(idx_tlag) == 0):
-            n = int(Z.shape[0])
-            L = int(tau_schedule[-1])
-            if L < n:
-                idx_t = np.arange(0, n - L, dtype=int)
-                idx_tlag = idx_t + L
-            else:
-                idx_t = np.asarray([], dtype=int)
-                idx_tlag = np.asarray([], dtype=int)
-        idx_t = np.asarray(idx_t, dtype=int)
-        idx_tlag = np.asarray(idx_tlag, dtype=int)
-        if weights is None:
-            weights_arr = np.ones((int(idx_t.shape[0]),), dtype=np.float32)
-        else:
-            weights_arr = np.asarray(weights, dtype=np.float32).reshape(-1)
-            if weights_arr.size == 1 and int(idx_t.shape[0]) > 1:
-                weights_arr = np.full(
-                    (int(idx_t.shape[0]),),
-                    float(weights_arr[0]),
-                    dtype=np.float32,
-                )
-            elif int(idx_t.shape[0]) != int(weights_arr.shape[0]):
+    # Validate that lagged pairs are meaningful before constructing loaders
+    if idx_t.size and idx_tlag.size:
+        rng = np.random.default_rng(int(cfg.seed))
+        sample = min(256, idx_t.shape[0])
+        if sample > 0:
+            sel = rng.choice(idx_t.shape[0], size=sample, replace=False)
+            xa = Z[idx_t[sel]]
+            xb = Z[idx_tlag[sel]]
+            if np.allclose(xa, xb):
                 raise ValueError(
-                    "weights must have the same length as the number of lagged pairs"
+                    "Invalid training pairs: x_t and x_{t+tau} are identical for sampled batch. "
+                    "Check lag construction; expected strictly positive lag per shard."
                 )
+    if weights_arr.size and float(np.mean(weights_arr)) <= 0.0:
+        raise ValueError("Invalid training weights: mean(weight) must be > 0")
 
-        # Ensure explicit float32 tensors for lagged pairs
-        # If you use a scaler, after scaler.fit, cast outputs to float32
-        # using torch tensors to standardize dtype end-to-end.
-        try:
-            x_t_np = Z[idx_t]
-            x_tau_np = Z[idx_tlag]
-            x_t_tensor = torch.as_tensor(x_t_np, dtype=torch.float32)
-            x_tau_tensor = torch.as_tensor(x_tau_np, dtype=torch.float32)
-        except Exception:
-            # Fallback via precomputed Z
-            x_t_tensor = torch.as_tensor(Z[idx_t], dtype=torch.float32)
-            x_tau_tensor = torch.as_tensor(Z[idx_tlag], dtype=torch.float32)
-
-        # Preflight assertions: pairs must differ and weights must be positive on average
-        try:
-            n_pairs = int(x_t_tensor.shape[0])
-            if n_pairs > 0:
-                sel = np.random.default_rng(int(cfg.seed)).choice(
-                    n_pairs, size=min(256, n_pairs), replace=False
-                )
-                xa = x_t_tensor[sel]
-                xb = x_tau_tensor[sel]
-                if torch.allclose(xa, xb):
-                    raise ValueError(
-                        "Invalid training pairs: x_t and x_{t+tau} are identical for sampled batch. "
-                        "Check lag construction; expected strictly positive lag per shard."
-                    )
-                if float(np.mean(weights_arr)) <= 0.0:
-                    raise ValueError(
-                        "Invalid training weights: mean(weight) must be > 0"
-                    )
-        except Exception:
-            # Surface the error early with a clear message
-            raise
-
-        # Prefer creating an explicit DictDataset with required keys
-        try:
-            from mlcolvar.data import DictDataset as _DictDataset  # type: ignore
-
-            # Enforce float32 for all tensors expected by mlcolvar>=1.2
-            payload: dict[str, Any] = {
-                "data": x_t_tensor.detach()
-                .cpu()
-                .numpy()
-                .astype(np.float32, copy=False),
-                "data_lag": x_tau_tensor.detach()
-                .cpu()
-                .numpy()
-                .astype(np.float32, copy=False),
-                "weights": np.asarray(weights_arr, dtype=np.float32),
-                # Some mlcolvar utilities also propagate weights for lagged frames
-                "weights_lag": np.asarray(weights_arr, dtype=np.float32),
-            }
-            ds = _DictDataset(payload)
-        except Exception:
-            # Minimal fallback dataset compatible with torch DataLoader
-            class _PairDataset(torch.utils.data.Dataset):  # type: ignore[type-arg]
-                def __init__(self, A: np.ndarray, B: np.ndarray, W: np.ndarray):
-                    # Enforce float32 tensors for stability
-                    self.A = torch.as_tensor(A, dtype=torch.float32)
-                    self.B = torch.as_tensor(B, dtype=torch.float32)
-                    self.W = np.asarray(W, dtype=np.float32).reshape(-1)
-
-                def __len__(self) -> int:  # noqa: D401
-                    return int(self.A.shape[0])
-
-                def __getitem__(self, idx: int) -> dict[str, Any]:
-                    # Return strictly float32 to satisfy training_step contract
-                    w = np.float32(self.W[idx])
-                    return {
-                        "data": self.A[idx],
-                        "data_lag": self.B[idx],
-                        "weights": w,
-                        "weights_lag": w,
-                    }
-
-            _A = x_t_tensor
-            _B = x_tau_tensor
-            _W = weights_arr
-            ds = _PairDataset(_A, _B, _W)
-    except Exception:
-        # As a last resort, fallback to helper and wrap to enforce weights
-        base = _create_timelagged_dataset(Z, lag=int(cfg.lag))
-
-        class _EnsureWeightsDataset(torch.utils.data.Dataset):  # type: ignore[type-arg]
-            def __init__(self, inner):
-                self.inner = inner
-
-            def __len__(self) -> int:
-                return len(self.inner)
-
-            def __getitem__(self, idx: int) -> dict[str, Any]:
-                d = dict(self.inner[idx])
-                if "weights" not in d:
-                    d["weights"] = np.float32(1.0)
-                if "weights_lag" not in d:
-                    d["weights_lag"] = np.float32(1.0)
-                return d
-
-        ds = _EnsureWeightsDataset(base)
+    ds = create_dataset(Z, idx_t, idx_tlag, weights_arr)
+    data_bundle = create_loaders(ds, cfg)
+    dm = data_bundle.dict_module
+    train_loader = data_bundle.train_loader
+    val_loader = data_bundle.val_loader
 
     # Train the model using Lightning Trainer per mlcolvar docs
     # Import lightning with compatibility between new and legacy package names
