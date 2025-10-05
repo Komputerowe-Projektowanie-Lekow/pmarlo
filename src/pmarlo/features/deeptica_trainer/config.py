@@ -71,14 +71,17 @@ class TrainerConfig(CurriculumConfig):  # type: ignore[misc]
 
         super().__init__(**kwargs)
 
+        if schedule:
+            object.__setattr__(self, "tau_schedule", schedule)
+
         if scheduler is not None:
-            setattr(self, "scheduler", scheduler)
+            object.__setattr__(self, "scheduler", scheduler)
         if total_steps is not None:
-            setattr(self, "scheduler_total_steps", int(total_steps))
+            object.__setattr__(self, "scheduler_total_steps", int(total_steps))
         if grad_clip_mode is not None:
-            setattr(self, "grad_clip_mode", str(grad_clip_mode).lower())
+            object.__setattr__(self, "grad_clip_mode", str(grad_clip_mode).lower())
         if log_every is not None:
-            setattr(self, "log_every", max(1, int(log_every)))
+            object.__setattr__(self, "log_every", max(1, int(log_every)))
 
 
 def resolve_curriculum(cfg: TrainerConfig) -> List[int]:
