@@ -62,7 +62,6 @@ def _write_exchange_csv(path: Path, rows: List[List[int]]) -> Path:
 def test_demux_plan_exactness_and_lengths(tmp_path: Path):
     topo = _write_minimal_pdb(tmp_path / "system.pdb")
     # 3 replicas, 6 slices each
-    R = 3
     N = 6
     ladder = [300.0, 310.0, 320.0]
     # Coordinates encode replica_index*1000 + frame_index

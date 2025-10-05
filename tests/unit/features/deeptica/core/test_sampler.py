@@ -20,7 +20,7 @@ assert spec and spec.loader
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
-from pmarlo.pairs.core import PairInfo
+from pmarlo.pairs.core import PairInfo  # noqa: E402
 
 iter_pair_batches = module.iter_pair_batches
 

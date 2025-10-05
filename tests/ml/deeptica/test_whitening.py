@@ -7,7 +7,7 @@ from pmarlo.ml.deeptica.whitening import apply_output_transform
 pytest.importorskip("mlcolvar")
 torch = pytest.importorskip("torch")
 
-from pmarlo.features.deeptica import DeepTICAConfig, DeepTICAModel
+from pmarlo.features.deeptica import DeepTICAConfig, DeepTICAModel  # noqa: E402
 
 
 class DummyScaler:

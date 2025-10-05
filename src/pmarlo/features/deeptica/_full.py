@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import logging
@@ -7,33 +7,7 @@ from pathlib import Path
 from typing import Any, Iterable, List, Optional, Tuple, cast
 
 import numpy as np
-
-# Standardize math defaults to float32 end-to-end
 import torch  # type: ignore
-
-logger = logging.getLogger(__name__)
-
-
-def set_all_seeds(seed: int = 2024) -> None:
-    """Compatibility wrapper around the core RNG seeding helper."""
-    _core_set_all_seeds(int(seed))
-
-
-class PmarloApiIncompatibilityError(RuntimeError):
-    """Raised when mlcolvar API layout does not expose expected classes."""
-
-
-# Official DeepTICA import and helpers (mlcolvar>=1.2)
-try:  # pragma: no cover - optional extra
-    from mlcolvar.cvs import DeepTICA  # type: ignore
-except Exception as e:  # pragma: no cover - optional extra
-    if isinstance(e, ImportError):
-        raise ImportError("Install optional extra pmarlo[mlcv] to use Deep-TICA") from e
-    raise PmarloApiIncompatibilityError(
-        "mlcolvar installed but DeepTICA not found in expected locations"
-    ) from e
-
-# External scaling via scikit-learn (avoid internal normalization)
 from sklearn.preprocessing import StandardScaler  # type: ignore
 
 from pmarlo.ml.deeptica.whitening import apply_output_transform
@@ -52,6 +26,38 @@ from .core.model import (
 from .core.trainer_api import train_deeptica_pipeline
 from .core.utils import safe_float as core_safe_float
 from .core.utils import set_all_seeds as _core_set_all_seeds
+
+_DEEPTICA_IMPORT_ERROR: Exception | None = None
+try:  # pragma: no cover - optional extra
+    from mlcolvar.cvs import DeepTICA  # type: ignore
+except Exception as exc:  # pragma: no cover - optional extra
+    DeepTICA = None  # type: ignore
+    _DEEPTICA_IMPORT_ERROR = exc
+else:  # pragma: no cover - optional extra
+    _DEEPTICA_IMPORT_ERROR = None
+
+
+logger = logging.getLogger(__name__)
+
+
+class PmarloApiIncompatibilityError(RuntimeError):
+    """Raised when mlcolvar API layout does not expose expected classes."""
+
+
+if DeepTICA is None:
+    if isinstance(_DEEPTICA_IMPORT_ERROR, ImportError):
+        raise ImportError(
+            "Install optional extra pmarlo[mlcv] to use Deep-TICA"
+        ) from _DEEPTICA_IMPORT_ERROR
+    raise PmarloApiIncompatibilityError(
+        "mlcolvar installed but DeepTICA not found in expected locations"
+    ) from _DEEPTICA_IMPORT_ERROR
+
+
+def set_all_seeds(seed: int = 2024) -> None:
+    """Compatibility wrapper around the core RNG seeding helper."""
+    _core_set_all_seeds(int(seed))
+
 
 torch.set_float32_matmul_precision("high")
 torch.set_default_dtype(torch.float32)

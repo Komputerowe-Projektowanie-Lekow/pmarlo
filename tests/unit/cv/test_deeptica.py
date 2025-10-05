@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
 
@@ -8,7 +8,7 @@ import pytest
 mlc = pytest.importorskip("mlcolvar")
 torch = pytest.importorskip("torch")
 
-from pmarlo.features.deeptica import DeepTICAConfig
+from pmarlo.features.deeptica import DeepTICAConfig  # noqa: E402
 
 
 def test_deeptica_config_linear_head_flag():
