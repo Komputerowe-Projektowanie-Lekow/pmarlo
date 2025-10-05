@@ -11,7 +11,9 @@ if "mdtraj" not in sys.modules:
     sys.modules["mdtraj"] = types.ModuleType("mdtraj")
 
 ROOT = Path(__file__).resolve().parents[5]
-SAMPLER_MODULE = ROOT / "src" / "pmarlo" / "features" / "deeptica_trainer" / "sampler.py"
+SAMPLER_MODULE = (
+    ROOT / "src" / "pmarlo" / "features" / "deeptica_trainer" / "sampler.py"
+)
 
 spec = importlib.util.spec_from_file_location("_pmarlo_sampler", SAMPLER_MODULE)
 assert spec and spec.loader

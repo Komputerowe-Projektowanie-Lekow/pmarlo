@@ -75,7 +75,9 @@ def test_train_deeptica_pipeline_runs_with_stub(monkeypatch, tmp_path):
     trainer_api = importlib.reload(
         importlib.import_module("pmarlo.features.deeptica.core.trainer_api")
     )
-    deeptica_module = importlib.reload(importlib.import_module("pmarlo.features.deeptica"))
+    deeptica_module = importlib.reload(
+        importlib.import_module("pmarlo.features.deeptica")
+    )
 
     cfg = deeptica_module.DeepTICAConfig(lag=2, max_epochs=1, batch_size=8, hidden=(8,))
     object.__setattr__(cfg, "checkpoint_dir", tmp_path / "ckpt")

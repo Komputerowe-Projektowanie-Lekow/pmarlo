@@ -13,7 +13,6 @@ import numpy as np
 # Standardize math defaults to float32 end-to-end
 import torch  # type: ignore
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -54,7 +53,6 @@ from sklearn.preprocessing import StandardScaler  # type: ignore
 from pmarlo.ml.deeptica.whitening import apply_output_transform
 
 from .losses import VAMP2Loss
-
 
 torch.set_float32_matmul_precision("high")
 torch.set_default_dtype(torch.float32)

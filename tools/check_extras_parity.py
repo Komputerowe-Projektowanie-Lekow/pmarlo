@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import tomllib
 from pathlib import Path
 from typing import Iterable, Sequence
-
-import tomllib
 
 
 class ExtrasParityError(RuntimeError):

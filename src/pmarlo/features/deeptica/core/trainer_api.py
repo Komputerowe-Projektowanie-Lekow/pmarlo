@@ -67,8 +67,8 @@ def train_deeptica_pipeline(
     pair_diagnostics = dict(pair_info.diagnostics)
 
     fallback_lag = int(prep.tau_schedule[-1])
-    usable_pairs, coverage, short_shards, total_possible, lag_used = _log_pair_diagnostics(
-        pair_diagnostics, len(arrays), fallback_lag
+    usable_pairs, coverage, short_shards, total_possible, lag_used = (
+        _log_pair_diagnostics(pair_diagnostics, len(arrays), fallback_lag)
     )
 
     net.eval()
@@ -83,7 +83,10 @@ def train_deeptica_pipeline(
     summary_dir: Optional[Path] = None
 
     try:
-        from pmarlo.ml.deeptica.trainer import CurriculumConfig, DeepTICACurriculumTrainer
+        from pmarlo.ml.deeptica.trainer import (
+            CurriculumConfig,
+            DeepTICACurriculumTrainer,
+        )
 
         curriculum_cfg = _build_curriculum_config(
             cfg,
@@ -165,7 +168,9 @@ def train_deeptica_pipeline(
     if summary_dir is not None:
         history.setdefault("summary_dir", str(summary_dir))
 
-    device = "cuda" if getattr(torch, "cuda", None) and torch.cuda.is_available() else "cpu"
+    device = (
+        "cuda" if getattr(torch, "cuda", None) and torch.cuda.is_available() else "cpu"
+    )
     return TrainingArtifacts(
         scaler=prep.scaler,
         network=net,
@@ -175,7 +180,9 @@ def train_deeptica_pipeline(
 
 
 def _resolve_tau_schedule(cfg: Any) -> tuple[int, ...]:
-    schedule = tuple(int(x) for x in (getattr(cfg, "tau_schedule", ()) or ()) if int(x) > 0)
+    schedule = tuple(
+        int(x) for x in (getattr(cfg, "tau_schedule", ()) or ()) if int(x) > 0
+    )
     if schedule:
         return schedule
     lag = int(getattr(cfg, "lag", 0) or 0)
@@ -263,7 +270,11 @@ def _build_curriculum_config(
         if batches_per_epoch <= 0:
             batches_per_epoch = None
     checkpoint_dir = getattr(cfg, "checkpoint_dir", None)
-    checkpoint_path = _Path(checkpoint_dir) if checkpoint_dir else Path.cwd() / "checkpoints" / "deeptica" / run_stamp
+    checkpoint_path = (
+        _Path(checkpoint_dir)
+        if checkpoint_dir
+        else Path.cwd() / "checkpoints" / "deeptica" / run_stamp
+    )
     cfg_kwargs = dict(
         tau_schedule=schedule,
         val_tau=int(getattr(cfg, "val_tau", 0) or schedule[-1]),
@@ -337,7 +348,8 @@ def _compute_output_variance(outputs: np.ndarray) -> Optional[list[float]]:
             var_arr = np.var(outputs, axis=0, ddof=1)
         else:
             var_arr = np.var(outputs, axis=0, ddof=0)
-        return np.asarray(var_arr, dtype=float).tolist()
+        flattened = np.asarray(var_arr, dtype=float).ravel()
+        return [float(x) for x in flattened]
     except Exception:
         return None
 
@@ -364,10 +376,7 @@ def _estimate_top_eigenvalues(
         M = inv_sqrt @ Ct @ inv_sqrt.T
         eigs = np.linalg.eigvalsh((M + M.T) * 0.5)
         eigs = np.sort(eigs)[::-1]
-        return [
-            float(x)
-            for x in eigs[: min(int(getattr(cfg, "n_out", 2)), eigs.size)]
-        ]
+        return [float(x) for x in eigs[: min(int(getattr(cfg, "n_out", 2)), eigs.size)]]
     except Exception:
         return None
 

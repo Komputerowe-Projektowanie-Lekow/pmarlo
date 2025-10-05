@@ -2,8 +2,8 @@ from __future__ import annotations
 
 """Simple JSON-backed state manager for the Streamlit demo."""
 
-from dataclasses import dataclass, field
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -106,7 +106,9 @@ class StateManager:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-    def _remove_from(self, collection: List[Dict[str, Any]], index: int) -> Optional[Dict[str, Any]]:
+    def _remove_from(
+        self, collection: List[Dict[str, Any]], index: int
+    ) -> Optional[Dict[str, Any]]:
         if 0 <= index < len(collection):
             entry = collection.pop(index)
             self._save()
@@ -125,7 +127,9 @@ class StateManager:
 
     def _save(self) -> None:
         tmp_path = self.path.with_suffix(".tmp")
-        tmp_path.write_text(json.dumps(self._data.to_dict(), indent=2), encoding="utf-8")
+        tmp_path.write_text(
+            json.dumps(self._data.to_dict(), indent=2), encoding="utf-8"
+        )
         tmp_path.replace(self.path)
 
 

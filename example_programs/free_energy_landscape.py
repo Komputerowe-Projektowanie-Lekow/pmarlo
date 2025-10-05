@@ -14,8 +14,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from pmarlo import Protein, power_of_two_temperature_ladder
-from pmarlo.replica_exchange import config as demux_config
 from pmarlo.api import analyze_msm, run_replica_exchange
+from pmarlo.replica_exchange import config as demux_config
 
 
 def main() -> None:
