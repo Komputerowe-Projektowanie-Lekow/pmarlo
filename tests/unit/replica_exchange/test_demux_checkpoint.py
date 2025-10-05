@@ -4,6 +4,9 @@ from pathlib import Path
 
 import mdtraj as md
 import numpy as np
+import pytest
+
+pytest.importorskip("sklearn")
 
 from pmarlo.demultiplexing.demux_engine import demux_streaming
 from pmarlo.demultiplexing.demux_plan import DemuxPlan, DemuxSegmentPlan
@@ -67,7 +70,7 @@ def test_checkpoint_every_segment_triggers_flush(tmp_path: Path):
         total_expected_frames=3,
     )
 
-    res = demux_streaming(
+    demux_streaming(
         plan,
         top,
         reader,

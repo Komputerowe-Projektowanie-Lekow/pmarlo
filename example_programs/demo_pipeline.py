@@ -74,7 +74,9 @@ def run_simple_example():
 
         # Demo the setup phases
         protein = pipeline.setup_protein()
-        print(f"✓ Protein setup complete: {protein.get_properties()['num_atoms']} atoms")
+        print(
+            f"✓ Protein setup complete: {protein.get_properties()['num_atoms']} atoms"
+        )
 
         simulation = pipeline.setup_simulation()
         print(f"✓ Simulation setup complete for {simulation.steps} steps")
@@ -96,7 +98,8 @@ def demo_simple_api():
 
     print("\n🆕 NEW API Usage Patterns:")
     print("=" * 40)
-    print("""
+    print(
+        """
 # Ultra-simple one-liner
 from pmarlo import run_pmarlo
 results = run_pmarlo(
@@ -116,7 +119,8 @@ from pmarlo import Protein, ReplicaExchange, MarkovStateModel
 protein = Protein("protein.pdb", ph=7.0)
 pipeline = Pipeline("protein.pdb")
 results = pipeline.run()
-    """)
+    """
+    )
 
     print("\n💡 API ADVANTAGES:")
     print("   ✅ Clean, simple interface")
@@ -138,14 +142,14 @@ Examples:
   python demo_pipeline.py --mode test      # Test protein preparation
   python demo_pipeline.py --mode simple    # Show API usage
   python demo_pipeline.py --mode demo      # Run simple demo
-        """
+        """,
     )
 
     parser.add_argument(
         "--mode",
         choices=["test", "simple", "demo"],
         default="simple",
-        help="Demo mode to run (default: simple)"
+        help="Demo mode to run (default: simple)",
     )
 
     args = parser.parse_args()

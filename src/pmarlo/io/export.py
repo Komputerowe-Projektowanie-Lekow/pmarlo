@@ -78,7 +78,11 @@ def _copy_training_history(out: Path, model: Any, metadata: dict[str, Any]) -> N
 
 
 def _resolve_metrics_path(model: Any, metadata: dict[str, Any]) -> Optional[str]:
-    history = getattr(model, "training_history", {}) if hasattr(model, "training_history") else {}
+    history = (
+        getattr(model, "training_history", {})
+        if hasattr(model, "training_history")
+        else {}
+    )
     metrics_csv = history.get("metrics_csv") if isinstance(history, dict) else None
     if not metrics_csv:
         metrics_csv = metadata.get("metrics_csv")

@@ -19,12 +19,12 @@ The goal is to make it straightforward to express the interactive workflow::
 while keeping the logic reusable for non-UI automation in the future.
 """
 
+import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-import shutil
-from typing import Any, Dict, Iterable, List, Optional, Sequence, TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence, cast
 
 try:  # Package-relative when imported as module
     from .state import StateManager
@@ -60,16 +60,12 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 def _pmarlo_handles() -> Dict[str, Any]:
     """Import heavyweight PMARLO helpers on demand."""
 
-    from pmarlo.api import (
-        build_from_shards as _build_from_shards,
-        emit_shards_rg_rmsd_windowed as _emit_shards,
-        run_replica_exchange as _run_replica_exchange,
-    )
+    from pmarlo.api import build_from_shards as _build_from_shards
+    from pmarlo.api import emit_shards_rg_rmsd_windowed as _emit_shards
+    from pmarlo.api import run_replica_exchange as _run_replica_exchange
     from pmarlo.data.shard import read_shard as _read_shard
-    from pmarlo.transform.build import (
-        BuildResult as _BuildResultRuntime,
-        _sanitize_artifacts as _sanitize,
-    )
+    from pmarlo.transform.build import BuildResult as _BuildResultRuntime
+    from pmarlo.transform.build import _sanitize_artifacts as _sanitize
 
     return {
         "build_from_shards": _build_from_shards,
@@ -204,7 +200,14 @@ class WorkspaceLayout:
         return layout
 
     def ensure(self) -> None:
-        for path in (self.workspace_dir, self.sims_dir, self.shards_dir, self.models_dir, self.bundles_dir, self.logs_dir):
+        for path in (
+            self.workspace_dir,
+            self.sims_dir,
+            self.shards_dir,
+            self.models_dir,
+            self.bundles_dir,
+            self.logs_dir,
+        ):
             path.mkdir(parents=True, exist_ok=True)
 
     def available_inputs(self) -> List[Path]:
@@ -343,7 +346,9 @@ class WorkflowBackend:
             temperatures=[float(t) for t in config.temperatures],
             total_steps=int(config.steps),
             quick=bool(config.quick),
-            random_seed=int(config.random_seed) if config.random_seed is not None else None,
+            random_seed=(
+                int(config.random_seed) if config.random_seed is not None else None
+            ),
             jitter_start=bool(config.jitter_start),
             jitter_sigma_A=float(config.jitter_sigma_A),
             exchange_frequency_steps=(
@@ -372,9 +377,9 @@ class WorkflowBackend:
                 "analysis_temperatures": result.analysis_temperatures,
                 "steps": int(config.steps),
                 "quick": bool(config.quick),
-                "random_seed": int(config.random_seed)
-                if config.random_seed is not None
-                else None,
+                "random_seed": (
+                    int(config.random_seed) if config.random_seed is not None else None
+                ),
                 "traj_files": [str(p) for p in result.traj_files],
                 "created_at": created,
             }
@@ -549,9 +554,7 @@ class WorkflowBackend:
         analysis_notes = dict(config.notes or {})
         if config.learn_cv and "model_dir" not in analysis_notes:
             analysis_notes["model_dir"] = str(self.layout.models_dir)
-        analysis_notes["apply_cv_whitening_requested"] = bool(
-            config.apply_cv_whitening
-        )
+        analysis_notes["apply_cv_whitening_requested"] = bool(config.apply_cv_whitening)
         analysis_notes["apply_cv_whitening_enforced"] = True
         analysis_notes["analysis_overrides"] = {
             "cluster_mode": str(config.cluster_mode),
@@ -606,7 +609,11 @@ class WorkflowBackend:
                 "seed": int(config.seed),
                 "temperature": float(config.temperature),
                 "learn_cv": bool(config.learn_cv),
-                "deeptica_params": _sanitize_artifacts(config.deeptica_params) if config.deeptica_params else None,
+                "deeptica_params": (
+                    _sanitize_artifacts(config.deeptica_params)
+                    if config.deeptica_params
+                    else None
+                ),
                 "created_at": stamp,
                 "flags": _sanitize_artifacts(br.flags),
                 "mlcv": _sanitize_artifacts(br.artifacts.get("mlcv_deeptica", {})),
@@ -737,7 +744,9 @@ class WorkflowBackend:
 
     def build_config_from_entry(self, entry: Dict[str, Any]) -> BuildConfig:
         bins_raw = entry.get("bins")
-        bins = dict(bins_raw) if isinstance(bins_raw, dict) else {"Rg": 64, "RMSD_ref": 64}
+        bins = (
+            dict(bins_raw) if isinstance(bins_raw, dict) else {"Rg": 64, "RMSD_ref": 64}
+        )
         deeptica_params = self._coerce_deeptica_params(entry.get("deeptica_params"))
         notes = {}
         entry_notes = entry.get("notes")
@@ -773,14 +782,20 @@ class WorkflowBackend:
 
     def training_config_from_entry(self, entry: Dict[str, Any]) -> TrainingConfig:
         bins_raw = entry.get("bins")
-        bins = dict(bins_raw) if isinstance(bins_raw, dict) else {"Rg": 64, "RMSD_ref": 64}
+        bins = (
+            dict(bins_raw) if isinstance(bins_raw, dict) else {"Rg": 64, "RMSD_ref": 64}
+        )
         hidden = self._coerce_hidden_layers(entry.get("hidden"))
         tau_raw = entry.get("tau_schedule")
         tau_schedule = self._coerce_tau_schedule(tau_raw)
         if not tau_schedule:
             tau_schedule = (int(entry.get("lag", 5)),)
         val_tau_entry = entry.get("val_tau")
-        val_tau = int(val_tau_entry) if val_tau_entry is not None else (tau_schedule[-1] if tau_schedule else int(entry.get("lag", 5)))
+        val_tau = (
+            int(val_tau_entry)
+            if val_tau_entry is not None
+            else (tau_schedule[-1] if tau_schedule else int(entry.get("lag", 5)))
+        )
         epochs_per_tau = int(entry.get("epochs_per_tau", 15))
         return TrainingConfig(
             lag=int(entry.get("lag", 5)),
@@ -884,7 +899,9 @@ class WorkflowBackend:
             created_at=created_at,
         )
 
-    def _load_analysis_from_entry(self, entry: Dict[str, Any]) -> Optional[BuildArtifact]:
+    def _load_analysis_from_entry(
+        self, entry: Dict[str, Any]
+    ) -> Optional[BuildArtifact]:
         bundle_path = Path(entry.get("bundle", ""))
         br = self._load_build_result_from_path(bundle_path)
         if br is None:
@@ -946,7 +963,7 @@ class WorkflowBackend:
                 if path.exists():
                     path.unlink()  # Delete the .json file
                     # Also delete associated .npz file
-                    npz_path = path.with_suffix('.npz')
+                    npz_path = path.with_suffix(".npz")
                     if npz_path.exists():
                         npz_path.unlink()
 

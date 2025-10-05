@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from pmarlo.features.deeptica.core import build_pair_info
+
 
 @dataclass(frozen=True)
 class PairDiagItem:
@@ -71,13 +73,14 @@ def _collect_shards_info(dataset: Any) -> List[Dict[str, Any]]:
 
 
 def diagnose_deeptica_pairs(dataset: Any, lag: int) -> PairDiagReport:
-    """Compute per‑shard pair counts for a given lag without training.
+    """Compute per-shard pair counts for a given lag without training.
 
-    The input ``dataset`` should match the structure produced by
-    :func:`pmarlo.data.aggregate.load_shards_as_dataset` or the dataset
+    The input dataset should match the structure produced by
+    ``pmarlo.data.aggregate.load_shards_as_dataset`` or the dataset
     forwarded to the engine builder, i.e., contain ``"X"`` and optionally
     ``"__shards__"``.
     """
+
     shards = _collect_shards_info(dataset)
     features = _extract_feature_matrix(dataset)
 
@@ -106,19 +109,43 @@ def _diagnose_with_shards(
     lag: int,
     pair_fn: Any,
 ) -> Dict[str, Any]:
+    lag = max(1, int(lag))
+    dummy_blocks = [
+        np.empty((max(0, int(shard.get("frames", 0))), 0), dtype=np.float32)
+        for shard in shards
+    ]
+    pair_info = build_pair_info(dummy_blocks, [lag]) if dummy_blocks else None
+
+    if pair_info is not None:
+        diagnostics = pair_info.diagnostics
+        uniform_counts = [int(count) for count in diagnostics.get("pairs_by_shard", [])]
+        if len(uniform_counts) < len(shards):
+            uniform_counts.extend([0] * (len(shards) - len(uniform_counts)))
+        pairs_total_uniform = int(diagnostics.get("usable_pairs", 0))
+        short_shards = {int(idx) for idx in diagnostics.get("short_shards", [])}
+    else:
+        uniform_counts = [0] * len(shards)
+        pairs_total_uniform = 0
+        short_shards = set()
+
     per: List[PairDiagItem] = []
     frames_total = 0
     pairs_total = 0
-    pairs_total_uniform = 0
     shards_with_bias = 0
     too_short_count = 0
 
-    for shard in shards:
-        item, stats = _evaluate_shard(shard, lag, pair_fn)
+    for idx, shard in enumerate(shards):
+        uniform = uniform_counts[idx] if idx < len(uniform_counts) else 0
+        item, stats = _evaluate_shard(
+            shard,
+            lag,
+            pair_fn,
+            uniform_pairs=uniform,
+            is_short=idx in short_shards,
+        )
         per.append(item)
         frames_total += stats.frames
         pairs_total += stats.pairs
-        pairs_total_uniform += stats.pairs_uniform
         shards_with_bias += stats.bias_flag
         too_short_count += stats.short_flag
 
@@ -160,39 +187,40 @@ def _evaluate_shard(
     shard: Dict[str, Any],
     lag: int,
     pair_fn: Any,
+    *,
+    uniform_pairs: int,
+    is_short: bool,
 ) -> Tuple[PairDiagItem, _ShardStats]:
     shard_id = str(shard.get("id", "unknown"))
-    frames = int(shard.get("frames", 0))
+    frames = max(0, int(shard.get("frames", 0)))
     bias = shard.get("bias_potential")
     temp_k = shard.get("temperature")
     has_bias = bias is not None and temp_k is not None
-    logw = _resolve_log_weights(bias, temp_k) if has_bias else None
 
+    logw = _resolve_log_weights(bias, temp_k) if has_bias else None
     if logw is not None:
         scaled_indices = pair_fn(frames, logw, float(lag), jitter=0.0)
+        pairs_scaled = int(len(scaled_indices[0])) if scaled_indices else 0
+    elif has_bias:
+        pairs_scaled = uniform_pairs
     else:
-        scaled_indices = pair_fn(frames, None, float(lag))
-    pairs_scaled = int(len(scaled_indices[0])) if scaled_indices else 0
-    if not has_bias:
-        pairs_scaled = max(0, frames - lag) if frames > lag else 0
+        pairs_scaled = uniform_pairs
 
-    i_uniform, _ = pair_fn(frames, None, float(lag))
-    pairs_uniform = int(len(i_uniform))
-    frames_leq_lag = frames <= lag
+    frames_leq_lag = bool(is_short or frames <= lag)
 
     item = PairDiagItem(
         id=shard_id,
         frames=frames,
         pairs=pairs_scaled,
-        pairs_uniform=pairs_uniform,
+        pairs_uniform=uniform_pairs,
         has_bias=has_bias,
-        temperature=temp_k,
+        temperature=temp_k if has_bias else None,
         frames_leq_lag=frames_leq_lag,
     )
     stats = _ShardStats(
         frames=frames,
         pairs=pairs_scaled,
-        pairs_uniform=pairs_uniform,
+        pairs_uniform=uniform_pairs,
         bias_flag=1 if has_bias else 0,
         short_flag=1 if frames_leq_lag else 0,
     )
@@ -252,6 +280,7 @@ def _diagnose_without_shards(
             "No dataset provided or dataset lacks both '__shards__' metadata and 'X' array"
         )
     n_frames = int(features.shape[0])
+    lag = max(1, int(lag))
     indices = pair_fn(n_frames, None, float(lag))
     pairs_scaled = int(len(indices[0])) if indices else 0
     item = PairDiagItem(

@@ -3,6 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+pytest.importorskip("sklearn")
+
 from pmarlo.demultiplexing.demux_engine import DemuxResult
 from pmarlo.demultiplexing.demux_metadata import (
     DemuxMetadata,

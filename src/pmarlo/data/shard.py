@@ -107,7 +107,7 @@ def generate_canonical_shard_id_from_meta(meta: ShardMeta, json_path: Path) -> s
                 from pmarlo.io.shard_id import parse_shard_id
 
                 canonical_id = parse_shard_id(source_path).canonical()
-                return canonical_id
+                return str(canonical_id)
             except Exception:
                 pass
 

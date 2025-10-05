@@ -5,8 +5,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from pmarlo.transform.build import AppliedOpts, BuildOpts, build_result
-from pmarlo.transform.plan import TransformPlan, TransformStep
+from pmarlo.transform.build import AppliedOpts, BuildOpts, build_result  # noqa: E402
+from pmarlo.transform.plan import TransformPlan, TransformStep  # noqa: E402
 
 
 def _make_dataset_with_shards(lengths: list[int], k: int = 3, T: float = 300.0):

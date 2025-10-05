@@ -5,6 +5,9 @@ from pathlib import Path
 
 import mdtraj as md
 import numpy as np
+import pytest
+
+pytest.importorskip("sklearn")
 
 from pmarlo.replica_exchange import config as demux_config
 from pmarlo.replica_exchange.replica_exchange import ReplicaExchange

@@ -25,7 +25,9 @@ def recursive_select(folder):
     print("Dostępne podfoldery:")
     for idx, sub in enumerate(subfolders, start=1):
         print(f"{idx}. {sub}")
-    print("Wpisz numery folderów do wyboru, 'wszystkie' aby wybrać wszystkie, lub 'stop' aby nie wybierać dalej.")
+    print(
+        "Wpisz numery folderów do wyboru, 'wszystkie' aby wybrać wszystkie, lub 'stop' aby nie wybierać dalej."
+    )
 
     wybor = input("Twój wybór: ").strip().lower()
     if wybor == "stop":
@@ -37,7 +39,7 @@ def recursive_select(folder):
             chosen.extend(recursive_select(os.path.join(folder, sub)))
     else:
         try:
-            indices = [int(i.strip()) for i in wybor.split(',')]
+            indices = [int(i.strip()) for i in wybor.split(",")]
             for i in indices:
                 if 1 <= i <= len(subfolders):
                     subfolder = os.path.join(folder, subfolders[i - 1])
@@ -85,7 +87,7 @@ def print_tree(all_files, main_folder):
         for part in parts:
             current = current.setdefault(part, {})
 
-    def print_dict(d, prefix=''):
+    def print_dict(d, prefix=""):
         items = sorted(d.items())
         for i, (key, subtree) in enumerate(items):
             connector = "└── " if i == len(items) - 1 else "├── "
@@ -102,7 +104,12 @@ def process_files(all_files, main_folder):
     Dla każdego pliku .py w /src/pmarlo generuje strukturę drzewa i zwraca ją jako tekst.
     """
     # Filtruj tylko pliki Pythona, znajdujące się w /src/pmarlo
-    py_files = [f for f in all_files if f.endswith('.py') and os.path.sep + "src" + os.path.sep + "pmarlo" + os.path.sep in f]
+    py_files = [
+        f
+        for f in all_files
+        if f.endswith(".py")
+        and os.path.sep + "src" + os.path.sep + "pmarlo" + os.path.sep in f
+    ]
 
     # Buduj drzewo z hierarchią ścieżek względem main_folder
     tree = {}
@@ -114,7 +121,7 @@ def process_files(all_files, main_folder):
             current = current.setdefault(part, {})
 
     # Funkcja formatująca drzewo do tekstu
-    def format_tree(node, prefix=''):
+    def format_tree(node, prefix=""):
         lines = []
         items = sorted(node.items())
         for idx, (name, subtree) in enumerate(items):
@@ -125,15 +132,15 @@ def process_files(all_files, main_folder):
                 lines.extend(format_tree(subtree, prefix + extension))
         return lines
 
-    tree_lines = format_tree(tree, '')
+    tree_lines = format_tree(tree, "")
     return "\n".join(tree_lines)
 
 
 def main():
     # Hardcoded seed path to the /src/pmarlo directory
     root_dir = os.path.dirname(os.path.abspath(__file__))
-    main_folder = os.path.join(root_dir, 'src', 'pmarlo')
-    output_file = os.path.join(root_dir, 'pmarlo_python_tree.txt')
+    main_folder = os.path.join(root_dir, "src", "pmarlo")
+    output_file = os.path.join(root_dir, "pmarlo_python_tree.txt")
 
     if not os.path.isdir(main_folder):
         print(f"Podana ścieżka '{main_folder}' nie jest folderem.")
@@ -156,7 +163,7 @@ def main():
 
     if output_file:
         try:
-            with open(output_file, 'w', encoding='utf-8') as f:
+            with open(output_file, "w", encoding="utf-8") as f:
                 f.write(result)
             print(f"\nWynik zapisany do pliku: {output_file}")
         except Exception as e:

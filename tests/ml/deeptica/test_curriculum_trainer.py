@@ -7,9 +7,12 @@ import numpy as np
 import pytest
 
 torch = pytest.importorskip("torch")
-import torch.nn as nn
+import torch.nn as nn  # noqa: E402
 
-from pmarlo.ml.deeptica.trainer import CurriculumConfig, DeepTICACurriculumTrainer
+from pmarlo.ml.deeptica.trainer import (  # noqa: E402
+    CurriculumConfig,
+    DeepTICACurriculumTrainer,
+)
 
 
 class TinyNet(nn.Module):

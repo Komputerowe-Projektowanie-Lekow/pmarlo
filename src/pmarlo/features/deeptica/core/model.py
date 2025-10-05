@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Iterable, Tuple
+from typing import Any, Iterable
 
 import numpy as np
 import torch  # type: ignore
@@ -8,12 +8,9 @@ import torch  # type: ignore
 try:  # pragma: no cover - optional extra
     from mlcolvar.cvs import DeepTICA  # type: ignore
 except Exception as exc:  # pragma: no cover
-    raise ImportError(
-        "Install optional extra pmarlo[mlcv] to use Deep-TICA"
-    ) from exc
+    raise ImportError("Install optional extra pmarlo[mlcv] to use Deep-TICA") from exc
 
 from .utils import safe_float, set_all_seeds
-
 
 __all__ = [
     "apply_output_whitening",
@@ -25,6 +22,8 @@ __all__ = [
     "resolve_input_dropout",
     "strip_batch_norm",
     "wrap_with_preprocessing_layers",
+    "wrap_network",
+    "build_network",
     "WhitenWrapper",
     "PrePostWrapper",
 ]
@@ -237,6 +236,12 @@ def wrap_network(cfg: Any, scaler, *, seed: int) -> torch.nn.Module:
     net = wrap_with_preprocessing_layers(core, cfg, scaler)
     torch.manual_seed(int(seed))
     return net
+
+
+def build_network(cfg: Any, scaler, *, seed: int) -> torch.nn.Module:
+    """Public alias for :func:`wrap_network` used by orchestration code."""
+
+    return wrap_network(cfg, scaler, seed=seed)
 
 
 def _regularize(mat: np.ndarray) -> np.ndarray:

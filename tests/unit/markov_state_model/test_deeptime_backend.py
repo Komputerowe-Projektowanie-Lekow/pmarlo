@@ -1,4 +1,8 @@
 import numpy as np
+import pytest
+
+pytest.importorskip("deeptime")
+
 from deeptime.markov import TransitionCountEstimator
 from deeptime.markov.msm import MaximumLikelihoodMSM
 

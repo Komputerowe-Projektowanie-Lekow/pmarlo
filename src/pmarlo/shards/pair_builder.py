@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from pmarlo.pairs.core import build_pair_info
+
 from .schema import Shard
 
 __all__ = ["PairBuilder"]
@@ -38,14 +40,11 @@ class PairBuilder:
     def make_pairs(self, shard: Shard) -> np.ndarray:
         """Return contiguous pairs within a shard with no boundary crossings."""
 
-        n_frames = shard.meta.n_frames
-        tau = self.tau
-        if n_frames <= tau:
+        info = build_pair_info([np.asarray(shard.X)], (self.tau,))
+        if info.idx_t.size == 0 or info.idx_tau.size == 0:
             return np.empty((0, 2), dtype=np.int64)
-        idx0 = np.arange(0, n_frames - tau, dtype=np.int64)
-        idx1 = idx0 + tau
-        pairs = np.stack([idx0, idx1], axis=1)
-        return pairs
+        pairs = np.stack((info.idx_t, info.idx_tau), axis=1)
+        return pairs.astype(np.int64, copy=False)
 
     def __repr__(self) -> str:  # pragma: no cover - simple debug helper
         return f"PairBuilder(tau={self.tau})"

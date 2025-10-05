@@ -61,7 +61,7 @@ def _load_full_impl() -> bool:
 _HAS_FULL_IMPL = _load_full_impl()
 
 
-if not _HAS_FULL_IMPL:
+if not _HAS_FULL_IMPL:  # noqa: C901
 
     @dataclass
     class Simulation:  # type: ignore[no-redef]

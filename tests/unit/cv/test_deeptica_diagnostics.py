@@ -12,7 +12,6 @@ def _dataset_with_shards(lengths, k=3, T=300.0):  # noqa: ANN001
     shards = []
     offset = 0
     for i, m in enumerate(lengths):
-        start = offset
         stop = offset + int(m)
         shards.append(
             {

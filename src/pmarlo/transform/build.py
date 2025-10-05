@@ -664,10 +664,15 @@ def _resolve_bin_counts(applied: AppliedOpts) -> Tuple[int, int]:
 def _compute_bin_edges(values: np.ndarray, count: int) -> List[float]:
     finite_min = float(np.nanmin(values))
     finite_max = float(np.nanmax(values))
-    if not np.isfinite(finite_min) or not np.isfinite(finite_max) or finite_max <= finite_min:
+    if (
+        not np.isfinite(finite_min)
+        or not np.isfinite(finite_max)
+        or finite_max <= finite_min
+    ):
         finite_min, finite_max = -1.0, 1.0
     bins = int(max(2, count)) + 1
-    return np.linspace(finite_min, finite_max, bins).astype(float).tolist()
+    edges = np.linspace(finite_min, finite_max, bins, dtype=float)
+    return [float(x) for x in edges]
 
 
 def _build_msm_payload(
@@ -730,12 +735,12 @@ def _lookup_named_bins(
     candidate: List[int] = []
     for name in names:
         key = str(name)
-        value = bins_cfg.get(key)
-        if value is None:
-            value = bins_cfg.get(key.lower())
-        if not _is_positive_int(value):
+        raw_value = bins_cfg.get(key)
+        if raw_value is None:
+            raw_value = bins_cfg.get(key.lower())
+        if raw_value is None or not _is_positive_int(raw_value):
             return None
-        candidate.append(int(value))
+        candidate.append(int(raw_value))
     return tuple(candidate)
 
 
