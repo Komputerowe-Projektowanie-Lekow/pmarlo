@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, List, Optional, Tuple, cast
 
@@ -170,7 +170,7 @@ class DeepTICAConfig:
     warmup_epochs: int = 5
     dropout: float = 0.0
     dropout_input: Optional[float] = None
-    hidden_dropout: Tuple[float, ...] = ()
+    hidden_dropout: Tuple[float, ...] = field(default_factory=tuple)
     layer_norm_in: bool = False
     layer_norm_hidden: bool = False
     linear_head: bool = False
@@ -179,7 +179,7 @@ class DeepTICAConfig:
     batches_per_epoch: int = 200
     gradient_clip_val: float = 1.0
     gradient_clip_algorithm: str = "norm"
-    tau_schedule: Tuple[int, ...] = ()
+    tau_schedule: Tuple[int, ...] = field(default_factory=tuple)
     val_tau: Optional[int] = None
     epochs_per_tau: int = 15
     vamp_eps: float = 1e-3

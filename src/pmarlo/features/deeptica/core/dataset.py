@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import ceil
-from typing import TYPE_CHECKING, Any, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Optional, Sequence, cast
 
 import numpy as np
 
@@ -238,14 +238,23 @@ def _collate_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
     return collated
 
 
+_TorchDatasetBase: type[Any]
 if torch is not None:
-    _DatasetBase = torch.utils.data.Dataset  # type: ignore[attr-defined]
+    _TorchDatasetBase = cast(type[Any], torch.utils.data.Dataset)  # type: ignore[attr-defined]
 else:
 
-    class _DatasetBase:
-        """Minimal base class used when torch is unavailable."""
+    class _FallbackDatasetBase:
+        """Minimal fallback when torch is unavailable."""
 
         pass
+
+    _TorchDatasetBase = _FallbackDatasetBase
+
+
+class _DatasetBase(_TorchDatasetBase):
+    """Common dataset base class regardless of torch availability."""
+
+    pass
 
 
 class _PairDataset(_DatasetBase):
