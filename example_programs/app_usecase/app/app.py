@@ -7,6 +7,8 @@ import pandas as pd
 import streamlit as st
 
 try:  # Prefer package-relative imports when launched via `streamlit run -m`
+    from pmarlo.transform.build import _sanitize_artifacts
+
     from .backend import (
         BuildArtifact,
         BuildConfig,
@@ -23,7 +25,6 @@ try:  # Prefer package-relative imports when launched via `streamlit run -m`
         plot_autocorrelation_curves,
         plot_canonical_correlations,
     )
-    from pmarlo.transform.build import _sanitize_artifacts
 except ImportError:  # Fallback for `streamlit run app.py`
     import sys
 
@@ -46,6 +47,7 @@ except ImportError:  # Fallback for `streamlit run app.py`
         plot_autocorrelation_curves,
         plot_canonical_correlations,
     )
+
     from pmarlo.transform.build import _sanitize_artifacts
 
 
@@ -76,7 +78,9 @@ def _parse_temperature_ladder(raw: str) -> List[float]:
     return temps
 
 
-def _select_shard_paths(groups: Sequence[Dict[str, object]], run_ids: Sequence[str]) -> List[Path]:
+def _select_shard_paths(
+    groups: Sequence[Dict[str, object]], run_ids: Sequence[str]
+) -> List[Path]:
     lookup: Dict[str, Sequence[str]] = {
         str(entry.get("run_id")): entry.get("paths", [])  # type: ignore[dict-item]
         for entry in groups
@@ -100,7 +104,8 @@ def _metrics_table(flags: Dict[str, object]) -> pd.DataFrame:
     flat table that stores display strings alongside their original type.
     """
 
-    from collections.abc import Mapping, Sequence as _SequenceABC
+    from collections.abc import Mapping
+    from collections.abc import Sequence as _SequenceABC
 
     try:  # Local import to avoid an unconditional dependency at module import
         import numpy as np  # type: ignore
@@ -113,7 +118,9 @@ def _metrics_table(flags: Dict[str, object]) -> pd.DataFrame:
         return val
 
     def _is_sequence(val: object) -> bool:
-        return isinstance(val, _SequenceABC) and not isinstance(val, (str, bytes, bytearray))
+        return isinstance(val, _SequenceABC) and not isinstance(
+            val, (str, bytes, bytearray)
+        )
 
     def _iter_items(prefix: str, value: object):
         value = _coerce_scalar(value)
@@ -124,7 +131,11 @@ def _metrics_table(flags: Dict[str, object]) -> pd.DataFrame:
                 yield from _iter_items(next_prefix, sub_val)
             return
 
-        if np is not None and hasattr(value, "tolist") and not isinstance(value, (str, bytes, bytearray)):
+        if (
+            np is not None
+            and hasattr(value, "tolist")
+            and not isinstance(value, (str, bytes, bytearray))
+        ):
             try:
                 value = value.tolist()
             except Exception:
@@ -163,11 +174,13 @@ def _metrics_table(flags: Dict[str, object]) -> pd.DataFrame:
     for key, raw_value in flags.items():
         for metric_key, metric_value in _iter_items(key, raw_value):
             display, dtype_name = _format_value(metric_value)
-            rows.append({
-                "metric": metric_key,
-                "value": display,
-                "value_type": dtype_name,
-            })
+            rows.append(
+                {
+                    "metric": metric_key,
+                    "value": display,
+                    "value_type": dtype_name,
+                }
+            )
 
     if not rows:
         return pd.DataFrame({"metric": [], "value": [], "value_type": []})
@@ -301,7 +314,9 @@ def _render_deeptica_summary(summary: Dict[str, object]) -> None:
     with st.expander("Training diagnostics", expanded=False):
         epochs = list(range(1, len(cleaned.get("val_score_curve", [])) + 1))
         if epochs:
-            df_score = pd.DataFrame({"val_score": cleaned.get("val_score_curve", [])}, index=epochs)
+            df_score = pd.DataFrame(
+                {"val_score": cleaned.get("val_score_curve", [])}, index=epochs
+            )
             st.line_chart(df_score, height=200)
         var_z0 = cleaned.get("var_z0_curve") or []
         if var_z0:
@@ -326,6 +341,7 @@ def _render_deeptica_summary(summary: Dict[str, object]) -> None:
         if cleaned.get("grad_norm_curve"):
             df_grad = pd.DataFrame({"grad_norm": cleaned.get("grad_norm_curve")})
             st.line_chart(df_grad, height=200)
+
 
 def _ensure_session_defaults() -> None:
     for key in (
@@ -557,7 +573,9 @@ def main() -> None:
                     step=500,
                     key="hop_frames",
                 )
-                temp_default = sim.analysis_temperatures[0] if sim.analysis_temperatures else 300.0
+                temp_default = (
+                    sim.analysis_temperatures[0] if sim.analysis_temperatures else 300.0
+                )
                 shard_temp = st.number_input(
                     "Shard metadata temperature (K)",
                     min_value=0.0,
@@ -586,9 +604,11 @@ def main() -> None:
                             seed_start=int(seed_start),
                             frames_per_shard=int(frames_per_shard),
                             hop_frames=int(hop_frames) if hop_frames > 0 else None,
-                            reference=Path(reference_path).expanduser().resolve()
-                            if reference_path.strip()
-                            else None,
+                            reference=(
+                                Path(reference_path).expanduser().resolve()
+                                if reference_path.strip()
+                                else None
+                            ),
                         )
                         shard_result = backend.emit_shards(
                             sim,
@@ -624,12 +644,22 @@ def main() -> None:
             selected_paths = _select_shard_paths(shard_groups, selected_runs)
             st.write(f"Selected {len(selected_paths)} shard files.")
             col_a, col_b, col_c = st.columns(3)
-            lag = col_a.number_input("Lag (steps)", min_value=1, value=5, step=1, key="train_lag")
-            bins_rg = col_b.number_input("Bins for Rg", min_value=8, value=64, step=4, key="train_bins_rg")
-            bins_rmsd = col_c.number_input("Bins for RMSD", min_value=8, value=64, step=4, key="train_bins_rmsd")
+            lag = col_a.number_input(
+                "Lag (steps)", min_value=1, value=5, step=1, key="train_lag"
+            )
+            bins_rg = col_b.number_input(
+                "Bins for Rg", min_value=8, value=64, step=4, key="train_bins_rg"
+            )
+            bins_rmsd = col_c.number_input(
+                "Bins for RMSD", min_value=8, value=64, step=4, key="train_bins_rmsd"
+            )
             col_d, col_e, col_f = st.columns(3)
-            seed = col_d.number_input("Training seed", min_value=0, value=1337, step=1, key="train_seed")
-            max_epochs = col_e.number_input("Max epochs", min_value=20, value=200, step=10, key="train_max_epochs")
+            seed = col_d.number_input(
+                "Training seed", min_value=0, value=1337, step=1, key="train_seed"
+            )
+            max_epochs = col_e.number_input(
+                "Max epochs", min_value=20, value=200, step=10, key="train_max_epochs"
+            )
             patience = col_f.number_input(
                 "Early stopping patience",
                 min_value=5,
@@ -670,9 +700,16 @@ def main() -> None:
                 step=1,
                 key="train_epochs_per_tau",
             )
-            hidden_layers = tuple(int(v.strip()) for v in hidden.split(",") if v.strip()) or (128, 128)
+            hidden_layers = tuple(
+                int(v.strip()) for v in hidden.split(",") if v.strip()
+            ) or (128, 128)
             disabled = len(selected_paths) == 0
-            if st.button("Train Deep-TICA model", type="primary", disabled=disabled, key="train_button"):
+            if st.button(
+                "Train Deep-TICA model",
+                type="primary",
+                disabled=disabled,
+                key="train_button",
+            ):
                 try:
                     tau_values = _parse_tau_schedule(tau_raw)
                 except ValueError as exc:
@@ -699,7 +736,11 @@ def main() -> None:
                             f"Model stored at {result.bundle_path.name} (hash {result.dataset_hash})."
                         )
                         _show_build_outputs(result)
-                        summary = result.build_result.artifacts.get("mlcv_deeptica") if result.build_result else None
+                        summary = (
+                            result.build_result.artifacts.get("mlcv_deeptica")
+                            if result.build_result
+                            else None
+                        )
                         if summary:
                             _render_deeptica_summary(summary)
                     except RuntimeError as exc:
@@ -712,13 +753,18 @@ def main() -> None:
 
         models = backend.list_models()
         if models:
-            with st.expander("Load recorded model", expanded=st.session_state.get(_LAST_TRAIN) is None):
+            with st.expander(
+                "Load recorded model",
+                expanded=st.session_state.get(_LAST_TRAIN) is None,
+            ):
                 indices = list(range(len(models)))
 
                 def _model_label(idx: int) -> str:
                     entry = models[idx]
                     bundle_raw = entry.get("bundle", "")
-                    bundle_name = Path(bundle_raw).name if bundle_raw else f"model-{idx}"
+                    bundle_name = (
+                        Path(bundle_raw).name if bundle_raw else f"model-{idx}"
+                    )
                     created = entry.get("created_at", "unknown")
                     return f"{bundle_name} (created {created})"
 
@@ -733,14 +779,20 @@ def main() -> None:
                     if loaded is not None:
                         st.session_state[_LAST_TRAIN] = loaded
                         try:
-                            cfg_loaded = backend.training_config_from_entry(models[int(selected_idx)])
+                            cfg_loaded = backend.training_config_from_entry(
+                                models[int(selected_idx)]
+                            )
                             st.session_state[_LAST_TRAIN_CONFIG] = cfg_loaded
                             _apply_training_config_to_state(cfg_loaded)
                         except Exception:
                             pass
                         st.success(f"Loaded model {loaded.bundle_path.name}.")
                         _show_build_outputs(loaded)
-                        summary = loaded.build_result.artifacts.get("mlcv_deeptica") if loaded.build_result else None
+                        summary = (
+                            loaded.build_result.artifacts.get("mlcv_deeptica")
+                            if loaded.build_result
+                            else None
+                        )
                         if summary:
                             _render_deeptica_summary(summary)
                     else:
@@ -756,13 +808,18 @@ def main() -> None:
 
         builds = backend.list_builds()
         if builds:
-            with st.expander("Load recorded analysis bundle", expanded=st.session_state.get(_LAST_BUILD) is None):
+            with st.expander(
+                "Load recorded analysis bundle",
+                expanded=st.session_state.get(_LAST_BUILD) is None,
+            ):
                 indices = list(range(len(builds)))
 
                 def _build_label(idx: int) -> str:
                     entry = builds[idx]
                     bundle_raw = entry.get("bundle", "")
-                    bundle_name = Path(bundle_raw).name if bundle_raw else f"bundle-{idx}"
+                    bundle_name = (
+                        Path(bundle_raw).name if bundle_raw else f"bundle-{idx}"
+                    )
                     created = entry.get("created_at", "unknown")
                     return f"{bundle_name} (created {created})"
 
@@ -777,17 +834,25 @@ def main() -> None:
                     if loaded is not None:
                         st.session_state[_LAST_BUILD] = loaded
                         try:
-                            cfg_loaded = backend.build_config_from_entry(builds[int(selected_idx)])
+                            cfg_loaded = backend.build_config_from_entry(
+                                builds[int(selected_idx)]
+                            )
                             _apply_analysis_config_to_state(cfg_loaded)
                         except Exception:
                             pass
                         st.success(f"Loaded bundle {loaded.bundle_path.name}.")
                         _show_build_outputs(loaded)
-                        summary = loaded.build_result.artifacts.get("mlcv_deeptica") if loaded.build_result else None
+                        summary = (
+                            loaded.build_result.artifacts.get("mlcv_deeptica")
+                            if loaded.build_result
+                            else None
+                        )
                         if summary:
                             _render_deeptica_summary(summary)
                     else:
-                        st.error("Could not load the selected analysis bundle from disk.")
+                        st.error(
+                            "Could not load the selected analysis bundle from disk."
+                        )
 
         if not shard_groups:
             st.info("Emit shards to build an MSM/FES bundle.")
@@ -801,11 +866,19 @@ def main() -> None:
             selected_paths = _select_shard_paths(shard_groups, selected_runs)
             st.write(f"Using {len(selected_paths)} shard files for analysis.")
             col_a, col_b, col_c = st.columns(3)
-            lag = col_a.number_input("Lag (steps)", min_value=1, value=10, step=1, key="analysis_lag")
-            bins_rg = col_b.number_input("Bins for Rg", min_value=8, value=72, step=4, key="analysis_bins_rg")
-            bins_rmsd = col_c.number_input("Bins for RMSD", min_value=8, value=72, step=4, key="analysis_bins_rmsd")
+            lag = col_a.number_input(
+                "Lag (steps)", min_value=1, value=10, step=1, key="analysis_lag"
+            )
+            bins_rg = col_b.number_input(
+                "Bins for Rg", min_value=8, value=72, step=4, key="analysis_bins_rg"
+            )
+            bins_rmsd = col_c.number_input(
+                "Bins for RMSD", min_value=8, value=72, step=4, key="analysis_bins_rmsd"
+            )
             col_d, col_e = st.columns(2)
-            seed = col_d.number_input("Build seed", min_value=0, value=2025, step=1, key="analysis_seed")
+            seed = col_d.number_input(
+                "Build seed", min_value=0, value=2025, step=1, key="analysis_seed"
+            )
             temperature = col_e.number_input(
                 "Reference temperature (K)",
                 min_value=0.0,
@@ -827,7 +900,14 @@ def main() -> None:
             cluster_mode = col_cluster.selectbox(
                 "Discretization mode",
                 options=["kmeans", "grid"],
-                index=(0 if str(st.session_state.get("analysis_cluster_mode", "kmeans")).lower() != "grid" else 1),
+                index=(
+                    0
+                    if str(
+                        st.session_state.get("analysis_cluster_mode", "kmeans")
+                    ).lower()
+                    != "grid"
+                    else 1
+                ),
                 key="analysis_cluster_mode",
             )
             n_microstates = col_micro.number_input(
@@ -837,7 +917,9 @@ def main() -> None:
                 step=1,
                 key="analysis_n_microstates",
             )
-            reweight_default = str(st.session_state.get("analysis_reweight_mode", "MBAR"))
+            reweight_default = str(
+                st.session_state.get("analysis_reweight_mode", "MBAR")
+            )
             reweight_index = 0
             if reweight_default.upper() == "TRAM":
                 reweight_index = 1
@@ -853,7 +935,12 @@ def main() -> None:
             fes_method = col_fes_method.selectbox(
                 "FES method",
                 options=["kde", "grid"],
-                index=(0 if str(st.session_state.get("analysis_fes_method", "kde")).lower() != "grid" else 1),
+                index=(
+                    0
+                    if str(st.session_state.get("analysis_fes_method", "kde")).lower()
+                    != "grid"
+                    else 1
+                ),
                 key="analysis_fes_method",
             )
             fes_bandwidth = col_bw.text_input(
@@ -880,15 +967,34 @@ def main() -> None:
                     cfg: TrainingConfig = st.session_state[_LAST_TRAIN_CONFIG]
                     deeptica_params = cfg.deeptica_params()
                 else:
-                    lag_ml = st.number_input("Deep-TICA lag", min_value=1, value=int(lag), key="analysis_lag_ml")
-                    hidden_ml = st.text_input("Deep-TICA hidden layers", value="128,128", key="analysis_hidden_layers")
+                    lag_ml = st.number_input(
+                        "Deep-TICA lag",
+                        min_value=1,
+                        value=int(lag),
+                        key="analysis_lag_ml",
+                    )
+                    hidden_ml = st.text_input(
+                        "Deep-TICA hidden layers",
+                        value="128,128",
+                        key="analysis_hidden_layers",
+                    )
                     hidden_layers = tuple(
-                        int(v.strip())
-                        for v in hidden_ml.split(",")
-                        if v.strip()
+                        int(v.strip()) for v in hidden_ml.split(",") if v.strip()
                     ) or (128, 128)
-                    max_epochs = st.number_input("Deep-TICA max epochs", min_value=20, value=200, step=10, key="analysis_max_epochs")
-                    patience = st.number_input("Deep-TICA patience", min_value=5, value=25, step=5, key="analysis_patience")
+                    max_epochs = st.number_input(
+                        "Deep-TICA max epochs",
+                        min_value=20,
+                        value=200,
+                        step=10,
+                        key="analysis_max_epochs",
+                    )
+                    patience = st.number_input(
+                        "Deep-TICA patience",
+                        min_value=5,
+                        value=25,
+                        step=5,
+                        key="analysis_patience",
+                    )
                     deeptica_params = {
                         "lag": int(lag_ml),
                         "n_out": 2,
@@ -898,11 +1004,18 @@ def main() -> None:
                         "reweight_mode": "scaled_time",
                     }
             disabled = len(selected_paths) == 0
-            if st.button("Build MSM/FES bundle", type="primary", disabled=disabled, key="analysis_build_button"):
+            if st.button(
+                "Build MSM/FES bundle",
+                type="primary",
+                disabled=disabled,
+                key="analysis_build_button",
+            ):
                 try:
                     bw_clean = fes_bandwidth.strip()
                     try:
-                        bandwidth_val: str | float = float(bw_clean) if bw_clean else "scott"
+                        bandwidth_val: str | float = (
+                            float(bw_clean) if bw_clean else "scott"
+                        )
                     except ValueError:
                         bandwidth_val = bw_clean or "scott"
                     reweight_norm = str(reweight_mode)
@@ -932,7 +1045,11 @@ def main() -> None:
                         f"Bundle {artifact.bundle_path.name} written (hash {artifact.dataset_hash})."
                     )
                     _show_build_outputs(artifact)
-                    summary = artifact.build_result.artifacts.get("mlcv_deeptica") if artifact.build_result else None
+                    summary = (
+                        artifact.build_result.artifacts.get("mlcv_deeptica")
+                        if artifact.build_result
+                        else None
+                    )
                     if summary:
                         _render_deeptica_summary(summary)
                 except Exception as exc:
@@ -948,12 +1065,18 @@ def main() -> None:
             for i, run in enumerate(runs):
                 col1, col2 = st.columns([8, 1])
                 with col1:
-                    st.write(f"**{run.get('run_id', 'Unknown')}** - {run.get('steps', 0)} steps - {run.get('created_at', 'Unknown date')}")
+                    st.write(
+                        f"**{run.get('run_id', 'Unknown')}** - {run.get('steps', 0)} steps - {run.get('created_at', 'Unknown date')}"
+                    )
                     st.caption(f"Temperatures: {run.get('temperatures', [])} K")
                 with col2:
-                    if st.button("❌", key=f"delete_run_{i}", help="Delete this simulation"):
+                    if st.button(
+                        "❌", key=f"delete_run_{i}", help="Delete this simulation"
+                    ):
                         if backend.delete_simulation(i):
-                            st.success(f"Deleted simulation {run.get('run_id', 'Unknown')}")
+                            st.success(
+                                f"Deleted simulation {run.get('run_id', 'Unknown')}"
+                            )
                             st.rerun()
                         else:
                             st.error("Failed to delete simulation")
@@ -968,12 +1091,20 @@ def main() -> None:
             for i, shard in enumerate(shards):
                 col1, col2 = st.columns([8, 1])
                 with col1:
-                    st.write(f"**{shard.get('run_id', 'Unknown')}** - {shard.get('n_shards', 0)} shards ({shard.get('n_frames', 0)} frames)")
-                    st.caption(f"Temperature: {shard.get('temperature', 0)} K, Stride: {shard.get('stride', 0)} - {shard.get('created_at', 'Unknown date')}")
+                    st.write(
+                        f"**{shard.get('run_id', 'Unknown')}** - {shard.get('n_shards', 0)} shards ({shard.get('n_frames', 0)} frames)"
+                    )
+                    st.caption(
+                        f"Temperature: {shard.get('temperature', 0)} K, Stride: {shard.get('stride', 0)} - {shard.get('created_at', 'Unknown date')}"
+                    )
                 with col2:
-                    if st.button("❌", key=f"delete_shard_{i}", help="Delete this shard batch"):
+                    if st.button(
+                        "❌", key=f"delete_shard_{i}", help="Delete this shard batch"
+                    ):
                         if backend.delete_shard_batch(i):
-                            st.success(f"Deleted shard batch from {shard.get('run_id', 'Unknown')}")
+                            st.success(
+                                f"Deleted shard batch from {shard.get('run_id', 'Unknown')}"
+                            )
                             st.rerun()
                         else:
                             st.error("Failed to delete shard batch")
@@ -988,11 +1119,17 @@ def main() -> None:
             for i, model in enumerate(models):
                 col1, col2 = st.columns([8, 1])
                 with col1:
-                    bundle_name = Path(model.get('bundle', '')).name
-                    st.write(f"**{bundle_name}** - Lag: {model.get('lag', 0)}, Temperature: {model.get('temperature', 0)} K")
-                    st.caption(f"Bins: Rg={model.get('bins', {}).get('Rg', 0)}, RMSD={model.get('bins', {}).get('RMSD_ref', 0)} - {model.get('created_at', 'Unknown date')}")
+                    bundle_name = Path(model.get("bundle", "")).name
+                    st.write(
+                        f"**{bundle_name}** - Lag: {model.get('lag', 0)}, Temperature: {model.get('temperature', 0)} K"
+                    )
+                    st.caption(
+                        f"Bins: Rg={model.get('bins', {}).get('Rg', 0)}, RMSD={model.get('bins', {}).get('RMSD_ref', 0)} - {model.get('created_at', 'Unknown date')}"
+                    )
                 with col2:
-                    if st.button("❌", key=f"delete_model_{i}", help="Delete this model"):
+                    if st.button(
+                        "❌", key=f"delete_model_{i}", help="Delete this model"
+                    ):
                         if backend.delete_model(i):
                             st.success(f"Deleted model {bundle_name}")
                             st.rerun()
@@ -1009,11 +1146,19 @@ def main() -> None:
             for i, build in enumerate(builds):
                 col1, col2 = st.columns([8, 1])
                 with col1:
-                    bundle_name = Path(build.get('bundle', '')).name
-                    st.write(f"**{bundle_name}** - Lag: {build.get('lag', 0)}, Temperature: {build.get('temperature', 0)} K")
-                    st.caption(f"Learn CV: {build.get('learn_cv', False)} - {build.get('created_at', 'Unknown date')}")
+                    bundle_name = Path(build.get("bundle", "")).name
+                    st.write(
+                        f"**{bundle_name}** - Lag: {build.get('lag', 0)}, Temperature: {build.get('temperature', 0)} K"
+                    )
+                    st.caption(
+                        f"Learn CV: {build.get('learn_cv', False)} - {build.get('created_at', 'Unknown date')}"
+                    )
                 with col2:
-                    if st.button("❌", key=f"delete_build_{i}", help="Delete this analysis bundle"):
+                    if st.button(
+                        "❌",
+                        key=f"delete_build_{i}",
+                        help="Delete this analysis bundle",
+                    ):
                         if backend.delete_analysis_bundle(i):
                             st.success(f"Deleted analysis bundle {bundle_name}")
                             st.rerun()
@@ -1023,7 +1168,9 @@ def main() -> None:
         else:
             st.info("No analysis bundles recorded yet.")
 
-    st.caption("Run this app with: poetry run streamlit run example_programs/app_usecase/app/app.py")
+    st.caption(
+        "Run this app with: poetry run streamlit run example_programs/app_usecase/app/app.py"
+    )
 
 
 if __name__ == "__main__":

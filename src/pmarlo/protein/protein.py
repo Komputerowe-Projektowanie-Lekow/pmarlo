@@ -45,7 +45,7 @@ _WATER_RESIDUES = {"HOH", "H2O", "WAT"}
 
 _PDBFixer: type[Any]
 
-if _RealPDBFixer is None:
+if _RealPDBFixer is None:  # noqa: C901
 
     class _StubPDBFixer:
         """Lightweight fallback emulating core PDBFixer APIs."""

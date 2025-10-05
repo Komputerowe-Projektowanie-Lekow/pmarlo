@@ -1,5 +1,9 @@
 from unittest.mock import Mock, patch
 
+import pytest
+
+pytest.importorskip("sklearn")
+
 from pmarlo.replica_exchange.replica_exchange import ReplicaExchange
 
 

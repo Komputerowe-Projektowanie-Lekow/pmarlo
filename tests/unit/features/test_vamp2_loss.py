@@ -21,7 +21,9 @@ if "mlcolvar" not in sys.modules:
 from typing import Tuple
 
 import numpy as np
-import torch
+import pytest
+
+torch = pytest.importorskip("torch")
 
 from pmarlo.features.deeptica.losses import VAMP2Loss
 

@@ -322,16 +322,12 @@ class MDTrajDCDWriter:
         new_traj = md.Trajectory(new_chunk, topo)
         return new_traj if joined is None else joined.join(new_traj)
 
-    def _join_existing_frames(
-        self, reader: MDTrajReader, old_len: int, topo: Any
-    ):
+    def _join_existing_frames(self, reader: MDTrajReader, old_len: int, topo: Any):
         import mdtraj as md  # type: ignore
 
         chunk_list: list[md.Trajectory] = []
         joined: Optional[md.Trajectory] = None
-        for xyz in reader.iter_frames(
-            str(self._path), start=0, stop=old_len, stride=1
-        ):
+        for xyz in reader.iter_frames(str(self._path), start=0, stop=old_len, stride=1):
             chunk_list.append(md.Trajectory(xyz[np.newaxis, ...], topo))
             if len(chunk_list) >= 256:
                 part = md.join(chunk_list)

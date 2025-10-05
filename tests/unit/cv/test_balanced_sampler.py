@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from pmarlo.features.samplers import BalancedTempSampler
+from pmarlo.samplers import BalancedTempSampler
 from pmarlo.shards.pair_builder import PairBuilder
 from pmarlo.shards.schema import FeatureSpec, Shard, ShardMeta
 

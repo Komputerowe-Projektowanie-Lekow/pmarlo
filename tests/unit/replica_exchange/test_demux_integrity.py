@@ -4,6 +4,8 @@ import mdtraj as md
 import numpy as np
 import pytest
 
+pytest.importorskip("sklearn")
+
 from pmarlo.demultiplexing.demux_metadata import DemuxIntegrityError
 from pmarlo.replica_exchange.replica_exchange import ReplicaExchange
 

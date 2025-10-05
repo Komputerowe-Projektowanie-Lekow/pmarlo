@@ -4,6 +4,10 @@ import inspect
 import typing as t
 from pathlib import Path
 
+import pytest
+
+pytest.importorskip("sklearn")
+
 from pmarlo.demultiplexing.demux import demux_trajectories
 from pmarlo.demultiplexing.demux_metadata import DemuxIntegrityError, DemuxMetadata
 from pmarlo.replica_exchange.replica_exchange import ReplicaExchange

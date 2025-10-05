@@ -4,6 +4,9 @@ from pathlib import Path
 
 import mdtraj as md
 import numpy as np
+import pytest
+
+pytest.importorskip("sklearn")
 
 from pmarlo.demultiplexing.demux_engine import demux_streaming
 from pmarlo.demultiplexing.demux_plan import DemuxPlan, DemuxSegmentPlan

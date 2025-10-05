@@ -120,7 +120,7 @@ class _EpochAccumulator:
         self._append_eigenvalue_summary(metrics)
         return metrics
 
-    def _empty_epoch(self) -> Dict[str, float]:
+    def _empty_epoch(self) -> Dict[str, float | List[float]]:
         return {
             "loss": 0.0,
             "score": 0.0,
@@ -160,9 +160,7 @@ class _EpochAccumulator:
         if self.mean_zt_sum is not None:
             agg["mean_zt"] = (self.mean_zt_sum / divisor).tolist()
 
-    def _append_eigenvalue_summary(
-        self, agg: Dict[str, float | List[float]]
-    ) -> None:
+    def _append_eigenvalue_summary(self, agg: Dict[str, float | List[float]]) -> None:
         if self.eig0_min != float("inf"):
             agg["eig_c00_min"] = self.eig0_min
         if self.eig0_max != 0.0:
