@@ -7,6 +7,7 @@ to construct a demultiplexed trajectory with minimal memory usage.
 from __future__ import annotations
 
 import logging
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Literal, Optional
@@ -282,7 +283,7 @@ class _ParallelDemuxer:
         self.window = self.max_workers * window_multiplier
         self.next_to_submit = 0
         self.next_to_consume = 0
-        self.pending: dict[object, int] = {}
+        self.pending: dict[Future[np.ndarray | None], int] = {}
         self.buffered: dict[int, Optional[np.ndarray]] = {}
 
     def run(self) -> None:
@@ -304,9 +305,8 @@ class _ParallelDemuxer:
         return bool(self.pending) and self._has_work()
 
     def _schedule(self, pool) -> None:
-        while (
-            len(self.pending) < self.window
-            and self.next_to_submit < len(self.plan.segments)
+        while len(self.pending) < self.window and self.next_to_submit < len(
+            self.plan.segments
         ):
             seg_idx = self.next_to_submit
             segment = self.plan.segments[seg_idx]
@@ -327,7 +327,7 @@ class _ParallelDemuxer:
     def _segment_has_source(self, segment: DemuxSegmentPlan) -> bool:
         return (
             segment.replica_index >= 0
-            and segment.source_path
+            and bool(segment.source_path)
             and segment.stop_frame > segment.start_frame
         )
 
@@ -336,12 +336,15 @@ class _ParallelDemuxer:
 
         if not self.pending:
             return
-        done, _ = fut.wait(self.pending.keys(), return_when=fut.FIRST_COMPLETED)
+        pending_futures = list(self.pending.keys())
+        done, _ = fut.wait(pending_futures, return_when=fut.FIRST_COMPLETED)
         for future in done:
             seg_idx = self.pending.pop(future)
             self.buffered[seg_idx] = self._resolve_future_result(seg_idx, future)
 
-    def _resolve_future_result(self, seg_idx: int, future) -> Optional[np.ndarray]:
+    def _resolve_future_result(
+        self, seg_idx: int, future: Future[np.ndarray | None]
+    ) -> Optional[np.ndarray]:
         try:
             arr = future.result()
         except Exception as exc:  # noqa: BLE001
@@ -361,7 +364,9 @@ class _ParallelDemuxer:
             segment = self.plan.segments[self.next_to_consume]
             planned = max(0, int(segment.expected_frames))
             if frames is not None and isinstance(frames, np.ndarray):
-                self.state.segment_real_frames[self.next_to_consume] = int(frames.shape[0])
+                self.state.segment_real_frames[self.next_to_consume] = int(
+                    frames.shape[0]
+                )
             progress_frames = _consume_parallel_segment(
                 self.context,
                 self.state,

@@ -5,7 +5,6 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 
-
 __all__ = ["plot_msm", "plot_fes"]
 
 

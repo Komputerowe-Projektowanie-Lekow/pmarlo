@@ -36,7 +36,9 @@ def prepare_features(
         raise ValueError("Expected at least one trajectory array for DeepTICA")
 
     X = np.concatenate(stacked, axis=0)
-    scaler = StandardScaler(with_mean=True, with_std=True).fit(np.asarray(X, dtype=np.float64))
+    scaler = StandardScaler(with_mean=True, with_std=True).fit(
+        np.asarray(X, dtype=np.float64)
+    )
     Z = scaler.transform(np.asarray(X, dtype=np.float64)).astype(np.float32, copy=False)
 
     schedule = tuple(int(t) for t in tau_schedule if int(t) > 0)

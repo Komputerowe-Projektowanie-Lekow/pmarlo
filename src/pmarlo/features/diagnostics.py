@@ -118,9 +118,7 @@ def _diagnose_with_shards(
 
     if pair_info is not None:
         diagnostics = pair_info.diagnostics
-        uniform_counts = [
-            int(count) for count in diagnostics.get("pairs_by_shard", [])
-        ]
+        uniform_counts = [int(count) for count in diagnostics.get("pairs_by_shard", [])]
         if len(uniform_counts) < len(shards):
             uniform_counts.extend([0] * (len(shards) - len(uniform_counts)))
         pairs_total_uniform = int(diagnostics.get("usable_pairs", 0))

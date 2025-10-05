@@ -10,9 +10,9 @@ import mdtraj as md
 import numpy as np
 
 from pmarlo import Protein, api
-from pmarlo.transform.build import AppliedOpts, BuildOpts, build_result
 from pmarlo.reporting.export import write_conformations_csv_json
 from pmarlo.reporting.plots import save_fes_contour, save_transition_matrix_heatmap
+from pmarlo.transform.build import AppliedOpts, BuildOpts, build_result
 from pmarlo.transform.plan import TransformPlan, TransformStep
 
 BASE_DIR = Path(__file__).resolve().parent.parent

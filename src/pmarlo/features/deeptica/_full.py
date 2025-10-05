@@ -4,13 +4,12 @@ import json
 import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable, List, Optional, Tuple
+from typing import Any, Iterable, List, Optional, Tuple, cast
 
 import numpy as np
 
 # Standardize math defaults to float32 end-to-end
 import torch  # type: ignore
-
 
 logger = logging.getLogger(__name__)
 
@@ -39,20 +38,20 @@ from sklearn.preprocessing import StandardScaler  # type: ignore
 
 from pmarlo.ml.deeptica.whitening import apply_output_transform
 
+from .core.model import apply_output_whitening as core_apply_output_whitening
+from .core.model import construct_deeptica_core as core_construct_deeptica_core
+from .core.model import normalize_hidden_dropout as core_normalize_hidden_dropout
+from .core.model import override_core_mlp as core_override_core_mlp
+from .core.model import resolve_activation_module as core_resolve_activation_module
+from .core.model import resolve_hidden_layers as core_resolve_hidden_layers
+from .core.model import resolve_input_dropout as core_resolve_input_dropout
+from .core.model import strip_batch_norm as core_strip_batch_norm
 from .core.model import (
-    apply_output_whitening as core_apply_output_whitening,
-    construct_deeptica_core as core_construct_deeptica_core,
-    normalize_hidden_dropout as core_normalize_hidden_dropout,
-    override_core_mlp as core_override_core_mlp,
-    resolve_activation_module as core_resolve_activation_module,
-    resolve_hidden_layers as core_resolve_hidden_layers,
-    resolve_input_dropout as core_resolve_input_dropout,
-    strip_batch_norm as core_strip_batch_norm,
     wrap_with_preprocessing_layers as core_wrap_with_preprocessing_layers,
 )
 from .core.trainer_api import train_deeptica_pipeline
-from .core.utils import safe_float as core_safe_float, set_all_seeds as _core_set_all_seeds
-
+from .core.utils import safe_float as core_safe_float
+from .core.utils import set_all_seeds as _core_set_all_seeds
 
 torch.set_float32_matmul_precision("high")
 torch.set_default_dtype(torch.float32)
@@ -375,14 +374,18 @@ def _resolve_input_dropout(cfg: Any) -> float:
 def _strip_batch_norm(module: Any) -> None:
     core_strip_batch_norm(module)
 
-def _load_training_history(path: Path) -> Optional[dict]:
+
+def _load_training_history(path: Path) -> Optional[dict[str, Any]]:
     history_path = path.with_suffix(".history.json")
     if not history_path.exists():
         return None
     try:
-        return json.loads(history_path.read_text(encoding="utf-8"))
+        data = json.loads(history_path.read_text(encoding="utf-8"))
     except Exception:
         return None
+    if isinstance(data, dict):
+        return cast(dict[str, Any], data)
+    return None
 
     def to_torchscript(self, path: Path) -> Path:
         path = Path(path)
@@ -411,7 +414,9 @@ def _mark_module_scripting_safe(module: Any) -> None:
     except Exception:
         return
     try:
-        iterator = getattr(module, "named_modules", lambda: [])()
+        iterator: Iterable[tuple[str, Any]] = getattr(
+            module, "named_modules", lambda: []
+        )()
     except Exception:
         return
     for _name, child in iterator:

@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Iterable, List
+from typing import Iterable, List, TypeAlias
 
 from pmarlo.ml.deeptica.trainer import CurriculumConfig
 
 __all__ = ["TrainerConfig", "resolve_curriculum"]
 
 # Alias the canonical configuration so legacy imports continue to work.
-TrainerConfig = CurriculumConfig
+TrainerConfig: TypeAlias = CurriculumConfig
 
 
 def resolve_curriculum(cfg: TrainerConfig) -> List[int]:

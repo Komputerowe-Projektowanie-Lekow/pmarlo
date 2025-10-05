@@ -30,7 +30,9 @@ def test_prepare_batch_and_metrics(tmp_path):
     x0 = np.arange(12, dtype=np.float32).reshape(6, 2)
     x1 = x0 + 1.0
     batch = [(x0, x1, None)]
-    tensors = prepare_batch(batch, torch_mod=torch, device=torch.device("cpu"), use_weights=False)
+    tensors = prepare_batch(
+        batch, torch_mod=torch, device=torch.device("cpu"), use_weights=False
+    )
     assert tensors is not None
     x_t, x_tau, weights = tensors
     assert weights is None

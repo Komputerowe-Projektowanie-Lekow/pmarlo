@@ -22,9 +22,12 @@ from typing import (
     cast,
 )
 
+from pmarlo.utils.errors import DemuxIntegrityError as _DemuxIntegrityError
+
 logger = logging.getLogger("pmarlo")
 
 # Backward-compatibility: alias project-specific error in this module
+DemuxIntegrityError = _DemuxIntegrityError
 
 if TYPE_CHECKING:  # pragma: no cover - typing-only imports
     from .demux_engine import DemuxResult

@@ -78,7 +78,9 @@ def test_strip_batch_norm_removes_layers():
     )
     model.strip_batch_norm(seq)
     children = list(seq.children())
-    assert not any(isinstance(child, torch.nn.modules.batchnorm._BatchNorm) for child in children)
+    assert not any(
+        isinstance(child, torch.nn.modules.batchnorm._BatchNorm) for child in children
+    )
 
 
 def test_resolve_hidden_layers_handles_linear_head():

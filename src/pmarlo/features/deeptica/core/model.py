@@ -8,12 +8,9 @@ import torch  # type: ignore
 try:  # pragma: no cover - optional extra
     from mlcolvar.cvs import DeepTICA  # type: ignore
 except Exception as exc:  # pragma: no cover
-    raise ImportError(
-        "Install optional extra pmarlo[mlcv] to use Deep-TICA"
-    ) from exc
+    raise ImportError("Install optional extra pmarlo[mlcv] to use Deep-TICA") from exc
 
 from .utils import safe_float, set_all_seeds
-
 
 __all__ = [
     "apply_output_whitening",

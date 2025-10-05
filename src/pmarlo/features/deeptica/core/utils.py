@@ -6,7 +6,6 @@ from typing import Any
 import numpy as np
 import torch  # type: ignore
 
-
 __all__ = ["set_all_seeds", "safe_float"]
 
 

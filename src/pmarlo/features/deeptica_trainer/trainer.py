@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from pmarlo.ml.deeptica.trainer import (
-    CurriculumConfig as TrainerConfig,
-    DeepTICACurriculumTrainer as DeepTICATrainer,
-)
+from pmarlo.ml.deeptica.trainer import CurriculumConfig as TrainerConfig
+from pmarlo.ml.deeptica.trainer import DeepTICACurriculumTrainer as DeepTICATrainer
 
 __all__ = ["TrainerConfig", "DeepTICATrainer"]
 

@@ -22,11 +22,13 @@ def test_loss_history_tracks_train_and_val_curves():
 
 
 def test_collect_history_metrics_normalises_types():
-    metrics = collect_history_metrics({
-        "loss_curve": ["1", 2.0],
-        "val_loss_curve": ["0.5"],
-        "val_score_curve": [0.75],
-    })
+    metrics = collect_history_metrics(
+        {
+            "loss_curve": ["1", 2.0],
+            "val_loss_curve": ["0.5"],
+            "val_score_curve": [0.75],
+        }
+    )
     assert metrics["loss_curve"] == [1.0, 2.0]
     assert metrics["val_loss_curve"] == [0.5]
     assert metrics["val_score_curve"] == [0.75]
