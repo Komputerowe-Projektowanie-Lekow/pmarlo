@@ -49,4 +49,4 @@ repos:
         entry: poetry run pytest --testmon -q -m "unit and not slow"
         language: system
         pass_filenames: false
-        stages: [commit]
+        stages: [pre-commit]

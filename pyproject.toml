@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 name            = "pmarlo"
 description     = "Protein Markov State Model Analysis with Replica Exchange"
 readme          = "README.md"
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.11,<3.13"
 license = { file = "LICENSE" }
 
 
@@ -93,7 +93,7 @@ url = "https://download.pytorch.org/whl/cpu"
 priority = "explicit"
 
 [tool.poetry.dependencies]
-python = ">=3.11,<3.14"
+python = ">=3.11,<3.13"
 # Optional dependencies (enabled via extras)
 matplotlib = {version = ">=3.8", optional = true}
 plotly = {version = ">=5.15", optional = true}
@@ -154,6 +154,21 @@ profile            = "black"
 line_length        = 88
 multi_line_output  = 3
 known_first_party  = ["pmarlo"]
+
+[tool.flake8]
+max-line-length = 120
+max-complexity = 12
+extend-ignore = ["E203", "W503"]
+exclude = [".git", ".tox", ".venv", "build", "dist", "__pycache__"]
+per-file-ignores = [
+  "tests/**/*.py: E402",
+  "tests/test_simulation.py: E501",
+  "src/pmarlo/features/deeptica/core/inputs.py: C901",
+  "src/pmarlo/features/deeptica_trainer/config.py: C901",
+  "src/pmarlo/replica_exchange/replica_exchange.py: C901",
+  "src/pmarlo/markov_state_model/markov_state_model.py: E501",
+  "src/pmarlo/cv/deeptica.py: C901",
+]
 
 [tool.mypy]
 python_version = "3.11"
