@@ -2,14 +2,83 @@
 
 from __future__ import annotations
 
-from typing import Iterable, List, TypeAlias
+from typing import Any, Iterable, List, TypeAlias
 
-from pmarlo.ml.deeptica.trainer import CurriculumConfig
+try:  # pragma: no cover - optional ML stack
+    from pmarlo.ml.deeptica.trainer import CurriculumConfig
+except Exception:  # pragma: no cover - torch/ML optional dependency
+
+    class CurriculumConfig:  # type: ignore[too-many-instance-attributes]
+        def __init__(self, tau_steps: Any = 1, **kwargs: Any) -> None:
+            schedule = kwargs.pop("tau_schedule", None)
+            if schedule is None:
+                if isinstance(tau_steps, Iterable) and not isinstance(
+                    tau_steps, (str, bytes)
+                ):
+                    schedule = tuple(int(x) for x in tau_steps)
+                else:
+                    schedule = (int(tau_steps),)
+            else:
+                schedule = tuple(int(x) for x in schedule)
+            if not schedule:
+                schedule = (1,)
+            self.tau_schedule = schedule
+            self.tau_steps = schedule
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
 
 __all__ = ["TrainerConfig", "resolve_curriculum"]
 
-# Alias the canonical configuration so legacy imports continue to work.
-TrainerConfig: TypeAlias = CurriculumConfig
+
+def _coerce_schedule(spec: Any) -> tuple[int, ...]:
+    if spec is None:
+        return ()
+    if isinstance(spec, Iterable) and not isinstance(spec, (str, bytes)):
+        values = [int(x) for x in spec if int(x) > 0]
+    else:
+        step = int(spec)
+        values = [step] if step > 0 else []
+    return tuple(values)
+
+
+class TrainerConfig(CurriculumConfig):  # type: ignore[misc]
+    """Backwards-compatible wrapper accepting legacy ``tau_steps`` arg."""
+
+    def __init__(self, tau_steps: Any = None, **kwargs: Any) -> None:
+        schedule_input = kwargs.pop("tau_schedule", None)
+        schedule = ()
+        if schedule_input is not None:
+            schedule = _coerce_schedule(schedule_input)
+        elif tau_steps is not None:
+            schedule = _coerce_schedule(tau_steps)
+        if schedule:
+            kwargs["tau_schedule"] = schedule
+        elif tau_steps is not None or schedule_input is not None:
+            raise ValueError("tau steps must be positive")
+
+        scheduler = kwargs.pop("scheduler", None)
+        total_steps = kwargs.pop("total_steps", None)
+        alt_total = kwargs.pop("scheduler_total_steps", None)
+        if total_steps is None and alt_total is not None:
+            total_steps = alt_total
+
+        grad_clip_mode = kwargs.pop("grad_clip_mode", None)
+        log_every = kwargs.pop("log_every", None)
+
+        if scheduler == "cosine" and not total_steps:
+            raise ValueError("cosine scheduler requires total_steps")
+
+        super().__init__(**kwargs)
+
+        if scheduler is not None:
+            setattr(self, "scheduler", scheduler)
+        if total_steps is not None:
+            setattr(self, "scheduler_total_steps", int(total_steps))
+        if grad_clip_mode is not None:
+            setattr(self, "grad_clip_mode", str(grad_clip_mode).lower())
+        if log_every is not None:
+            setattr(self, "log_every", max(1, int(log_every)))
 
 
 def resolve_curriculum(cfg: TrainerConfig) -> List[int]:

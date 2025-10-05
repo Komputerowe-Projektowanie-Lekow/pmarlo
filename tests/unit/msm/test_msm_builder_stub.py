@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
+
+pytest.importorskip("sklearn")
 
 from pmarlo.markov_state_model.msm_builder import MSMBuilder
 

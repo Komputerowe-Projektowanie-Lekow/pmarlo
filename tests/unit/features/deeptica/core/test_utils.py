@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")
 
 from pmarlo.features.deeptica.core.utils import safe_float, set_all_seeds
 

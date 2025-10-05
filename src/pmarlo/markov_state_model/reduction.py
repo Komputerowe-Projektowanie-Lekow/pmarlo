@@ -5,6 +5,11 @@ from typing import List, Optional, cast
 
 import numpy as np
 
+try:  # pragma: no cover - optional SciPy dependency
+    from scipy.linalg import eigh as scipy_eigh
+except Exception:  # pragma: no cover - SciPy optional
+    scipy_eigh = None
+
 
 def _preprocess(X: np.ndarray, scale: bool = True) -> np.ndarray:
     """Center and optionally scale features in a NaN-safe manner."""
@@ -132,7 +137,12 @@ def _manual_tica(X: np.ndarray, lag: int = 1, n_components: int = 2) -> np.ndarr
 
     # Solve generalized eigenvalue problem
     try:
-        eigenvals, eigenvecs = np.linalg.eigh(C_0t @ C_0t.T, C_00)
+        if scipy_eigh is not None:
+            eigenvals, eigenvecs = scipy_eigh(C_0t @ C_0t.T, C_00)
+        else:
+            inv_c00 = np.linalg.pinv(C_00)
+            mat = inv_c00 @ (C_0t @ C_0t.T)
+            eigenvals, eigenvecs = np.linalg.eigh(mat)
         # Sort by eigenvalues (descending)
         idx = np.argsort(eigenvals)[::-1]
         eigenvecs = eigenvecs[:, idx]

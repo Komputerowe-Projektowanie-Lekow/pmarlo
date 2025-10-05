@@ -4,7 +4,51 @@ from dataclasses import dataclass
 from typing import Iterable, Sequence
 
 import numpy as np
-from sklearn.preprocessing import StandardScaler  # type: ignore
+
+try:  # pragma: no cover - optional ML stack
+    from sklearn.preprocessing import StandardScaler  # type: ignore
+except Exception:  # pragma: no cover - sklearn optional dependency
+
+    class StandardScaler:  # type: ignore[too-many-instance-attributes]
+        def __init__(self, with_mean: bool = True, with_std: bool = True) -> None:
+            self.with_mean = with_mean
+            self.with_std = with_std
+            self.mean_: np.ndarray | None = None
+            self.scale_: np.ndarray | None = None
+
+        def fit(self, X: np.ndarray) -> "StandardScaler":
+            data = np.asarray(X, dtype=np.float64)
+            if data.ndim != 2:
+                raise ValueError("Expected 2-D array for scaling")
+            if self.with_mean:
+                self.mean_ = np.mean(data, axis=0)
+            else:
+                self.mean_ = np.zeros(data.shape[1], dtype=np.float64)
+            if self.with_std:
+                scale = np.std(data, axis=0, ddof=0)
+                scale[scale == 0.0] = 1.0
+                self.scale_ = scale
+            else:
+                self.scale_ = np.ones(data.shape[1], dtype=np.float64)
+            return self
+
+        def transform(self, X: np.ndarray) -> np.ndarray:
+            if self.mean_ is None or self.scale_ is None:
+                raise RuntimeError(
+                    "StandardScaler fallback requires fit before transform"
+                )
+            data = np.asarray(X, dtype=np.float64)
+            if data.ndim != 2:
+                raise ValueError("Expected 2-D array for scaling")
+            if self.with_mean:
+                data = data - self.mean_
+            if self.with_std:
+                data = data / self.scale_
+            return data
+
+        def fit_transform(self, X: np.ndarray) -> np.ndarray:
+            return self.fit(X).transform(X)
+
 
 from .utils import set_all_seeds
 
