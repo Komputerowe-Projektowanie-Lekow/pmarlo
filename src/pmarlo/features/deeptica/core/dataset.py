@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 import numpy as np
 import torch  # type: ignore
+
+__all__ = ["DatasetBundle", "create_dataset", "create_loaders", "split_sequences"]
 
 
 @dataclass(slots=True)
@@ -137,3 +139,25 @@ class _PairDataset(torch.utils.data.Dataset):  # type: ignore[type-arg]
             "weights": np.float32(weight),
             "weights_lag": np.float32(weight),
         }
+
+
+def split_sequences(Z: np.ndarray, lengths: Sequence[int]) -> list[np.ndarray]:
+    """Slice the normalized feature matrix into per-shard sequences."""
+
+    sequences: list[np.ndarray] = []
+    offset = 0
+    total = int(Z.shape[0])
+    n_features = int(Z.shape[1]) if Z.ndim >= 2 else 0
+
+    for length in lengths:
+        n = int(max(0, length))
+        if n == 0:
+            sequences.append(np.zeros((0, n_features), dtype=np.float32))
+            continue
+        end = min(offset + n, total)
+        sequences.append(Z[offset:end])
+        offset = end
+
+    if not sequences:
+        sequences.append(Z)
+    return sequences

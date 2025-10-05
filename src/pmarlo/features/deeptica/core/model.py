@@ -25,6 +25,8 @@ __all__ = [
     "resolve_input_dropout",
     "strip_batch_norm",
     "wrap_with_preprocessing_layers",
+    "wrap_network",
+    "build_network",
     "WhitenWrapper",
     "PrePostWrapper",
 ]
@@ -237,6 +239,12 @@ def wrap_network(cfg: Any, scaler, *, seed: int) -> torch.nn.Module:
     net = wrap_with_preprocessing_layers(core, cfg, scaler)
     torch.manual_seed(int(seed))
     return net
+
+
+def build_network(cfg: Any, scaler, *, seed: int) -> torch.nn.Module:
+    """Public alias for :func:`wrap_network` used by orchestration code."""
+
+    return wrap_network(cfg, scaler, seed=seed)
 
 
 def _regularize(mat: np.ndarray) -> np.ndarray:
