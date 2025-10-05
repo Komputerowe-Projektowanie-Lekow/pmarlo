@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import importlib
 import sys
@@ -73,7 +73,7 @@ class DummyDeepTICA(nn.Module):
     def forward(self, x):
         return self.model(x)
 
-    def fit(
+    def fit(  # noqa: C901
         self,
         dataset,
         batch_size: int = 32,
@@ -248,7 +248,9 @@ class Trainer:
             if method is not None:
                 method(self, model)
 
-    def fit(self, model, datamodule=None, train_dataloaders=None, val_dataloaders=None):
+    def fit(  # noqa: C901
+        self, model, datamodule=None, train_dataloaders=None, val_dataloaders=None
+    ):
         if not hasattr(model, "device"):
             model.device = torch.device("cpu")
         model = model.to(torch.device("cpu"))

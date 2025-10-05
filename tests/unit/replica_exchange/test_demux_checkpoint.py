@@ -67,7 +67,7 @@ def test_checkpoint_every_segment_triggers_flush(tmp_path: Path):
         total_expected_frames=3,
     )
 
-    res = demux_streaming(
+    demux_streaming(
         plan,
         top,
         reader,
