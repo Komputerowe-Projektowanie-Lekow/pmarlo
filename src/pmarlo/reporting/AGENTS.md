@@ -16,7 +16,7 @@ Reporting module:
 - Static Format Only: Only generate static, non-interactive outputs. Accepted formats are PNG (for plots), CSV, and JSON. Do not produce HTML, PDF, Jupyter notebooks, or other interactive/complex formats in this module. Ensure that every output is a plain file suitable for archival and comparison.
 
 # Small explanation
-The reporting module runs after the MSM/FES analysis step to produce human-readable summaries and visualizations of the results. It provides functions to export MSM data (states, transition matrices, etc.) and free-energy surfaces to disk. The public API consists of five functions: write_conformations_csv_json, fes2d, save_fes_contour, save_pmf_line, and save_transition_matrix_heatmap. Together, these functions take arrays or summaries from the analysis and write out standardized CSV/JSON tables and PNG plots. All outputs must adhere to the reproducibility and naming rules outlined above, fitting into the deterministic PMARLO workflow. 
+The reporting module runs after the MSM/FES analysis step to produce human-readable summaries and visualizations of the results. It provides functions to export MSM data (states, transition matrices, etc.) and free-energy surfaces to disk. The public API consists of five functions: write_conformations_csv_json, fes2d, save_fes_contour, save_pmf_line, and save_transition_matrix_heatmap. Together, these functions take arrays or summaries from the analysis and write out standardized CSV/JSON tables and PNG plots. All outputs must adhere to the reproducibility and naming rules outlined above, fitting into the deterministic PMARLO workflow.
 
 # Key values
 - Reproducibility: Ensure that every output file is reproducible on every run. This means controlling all sources of non-determinism (random number generators, system locales, font rendering) so that identical inputs produce identical outputs. For example, plotting functions fix figsize and dpi (e.g. plt.figure(figsize=(6,5)) and plt.savefig(..., dpi=200)) to avoid variation in image output.
@@ -46,7 +46,7 @@ The reporting module runs after the MSM/FES analysis step to produce human-reada
 
 # Files description
 
-## export.py 
+## export.py
 Implements write_conformations_csv_json which creates the output directory if needed and writes a CSV and JSON of the given item list. It normalizes any NumPy types so that the CSV and JSON have native Python types.
 
 ## plots.py

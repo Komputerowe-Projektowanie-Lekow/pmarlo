@@ -138,5 +138,3 @@ from .core.model import (
     wrap_with_preprocessing_layers as core_wrap_with_preprocessing_layers,
     PrePostWrapper as _CorePrePostWrapper,
 )
-
-
