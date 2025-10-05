@@ -1,5 +1,8 @@
 """Internal building blocks for DeepTICA training."""
 
+from importlib import import_module
+from typing import Any, Dict, Tuple
+
 from .dataset import DatasetBundle, create_dataset, create_loaders, split_sequences
 from .history import (
     LossHistory,
@@ -9,9 +12,7 @@ from .history import (
     vamp2_proxy,
 )
 from .inputs import FeaturePrep, prepare_features
-from .model import apply_output_whitening, build_network
 from .pairs import PairInfo, build_pair_info
-from .trainer_api import TrainingArtifacts, train_deeptica_pipeline
 from .utils import safe_float, set_all_seeds
 
 __all__ = [
@@ -26,12 +27,40 @@ __all__ = [
     "vamp2_proxy",
     "FeaturePrep",
     "prepare_features",
-    "apply_output_whitening",
-    "build_network",
     "PairInfo",
     "build_pair_info",
-    "TrainingArtifacts",
-    "train_deeptica_pipeline",
     "safe_float",
     "set_all_seeds",
 ]
+
+_OPTIONAL_EXPORTS: Dict[str, Tuple[str, str]] = {
+    "apply_output_whitening": (
+        "pmarlo.features.deeptica.core.model",
+        "apply_output_whitening",
+    ),
+    "build_network": ("pmarlo.features.deeptica.core.model", "build_network"),
+    "TrainingArtifacts": (
+        "pmarlo.features.deeptica.core.trainer_api",
+        "TrainingArtifacts",
+    ),
+    "train_deeptica_pipeline": (
+        "pmarlo.features.deeptica.core.trainer_api",
+        "train_deeptica_pipeline",
+    ),
+}
+
+__all__.extend(_OPTIONAL_EXPORTS.keys())
+
+
+def __getattr__(name: str) -> Any:
+    if name not in _OPTIONAL_EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attr_name = _OPTIONAL_EXPORTS[name]
+    module = import_module(module_name)
+    value = getattr(module, attr_name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(__all__))

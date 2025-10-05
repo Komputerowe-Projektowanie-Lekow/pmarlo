@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable
+from typing import TYPE_CHECKING, Any, Dict, Iterable
 
 import numpy as np
-import torch  # type: ignore
+
+try:  # pragma: no cover - optional ML stack
+    import torch  # type: ignore
+except Exception:  # pragma: no cover - torch optional dependency
+    torch = None  # type: ignore[assignment]
+
+if TYPE_CHECKING:  # pragma: no cover - type checking only
+    import torch as _torch_mod  # noqa: F401
 
 
 @dataclass(slots=True)
@@ -64,7 +71,14 @@ def vamp2_proxy(Y: np.ndarray, idx_t: Iterable[int], idx_tau: Iterable[int]) -> 
     return float(np.mean(r * r))
 
 
-def project_model(net: torch.nn.Module, Z: np.ndarray) -> np.ndarray:
+def project_model(net: Any, Z: np.ndarray) -> np.ndarray:
+    """Project numpy features through a torch module if available."""
+
+    if torch is None:  # pragma: no cover - optional dependency guard
+        raise ImportError(
+            "project_model requires torch; install optional extra 'pmarlo[mlcv]'"
+        )
+
     with torch.no_grad():
         tensor = torch.as_tensor(Z, dtype=torch.float32)
         out = net(tensor)

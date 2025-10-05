@@ -4,6 +4,9 @@ from pathlib import Path
 
 import mdtraj as md
 import numpy as np
+import pytest
+
+pytest.importorskip("sklearn")
 
 from pmarlo.demultiplexing.demux_hints import load_demux_hints
 from pmarlo.demultiplexing.demux_metadata import DemuxMetadata

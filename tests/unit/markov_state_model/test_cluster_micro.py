@@ -3,6 +3,8 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
+pytest.importorskip("sklearn")
+
 from pmarlo.markov_state_model.clustering import cluster_microstates
 
 

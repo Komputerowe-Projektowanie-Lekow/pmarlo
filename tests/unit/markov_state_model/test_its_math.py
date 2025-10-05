@@ -1,7 +1,10 @@
 import warnings
 
-import matplotlib.pyplot as plt
 import numpy as np
+import pytest
+
+pytest.importorskip("matplotlib")
+import matplotlib.pyplot as plt
 
 from pmarlo.markov_state_model import MarkovStateModel
 from pmarlo.markov_state_model.results import ITSResult

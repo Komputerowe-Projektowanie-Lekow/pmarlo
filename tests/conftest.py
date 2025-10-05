@@ -1,15 +1,21 @@
-﻿# Copyright (c) 2025 PMARLO Development Team
+# Copyright (c) 2025 PMARLO Development Team
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 """Pytest configuration and fixtures for PMARLO tests."""
 
 import shutil
+import sys
 import tempfile
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Iterable
 
 import pytest
+
+TESTS_ROOT = Path(__file__).resolve().parent
+SRC_ROOT = TESTS_ROOT.parent / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 # Folder -> default markers that should apply to every test collected under it.
 FOLDER_MARKERS = {
