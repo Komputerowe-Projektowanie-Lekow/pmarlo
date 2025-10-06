@@ -63,6 +63,8 @@ _LAST_TRAIN = "__pmarlo_last_training"
 _LAST_TRAIN_CONFIG = "__pmarlo_last_train_cfg"
 _LAST_BUILD = "__pmarlo_last_build"
 _RUN_PENDING = "__pmarlo_run_pending"
+_TRAIN_CONFIG_PENDING = "__pmarlo_pending_train_cfg"
+_TRAIN_FEEDBACK = "__pmarlo_train_feedback"
 
 
 def _parse_temperature_ladder(raw: str) -> List[float]:
@@ -353,6 +355,8 @@ def _ensure_session_defaults() -> None:
     ):
         st.session_state.setdefault(key, None)
     st.session_state.setdefault(_RUN_PENDING, False)
+    st.session_state.setdefault(_TRAIN_CONFIG_PENDING, None)
+    st.session_state.setdefault(_TRAIN_FEEDBACK, None)
     st.session_state.setdefault("train_hidden_layers", "128,128")
     st.session_state.setdefault("train_tau_schedule", "2,5,10,20")
     st.session_state.setdefault("train_val_tau", 20)
@@ -365,9 +369,18 @@ def _ensure_session_defaults() -> None:
     st.session_state.setdefault("analysis_min_count_per_bin", 1)
 
 
+def _consume_pending_training_config() -> None:
+    pending = st.session_state.get(_TRAIN_CONFIG_PENDING)
+    if isinstance(pending, TrainingConfig):
+        _apply_training_config_to_state(pending)
+    st.session_state[_TRAIN_CONFIG_PENDING] = None
+
+
+
 def main() -> None:
     st.set_page_config(page_title="PMARLO Joint Learning", layout="wide")
     _ensure_session_defaults()
+    _consume_pending_training_config()
 
     layout = WorkspaceLayout.from_app_package()
     backend = WorkflowBackend(layout)
@@ -631,6 +644,15 @@ def main() -> None:
 
     with tab_training:
         st.header("Train collective-variable model")
+        feedback = st.session_state.get(_TRAIN_FEEDBACK)
+        if feedback:
+            if isinstance(feedback, tuple) and len(feedback) == 2:
+                level, message = feedback
+            else:
+                level, message = ("info", str(feedback))
+            display_fn = getattr(st, str(level), st.info)
+            display_fn(str(message))
+            st.session_state[_TRAIN_FEEDBACK] = None
         shard_groups = backend.shard_summaries()
         if not shard_groups:
             st.info("Emit shards before training a CV model.")
@@ -731,18 +753,12 @@ def main() -> None:
                         result = backend.train_model(selected_paths, train_cfg)
                         st.session_state[_LAST_TRAIN] = result
                         st.session_state[_LAST_TRAIN_CONFIG] = train_cfg
-                        _apply_training_config_to_state(train_cfg)
-                        st.success(
-                            f"Model stored at {result.bundle_path.name} (hash {result.dataset_hash})."
+                        st.session_state[_TRAIN_CONFIG_PENDING] = train_cfg
+                        st.session_state[_TRAIN_FEEDBACK] = (
+                            "success",
+                            f"Model stored at {result.bundle_path.name} (hash {result.dataset_hash}).",
                         )
-                        _show_build_outputs(result)
-                        summary = (
-                            result.build_result.artifacts.get("mlcv_deeptica")
-                            if result.build_result
-                            else None
-                        )
-                        if summary:
-                            _render_deeptica_summary(summary)
+                        st.rerun()
                     except RuntimeError as exc:
                         if "Deep-TICA optional dependencies missing" in str(exc):
                             st.warning(DEEPTICA_SKIP_MESSAGE)
@@ -750,6 +766,17 @@ def main() -> None:
                             st.error(f"Training failed: {exc}")
                     except Exception as exc:
                         st.error(f"Training failed: {exc}")
+
+        last_train: TrainingResult | None = st.session_state.get(_LAST_TRAIN)
+        if last_train is not None:
+            _show_build_outputs(last_train)
+            summary = (
+                last_train.build_result.artifacts.get("mlcv_deeptica")
+                if last_train.build_result
+                else None
+            )
+            if summary:
+                _render_deeptica_summary(summary)
 
         models = backend.list_models()
         if models:
@@ -778,23 +805,21 @@ def main() -> None:
                     loaded = backend.load_model(int(selected_idx))
                     if loaded is not None:
                         st.session_state[_LAST_TRAIN] = loaded
+                        cfg_loaded: TrainingConfig | None = None
                         try:
                             cfg_loaded = backend.training_config_from_entry(
                                 models[int(selected_idx)]
                             )
-                            st.session_state[_LAST_TRAIN_CONFIG] = cfg_loaded
-                            _apply_training_config_to_state(cfg_loaded)
                         except Exception:
-                            pass
-                        st.success(f"Loaded model {loaded.bundle_path.name}.")
-                        _show_build_outputs(loaded)
-                        summary = (
-                            loaded.build_result.artifacts.get("mlcv_deeptica")
-                            if loaded.build_result
-                            else None
+                            cfg_loaded = None
+                        if cfg_loaded is not None:
+                            st.session_state[_LAST_TRAIN_CONFIG] = cfg_loaded
+                            st.session_state[_TRAIN_CONFIG_PENDING] = cfg_loaded
+                        st.session_state[_TRAIN_FEEDBACK] = (
+                            "success",
+                            f"Loaded model {loaded.bundle_path.name}.",
                         )
-                        if summary:
-                            _render_deeptica_summary(summary)
+                        st.rerun()
                     else:
                         st.error("Could not load the selected model from disk.")
 
@@ -1114,6 +1139,17 @@ def main() -> None:
 
         # Models section
         st.subheader("Models")
+        last_train: TrainingResult | None = st.session_state.get(_LAST_TRAIN)
+        if last_train is not None:
+            _show_build_outputs(last_train)
+            summary = (
+                last_train.build_result.artifacts.get("mlcv_deeptica")
+                if last_train.build_result
+                else None
+            )
+            if summary:
+                _render_deeptica_summary(summary)
+
         models = backend.list_models()
         if models:
             for i, model in enumerate(models):
