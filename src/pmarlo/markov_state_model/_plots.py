@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional, Protocol
 
 import numpy as np
 
+from pmarlo import constants as const
+
 # Protocol describing the attributes expected by this mixin. This allows mypy
 # to understand that the concrete class mixing this in provides these members.
 from ._base import CKTestResult
@@ -120,7 +122,7 @@ class PlotsMixin:
         scale = 1.0
         if (np.max(lag_ps) >= 1000.0) or (np.max(ts_ps) >= 1000.0):
             unit_label = "ns"
-            scale = 1e-3
+            scale = const.MSM_RATE_DISPLAY_SCALE
 
         lag_plot = lag_ps * scale
         ts_plot = ts_ps * scale
@@ -177,13 +179,13 @@ class PlotsMixin:
         lag_scale = 1.0
         if np.max(lag_ps) >= 1000.0:
             lag_unit = "ns"
-            lag_scale = 1e-3
+            lag_scale = const.MSM_RATE_DISPLAY_SCALE
 
         rate_unit = "1/ps"
         rate_scale = 1.0
-        if np.max(rates) < 1e-3:
+        if np.max(rates) < const.MSM_RATE_DISPLAY_SCALE:
             rate_unit = "1/ns"
-            rate_scale = 1e3
+            rate_scale = const.MSM_RATE_INVERSE_SCALE
 
         lag_plot = lag_ps * lag_scale
         rate_plot = rates * rate_scale

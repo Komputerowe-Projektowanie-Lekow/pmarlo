@@ -17,9 +17,11 @@ compatibility parse from stored metadata with strict checks.
 """
 
 from dataclasses import dataclass
+
+from pmarlo import constants as const
 from typing import Any, Dict, Literal, Optional
 
-SCHEMA_VERSION = "2.0"
+SCHEMA_VERSION = const.SHARD_SCHEMA_VERSION
 
 
 @dataclass(frozen=True)

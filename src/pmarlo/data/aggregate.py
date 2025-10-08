@@ -261,15 +261,30 @@ def _build_shard_info(meta: Any, path: Path, X_np: np.ndarray, dtraj: Any) -> di
     source_attr = getattr(meta, "source", {})
     source_dict = dict(source_attr) if isinstance(source_attr, dict) else {}
 
+    frames_loaded = int(X_np.shape[0])
+    frames_declared = int(getattr(meta, "n_frames", frames_loaded))
+    stride_ratio = None
+    if frames_loaded > 0 and frames_declared > 0:
+        stride_ratio = float(frames_declared) / float(frames_loaded)
+    effective_stride = None
+    if stride_ratio is not None and stride_ratio > 0:
+        effective_stride = max(1, int(round(stride_ratio)))
+
     info: dict[str, Any] = {
         "id": str(uid),
         "legacy_id": str(getattr(meta, "shard_id", path.stem)),
         "start": 0,
-        "stop": int(X_np.shape[0]),
+        "stop": frames_loaded,
         "dtraj": shard_dtraj,
         "bias_potential": bias_arr,
         "temperature": float(meta.temperature),
         "source": source_dict,
+        "frames_loaded": frames_loaded,
+        "frames_declared": frames_declared,
+        "effective_frame_stride": effective_stride,
+        "preview_truncated": bool(
+            frames_loaded > 0 and frames_declared > frames_loaded
+        ),
     }
 
     try:
@@ -286,6 +301,29 @@ def _build_shard_info(meta: Any, path: Path, X_np: np.ndarray, dtraj: Any) -> di
             or source_dict.get("run_id")
             or source_dict.get("run_dir")
         )
+        if effective_stride and effective_stride > 1:
+            info.setdefault("notes", {})[
+                "stride_ratio"
+            ] = stride_ratio if stride_ratio is not None else effective_stride
+        time_fields: dict[str, Any] = {}
+        first_ts = None
+        last_ts = None
+        for key, value in source_dict.items():
+            if not isinstance(key, str):
+                continue
+            key_lower = key.lower()
+            if "time" in key_lower:
+                time_fields[key] = value
+                if ("first" in key_lower or "start" in key_lower) and first_ts is None:
+                    first_ts = value
+                if ("last" in key_lower or "stop" in key_lower or "end" in key_lower):
+                    last_ts = value
+        if time_fields:
+            info["time_metadata"] = time_fields
+        if first_ts is not None:
+            info["first_timestamp"] = first_ts
+        if last_ts is not None:
+            info["last_timestamp"] = last_ts
     except Exception:
         pass
 

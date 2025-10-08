@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 import numpy as np
 
+from pmarlo import constants as const
+
 
 class _HasFESAttrs(Protocol):
     features: Optional[np.ndarray]
@@ -234,7 +236,7 @@ class FESMixin:
 
         kT = constants.k * temperature * constants.Avogadro / 1000.0
         F = np.full_like(H, np.inf)
-        mask = H > 1e-12
+        mask = H > const.NUMERIC_MIN_POSITIVE
         if int(np.sum(mask)) == 0:
             raise ValueError(
                 "Histogram too sparse for free energy calculation. Try fewer bins or more data"

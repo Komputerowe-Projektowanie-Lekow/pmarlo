@@ -7,18 +7,20 @@ from typing import Optional, Tuple
 import torch
 from torch import Tensor, nn
 
+from pmarlo import constants as const
+
 
 class VAMP2Loss(nn.Module):
     """Compute a scale-invariant, regularised VAMP-2 score."""
 
     def __init__(
         self,
-        eps: float = 1e-3,
+        eps: float = const.DEEPTICA_DEFAULT_VAMP_EPS,
         *,
-        eps_abs: float = 1e-6,
+        eps_abs: float = const.DEEPTICA_DEFAULT_VAMP_EPS_ABS,
         alpha: float = 0.15,
-        cond_reg: float = 1e-4,
-        jitter: float = 1e-8,
+        cond_reg: float = const.DEEPTICA_DEFAULT_VAMP_COND_REG,
+        jitter: float = const.DEEPTICA_DEFAULT_JITTER,
         max_cholesky_retries: int = 5,
         jitter_growth: float = 10.0,
         dtype: torch.dtype = torch.float64,
@@ -60,7 +62,7 @@ class VAMP2Loss(nn.Module):
         else:
             w = weights.reshape(-1, 1).to(device=device, dtype=dtype)
             w = torch.clamp(w, min=0.0)
-            total = torch.clamp(w.sum(), min=1e-12)
+            total = torch.clamp(w.sum(), min=const.NUMERIC_MIN_POSITIVE)
             w = w / total
 
         mean0 = torch.sum(z0 * w, dim=0, keepdim=True)
@@ -77,7 +79,9 @@ class VAMP2Loss(nn.Module):
 
         eye = self._identity_like(C00, device)
         dim = C00.shape[-1]
-        trace_floor = torch.tensor(1e-12, device=device, dtype=dtype)
+        trace_floor = torch.tensor(
+            const.NUMERIC_MIN_POSITIVE, device=device, dtype=dtype
+        )
         tr0 = torch.clamp(torch.trace(C00), min=trace_floor)
         trt = torch.clamp(torch.trace(Ctt), min=trace_floor)
         mu0 = tr0 / float(max(1, dim))
@@ -166,7 +170,7 @@ class VAMP2Loss(nn.Module):
             except RuntimeError:
                 if attempt + 1 >= self.max_cholesky_retries:
                     raise
-                jitter = jitter if jitter > 0.0 else 1e-12
+                jitter = jitter if jitter > 0.0 else const.NUMERIC_MIN_POSITIVE
                 updated = updated + eye * jitter
                 jitter *= self.jitter_growth
         raise RuntimeError("Cholesky decomposition failed after retries")

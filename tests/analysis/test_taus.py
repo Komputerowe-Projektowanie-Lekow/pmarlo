@@ -1,5 +1,5 @@
-import pytest
 import numpy as np
+import pytest
 
 from src.pmarlo.analysis.diagnostics import derive_taus
 

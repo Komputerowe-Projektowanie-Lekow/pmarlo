@@ -6,11 +6,11 @@ from typing import Any, Mapping, MutableMapping, Sequence
 
 import numpy as np
 
+from pmarlo import constants as const
+
 from .project_cv import apply_whitening_from_metadata
 
 DatasetLike = MutableMapping[str, Any]
-
-_KB_KJ_PER_MOL = 0.00831446261815324
 
 
 def _normalise_weights(
@@ -415,7 +415,9 @@ def _finalize_free_energy(hist: np.ndarray, temperature_K: float) -> np.ndarray:
 
     with np.errstate(divide="ignore"):
         prob = hist / total
-        free_energy = -(_KB_KJ_PER_MOL * float(temperature_K)) * np.log(prob + 1e-12)
+        free_energy = -(
+            const.BOLTZMANN_CONSTANT_KJ_PER_MOL * float(temperature_K)
+        ) * np.log(prob + const.NUMERIC_MIN_POSITIVE)
 
     finite = np.isfinite(free_energy)
     if finite.any():

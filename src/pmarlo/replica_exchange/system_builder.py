@@ -7,6 +7,8 @@ import openmm
 from openmm import unit
 from openmm.app import PME, ForceField, HBonds, PDBFile
 
+from pmarlo import constants as const
+
 
 def load_pdb_and_forcefield(
     pdb_file: str, forcefield_files: List[str]
@@ -23,7 +25,7 @@ def create_system(pdb: PDBFile, forcefield: ForceField) -> openmm.System:
         constraints=HBonds,
         rigidWater=True,
         nonbondedCutoff=0.9 * unit.nanometer,
-        ewaldErrorTolerance=1e-4,
+        ewaldErrorTolerance=const.REPLICA_EXCHANGE_EWALD_TOLERANCE,
         hydrogenMass=3.0 * unit.amu,
     )
     # Avoid duplicate CMMotionRemover if ForceField already inserted one

@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from pmarlo import constants as const
 from pmarlo.markov_state_model.clustering import cluster_microstates
 from pmarlo.markov_state_model.msm_builder import MSMResult
 from pmarlo.markov_state_model.reweighter import Reweighter
@@ -20,8 +21,6 @@ from pmarlo.shards.schema import Shard
 from .metrics import GuardrailReport, Metrics
 
 __all__ = ["WorkflowConfig", "JointWorkflow"]
-
-_KB_KJ_PER_MOL = 0.00831446261815324
 
 logger = logging.getLogger(__name__)
 
@@ -338,7 +337,9 @@ class JointWorkflow:
             return None
 
         prob = hist / hist.sum()
-        fes = -(_KB_KJ_PER_MOL * self.cfg.temperature_ref_K) * np.log(prob + 1e-12)
+        fes = -(
+            const.BOLTZMANN_CONSTANT_KJ_PER_MOL * self.cfg.temperature_ref_K
+        ) * np.log(prob + const.NUMERIC_MIN_POSITIVE)
         finite = np.isfinite(fes)
         if finite.any():
             fes = fes - np.min(fes[finite])
@@ -366,7 +367,7 @@ class JointWorkflow:
         if len(vamp_series) >= 2:
             initial = float(vamp_series[0])
             latest = float(vamp_series[-1])
-            tolerance = 0.05 * abs(initial) + 1e-6
+            tolerance = 0.05 * abs(initial) + const.NUMERIC_ABSOLUTE_TOLERANCE
             vamp_ok = latest + tolerance >= initial
             if not vamp_ok:
                 notes["vamp2"] = f"latest={latest:.6f} initial={initial:.6f}"
@@ -377,7 +378,9 @@ class JointWorkflow:
         its_ok = True
         if its_vals.size >= 2:
             diffs = np.diff(its_vals)
-            tolerance = 0.1 * np.max(np.abs(its_vals)) + 1e-6
+            tolerance = (
+                0.1 * np.max(np.abs(its_vals)) + const.NUMERIC_ABSOLUTE_TOLERANCE
+            )
             its_ok = bool(np.all(diffs >= -tolerance))
             if not its_ok:
                 notes["its"] = f"min_diff={float(diffs.min()):.6f}"
@@ -495,7 +498,10 @@ class JointWorkflow:
         eigvals = sorted(eigvals, key=lambda x: -abs(x))
         its: List[float] = []
         for lam in eigvals[1:]:
-            lam_abs = min(max(abs(lam), 1e-12), 1 - 1e-12)
+            lam_abs = min(
+                max(abs(lam), const.NUMERIC_MIN_POSITIVE),
+                1.0 - const.NUMERIC_MIN_POSITIVE,
+            )
             its.append(float(-lag_time_ps / np.log(lam_abs)))
             if len(its) >= n_times:
                 break
@@ -519,8 +525,8 @@ class JointWorkflow:
         if total <= 0:
             return None
         prob = counts / total
-        kT = _KB_KJ_PER_MOL * self.cfg.temperature_ref_K
-        F = -kT * np.log(prob + 1e-12)
+        kT = const.BOLTZMANN_CONSTANT_KJ_PER_MOL * self.cfg.temperature_ref_K
+        F = -kT * np.log(prob + const.NUMERIC_MIN_POSITIVE)
         finite = np.isfinite(F)
         if finite.any():
             F = F - np.min(F[finite])

@@ -6,6 +6,8 @@ from typing import List, Optional, Protocol, Tuple
 import numpy as np
 from scipy.sparse import csc_matrix, issparse, save_npz
 
+from pmarlo import constants as const
+
 from ._msm_utils import _row_normalize, _stationary_from_T, ensure_connected_counts
 
 
@@ -202,7 +204,7 @@ class EstimationMixin:
             raise ValueError("Stationary distribution must be computed first")
 
         kT = constants.k * temperature * constants.Avogadro / 1000.0  # kJ/mol
-        pi_safe = np.maximum(self.stationary_distribution, 1e-12)
+        pi_safe = np.maximum(self.stationary_distribution, const.NUMERIC_MIN_POSITIVE)
         self.free_energies = -kT * np.log(pi_safe)
         self.free_energies -= np.min(self.free_energies)
 

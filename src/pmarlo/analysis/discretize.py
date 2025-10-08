@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, Mapping, MutableMapping, Sequence
 
 import numpy as np
@@ -26,6 +26,7 @@ class MSMDiscretizationResult:
     lag_time: int
     diag_mass: float
     cluster_mode: str
+    fingerprint: Dict[str, Any] = field(default_factory=dict)
 
 
 def _looks_like_split(value: Any) -> bool:
@@ -316,6 +317,12 @@ def discretize_dataset(
             counts.shape[0],
         )
 
+    fingerprint = {
+        "mode": str(cluster_mode),
+        "n_states": int(max(n_states, 0)),
+        "seed": None if random_state is None else int(random_state),
+    }
+
     return MSMDiscretizationResult(
         assignments=assignments,
         centers=discretizer.centers,
@@ -324,4 +331,5 @@ def discretize_dataset(
         lag_time=lag_time,
         diag_mass=diag_mass,
         cluster_mode=cluster_mode,
+        fingerprint=fingerprint,
     )

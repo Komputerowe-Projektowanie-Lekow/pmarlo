@@ -5,7 +5,9 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
-EPS = 1e-12
+from pmarlo import constants as const
+
+EPS = const.NUMERIC_MIN_POSITIVE
 
 
 def safe_timescales(

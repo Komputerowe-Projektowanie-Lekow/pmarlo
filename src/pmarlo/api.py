@@ -21,6 +21,8 @@ from typing import (
 import mdtraj as md  # type: ignore
 import numpy as np
 
+from pmarlo import constants as const
+
 if TYPE_CHECKING:
     from .io.trajectory_writer import MDTrajDCDWriter
 
@@ -1961,9 +1963,9 @@ def _compute_cv_edges(
         maxs[1] = max(maxs[1], float(np_module.nanmax(data[:, 1])))
 
     if not np_module.isfinite(mins[0]) or mins[0] == maxs[0]:
-        maxs[0] = mins[0] + 1e-8
+        maxs[0] = mins[0] + const.NUMERIC_RELATIVE_TOLERANCE
     if not np_module.isfinite(mins[1]) or mins[1] == maxs[1]:
-        maxs[1] = mins[1] + 1e-8
+        maxs[1] = mins[1] + const.NUMERIC_RELATIVE_TOLERANCE
 
     return {
         cv_pair[0]: np_module.linspace(

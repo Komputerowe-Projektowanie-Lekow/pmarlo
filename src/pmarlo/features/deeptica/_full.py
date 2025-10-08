@@ -10,6 +10,8 @@ import numpy as np
 import torch  # type: ignore
 from sklearn.preprocessing import StandardScaler  # type: ignore
 
+from pmarlo import constants as const
+
 from pmarlo.ml.deeptica.whitening import apply_output_transform
 
 from .core.model import apply_output_whitening as core_apply_output_whitening
@@ -108,7 +110,7 @@ def _apply_output_whitening(
     idx_tau,
     *,
     apply: bool = False,
-    eig_floor: float = 1e-4,
+    eig_floor: float = const.DEEPTICA_DEFAULT_EIGEN_FLOOR,
 ):
     return core_apply_output_whitening(
         net,
@@ -154,11 +156,11 @@ class DeepTICAConfig:
     n_out: int = 2
     hidden: Tuple[int, ...] = (32, 16)
     activation: str = "gelu"
-    learning_rate: float = 3e-4
+    learning_rate: float = const.DEEPTICA_DEFAULT_LEARNING_RATE
     batch_size: int = 1024
     max_epochs: int = 200
     early_stopping: int = 25
-    weight_decay: float = 1e-4
+    weight_decay: float = const.DEEPTICA_DEFAULT_WEIGHT_DECAY
     log_every: int = 1
     seed: int = 0
     reweight_mode: str = "scaled_time"  # or "none"
@@ -182,12 +184,12 @@ class DeepTICAConfig:
     tau_schedule: Tuple[int, ...] = field(default_factory=tuple)
     val_tau: Optional[int] = None
     epochs_per_tau: int = 15
-    vamp_eps: float = 1e-3
-    vamp_eps_abs: float = 1e-6
+    vamp_eps: float = const.DEEPTICA_DEFAULT_VAMP_EPS
+    vamp_eps_abs: float = const.DEEPTICA_DEFAULT_VAMP_EPS_ABS
     vamp_alpha: float = 0.15
-    vamp_cond_reg: float = 1e-4
+    vamp_cond_reg: float = const.DEEPTICA_DEFAULT_VAMP_COND_REG
     grad_norm_warn: Optional[float] = None
-    variance_warn_threshold: float = 1e-6
+    variance_warn_threshold: float = const.DEEPTICA_DEFAULT_VARIANCE_WARN_THRESHOLD
     mean_warn_threshold: float = 5.0
 
     @classmethod
