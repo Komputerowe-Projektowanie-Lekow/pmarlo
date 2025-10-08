@@ -1,0 +1,526 @@
+from __future__ import annotations
+
+"""Utilities for emitting detailed debugging artifacts for MSM analysis builds."""
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
+
+import numpy as np
+
+from pmarlo.markov_state_model.free_energy import FESResult
+
+__all__ = ["AnalysisDebugData", "compute_analysis_debug", "export_analysis_debug"]
+
+
+@dataclass
+class AnalysisDebugData:
+    """Container for dataset-level debug information gathered prior to MSM build."""
+
+    summary: Dict[str, Any]
+    counts: np.ndarray
+    state_counts: np.ndarray
+    component_labels: np.ndarray
+
+    def to_summary_dict(self) -> Dict[str, Any]:
+        """Return a JSON-serialisable summary dictionary."""
+        payload = dict(self.summary)
+        payload["component_labels"] = self.component_labels.astype(int).tolist()
+        payload["state_counts"] = self.state_counts.astype(float).tolist()
+        payload["counts_nonzero"] = int(np.count_nonzero(self.counts))
+        payload["counts_density"] = (
+            float(payload["counts_nonzero"] / float(self.counts.size))
+            if self.counts.size
+            else 0.0
+        )
+        return payload
+
+
+def compute_analysis_debug(
+    dataset: Mapping[str, Any],
+    *,
+    lag: int,
+    count_mode: str = "sliding",
+) -> AnalysisDebugData:
+    """Compute dataset diagnostics ahead of MSM construction."""
+
+    shards_raw = _normalise_shard_info(dataset.get("__shards__", ()))
+    shard_lengths = [entry["length"] for entry in shards_raw]
+    total_frames = sum(shard_lengths)
+    total_frames_state = 0
+
+    dtrajs = _coerce_dtrajs(dataset.get("dtrajs", ()))
+    n_states = _infer_n_states(dtrajs)
+    counts, total_pairs = _build_transition_counts(dtrajs, n_states, lag, count_mode)
+    state_counts = _count_state_visits(dtrajs, n_states)
+    total_frames_state = int(state_counts.sum())
+
+    frames_declared_all = [
+        int(entry.get("frames_declared", 0)) for entry in shards_raw
+    ]
+    frames_loaded_all = [
+        int(entry.get("frames_loaded", entry.get("length", 0))) for entry in shards_raw
+    ]
+    effective_stride_raw = [
+        entry.get("effective_frame_stride") for entry in shards_raw
+    ]
+    stride_values = [int(s) for s in effective_stride_raw if s and s > 0]
+    max_stride = max(stride_values) if stride_values else 1
+    preview_truncated_ids = [
+        str(entry.get("id", idx))
+        for idx, entry in enumerate(shards_raw)
+        if entry.get("preview_truncated")
+    ]
+
+    zero_rows = _count_zero_rows(counts)
+    components, component_labels = _strongly_connected_components(counts)
+    largest_size = max((len(comp) for comp in components), default=0)
+    largest_indices = max(components, key=len) if components else []
+    largest_cover = _coverage_fraction(state_counts, largest_indices)
+
+    warnings: List[Dict[str, Any]] = []
+    if total_pairs < 5000:
+        warnings.append(
+            {
+                "code": "TOTAL_PAIRS_LT_5000",
+                "message": (
+                    "Too few (t, t+tau) pairs for reliable MSM "
+                    f"(observed {total_pairs}, requires >=5000)."
+                ),
+            }
+        )
+    if zero_rows > 0:
+        warnings.append(
+            {
+                "code": "ZERO_ROW_STATES_PRESENT",
+                "message": (
+                    "States with zero outgoing counts detected before regularisation; "
+                    "prune states or lower lag to avoid singular rows."
+                ),
+            }
+        )
+    if largest_cover is not None and largest_cover < 0.9:
+        warnings.append(
+            {
+                "code": "SCC_COVERAGE_LT_0.90",
+                "message": (
+                    f"Largest strongly connected component covers only "
+                    f"{largest_cover:.2%} of visited frames."
+                ),
+            }
+        )
+    if stride_values and max_stride > 1:
+        warnings.append(
+            {
+                "code": "EFFECTIVE_STRIDE_GT_1",
+                "message": (
+                    "Loaded shard data appears subsampled; "
+                    f"effective stride values detected: {stride_values}"
+                ),
+            }
+        )
+    if preview_truncated_ids:
+        warnings.append(
+            {
+                "code": "SHARD_PREVIEW_TRUNCATION",
+                "message": (
+                    "Shards truncated relative to declared frame count: "
+                    f"{preview_truncated_ids}"
+                ),
+            }
+        )
+
+    temperatures = sorted(
+        {float(entry["temperature"]) for entry in shards_raw if entry["temperature"]}
+    )
+
+    stride_map = {
+        str(entry.get("id", str(idx))): entry.get("effective_frame_stride")
+        for idx, entry in enumerate(shards_raw)
+        if entry.get("effective_frame_stride") is not None
+    }
+    first_timestamps = [
+        entry.get("first_timestamp")
+        for entry in shards_raw
+        if entry.get("first_timestamp") is not None
+    ]
+    last_timestamps = [
+        entry.get("last_timestamp")
+        for entry in shards_raw
+        if entry.get("last_timestamp") is not None
+    ]
+    effective_tau_frames = int(lag * max_stride) if lag > 0 else 0
+
+    summary: Dict[str, Any] = {
+        "tau_frames": int(lag),
+        "count_mode": str(count_mode),
+        "total_frames_declared": int(total_frames),
+        "total_frames_with_states": int(total_frames_state),
+        "total_pairs": int(total_pairs),
+        "counts_shape": [int(counts.shape[0]), int(counts.shape[1])],
+        "zero_rows": int(zero_rows),
+        "states_observed": int(np.count_nonzero(state_counts)),
+        "largest_scc_size": int(largest_size),
+        "largest_scc_frame_fraction": (
+            float(largest_cover) if largest_cover is not None else None
+        ),
+        "component_sizes": [int(len(comp)) for comp in components],
+        "per_shard_lengths": shard_lengths,
+        "shards": shards_raw,
+        "frames_declared": frames_declared_all,
+        "frames_loaded": frames_loaded_all,
+        "effective_strides": stride_values,
+        "per_shard_effective_strides": effective_stride_raw,
+        "effective_stride_map": stride_map,
+        "effective_stride_max": int(max_stride),
+        "preview_truncated": preview_truncated_ids,
+        "effective_tau_frames": effective_tau_frames,
+        "first_timestamps": first_timestamps,
+        "last_timestamps": last_timestamps,
+        "temperatures": temperatures,
+        "warnings": warnings,
+    }
+
+    return AnalysisDebugData(
+        summary=summary,
+        counts=counts,
+        state_counts=state_counts,
+        component_labels=component_labels,
+    )
+
+
+def export_analysis_debug(
+    *,
+    output_dir: Path,
+    build_result: Any,
+    debug_data: AnalysisDebugData,
+    config: Mapping[str, Any] | None,
+    dataset_hash: str,
+) -> Dict[str, Any]:
+    """Persist debug artefacts (counts, MSM arrays, diagnostics) to disk."""
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    summary_payload = debug_data.to_summary_dict()
+    summary_payload["dataset_hash"] = str(dataset_hash)
+    if config is not None:
+        summary_payload["config"] = _make_json_ready(config)
+
+    arrays_written: Dict[str, str] = {}
+
+    counts_path = output_dir / "transition_counts.npy"
+    np.save(counts_path, debug_data.counts)
+    arrays_written["transition_counts"] = counts_path.name
+
+    state_counts_path = output_dir / "state_counts.npy"
+    np.save(state_counts_path, debug_data.state_counts)
+    arrays_written["state_counts"] = state_counts_path.name
+
+    component_labels_path = output_dir / "component_labels.npy"
+    np.save(component_labels_path, debug_data.component_labels.astype(int))
+    arrays_written["component_labels"] = component_labels_path.name
+
+    if getattr(build_result, "transition_matrix", None) is not None:
+        tm_path = output_dir / "transition_matrix.npy"
+        np.save(tm_path, np.asarray(build_result.transition_matrix, dtype=float))
+        arrays_written["transition_matrix"] = tm_path.name
+    if getattr(build_result, "stationary_distribution", None) is not None:
+        pi_path = output_dir / "stationary_distribution.npy"
+        np.save(pi_path, np.asarray(build_result.stationary_distribution, dtype=float))
+        arrays_written["stationary_distribution"] = pi_path.name
+    if getattr(build_result, "cluster_populations", None) is not None:
+        cp_path = output_dir / "cluster_populations.npy"
+        np.save(cp_path, np.asarray(build_result.cluster_populations, dtype=float))
+        arrays_written["cluster_populations"] = cp_path.name
+
+    fes_payload = _maybe_export_fes(build_result, output_dir)
+    if fes_payload:
+        arrays_written.update(fes_payload)
+
+    result_summary = _collect_result_summary(build_result)
+    summary_payload["result"] = result_summary
+    summary_payload["arrays"] = arrays_written
+
+    diagnostics = getattr(build_result, "diagnostics", None)
+    if isinstance(diagnostics, Mapping):
+        diag_path = output_dir / "diagnostics.json"
+        diag_path.write_text(json.dumps(_make_json_ready(diagnostics), indent=2))
+        summary_payload["diagnostics_file"] = diag_path.name
+
+    flags = getattr(build_result, "flags", None)
+    if isinstance(flags, Mapping):
+        flags_path = output_dir / "flags.json"
+        flags_path.write_text(json.dumps(_make_json_ready(flags), indent=2))
+        summary_payload["flags_file"] = flags_path.name
+
+    summary_path = output_dir / "summary.json"
+    summary_path.write_text(json.dumps(summary_payload, indent=2))
+
+    return {"summary": summary_path, "arrays": arrays_written}
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _normalise_shard_info(shards: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    normalised: List[Dict[str, Any]] = []
+    for raw in shards:
+        if not isinstance(raw, Mapping):
+            continue
+        start = int(raw.get("start", 0))
+        stop = int(raw.get("stop", start))
+        length = max(0, stop - start)
+        entry = {
+            "id": str(raw.get("id", raw.get("legacy_id", ""))),
+            "legacy_id": str(raw.get("legacy_id", "")),
+            "start": start,
+            "stop": stop,
+            "length": length,
+            "temperature": _coerce_float(raw.get("temperature")),
+        }
+        for key in (
+            "frames_declared",
+            "frames_loaded",
+            "effective_frame_stride",
+            "preview_truncated",
+            "time_metadata",
+            "notes",
+            "first_timestamp",
+            "last_timestamp",
+        ):
+            if key in raw:
+                entry[key] = raw[key]
+        if "source" in raw:
+            entry["source"] = raw["source"]
+        source_path = raw.get("source_path")
+        if source_path:
+            try:
+                entry["source_path"] = str(Path(source_path))
+            except Exception:
+                entry["source_path"] = str(source_path)
+        run_uid = raw.get("run_uid")
+        if run_uid:
+            entry["run_uid"] = str(run_uid)
+        normalised.append(entry)
+    return normalised
+
+
+def _coerce_dtrajs(
+    dtrajs: Iterable[Iterable[int]] | Iterable[np.ndarray],
+) -> List[np.ndarray]:
+    coerced: List[np.ndarray] = []
+    for traj in dtrajs:
+        try:
+            arr = np.asarray(traj, dtype=int).reshape(-1)
+        except Exception:
+            continue
+        coerced.append(arr)
+    return coerced
+
+
+def _infer_n_states(dtrajs: Sequence[np.ndarray]) -> int:
+    max_state = -1
+    for dtraj in dtrajs:
+        if dtraj.size == 0:
+            continue
+        local_max = int(np.max(dtraj))
+        if local_max >= 0:
+            max_state = max(max_state, local_max)
+    return int(max_state + 1) if max_state >= 0 else 0
+
+
+def _build_transition_counts(
+    dtrajs: Sequence[np.ndarray],
+    n_states: int,
+    lag: int,
+    count_mode: str,
+) -> Tuple[np.ndarray, int]:
+    counts = np.zeros((n_states, n_states), dtype=float)
+    if n_states == 0 or lag <= 0:
+        return counts, 0
+
+    total_pairs = 0
+    step = lag if str(count_mode).lower() == "strided" else 1
+    for traj in dtrajs:
+        if traj.size <= lag:
+            continue
+        for idx in range(0, traj.size - lag, step):
+            a = int(traj[idx])
+            b = int(traj[idx + lag])
+            if a < 0 or b < 0:
+                continue
+            if a >= n_states or b >= n_states:
+                continue
+            counts[a, b] += 1.0
+            total_pairs += 1
+    return counts, total_pairs
+
+
+def _count_state_visits(dtrajs: Sequence[np.ndarray], n_states: int) -> np.ndarray:
+    visits = np.zeros((n_states,), dtype=int)
+    if n_states == 0:
+        return visits
+    for traj in dtrajs:
+        if traj.size == 0:
+            continue
+        mask = traj >= 0
+        if not np.any(mask):
+            continue
+        selected = traj[mask]
+        bins = np.bincount(selected, minlength=n_states)
+        visits[: bins.shape[0]] += bins
+    return visits
+
+
+def _count_zero_rows(counts: np.ndarray) -> int:
+    if counts.size == 0:
+        return 0
+    row_sums = counts.sum(axis=1)
+    return int(np.sum(np.isclose(row_sums, 0.0)))
+
+
+class _TarjanSCC:
+    """Tarjan strongly connected components solver with minimal state."""
+
+    def __init__(self, adjacency: Sequence[Sequence[int]]) -> None:
+        self.adjacency = adjacency
+        self.n = len(adjacency)
+        self.index = 0
+        self.indices = np.full(self.n, -1, dtype=int)
+        self.lowlinks = np.zeros(self.n, dtype=int)
+        self.on_stack = np.zeros(self.n, dtype=bool)
+        self.stack: List[int] = []
+        self.components: List[List[int]] = []
+        self.labels = np.full(self.n, -1, dtype=int)
+
+    def run(self) -> Tuple[List[List[int]], np.ndarray]:
+        for v in range(self.n):
+            if self.indices[v] == -1:
+                self._visit(v)
+        return self.components, self.labels
+
+    def _visit(self, v: int) -> None:
+        self.indices[v] = self.index
+        self.lowlinks[v] = self.index
+        self.index += 1
+        self.stack.append(v)
+        self.on_stack[v] = True
+
+        for w in self.adjacency[v]:
+            if self.indices[w] == -1:
+                self._visit(w)
+                self.lowlinks[v] = min(self.lowlinks[v], self.lowlinks[w])
+            elif self.on_stack[w]:
+                self.lowlinks[v] = min(self.lowlinks[v], self.indices[w])
+
+        if self.lowlinks[v] == self.indices[v]:
+            component: List[int] = []
+            while True:
+                w = self.stack.pop()
+                self.on_stack[w] = False
+                component.append(w)
+                if w == v:
+                    break
+            comp_idx = len(self.components)
+            for node in component:
+                self.labels[node] = comp_idx
+            self.components.append(component)
+
+
+def _strongly_connected_components(
+    counts: np.ndarray,
+) -> Tuple[List[List[int]], np.ndarray]:
+    n = int(counts.shape[0])
+    if n == 0:
+        return [], np.zeros((0,), dtype=int)
+
+    adjacency = [
+        np.where(counts[i] > 0.0)[0].astype(int).tolist() for i in range(n)
+    ]
+    solver = _TarjanSCC(adjacency)
+    return solver.run()
+
+
+def _coverage_fraction(
+    state_counts: np.ndarray,
+    indices: Sequence[int],
+) -> float | None:
+    if state_counts.size == 0:
+        return None
+    total = float(state_counts.sum())
+    if total <= 0.0:
+        return None
+    in_component = float(state_counts[indices].sum()) if indices else 0.0
+    return in_component / total
+
+
+def _maybe_export_fes(
+    build_result: Any,
+    output_dir: Path,
+) -> Dict[str, str]:
+    fes = getattr(build_result, "fes", None)
+    if fes is None:
+        return {}
+    payload: Dict[str, Any]
+    if isinstance(fes, FESResult):
+        payload = {
+            "F": np.asarray(fes.F, dtype=float),
+            "xedges": np.asarray(fes.xedges, dtype=float),
+            "yedges": np.asarray(fes.yedges, dtype=float),
+        }
+        if getattr(fes, "levels_kJmol", None) is not None:
+            payload["levels_kJmol"] = np.asarray(fes.levels_kJmol, dtype=float)
+        meta = getattr(fes, "metadata", None)
+        if meta:
+            payload["metadata"] = _make_json_ready(meta)
+    elif isinstance(fes, Mapping):
+        payload = {key: value for key, value in fes.items() if key != "result"}
+        if "result" in fes and isinstance(fes["result"], Mapping):
+            payload["result"] = _make_json_ready(fes["result"])
+    else:
+        payload = {"raw": _make_json_ready(fes)}
+
+    fes_path = output_dir / "fes.json"
+    fes_path.write_text(json.dumps(_make_json_ready(payload), indent=2))
+    return {"fes": fes_path.name}
+
+
+def _collect_result_summary(build_result: Any) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {
+        "n_frames": int(getattr(build_result, "n_frames", 0)),
+        "n_shards": int(getattr(build_result, "n_shards", 0)),
+        "feature_names": list(getattr(build_result, "feature_names", []) or []),
+        "messages": list(getattr(build_result, "messages", []) or []),
+    }
+    artifacts = getattr(build_result, "artifacts", None)
+    if isinstance(artifacts, Mapping):
+        summary["artifact_keys"] = sorted(str(k) for k in artifacts.keys())
+    return summary
+
+
+def _make_json_ready(obj: Any) -> Any:
+    if isinstance(obj, Mapping):
+        return {str(k): _make_json_ready(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [_make_json_ready(v) for v in obj]
+    if isinstance(obj, (np.generic,)):
+        return obj.item()
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, Path):
+        return str(obj)
+    return obj
+
+
+def _coerce_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except Exception:
+        return None
+    if not np.isfinite(number):
+        return None
+    return float(number)
