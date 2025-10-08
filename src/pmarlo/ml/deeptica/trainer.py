@@ -372,8 +372,8 @@ class CurriculumConfig:
     epochs_per_tau: int = 15
     warmup_epochs: int = 5
     batch_size: int = 256
-    learning_rate: float = 3e-4
-    weight_decay: float = 1e-4
+    learning_rate: float = const.DEEPTICA_DEFAULT_LEARNING_RATE
+    weight_decay: float = const.DEEPTICA_DEFAULT_WEIGHT_DECAY
     val_fraction: float = 0.2
     shuffle: bool = True
     num_workers: int = 0
@@ -381,10 +381,10 @@ class CurriculumConfig:
     grad_clip_norm: Optional[float] = 1.0
     log_every: int = 1
     checkpoint_dir: Optional[Path] = None
-    vamp_eps: float = 1e-3
-    vamp_eps_abs: float = 1e-6
+    vamp_eps: float = const.DEEPTICA_DEFAULT_VAMP_EPS
+    vamp_eps_abs: float = const.DEEPTICA_DEFAULT_VAMP_EPS_ABS
     vamp_alpha: float = 0.15
-    vamp_cond_reg: float = 1e-4
+    vamp_cond_reg: float = const.DEEPTICA_DEFAULT_VAMP_COND_REG
     seed: Optional[int] = None
     max_batches_per_epoch: Optional[int] = None
 
@@ -404,7 +404,7 @@ class CurriculumConfig:
         object.__setattr__(self, "warmup_epochs", warmup)
         frac = float(self.val_fraction)
         if not 0.0 < frac < 1.0:
-            frac = min(max(frac, 1e-3), 0.9)
+            frac = min(max(frac, const.DEEPTICA_MIN_BATCH_FRACTION), const.DEEPTICA_MAX_BATCH_FRACTION)
             object.__setattr__(self, "val_fraction", frac)
         if float(self.learning_rate) <= 0:
             raise ValueError("learning_rate must be positive")
@@ -426,7 +426,7 @@ class DeepTICACurriculumTrainer:
             torch.manual_seed(int(cfg.seed))
             np.random.seed(int(cfg.seed))
         self.loss_fn = VAMP2Loss(
-            eps=float(max(cfg.vamp_eps, 1e-9)),
+            eps=float(max(cfg.vamp_eps, const.DEEPTICA_MIN_VAMP_EPS)),
             eps_abs=float(max(cfg.vamp_eps_abs, 0.0)),
             alpha=float(min(max(cfg.vamp_alpha, 0.0), 1.0)),
             cond_reg=float(max(cfg.vamp_cond_reg, 0.0)),
@@ -603,12 +603,12 @@ class DeepTICACurriculumTrainer:
         self.var_zt_curve.append(_metric_vector(train_metrics, "var_zt"))
         self.mean_z0_curve.append(_metric_vector(train_metrics, "mean_z0"))
         self.mean_zt_curve.append(_metric_vector(train_metrics, "mean_zt"))
-        if cond_c00 > 1e6:
+        if cond_c00 > const.DEEPTICA_CONDITION_NUMBER_WARN:
             logger.warning(
                 "Condition number cond(C00)=%.3e exceeds stability threshold",
                 cond_c00,
             )
-        if cond_ctt > 1e6:
+        if cond_ctt > const.DEEPTICA_CONDITION_NUMBER_WARN:
             logger.warning(
                 "Condition number cond(Ctt)=%.3e exceeds stability threshold",
                 cond_ctt,

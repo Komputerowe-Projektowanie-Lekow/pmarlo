@@ -6,6 +6,8 @@ from typing import Any
 
 import numpy as np
 
+from pmarlo import constants as const
+
 logger = logging.getLogger("pmarlo")
 
 
@@ -112,7 +114,9 @@ class ConnectedCountResult:
 
 
 def ensure_connected_counts(
-    C: np.ndarray, alpha: float = 1e-3, epsilon: float = 1e-12
+    C: np.ndarray,
+    alpha: float = const.NUMERIC_DIRICHLET_ALPHA,
+    epsilon: float = const.NUMERIC_MIN_POSITIVE,
 ) -> ConnectedCountResult:
     """Regularise and trim a transition count matrix.
 
@@ -154,8 +158,8 @@ def check_transition_matrix(
     T: np.ndarray,
     pi: np.ndarray,
     *,
-    row_tol: float = 1e-12,
-    stat_tol: float = 1e-8,
+    row_tol: float = const.NUMERIC_MIN_POSITIVE,
+    stat_tol: float = const.NUMERIC_RELATIVE_TOLERANCE,
 ) -> None:
     """Validate a transition matrix and stationary distribution.
 

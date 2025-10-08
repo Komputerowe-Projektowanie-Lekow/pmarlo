@@ -5,6 +5,8 @@ from typing import List, Optional, cast
 
 import numpy as np
 
+from pmarlo import constants as const
+
 try:  # pragma: no cover - optional SciPy dependency
     from scipy.linalg import eigh as scipy_eigh
 except Exception:  # pragma: no cover - SciPy optional
@@ -159,7 +161,7 @@ def vamp_reduce(
     lag: int = 1,
     n_components: int = 2,
     scale: bool = True,
-    epsilon: float = 1e-6,
+    epsilon: float = const.NUMERIC_ABSOLUTE_TOLERANCE,
 ) -> np.ndarray:
     """VAMP (Variational Approach for Markov Processes) reduction.
 
@@ -207,7 +209,7 @@ def vamp_reduce(
 
 
 def _manual_vamp(
-    X: np.ndarray, lag: int = 1, n_components: int = 2, epsilon: float = 1e-6
+    X: np.ndarray, lag: int = 1, n_components: int = 2, epsilon: float = const.NUMERIC_ABSOLUTE_TOLERANCE
 ) -> np.ndarray:
     """Manual VAMP implementation using SVD-based approach."""
     n_frames = X.shape[0]

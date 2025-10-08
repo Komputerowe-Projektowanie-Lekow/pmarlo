@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import pandas as pd
 import streamlit as st
@@ -277,35 +277,106 @@ def _show_build_outputs(artifact: BuildArtifact | TrainingResult) -> None:
     with col2:
         fig = plot_fes(br.fes)
         st.pyplot(fig, clear_figure=True, width="stretch")
-    meta_cols = st.columns(3)
+
+    flags: Dict[str, Any] = br.flags or {}
+
+    def _safe_int(value: Any) -> Optional[int]:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    tau_frames = _safe_int(getattr(artifact, "tau_frames", None))
+    if tau_frames is None:
+        tau_frames = _safe_int(flags.get("analysis_tau_frames"))
+    effective_tau = _safe_int(getattr(artifact, "effective_tau_frames", None))
+    if effective_tau is None:
+        effective_tau = _safe_int(flags.get("analysis_effective_tau_frames"))
+    stride_max = _safe_int(getattr(artifact, "effective_stride_max", None))
+    if stride_max is None:
+        stride_max = _safe_int(flags.get("analysis_effective_stride_max"))
+    fingerprint = getattr(artifact, "discretizer_fingerprint", None) or flags.get(
+        "discretizer_fingerprint"
+    )
+    fingerprint_changed = bool(flags.get("discretizer_fingerprint_changed"))
+    tau_mismatch = flags.get("analysis_tau_mismatch")
+    if not isinstance(tau_mismatch, Mapping):
+        tau_mismatch = None
+    preview_truncated = flags.get("analysis_preview_truncated") or []
+    stride_map = flags.get("analysis_effective_stride_map") or {}
+
+    meta_cols = st.columns(4)
     meta_cols[0].metric("Shards", int(br.n_shards))
     meta_cols[1].metric("Frames", int(br.n_frames))
     meta_cols[2].metric("Features", len(br.feature_names))
-    if br.flags:
+    if tau_frames is not None:
+        delta_label = None
+        if tau_mismatch is not None:
+            delta_label = f"req {tau_mismatch.get('requested')}"
+        meta_cols[3].metric("tau (frames)", tau_frames, delta=delta_label)
+    else:
+        meta_cols[3].metric("tau (frames)", "n/a")
+
+    if flags:
         st.dataframe(_metrics_table(br.flags), width="stretch")
+
+    if tau_mismatch is not None:
+        st.warning(
+            f"Requested tau={tau_mismatch.get('requested')} frames but build used {tau_mismatch.get('actual')}.",
+        )
+
+    if fingerprint_changed:
+        st.info("Discretizer fingerprint differs from requested configuration; cached mappings were invalidated.")
+
+    if stride_max is not None and stride_max > 1:
+        info_msg = (
+            f"Effective tau={effective_tau}" if effective_tau is not None else f"Max stride={stride_max}"
+        )
+        st.info(f"Detected subsampling in shards (max stride={stride_max}). {info_msg}.")
+
+    if preview_truncated:
+        formatted = ", ".join(str(item) for item in preview_truncated)
+        st.warning(
+            "Some shards appear truncated relative to their metadata: "
+            f"{formatted}"
+        )
+
+    debug_summary = getattr(artifact, "debug_summary", None)
+    if debug_summary:
+        with st.expander("Analysis metadata", expanded=False):
+            total_pairs = debug_summary.get("total_pairs", "n/a")
+            zero_rows = debug_summary.get("zero_rows", "n/a")
+            st.write(
+                f"Total (t, t+tau) pairs: {total_pairs} | Zero rows: {zero_rows}"
+            )
+            stride_values = debug_summary.get("effective_strides") or []
+            if stride_values:
+                st.write(f"Effective strides detected: {stride_values}")
+            effective_tau_summary = debug_summary.get("effective_tau_frames")
+            if effective_tau_summary is not None:
+                st.write(f"Effective tau (stride-adjusted): {effective_tau_summary}")
+            if stride_map:
+                st.write("Per-shard stride map:")
+                st.json(stride_map)
+            first_ts = debug_summary.get("first_timestamps") or []
+            last_ts = debug_summary.get("last_timestamps") or []
+            if first_ts or last_ts:
+                first_repr = ", ".join(str(val) for val in first_ts) if first_ts else "n/a"
+                last_repr = ", ".join(str(val) for val in last_ts) if last_ts else "n/a"
+                st.write(f"First timestamps: {first_repr} | Last timestamps: {last_repr}")
+            if fingerprint:
+                st.write("Discretizer fingerprint:")
+                st.json(fingerprint)
+            else:
+                st.write("Discretizer fingerprint: unavailable")
+    elif fingerprint:
+        st.caption("Discretizer fingerprint")
+        st.json(fingerprint)
+
     if br.messages:
         st.write("Messages:")
         for msg in br.messages:
             st.write(f"- {msg}")
-    diagnostics = getattr(br, "diagnostics", None)
-    if isinstance(diagnostics, dict) and diagnostics:
-        st.subheader("Diagnostics")
-        diag_cols = st.columns(2)
-        with diag_cols[0]:
-            fig_diag = plot_canonical_correlations(diagnostics)
-            st.pyplot(fig_diag, clear_figure=True, width="stretch")
-        with diag_cols[1]:
-            fig_auto = plot_autocorrelation_curves(diagnostics)
-            st.pyplot(fig_auto, clear_figure=True, width="stretch")
-        diag_mass = diagnostics.get("diag_mass")
-        if isinstance(diag_mass, (int, float)):
-            st.metric("MSM diagonal mass", f"{float(diag_mass):.3f}")
-        warnings = format_warnings(diagnostics)
-        if warnings:
-            for msg in warnings:
-                st.warning(msg)
-
-
 def _render_deeptica_summary(summary: Dict[str, object]) -> None:
     cleaned = _sanitize_artifacts(summary)
     st.caption("Deep-TICA summary")

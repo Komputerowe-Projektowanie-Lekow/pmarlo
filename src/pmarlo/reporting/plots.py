@@ -5,6 +5,8 @@ from typing import Optional, Tuple
 
 import numpy as np
 
+from pmarlo import constants as const
+
 
 def save_transition_matrix_heatmap(
     T: np.ndarray, output_dir: str, name: str = "T_heatmap.png"
@@ -153,9 +155,12 @@ def _kT_kJ_per_mol(temperature_kelvin: float) -> float:
         return float(constants.k * temperature_kelvin * constants.Avogadro / 1000.0)
     except Exception:
         # Fallback constant if SciPy is unavailable
-        k_B = 1.380649e-23  # J/K
-        N_A = 6.02214076e23  # 1/mol
-        return float(k_B * temperature_kelvin * N_A / 1000.0)
+        return float(
+            const.BOLTZMANN_CONSTANT_J_PER_K
+            * temperature_kelvin
+            * const.AVOGADRO_NUMBER
+            / 1000.0
+        )
 
 
 def fes2d(
@@ -208,8 +213,8 @@ def fes2d(
                 or y_lo >= y_hi
             ):
                 # Degenerate, return a trivial surface
-                xe = np.linspace(float(np.min(x)), float(np.max(x)) + 1e-8, 41)
-                ye = np.linspace(float(np.min(y)), float(np.max(y)) + 1e-8, 41)
+                xe = np.linspace(float(np.min(x)), float(np.max(x)) + const.NUMERIC_RELATIVE_TOLERANCE, 41)
+                ye = np.linspace(float(np.min(y)), float(np.max(y)) + const.NUMERIC_RELATIVE_TOLERANCE, 41)
                 H = np.zeros((len(xe) - 1, len(ye) - 1), dtype=float)
                 return np.full_like(H, np.nan), xe, ye, "Invalid FES ranges"
         nb = max(40, int(np.sqrt(len(x)) / 4))
@@ -229,7 +234,7 @@ def fes2d(
         warn = None
 
     kT = _kT_kJ_per_mol(float(temperature))
-    F = -kT * np.log(H + 1e-12)
+    F = -kT * np.log(H + const.NUMERIC_MIN_POSITIVE)
     # Assign +inf to truly empty (below min_count) bins to avoid misleading minima
     F = np.where(H >= max(1, int(min_count)), F, np.inf)
     if np.any(np.isfinite(F)):

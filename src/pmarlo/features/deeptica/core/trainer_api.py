@@ -14,6 +14,8 @@ import numpy as np
 import torch
 from torch import nn
 
+from pmarlo import constants as const
+
 from .dataset import split_sequences
 from .history import vamp2_proxy
 from .inputs import FeaturePrep, prepare_features
@@ -281,8 +283,12 @@ def _build_curriculum_config(
         epochs_per_tau=int(max(1, getattr(cfg, "epochs_per_tau", 15))),
         warmup_epochs=int(max(0, getattr(cfg, "warmup_epochs", 5))),
         batch_size=int(max(1, getattr(cfg, "batch_size", 256))),
-        learning_rate=float(getattr(cfg, "learning_rate", 3e-4)),
-        weight_decay=float(max(0.0, getattr(cfg, "weight_decay", 1e-4))),
+        learning_rate=float(
+            getattr(cfg, "learning_rate", const.DEEPTICA_DEFAULT_LEARNING_RATE)
+        ),
+        weight_decay=float(
+            max(0.0, getattr(cfg, "weight_decay", const.DEEPTICA_DEFAULT_WEIGHT_DECAY))
+        ),
         val_fraction=val_frac,
         shuffle=True,
         num_workers=int(max(0, getattr(cfg, "num_workers", 0))),
@@ -290,10 +296,23 @@ def _build_curriculum_config(
         grad_clip_norm=grad_clip,
         log_every=int(max(1, getattr(cfg, "log_every", 1))),
         checkpoint_dir=checkpoint_path,
-        vamp_eps=float(getattr(cfg, "vamp_eps", 1e-3)),
-        vamp_eps_abs=float(getattr(cfg, "vamp_eps_abs", 1e-6)),
+        vamp_eps=float(
+            getattr(cfg, "vamp_eps", const.DEEPTICA_DEFAULT_VAMP_EPS)
+        ),
+        vamp_eps_abs=float(
+            getattr(cfg, "vamp_eps_abs", const.DEEPTICA_DEFAULT_VAMP_EPS_ABS)
+        ),
         vamp_alpha=float(getattr(cfg, "vamp_alpha", 0.15)),
-        vamp_cond_reg=float(max(0.0, getattr(cfg, "vamp_cond_reg", 1e-4))),
+        vamp_cond_reg=float(
+            max(
+                0.0,
+                getattr(
+                    cfg,
+                    "vamp_cond_reg",
+                    const.DEEPTICA_DEFAULT_VAMP_COND_REG,
+                ),
+            )
+        ),
         seed=int(getattr(cfg, "seed", 0)),
         max_batches_per_epoch=batches_per_epoch,
     )
@@ -371,7 +390,7 @@ def _estimate_top_eigenvalues(
         C0 = (y_t_c.T @ y_t_c) / float(n)
         Ct = (y_t_c.T @ y_tau_c) / float(n)
         evals, evecs = np.linalg.eigh((C0 + C0.T) * 0.5)
-        evals = np.clip(evals, 1e-12, None)
+        evals = np.clip(evals, const.NUMERIC_MIN_POSITIVE, None)
         inv_sqrt = evecs @ np.diag(1.0 / np.sqrt(evals)) @ evecs.T
         M = inv_sqrt @ Ct @ inv_sqrt.T
         eigs = np.linalg.eigvalsh((M + M.T) * 0.5)

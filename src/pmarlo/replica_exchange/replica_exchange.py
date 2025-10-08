@@ -21,6 +21,8 @@ import openmm
 from openmm import Platform, unit
 from openmm.app import PDBFile, Simulation
 
+from pmarlo import constants as const
+
 from pmarlo.transform.progress import ProgressCB, ProgressPrinter, ProgressReporter
 
 from ..demultiplexing.demux import demux_trajectories as _demux_trajectories
@@ -505,7 +507,7 @@ class ReplicaExchange:
                 f"  Initial energy for replica {replica_index}: {initial_energy}"
             )
             energy_val = initial_energy.value_in_unit(unit.kilojoules_per_mole)
-            if abs(energy_val) > 1e6:
+            if abs(energy_val) > const.NUMERIC_HARD_ENERGY_LIMIT:
                 logger.warning(
                     (
                         "  Very high initial energy ("
@@ -602,7 +604,7 @@ class ReplicaExchange:
                 )
             )
         energy_val = energy.value_in_unit(unit.kilojoules_per_mole)
-        if abs(energy_val) > 1e5:
+        if abs(energy_val) > const.NUMERIC_SOFT_ENERGY_LIMIT:
             logger.warning(
                 (
                     f"  High final energy ({energy_val:.2e} kJ/mol) for "
@@ -1051,7 +1053,14 @@ class ReplicaExchange:
         # Rescale velocities deterministically instead of redrawing
         Ti = self.temperatures[old_state_i]
         Tj = self.temperatures[old_state_j]
-        scale_ij = float(np.sqrt(max(1e-12, Tj / max(1e-12, Ti))))
+        scale_ij = float(
+            np.sqrt(
+                max(
+                    const.NUMERIC_MIN_POSITIVE,
+                    Tj / max(const.NUMERIC_MIN_POSITIVE, Ti),
+                )
+            )
+        )
         try:
             vi = self.contexts[replica_i].getState(getVelocities=True).getVelocities()
             vj = self.contexts[replica_j].getState(getVelocities=True).getVelocities()

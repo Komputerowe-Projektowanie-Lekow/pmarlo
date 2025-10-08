@@ -13,6 +13,8 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union, 
 
 import numpy as np
 
+from pmarlo import constants as const
+
 from ..analysis import compute_diagnostics
 from ..analysis.fes import ensure_fes_inputs_whitened
 from ..analysis.msm import ensure_msm_inputs_whitened
@@ -104,7 +106,7 @@ def _collect_demux_temperatures(meta: Dict[str, Any]) -> List[float]:
         coerced = _coerce_float(candidate)
         if coerced is None:
             continue
-        if all(abs(coerced - existing) > 1e-9 for existing in temps):
+        if all(abs(coerced - existing) > const.NUMERIC_PROGRESS_MIN_FRACTION for existing in temps):
             temps.append(coerced)
     return temps
 
@@ -1182,7 +1184,7 @@ def _histogram_fes_fallback(
         hist = np.ones((32, 32), dtype=np.float64)
     hist = np.asarray(hist, dtype=np.float64)
     with np.errstate(divide="ignore"):
-        F = -np.log(hist + 1e-12)
+        F = -np.log(hist + const.NUMERIC_MIN_POSITIVE)
     from pmarlo.markov_state_model.free_energy import FESResult
 
     fallback = FESResult(

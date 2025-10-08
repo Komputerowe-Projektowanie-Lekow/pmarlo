@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, Optional, Tuple
 
 import numpy as np
+
+from pmarlo import constants as const
 from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter
 
@@ -378,7 +380,7 @@ def generate_2d_fes(  # noqa: C901
     inpaint: bool = False,
     min_count: int = 1,
     kde_bw_deg: Tuple[float, float] = (20.0, 20.0),
-    epsilon: float = 1e-6,
+    epsilon: float = const.NUMERIC_ABSOLUTE_TOLERANCE,
 ) -> FESResult:
     """Generate a two-dimensional free-energy surface (FES)."""
 

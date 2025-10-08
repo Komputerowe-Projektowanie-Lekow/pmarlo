@@ -19,12 +19,14 @@ The goal is to make it straightforward to express the interactive workflow::
 while keeping the logic reusable for non-UI automation in the future.
 """
 
+import json
+import logging
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence, cast
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Sequence, cast
 
 try:  # Package-relative when imported as module
     from .state import StateManager
@@ -35,6 +37,9 @@ except ImportError:  # Fallback for direct script import
     if str(_APP_DIR) not in sys.path:
         sys.path.insert(0, str(_APP_DIR))
     from state import StateManager  # type: ignore
+
+from pmarlo.analysis import compute_analysis_debug, export_analysis_debug
+from pmarlo.data.aggregate import load_shards_as_dataset
 
 __all__ = [
     "WorkspaceLayout",
@@ -50,6 +55,8 @@ __all__ = [
     "choose_sim_seed",
     "run_short_sim",
 ]
+
+logger = logging.getLogger(__name__)
 
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -209,11 +216,16 @@ class WorkspaceLayout:
             self.logs_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
+        self.analysis_debug_dir.mkdir(parents=True, exist_ok=True)
 
     def available_inputs(self) -> List[Path]:
         if not self.inputs_dir.exists():
             return []
         return sorted(p.resolve() for p in self.inputs_dir.glob("*.pdb"))
+
+    @property
+    def analysis_debug_dir(self) -> Path:
+        return self.workspace_dir / "analysis_debug"
 
 
 @dataclass
@@ -324,6 +336,14 @@ class BuildArtifact:
     dataset_hash: str
     build_result: BuildResult
     created_at: str
+    debug_dir: Optional[Path] = None
+    debug_summary: Optional[Dict[str, Any]] = None
+    discretizer_fingerprint: Optional[Dict[str, Any]] = None
+    tau_frames: Optional[int] = None
+    effective_tau_frames: Optional[int] = None
+    effective_stride_max: Optional[int] = None
+    debug_dir: Optional[Path] = None
+    debug_summary: Optional[Dict[str, Any]] = None
 
 
 class WorkflowBackend:
@@ -551,6 +571,13 @@ class WorkflowBackend:
             raise ValueError("No shards selected for analysis")
         stamp = _timestamp()
         bundle_path = self.layout.bundles_dir / f"bundle-{stamp}.pbz"
+        dataset = load_shards_as_dataset(shards)
+        debug_data = compute_analysis_debug(
+            dataset,
+            lag=int(config.lag),
+            count_mode="sliding",
+        )
+        config_payload = asdict(config)
         analysis_notes = dict(config.notes or {})
         if config.learn_cv and "model_dir" not in analysis_notes:
             analysis_notes["model_dir"] = str(self.layout.models_dir)
@@ -564,6 +591,36 @@ class WorkflowBackend:
             "fes_bandwidth": config.fes_bandwidth,
             "fes_min_count_per_bin": int(config.fes_min_count_per_bin),
         }
+        requested_fingerprint = {
+            "mode": str(config.cluster_mode),
+            "n_states": int(config.n_microstates),
+            "seed": int(config.seed),
+        }
+        previous_fingerprint = analysis_notes.get("discretizer_fingerprint")
+        if previous_fingerprint and previous_fingerprint != requested_fingerprint:
+            analysis_notes.setdefault(
+                "discretizer_fingerprint_previous", previous_fingerprint
+            )
+            logger.info(
+                "Discretizer fingerprint override changed from %s to %s; "
+                "forcing refit of clusterer.",
+                previous_fingerprint,
+                requested_fingerprint,
+            )
+        analysis_notes["discretizer_fingerprint_requested"] = requested_fingerprint
+        analysis_notes["analysis_tau_requested"] = int(config.lag)
+        analysis_notes["debug_summary"] = _sanitize_artifacts(debug_data.summary)
+        logger.info(
+            (
+                "Analysis debug summary: frames=%d states=%d pairs=%d zero_rows=%d "
+                "warnings=%d"
+            ),
+            int(debug_data.summary.get("total_frames_with_states", 0)),
+            int(debug_data.counts.shape[0]),
+            int(debug_data.summary.get("total_pairs", 0)),
+            int(debug_data.summary.get("zero_rows", 0)),
+            len(debug_data.summary.get("warnings", [])),
+        )
 
         br, ds_hash = build_from_shards(
             shard_jsons=shards,
@@ -576,10 +633,122 @@ class WorkflowBackend:
             deeptica_params=config.deeptica_params,
             notes=analysis_notes,
         )
+
+        debug_dir = (self.layout.analysis_debug_dir / f"analysis-{stamp}").resolve()
+        export_info = export_analysis_debug(
+            output_dir=debug_dir,
+            build_result=br,
+            debug_data=debug_data,
+            config=config_payload,
+            dataset_hash=ds_hash,
+        )
+        summary = debug_data.summary
+        tau_frames_value = summary.get("tau_frames", config.lag)
+        try:
+            tau_frames = int(tau_frames_value)
+        except (TypeError, ValueError):
+            tau_frames = int(config.lag)
+        effective_tau_value = summary.get("effective_tau_frames", tau_frames)
+        try:
+            effective_tau_frames = int(effective_tau_value)
+        except (TypeError, ValueError):
+            effective_tau_frames = int(tau_frames)
+        stride_max_value = summary.get("effective_stride_max", 1)
+        try:
+            stride_max = int(stride_max_value)
+        except (TypeError, ValueError):
+            stride_max = 1
+        raw_stride_values = summary.get("effective_strides") or []
+        stride_values = []
+        for value in raw_stride_values:
+            try:
+                stride_values.append(int(value))
+            except (TypeError, ValueError):
+                continue
+        stride_map = summary.get("effective_stride_map") or {}
+        preview_truncated = summary.get("preview_truncated") or []
+        for idx, shard in enumerate(summary.get("shards", [])):
+            shard_id = shard.get("id", f"shard-{idx}")
+            frames_loaded = shard.get("frames_loaded", shard.get("length"))
+            frames_declared = shard.get("frames_declared", shard.get("length"))
+            stride_val = shard.get("effective_frame_stride")
+            logger.info(
+                "Shard %s: loaded=%s declared=%s stride=%s",
+                shard_id,
+                frames_loaded,
+                frames_declared,
+                stride_val,
+            )
+            if shard.get("first_timestamp") is not None or shard.get("last_timestamp") is not None:
+                logger.info(
+                    "Shard %s timestamps: first=%s last=%s",
+                    shard_id,
+                    shard.get("first_timestamp"),
+                    shard.get("last_timestamp"),
+                )
+        logger.info(
+            "Analysis lag requested=%d, applied=%d, effective_tau=%d (max stride=%d, stride values=%s)",
+            int(config.lag),
+            tau_frames,
+            effective_tau_frames,
+            stride_max,
+            stride_values,
+        )
+        actual_seed = int(config.seed)
+        if getattr(br.metadata, "seed", None) is not None:
+            try:
+                actual_seed = int(br.metadata.seed)  # type: ignore[arg-type]
+            except Exception:
+                actual_seed = int(config.seed)
+        fingerprint = {
+            "mode": str(config.cluster_mode),
+            "n_states": int(config.n_microstates),
+            "seed": actual_seed,
+        }
+        fingerprint_changed = fingerprint != requested_fingerprint
+        analysis_notes["discretizer_fingerprint"] = fingerprint
+        analysis_notes["analysis_tau_frames"] = tau_frames
+        analysis_notes["analysis_effective_tau_frames"] = effective_tau_frames
+        analysis_notes["analysis_effective_stride_max"] = stride_max
+        analysis_notes["analysis_effective_stride_values"] = stride_values
+        analysis_notes["analysis_effective_stride_map"] = stride_map
+        if preview_truncated:
+            analysis_notes["analysis_preview_truncated"] = preview_truncated
+        if fingerprint_changed:
+            logger.info(
+                "Effective discretizer fingerprint differs from request: %s (requested %s)",
+                fingerprint,
+                requested_fingerprint,
+            )
+        analysis_notes["discretizer_fingerprint_changed"] = bool(fingerprint_changed)
+        if tau_frames != int(config.lag):
+            logger.warning(
+                "Analysis lag mismatch: requested %d frames, applied %d frames",
+                int(config.lag),
+                tau_frames,
+            )
+        analysis_notes.pop("discretizer_fingerprint_requested", None)
         try:
             flags = dict(br.flags or {})
         except Exception:
             flags = {}
+        flags["discretizer_fingerprint"] = fingerprint
+        flags["discretizer_fingerprint_changed"] = bool(fingerprint_changed)
+        flags["analysis_requested_tau_frames"] = int(config.lag)
+        flags["analysis_tau_frames"] = int(tau_frames)
+        flags["analysis_effective_tau_frames"] = int(effective_tau_frames)
+        flags["analysis_effective_stride_max"] = int(stride_max)
+        if stride_values:
+            flags["analysis_effective_stride_values"] = list(stride_values)
+        if stride_map:
+            flags["analysis_effective_stride_map"] = stride_map
+        if preview_truncated:
+            flags["analysis_preview_truncated"] = list(preview_truncated)
+        if tau_frames != int(config.lag):
+            flags["analysis_tau_mismatch"] = {
+                "requested": int(config.lag),
+                "actual": int(tau_frames),
+            }
         overrides = {
             "cluster_mode": str(config.cluster_mode),
             "n_microstates": int(config.n_microstates),
@@ -592,13 +761,44 @@ class WorkflowBackend:
         flags.setdefault("analysis_overrides", overrides)
         flags.setdefault("analysis_reweight_mode", str(config.reweight_mode))
         flags.setdefault("analysis_apply_whitening", bool(config.apply_cv_whitening))
+        warning_count = len(debug_data.summary.get("warnings", []))
+        flags.setdefault("analysis_debug_warning_count", warning_count)
+        if warning_count:
+            flags.setdefault(
+                "analysis_debug_warnings",
+                _sanitize_artifacts(debug_data.summary.get("warnings")),
+            )
         br.flags = flags  # type: ignore[assignment]
+        try:
+            artifacts = dict(br.artifacts or {})
+            artifacts["analysis_debug"] = {
+                "directory": str(debug_dir),
+                "summary": str(Path(export_info["summary"]).name),
+                "arrays": export_info.get("arrays", {}),
+            }
+            artifacts["analysis_discretizer_fingerprint"] = fingerprint
+            artifacts["analysis_tau_frames"] = int(tau_frames)
+            artifacts["analysis_effective_tau_frames"] = int(effective_tau_frames)
+            artifacts["analysis_effective_stride_max"] = int(stride_max)
+            if stride_map:
+                artifacts["analysis_effective_stride_map"] = stride_map
+            if preview_truncated:
+                artifacts["analysis_preview_truncated"] = list(preview_truncated)
+            br.artifacts = artifacts  # type: ignore[assignment]
+        except Exception:
+            logger.debug("Failed to attach analysis debug artifacts", exc_info=True)
 
         artifact = BuildArtifact(
             bundle_path=bundle_path.resolve(),
             dataset_hash=ds_hash,
             build_result=br,
             created_at=stamp,
+            debug_dir=debug_dir,
+            debug_summary=debug_data.summary,
+            discretizer_fingerprint=fingerprint,
+            tau_frames=int(tau_frames),
+            effective_tau_frames=int(effective_tau_frames),
+            effective_stride_max=int(stride_max),
         )
         self.state.append_build(
             {
@@ -624,6 +824,17 @@ class WorkflowBackend:
                 "fes_method": str(config.fes_method),
                 "fes_bandwidth": config.fes_bandwidth,
                 "fes_min_count_per_bin": int(config.fes_min_count_per_bin),
+                "debug_dir": str(debug_dir),
+                "debug_summary": _sanitize_artifacts(debug_data.summary),
+                "debug_summary_file": str(Path(export_info["summary"]).name),
+                "discretizer_fingerprint": _sanitize_artifacts(fingerprint),
+                "discretizer_fingerprint_changed": bool(fingerprint_changed),
+                "tau_frames": int(tau_frames),
+                "effective_tau_frames": int(effective_tau_frames),
+                "effective_stride_max": int(stride_max),
+                "effective_stride_values": list(stride_values),
+                "effective_stride_map": _sanitize_artifacts(stride_map),
+                "preview_truncated": list(preview_truncated),
             }
         )
         return artifact
@@ -910,11 +1121,46 @@ class WorkflowBackend:
             str(getattr(br.metadata, "dataset_hash", "")) if br.metadata else ""
         )
         created_at = str(entry.get("created_at", "")) or _timestamp()
+        debug_dir_raw = entry.get("debug_dir")
+        debug_dir = Path(debug_dir_raw).resolve() if debug_dir_raw else None
+        debug_summary = entry.get("debug_summary")
+        if debug_summary is None and debug_dir:
+            summary_name = entry.get("debug_summary_file") or "summary.json"
+            summary_path = debug_dir / summary_name
+            if summary_path.exists():
+                try:
+                    debug_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                except Exception:
+                    logger.debug("Failed to load analysis summary from %s", summary_path)
+        fingerprint = entry.get("discretizer_fingerprint")
+        if fingerprint is None and isinstance(br.flags, Mapping):
+            fingerprint = br.flags.get("discretizer_fingerprint")
+        tau_frames = entry.get("tau_frames")
+        if tau_frames is None and isinstance(br.flags, Mapping):
+            tau_frames = br.flags.get("analysis_tau_frames")
+        effective_tau_frames = entry.get("effective_tau_frames")
+        if effective_tau_frames is None and isinstance(br.flags, Mapping):
+            effective_tau_frames = br.flags.get("analysis_effective_tau_frames")
+        effective_stride_max = entry.get("effective_stride_max")
+        if effective_stride_max is None and isinstance(br.flags, Mapping):
+            effective_stride_max = br.flags.get("analysis_effective_stride_max")
         return BuildArtifact(
             bundle_path=bundle_path.resolve(),
             dataset_hash=dataset_hash,
             build_result=br,
             created_at=created_at,
+            debug_dir=debug_dir,
+            debug_summary=debug_summary,
+            discretizer_fingerprint=fingerprint,
+            tau_frames=int(tau_frames) if tau_frames is not None else None,
+            effective_tau_frames=(
+                int(effective_tau_frames)
+                if effective_tau_frames is not None
+                else None
+            ),
+            effective_stride_max=(
+                int(effective_stride_max) if effective_stride_max is not None else None
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -1012,6 +1258,9 @@ class WorkflowBackend:
             bundle_path = Path(entry.get("bundle", ""))
             if bundle_path.exists():
                 bundle_path.unlink()
+            debug_dir = Path(entry.get("debug_dir", ""))
+            if debug_dir.exists() and debug_dir.is_dir():
+                shutil.rmtree(debug_dir)
 
             return True
         except Exception:

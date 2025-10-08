@@ -5,6 +5,8 @@ from typing import Any, Iterable
 import numpy as np
 import torch  # type: ignore
 
+from pmarlo import constants as const
+
 try:  # pragma: no cover - optional extra
     from mlcolvar.cvs import DeepTICA  # type: ignore
 except Exception as exc:  # pragma: no cover
@@ -105,7 +107,7 @@ def apply_output_whitening(
     idx_tau: np.ndarray | None,
     *,
     apply: bool = False,
-    eig_floor: float = 1e-4,
+    eig_floor: float = const.DEEPTICA_DEFAULT_EIGEN_FLOOR,
 ) -> tuple[torch.nn.Module, dict[str, Any]]:
     tensor = torch.as_tensor(Z, dtype=torch.float32)
     with torch.no_grad():
@@ -130,7 +132,7 @@ def apply_output_whitening(
 
     C0_reg = _regularize(C0)
     eigvals, eigvecs = np.linalg.eigh(C0_reg)
-    eigvals = np.clip(eigvals, max(eig_floor, 1e-8), None)
+    eigvals = np.clip(eigvals, max(eig_floor, const.NUMERIC_MIN_EIGEN_CLIP), None)
     inv_sqrt = eigvecs @ np.diag(1.0 / np.sqrt(eigvals)) @ eigvecs.T
     output_var = centered.var(axis=0, ddof=1).astype(float).tolist()
     cond_c00 = float(eigvals.max() / eigvals.min())
@@ -150,7 +152,7 @@ def apply_output_whitening(
         Ct = (tau_center.T @ tau_center) / float(n_tau)
         Ct_reg = _regularize(Ct)
         eig_ct = np.linalg.eigvalsh(Ct_reg)
-        eig_ct = np.clip(eig_ct, max(eig_floor, 1e-8), None)
+        eig_ct = np.clip(eig_ct, max(eig_floor, const.NUMERIC_MIN_EIGEN_CLIP), None)
         cond_ctt = float(eig_ct.max() / eig_ct.min())
 
     transform = inv_sqrt if apply else np.eye(inv_sqrt.shape[0], dtype=np.float64)
@@ -249,9 +251,9 @@ def _regularize(mat: np.ndarray) -> np.ndarray:
     dim = sym.shape[0]
     eye = np.eye(dim, dtype=np.float64)
     trace = float(np.trace(sym))
-    trace = max(trace, 1e-12)
+    trace = max(trace, const.NUMERIC_MIN_POSITIVE)
     mu = trace / float(max(1, dim))
-    ridge = mu * 1e-5
+    ridge = mu * const.NUMERIC_RIDGE_SCALE
     alpha = 0.02
     return (1.0 - alpha) * sym + (alpha * mu + ridge) * eye
 

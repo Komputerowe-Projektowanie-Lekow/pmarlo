@@ -5,13 +5,20 @@ from typing import Any, Dict, Mapping, MutableMapping, Sequence
 
 import numpy as np
 
+from pmarlo import constants as const
 from .discretize import _coerce_array, _normalise_splits
 from .project_cv import apply_whitening_from_metadata
 
 logger = logging.getLogger(__name__)
 
 DatasetLike = Mapping[str, Any] | MutableMapping[str, Any]
-_TAU_SEQUENCE: tuple[int, ...] = (2, 5, 10, 20, 40)  # legacy base candidate lags (kept for backwards compatibility only)
+_TAU_SEQUENCE: tuple[int, ...] = (
+    2,
+    5,
+    10,
+    20,
+    40,
+)  # legacy base candidate lags (kept for backwards compatibility only)
 
 
 class CanonicalCorrelationError(ValueError):
@@ -23,6 +30,7 @@ class InsufficientSamplesError(CanonicalCorrelationError):
 
 
 # --- Canonical correlation helpers -------------------------------------------------
+
 
 def _extract_optional_inputs(split: Mapping[str, Any]) -> np.ndarray | None:
     candidate_keys = (
@@ -87,7 +95,7 @@ def _inv_symmetric_sqrt(mat: np.ndarray, regularisation: float) -> np.ndarray:
 
 
 def _canonical_correlations(
-    X: np.ndarray, Y: np.ndarray, *, regularisation: float = 1e-8
+    X: np.ndarray, Y: np.ndarray, *, regularisation: float = const.NUMERIC_RELATIVE_TOLERANCE
 ) -> list[float]:
     """Compute canonical correlations between two 2D arrays.
 
@@ -130,6 +138,7 @@ def _canonical_correlations(
 
 # --- Autocorrelation helpers (refactored for SOLID) ------------------------------
 
+
 def _validate_autocorr_input(X: np.ndarray) -> np.ndarray | None:
     """Validate and mean-center input for autocorrelation.
 
@@ -143,7 +152,9 @@ def _validate_autocorr_input(X: np.ndarray) -> np.ndarray | None:
         logger.error("Autocorrelation: insufficient samples (n=%d < 2)", X.shape[0])
         return None
     if not np.isfinite(X).all():
-        logger.warning("Autocorrelation: non-finite values detected; filtering may produce NaNs")
+        logger.warning(
+            "Autocorrelation: non-finite values detected; filtering may produce NaNs"
+        )
     return X - np.mean(X, axis=0, keepdims=True)
 
 
@@ -248,6 +259,7 @@ def _validate_user_taus(user_taus: Sequence[int], min_length: int) -> list[int]:
 
 # --- Public tau API ----------------------------------------------------------------
 
+
 def derive_taus(
     dataset: DatasetLike | Sequence[int],
     *,
@@ -311,7 +323,9 @@ def derive_taus(
         raise ValueError(f"fraction_max must be in (0,1], got {fraction_max}")
 
     # Acquire split lengths.
-    if isinstance(dataset, (Mapping, MutableMapping)) and not isinstance(dataset, (list, tuple)):
+    if isinstance(dataset, (Mapping, MutableMapping)) and not isinstance(
+        dataset, (list, tuple)
+    ):
         splits = _normalise_splits(dataset)
         lengths: list[int] = []
         for value in splits.values():
@@ -337,7 +351,9 @@ def derive_taus(
 
     if geometric:
         if base is not None:
-            logger.warning("derive_taus: 'base' provided but ignored because geometric=True")
+            logger.warning(
+                "derive_taus: 'base' provided but ignored because geometric=True"
+            )
         upper_bound = int(max(min_lag + 1, np.floor(min_len * fraction_max)))
         # Ensure upper_bound < min_len.
         upper_bound = min(upper_bound, min_len - 1)
@@ -371,9 +387,13 @@ def derive_taus(
             raise ValueError("Non-geometric tau derivation requires a 'base' sequence")
         if not base:
             raise ValueError("Base tau candidate sequence is empty")
-        invalid = [b for b in base if (not isinstance(b, (int, np.integer))) or int(b) <= 0]
+        invalid = [
+            b for b in base if (not isinstance(b, (int, np.integer))) or int(b) <= 0
+        ]
         if invalid:
-            raise ValueError(f"Base tau sequence must contain only positive integers, got invalid entries {invalid}")
+            raise ValueError(
+                f"Base tau sequence must contain only positive integers, got invalid entries {invalid}"
+            )
         taus = []
         seen: set[int] = set()
         for b in base:
@@ -398,6 +418,7 @@ def derive_taus(
 
 
 # --- Public diagnostics API ------------------------------------------------------
+
 
 def compute_diagnostics(
     dataset: DatasetLike,
@@ -429,7 +450,9 @@ def compute_diagnostics(
         taus_used = derive_taus(lengths)
     else:
         taus_used = _validate_user_taus(taus, min_length)
-        logger.info("Validated user taus %s (min split length %d)", taus_used, min_length)
+        logger.info(
+            "Validated user taus %s (min split length %d)", taus_used, min_length
+        )
 
     canonical: Dict[str, list[float]] = {}
     autocorr: Dict[str, Dict[str, Any]] = {}

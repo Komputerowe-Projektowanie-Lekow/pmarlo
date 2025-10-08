@@ -4,6 +4,8 @@ from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 import numpy as np
 
+from pmarlo import constants as const
+
 from .utils import safe_timescales
 
 
@@ -179,7 +181,7 @@ class ITSMixin:
         *,
         n_samples: int = 100,
         ci: float = 0.95,
-        dirichlet_alpha: float = 1e-3,
+        dirichlet_alpha: float = const.NUMERIC_DIRICHLET_ALPHA,
         plateau_m: int | None = None,
         plateau_epsilon: float = 0.1,
     ) -> None:
@@ -349,7 +351,7 @@ class ITSMixin:
             rate_hi,
         ) = self._summarize_its_stats(lag, matrices_arr, n_timescales, q_low, q_high)
 
-        if np.all(rate_med < 1e-12):
+        if np.all(rate_med < const.NUMERIC_MIN_POSITIVE):
             _logging.getLogger("pmarlo").warning(
                 "Rates collapsed to near zero at lag %s; data may be insufficient",
                 lag,
@@ -666,7 +668,7 @@ class ITSMixin:
             eigenvals = np.sort(eigenvals)[::-1]
             eig = eigenvals[1 : n_timescales + 1]
             # Robustify against tiny negative rounding; keep within (0,1)
-            eig = np.clip(np.abs(eig), 1e-12, 1 - 1e-12)
+            eig = np.clip(np.abs(eig), const.NUMERIC_MIN_POSITIVE, 1.0 - const.NUMERIC_MIN_POSITIVE)
             eig_samples.append(eig)
         eig_arr = np.asarray(eig_samples, dtype=float)
 
@@ -824,13 +826,13 @@ class ITSMixin:
         with np.errstate(invalid="ignore"):
             T = C_rev / np.where(row == 0, 1.0, row)
         # Similarity transform to symmetric
-        pi = np.maximum(T.sum(axis=1), 1e-15)
+        pi = np.maximum(T.sum(axis=1), const.NUMERIC_MIN_POSITIVE_STRICT)
         pi = pi / np.sum(pi)
         sym = np.diag(np.sqrt(pi)) @ T @ np.diag(1.0 / np.sqrt(pi))
         sym = 0.5 * (sym + sym.T)
         w = np.sort(np.linalg.eigvalsh(sym))[::-1]
         eig = w[1 : n_timescales + 1]
-        eig = np.clip(np.abs(eig), 1e-12, 1 - 1e-12)
+        eig = np.clip(np.abs(eig), const.NUMERIC_MIN_POSITIVE, 1.0 - const.NUMERIC_MIN_POSITIVE)
         evals = np.zeros((n_timescales,), dtype=float)
         evals[: eig.shape[0]] = eig
         ts_arr = safe_timescales(lag, evals)

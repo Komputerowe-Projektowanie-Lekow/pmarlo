@@ -7,13 +7,14 @@ import warnings
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, cast
 
+from pmarlo import constants as const
 from pmarlo.shards.discover import discover_shard_jsons
 from pmarlo.shards.id import canonical_shard_id
 from pmarlo.shards.meta import load_shard_meta
 
 from .shard_id import ShardId
 
-INDEX_VERSION = 2
+INDEX_VERSION = const.SHARD_INDEX_VERSION
 
 __all__ = [
     "rescan_shards",

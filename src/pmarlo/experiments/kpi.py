@@ -15,6 +15,8 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from pmarlo import constants as const
+
 
 def _ordered(obj: Dict[str, Any]) -> "OrderedDict[str, Any]":
     """Create an OrderedDict preserving the current insertion order."""
@@ -270,8 +272,8 @@ def compute_stationary_entropy(stationary_distribution: Any) -> Optional[float]:
         pi = np.asarray(stationary_distribution, dtype=float)
         if pi.ndim != 1 or pi.size == 0:
             return None
-        pi_safe = pi / max(np.sum(pi), 1e-12)
-        pi_safe = np.clip(pi_safe, 1e-12, 1.0)
+        pi_safe = pi / max(np.sum(pi), const.NUMERIC_MIN_POSITIVE)
+        pi_safe = np.clip(pi_safe, const.NUMERIC_MIN_POSITIVE, 1.0)
         return float(-np.sum(pi_safe * np.log(pi_safe)))
     except Exception:
         return None

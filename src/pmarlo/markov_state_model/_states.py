@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Optional, Protocol
 import numpy as np
 import pandas as pd
 
+from pmarlo import constants as const
+
 
 class _HasStateAttrs(Protocol):
     stationary_distribution: Optional[np.ndarray]
@@ -43,7 +45,9 @@ class StatesMixin:
         from scipy import constants
 
         kT = constants.k * float(self.temperatures[0]) * constants.Avogadro / 1000.0
-        free_from_pop = -kT * np.log(np.clip(population, 1e-12, None))
+        free_from_pop = -kT * np.log(
+            np.clip(population, const.NUMERIC_MIN_POSITIVE, None)
+        )
         state_data["free_energy_kJ_mol"] = free_from_pop
         representative_frames, _ = self._find_representatives()
         rep_traj_array = np.array([int(rf[0]) for rf in representative_frames])
@@ -119,7 +123,9 @@ class StatesMixin:
         from scipy import constants
 
         kT = constants.k * float(self.temperatures[0]) * constants.Avogadro / 1000.0
-        fe_samples = -kT * np.log(np.clip(samples / assignments.size, 1e-12, None))
+        fe_samples = -kT * np.log(
+            np.clip(samples / assignments.size, const.NUMERIC_MIN_POSITIVE, None)
+        )
         return np.nanstd(fe_samples, axis=0)
 
     def _find_representatives(

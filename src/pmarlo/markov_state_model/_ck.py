@@ -5,6 +5,8 @@ from typing import Any, Callable, List, Optional, Tuple
 import numpy as np
 from scipy.sparse.csgraph import connected_components
 
+from pmarlo import constants as const
+
 from ._base import CKTestResult
 
 
@@ -203,8 +205,8 @@ class CKMixin:
                 continue
             # Help static type checkers: prev_mse/prev_its are set here
             assert prev_mse is not None and prev_its is not None
-            non_decreasing_its = s >= prev_its - 1e-12
-            rel_improvement = (prev_mse - m) / max(prev_mse, 1e-12)
+            non_decreasing_its = s >= prev_its - const.NUMERIC_MIN_POSITIVE
+            rel_improvement = (prev_mse - m) / max(prev_mse, const.NUMERIC_MIN_POSITIVE)
             if non_decreasing_its and rel_improvement > float(mse_epsilon):
                 selected = int(t)
                 prev_mse = float(m)
@@ -228,7 +230,7 @@ class CKMixin:
         if selected == 1 and 2 in taus:
             j = int(taus.index(2))
             idx_min = int(np.nanargmin(mses))
-            if mses[j] <= mses[idx_min] + 1e-12:
+            if mses[j] <= mses[idx_min] + const.NUMERIC_MIN_POSITIVE:
                 selected = 2
         return int(selected)
 
@@ -360,8 +362,8 @@ class CKMixin:
             if evals.size < 2:
                 return 0.0
             lam = float(evals[1])
-            if lam <= 0 or lam >= 0.999999:
-                lam = min(max(lam, 1e-12), 0.999999)
+            if lam <= 0 or lam >= const.NUMERIC_MAX_RATE:
+                lam = min(max(lam, const.NUMERIC_MIN_POSITIVE), const.NUMERIC_MAX_RATE)
             its = -float(tau) / np.log(lam)
             if not np.isfinite(its):
                 return 0.0
