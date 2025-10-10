@@ -118,6 +118,7 @@ all = ["torch", "deeptime", "streamlit", "plotly", "matplotlib", "pdbfixer", "bl
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^3.7"
 mypy = "^1.11"
+hypothesis = "^6.112"
 isort = "^6.0.1"
 
 [tool.poetry.group.tests.dependencies]

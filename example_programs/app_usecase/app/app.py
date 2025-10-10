@@ -304,6 +304,14 @@ def _show_build_outputs(artifact: BuildArtifact | TrainingResult) -> None:
         tau_mismatch = None
     preview_truncated = flags.get("analysis_preview_truncated") or []
     stride_map = flags.get("analysis_effective_stride_map") or {}
+    guardrail_info = (
+        flags.get("analysis_guardrail_violations")
+        or getattr(artifact, "guardrail_violations", None)
+        or []
+    )
+    analysis_healthy_flag = flags.get("analysis_healthy")
+    if analysis_healthy_flag is None:
+        analysis_healthy_flag = getattr(artifact, "analysis_healthy", None)
 
     meta_cols = st.columns(4)
     meta_cols[0].metric("Shards", int(br.n_shards))
@@ -333,6 +341,13 @@ def _show_build_outputs(artifact: BuildArtifact | TrainingResult) -> None:
             f"Effective tau={effective_tau}" if effective_tau is not None else f"Max stride={stride_max}"
         )
         st.info(f"Detected subsampling in shards (max stride={stride_max}). {info_msg}.")
+
+    if analysis_healthy_flag is not None:
+        status_text = "healthy" if analysis_healthy_flag else "violations detected"
+        st.caption(f"Analysis health: {status_text}")
+    if guardrail_info:
+        st.warning("Guardrail violations detected:")
+        st.json(guardrail_info)
 
     if preview_truncated:
         formatted = ", ".join(str(item) for item in preview_truncated)

@@ -26,9 +26,54 @@ class MSMDiscretizationResult:
     lag_time: int
     diag_mass: float
     cluster_mode: str
+    feature_schema: Dict[str, Any] = field(default_factory=dict)
     fingerprint: Dict[str, Any] = field(default_factory=dict)
 
 
+class FeatureMismatchError(ValueError):
+    """Raised when feature schemas between splits are incompatible."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        differences: Sequence[str] | None = None,
+        expected: Mapping[str, Any] | None = None,
+        actual: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.differences = list(differences or [])
+        self.expected_schema = dict(expected or {})
+        self.actual_schema = dict(actual or {})
+        if self.differences:
+            diff_text = "\n".join(f"- {item}" for item in self.differences)
+            message = f"{message}\n{diff_text}"
+        super().__init__(message)
+
+
+class NoAssignmentsError(RuntimeError):
+    """Raised when no frames receive a valid state assignment."""
+
+    def __init__(
+        self,
+        split: str,
+        *,
+        preview: np.ndarray,
+        center_norms: np.ndarray | None,
+    ) -> None:
+        self.split = str(split)
+        self.preview = np.asarray(preview)
+        self.center_norms = None if center_norms is None else np.asarray(center_norms)
+        preview_repr = repr(self.preview)
+        centers_repr = (
+            "[]"
+            if self.center_norms is None
+            else repr(self.center_norms.astype(float, copy=False))
+        )
+        super().__init__(
+            "No state assignments were produced for split"
+            f" '{self.split}'. Preview (up to 10 rows): {preview_repr}; "
+            f"centroid norms: {centers_repr}"
+        )
 def _looks_like_split(value: Any) -> bool:
     if isinstance(value, (Mapping, MutableMapping)):
         candidate = value.get("X")
@@ -84,6 +129,108 @@ def _coerce_array(obj: Any, *, copy: bool = False) -> np.ndarray:
     if array.shape[0] == 0:
         raise ValueError("Split is empty")
     return array
+
+
+def _coerce_feature_names(raw: Any) -> list[str]:
+    try:
+        if raw is None:
+            return []
+        if isinstance(raw, Mapping):
+            raw = raw.get("names")
+        if raw is None:
+            return []
+        if isinstance(raw, (str, bytes)):
+            return [str(raw)]
+        return [str(item) for item in raw if item is not None]
+    except Exception:
+        return []
+
+
+def _extract_feature_schema(split: Any, n_features: int) -> Dict[str, Any]:
+    names: list[str] = []
+
+    if isinstance(split, (Mapping, MutableMapping)):
+        schema = split.get("feature_schema")
+        if isinstance(schema, Mapping):
+            names = _coerce_feature_names(schema)
+        if not names:
+            candidate = split.get("cv_names")
+            if candidate is None:
+                candidate = split.get("feature_names")
+            names = _coerce_feature_names(candidate)
+    else:
+        schema = getattr(split, "feature_schema", None)
+        if isinstance(schema, Mapping):
+            names = _coerce_feature_names(schema)
+        if not names and hasattr(split, "feature_names"):
+            names = _coerce_feature_names(getattr(split, "feature_names"))
+        if not names and hasattr(split, "columns"):
+            names = _coerce_feature_names(getattr(split, "columns"))
+
+    return {"names": names, "n_features": int(n_features)}
+
+
+def _diff_feature_names(expected: Sequence[str], actual: Sequence[str]) -> list[str]:
+    if not expected:
+        return []
+
+    expected_list = list(expected)
+    actual_list = list(actual)
+    differences: list[str] = []
+
+    expected_set = {name for name in expected_list}
+    actual_set = {name for name in actual_list}
+
+    missing = [name for name in expected_list if name not in actual_set]
+    if missing:
+        differences.append(
+            "missing: " + ", ".join(repr(name) for name in missing)
+        )
+
+    unexpected = [name for name in actual_list if name not in expected_set]
+    if unexpected:
+        differences.append(
+            "unexpected: " + ", ".join(repr(name) for name in unexpected)
+        )
+
+    if not missing and not unexpected:
+        mismatched_positions = [
+            f"position {idx}: expected {repr(exp)}, got {repr(act)}"
+            for idx, (exp, act) in enumerate(zip(expected_list, actual_list))
+            if exp != act
+        ]
+        if mismatched_positions:
+            differences.append("order mismatch: " + "; ".join(mismatched_positions))
+
+    return differences
+
+
+def _validate_feature_schema(
+    reference: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+    *,
+    split_name: str,
+) -> None:
+    expected_count = int(reference.get("n_features", 0))
+    actual_count = int(candidate.get("n_features", 0))
+    differences: list[str] = []
+
+    if actual_count != expected_count:
+        differences.append(
+            f"n_features mismatch: expected {expected_count}, got {actual_count}"
+        )
+    else:
+        expected_names = list(reference.get("names") or [])
+        actual_names = list(candidate.get("names") or [])
+        differences.extend(_diff_feature_names(expected_names, actual_names))
+
+    if differences:
+        raise FeatureMismatchError(
+            f"Feature schema mismatch for split '{split_name}'",
+            differences=differences,
+            expected=reference,
+            actual=candidate,
+        )
 
 
 def _coerce_weights(weights: Any, n_frames: int, split_name: str) -> np.ndarray | None:
@@ -268,6 +415,7 @@ def discretize_dataset(
 
     train_key = "train" if "train" in splits else next(iter(splits))
     train_data = _coerce_array(splits[train_key])
+    feature_schema = _extract_feature_schema(splits[train_key], train_data.shape[1])
 
     if cluster_mode == "kmeans":
         discretizer = _KMeansDiscretizer(n_microstates, random_state=random_state)
@@ -282,6 +430,8 @@ def discretize_dataset(
     max_state = -1
     for name, split in splits.items():
         X = _coerce_array(split)
+        split_schema = _extract_feature_schema(split, X.shape[1])
+        _validate_feature_schema(feature_schema, split_schema, split_name=name)
         labels = discretizer.transform(X)
         assignments[name] = labels
         if labels.size:
@@ -321,6 +471,10 @@ def discretize_dataset(
         "mode": str(cluster_mode),
         "n_states": int(max(n_states, 0)),
         "seed": None if random_state is None else int(random_state),
+        "feature_schema": {
+            "names": list(feature_schema.get("names", [])),
+            "n_features": int(feature_schema.get("n_features", 0)),
+        },
     }
 
     return MSMDiscretizationResult(
@@ -331,5 +485,6 @@ def discretize_dataset(
         lag_time=lag_time,
         diag_mass=diag_mass,
         cluster_mode=cluster_mode,
+        feature_schema=feature_schema,
         fingerprint=fingerprint,
     )

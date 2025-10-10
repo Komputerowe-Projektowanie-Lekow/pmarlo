@@ -21,6 +21,7 @@ while keeping the logic reusable for non-UI automation in the future.
 
 import json
 import logging
+import math
 import shutil
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -342,8 +343,8 @@ class BuildArtifact:
     tau_frames: Optional[int] = None
     effective_tau_frames: Optional[int] = None
     effective_stride_max: Optional[int] = None
-    debug_dir: Optional[Path] = None
-    debug_summary: Optional[Dict[str, Any]] = None
+    analysis_healthy: bool = True
+    guardrail_violations: Optional[List[Dict[str, Any]]] = None
 
 
 class WorkflowBackend:
@@ -634,30 +635,25 @@ class WorkflowBackend:
             notes=analysis_notes,
         )
 
-        debug_dir = (self.layout.analysis_debug_dir / f"analysis-{stamp}").resolve()
-        export_info = export_analysis_debug(
-            output_dir=debug_dir,
-            build_result=br,
-            debug_data=debug_data,
-            config=config_payload,
-            dataset_hash=ds_hash,
-        )
         summary = debug_data.summary
-        tau_frames_value = summary.get("tau_frames", config.lag)
-        try:
-            tau_frames = int(tau_frames_value)
-        except (TypeError, ValueError):
-            tau_frames = int(config.lag)
-        effective_tau_value = summary.get("effective_tau_frames", tau_frames)
-        try:
-            effective_tau_frames = int(effective_tau_value)
-        except (TypeError, ValueError):
-            effective_tau_frames = int(tau_frames)
-        stride_max_value = summary.get("effective_stride_max", 1)
-        try:
-            stride_max = int(stride_max_value)
-        except (TypeError, ValueError):
-            stride_max = 1
+
+        def _safe_int(value: Any, default: int) -> int:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
+
+        def _safe_float(value: Any, default: float = float("nan")) -> float:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
+        tau_frames = _safe_int(summary.get("tau_frames"), int(config.lag))
+        stride_max = max(1, _safe_int(summary.get("effective_stride_max"), 1))
+        effective_tau_frames = _safe_int(
+            summary.get("effective_tau_frames"), tau_frames
+        )
         raw_stride_values = summary.get("effective_strides") or []
         stride_values = []
         for value in raw_stride_values:
@@ -667,6 +663,83 @@ class WorkflowBackend:
                 continue
         stride_map = summary.get("effective_stride_map") or {}
         preview_truncated = summary.get("preview_truncated") or []
+        total_pairs_val = _safe_int(summary.get("total_pairs"), 0)
+        zero_rows_val = _safe_int(summary.get("zero_rows"), 0)
+        largest_cover_raw = summary.get("largest_scc_frame_fraction")
+        try:
+            largest_cover = (
+                float(largest_cover_raw)
+                if largest_cover_raw is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            largest_cover = None
+        diag_mass_val = _safe_float(summary.get("diag_mass"))
+        expected_effective_tau = tau_frames * stride_max if tau_frames > 0 else 0
+
+        actual_seed = int(config.seed)
+        if getattr(br.metadata, "seed", None) is not None:
+            try:
+                actual_seed = int(br.metadata.seed)  # type: ignore[arg-type]
+            except Exception:
+                actual_seed = int(config.seed)
+        fingerprint = {
+            "mode": str(config.cluster_mode),
+            "n_states": int(config.n_microstates),
+            "seed": actual_seed,
+        }
+        fingerprint_changed = fingerprint != requested_fingerprint
+
+        guardrail_violations: List[Dict[str, Any]] = []
+        if total_pairs_val < 5000:
+            guardrail_violations.append(
+                {"code": "total_pairs_lt_5000", "actual": total_pairs_val}
+            )
+        if zero_rows_val != 0:
+            guardrail_violations.append(
+                {"code": "zero_row_states_present", "actual": zero_rows_val}
+            )
+        if largest_cover is None or largest_cover < 0.9:
+            guardrail_violations.append(
+                {
+                    "code": "largest_scc_coverage_lt_0.9",
+                    "actual": largest_cover,
+                }
+            )
+        if math.isfinite(diag_mass_val) and diag_mass_val > 0.90:
+            guardrail_violations.append(
+                {"code": "diag_mass_gt_0.90", "actual": diag_mass_val}
+            )
+        if effective_tau_frames != expected_effective_tau:
+            guardrail_violations.append(
+                {
+                    "code": "effective_tau_mismatch",
+                    "expected": expected_effective_tau,
+                    "actual": effective_tau_frames,
+                }
+            )
+        analysis_healthy = not guardrail_violations
+
+        summary_overrides = {
+            "fingerprint": fingerprint,
+            "analysis_guardrail_violations": guardrail_violations,
+            "analysis_expected_effective_tau_frames": expected_effective_tau,
+            "analysis_healthy": analysis_healthy,
+            "discretizer_fingerprint_changed": bool(fingerprint_changed),
+        }
+        summary.update(summary_overrides)
+
+        debug_dir = (self.layout.analysis_debug_dir / f"analysis-{stamp}").resolve()
+        export_info = export_analysis_debug(
+            output_dir=debug_dir,
+            build_result=br,
+            debug_data=debug_data,
+            config=config_payload,
+            dataset_hash=ds_hash,
+            summary_overrides=summary_overrides,
+            fingerprint=fingerprint,
+        )
+
         for idx, shard in enumerate(summary.get("shards", [])):
             shard_id = shard.get("id", f"shard-{idx}")
             frames_loaded = shard.get("frames_loaded", shard.get("length"))
@@ -686,6 +759,15 @@ class WorkflowBackend:
                     shard.get("first_timestamp"),
                     shard.get("last_timestamp"),
                 )
+
+        if not analysis_healthy:
+            summary_path = Path(export_info["summary"]).resolve()
+            raise ValueError(
+                "Analysis guardrails failed: "
+                f"{guardrail_violations}. "
+                f"See {summary_path} for details."
+            )
+
         logger.info(
             "Analysis lag requested=%d, applied=%d, effective_tau=%d (max stride=%d, stride values=%s)",
             int(config.lag),
@@ -694,40 +776,38 @@ class WorkflowBackend:
             stride_max,
             stride_values,
         )
-        actual_seed = int(config.seed)
-        if getattr(br.metadata, "seed", None) is not None:
-            try:
-                actual_seed = int(br.metadata.seed)  # type: ignore[arg-type]
-            except Exception:
-                actual_seed = int(config.seed)
-        fingerprint = {
-            "mode": str(config.cluster_mode),
-            "n_states": int(config.n_microstates),
-            "seed": actual_seed,
-        }
-        fingerprint_changed = fingerprint != requested_fingerprint
-        analysis_notes["discretizer_fingerprint"] = fingerprint
-        analysis_notes["analysis_tau_frames"] = tau_frames
-        analysis_notes["analysis_effective_tau_frames"] = effective_tau_frames
-        analysis_notes["analysis_effective_stride_max"] = stride_max
-        analysis_notes["analysis_effective_stride_values"] = stride_values
-        analysis_notes["analysis_effective_stride_map"] = stride_map
-        if preview_truncated:
-            analysis_notes["analysis_preview_truncated"] = preview_truncated
         if fingerprint_changed:
             logger.info(
                 "Effective discretizer fingerprint differs from request: %s (requested %s)",
                 fingerprint,
                 requested_fingerprint,
             )
-        analysis_notes["discretizer_fingerprint_changed"] = bool(fingerprint_changed)
         if tau_frames != int(config.lag):
             logger.warning(
                 "Analysis lag mismatch: requested %d frames, applied %d frames",
                 int(config.lag),
                 tau_frames,
             )
+        analysis_notes["discretizer_fingerprint"] = fingerprint
+        analysis_notes["analysis_total_pairs"] = int(total_pairs_val)
+        analysis_notes["analysis_zero_rows"] = int(zero_rows_val)
+        analysis_notes["analysis_largest_scc_fraction"] = (
+            float(largest_cover) if largest_cover is not None else None
+        )
+        analysis_notes["analysis_diag_mass"] = float(diag_mass_val)
+        analysis_notes["analysis_tau_frames"] = tau_frames
+        analysis_notes["analysis_effective_tau_frames"] = effective_tau_frames
+        analysis_notes["analysis_effective_stride_max"] = stride_max
+        analysis_notes["analysis_effective_stride_values"] = stride_values
+        analysis_notes["analysis_effective_stride_map"] = stride_map
+        analysis_notes["analysis_expected_effective_tau_frames"] = expected_effective_tau
+        analysis_notes["analysis_healthy"] = analysis_healthy
+        if preview_truncated:
+            analysis_notes["analysis_preview_truncated"] = preview_truncated
+        analysis_notes["analysis_guardrail_violations"] = guardrail_violations
+        analysis_notes["discretizer_fingerprint_changed"] = bool(fingerprint_changed)
         analysis_notes.pop("discretizer_fingerprint_requested", None)
+
         try:
             flags = dict(br.flags or {})
         except Exception:
@@ -735,9 +815,18 @@ class WorkflowBackend:
         flags["discretizer_fingerprint"] = fingerprint
         flags["discretizer_fingerprint_changed"] = bool(fingerprint_changed)
         flags["analysis_requested_tau_frames"] = int(config.lag)
+        flags["analysis_total_pairs"] = int(total_pairs_val)
+        flags["analysis_zero_rows"] = int(zero_rows_val)
+        flags["analysis_largest_scc_fraction"] = (
+            float(largest_cover) if largest_cover is not None else None
+        )
+        flags["analysis_diag_mass"] = float(diag_mass_val)
         flags["analysis_tau_frames"] = int(tau_frames)
         flags["analysis_effective_tau_frames"] = int(effective_tau_frames)
+        flags["analysis_expected_effective_tau_frames"] = int(expected_effective_tau)
         flags["analysis_effective_stride_max"] = int(stride_max)
+        flags["analysis_healthy"] = analysis_healthy
+        flags["analysis_guardrail_violations"] = guardrail_violations
         if stride_values:
             flags["analysis_effective_stride_values"] = list(stride_values)
         if stride_map:
@@ -799,6 +888,8 @@ class WorkflowBackend:
             tau_frames=int(tau_frames),
             effective_tau_frames=int(effective_tau_frames),
             effective_stride_max=int(stride_max),
+            analysis_healthy=analysis_healthy,
+            guardrail_violations=guardrail_violations or None,
         )
         self.state.append_build(
             {
@@ -835,6 +926,12 @@ class WorkflowBackend:
                 "effective_stride_values": list(stride_values),
                 "effective_stride_map": _sanitize_artifacts(stride_map),
                 "preview_truncated": list(preview_truncated),
+                "analysis_healthy": bool(analysis_healthy),
+                "guardrail_violations": _sanitize_artifacts(guardrail_violations),
+                "total_pairs": int(total_pairs_val),
+                "zero_rows": int(zero_rows_val),
+                "largest_scc_fraction": float(largest_cover) if largest_cover is not None else None,
+                "diag_mass": float(diag_mass_val),
             }
         )
         return artifact

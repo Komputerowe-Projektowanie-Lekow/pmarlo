@@ -96,3 +96,43 @@ def test_bias_changes_relative_weights():
     # Second frame should now dominate
     assert w[1] > w[0]
     np.testing.assert_allclose(w.sum(), 1.0)
+
+
+def test_bias_length_mismatch_raises():
+    energy = np.array([1.0, 2.0, 3.0], dtype=np.float64)
+    bias = np.array([0.0, 0.1], dtype=np.float64)
+    ds = make_dataset(energy, bias=bias)
+    rw = Reweighter(temperature_ref_K=300.0)
+
+    with pytest.raises(ValueError) as excinfo:
+        rw.apply(ds)
+
+    assert "bias length mismatch" in str(excinfo.value)
+
+
+def test_inputs_remain_immutable_after_apply():
+    energy = np.array([0.2, 0.4, 0.6, 0.8], dtype=np.float64)
+    bias = np.array([0.0, 0.5, 1.0, 0.0], dtype=np.float64)
+    base = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float64)
+    energy_before = energy.copy()
+    bias_before = bias.copy()
+    base_before = base.copy()
+
+    ds = make_dataset(energy, bias=bias, base=base)
+    rw = Reweighter(temperature_ref_K=310.0)
+    rw.apply(ds)
+
+    np.testing.assert_allclose(energy, energy_before, rtol=0, atol=0)
+    np.testing.assert_allclose(bias, bias_before, rtol=0, atol=0)
+    np.testing.assert_allclose(base, base_before, rtol=0, atol=0)
+
+
+def test_tram_mode_matches_mbar_results():
+    energy = np.array([0.5, 0.1, 0.2], dtype=np.float64)
+    ds_tram = make_dataset(energy)
+    ds_mbar = make_dataset(energy)
+
+    tram = Reweighter(temperature_ref_K=290.0).apply(ds_tram, mode="TRAM")["s1"]
+    mbar = Reweighter(temperature_ref_K=290.0).apply(ds_mbar, mode="MBAR")["s1"]
+
+    np.testing.assert_allclose(tram, mbar, rtol=0, atol=0)

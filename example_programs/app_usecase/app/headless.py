@@ -154,6 +154,10 @@ def cmd_run_analysis(args: argparse.Namespace) -> int:
         first_repr = ', '.join(str(val) for val in first_ts) if first_ts else 'n/a'
         last_repr = ', '.join(str(val) for val in last_ts) if last_ts else 'n/a'
         print('First timestamps:', first_repr, '| Last timestamps:', last_repr, file=sys.stdout)
+    guardrail = summary.get("analysis_guardrail_violations") or []
+    print("Analysis healthy:", summary.get("analysis_healthy", True), file=sys.stdout)
+    if guardrail:
+        print("Guardrail violations:", json.dumps(guardrail, indent=2), file=sys.stdout)
     if artifact.debug_summary:
         print("Debug summary:", file=sys.stdout)
         print(json.dumps(artifact.debug_summary, indent=2), file=sys.stdout)
