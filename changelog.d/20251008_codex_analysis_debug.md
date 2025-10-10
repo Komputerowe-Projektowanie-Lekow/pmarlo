@@ -6,3 +6,4 @@
 - Streamlit backend now captures per-build analysis summaries, persists them under `analysis_debug/`, and surfaces warning counts in stored artifacts.
 - Workspace layout prepares a dedicated `analysis_debug` directory so raw analysis data lands in a predictable location alongside bundles.
 - Captured discretizer fingerprints plus tau metadata per analysis build; UI and CLI now surface stride-derived effective tau and alert when overrides drift.
+- Added synthetic MSM/CLI/Hypothesis tests plus compare_debug_bundles utility to guard against regression in fingerprint and transition statistics.

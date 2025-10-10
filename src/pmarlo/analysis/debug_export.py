@@ -11,7 +11,17 @@ import numpy as np
 
 from pmarlo.markov_state_model.free_energy import FESResult
 
-__all__ = ["AnalysisDebugData", "compute_analysis_debug", "export_analysis_debug"]
+__all__ = [
+    "AnalysisDebugData",
+    "CountingLogicError",
+    "compute_analysis_debug",
+    "export_analysis_debug",
+    "total_pairs_from_shards",
+]
+
+
+class CountingLogicError(RuntimeError):
+    """Raised when pair-counting invariants are violated."""
 
 
 @dataclass
@@ -37,6 +47,48 @@ class AnalysisDebugData:
         return payload
 
 
+def total_pairs_from_shards(
+    lengths: Sequence[int],
+    tau: int,
+    *,
+    count_mode: str = "sliding",
+) -> int:
+    """Predict total (t, t+tau) pairs from shard lengths.
+
+    Parameters
+    ----------
+    lengths
+        Effective lengths (number of frames considered for MSM counting)
+        for each shard.
+    tau
+        Lag time in frames.
+    count_mode
+        Counting strategy; ``"sliding"`` matches the default sliding window.
+
+    Returns
+    -------
+    int
+        Predicted number of transition pairs.
+    """
+
+    if tau < 0:
+        raise ValueError("tau must be non-negative")
+    if count_mode not in {"sliding", "strided"}:
+        raise ValueError(f"Unsupported count_mode: {count_mode}")
+
+    total = 0
+    if count_mode == "strided":
+        step = max(1, tau)
+        for length in lengths:
+            span = max(0, int(length) - tau)
+            total += span // step
+        return total
+
+    for length in lengths:
+        total += max(0, int(length) - tau)
+    return total
+
+
 def compute_analysis_debug(
     dataset: Mapping[str, Any],
     *,
@@ -46,9 +98,8 @@ def compute_analysis_debug(
     """Compute dataset diagnostics ahead of MSM construction."""
 
     shards_raw = _normalise_shard_info(dataset.get("__shards__", ()))
-    shard_lengths = [entry["length"] for entry in shards_raw]
+    shard_lengths = [int(entry["length"]) for entry in shards_raw]
     total_frames = sum(shard_lengths)
-    total_frames_state = 0
 
     dtrajs = _coerce_dtrajs(dataset.get("dtrajs", ()))
     n_states = _infer_n_states(dtrajs)
@@ -78,6 +129,7 @@ def compute_analysis_debug(
     largest_size = max((len(comp) for comp in components), default=0)
     largest_indices = max(components, key=len) if components else []
     largest_cover = _coverage_fraction(state_counts, largest_indices)
+    diag_mass_val = _transition_diag_mass(counts)
 
     warnings: List[Dict[str, Any]] = []
     if total_pairs < 5000:
@@ -151,6 +203,7 @@ def compute_analysis_debug(
         if entry.get("last_timestamp") is not None
     ]
     effective_tau_frames = int(lag * max_stride) if lag > 0 else 0
+    total_pairs_predicted = total_pairs_from_shards(shard_lengths, lag)
 
     summary: Dict[str, Any] = {
         "tau_frames": int(lag),
@@ -176,9 +229,11 @@ def compute_analysis_debug(
         "effective_stride_max": int(max_stride),
         "preview_truncated": preview_truncated_ids,
         "effective_tau_frames": effective_tau_frames,
+        "total_pairs_predicted": int(total_pairs_predicted),
         "first_timestamps": first_timestamps,
         "last_timestamps": last_timestamps,
         "temperatures": temperatures,
+        "diag_mass": float(diag_mass_val),
         "warnings": warnings,
     }
 
@@ -197,6 +252,8 @@ def export_analysis_debug(
     debug_data: AnalysisDebugData,
     config: Mapping[str, Any] | None,
     dataset_hash: str,
+    summary_overrides: Mapping[str, Any] | None = None,
+    fingerprint: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Persist debug artefacts (counts, MSM arrays, diagnostics) to disk."""
 
@@ -204,6 +261,10 @@ def export_analysis_debug(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     summary_payload = debug_data.to_summary_dict()
+    if summary_overrides:
+        summary_payload.update(_make_json_ready(summary_overrides))
+    if fingerprint is not None:
+        summary_payload.setdefault("fingerprint", _make_json_ready(fingerprint))
     summary_payload["dataset_hash"] = str(dataset_hash)
     if config is not None:
         summary_payload["config"] = _make_json_ready(config)
@@ -381,6 +442,16 @@ def _count_zero_rows(counts: np.ndarray) -> int:
         return 0
     row_sums = counts.sum(axis=1)
     return int(np.sum(np.isclose(row_sums, 0.0)))
+
+
+def _transition_diag_mass(counts: np.ndarray) -> float:
+    if counts.size == 0 or counts.shape[0] == 0:
+        return float("nan")
+    row_sum = counts.sum(axis=1, keepdims=True)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        denom = np.where(row_sum == 0.0, 1.0, row_sum)
+        T = counts / denom
+    return float(np.trace(T) / T.shape[0]) if T.size else float("nan")
 
 
 class _TarjanSCC:

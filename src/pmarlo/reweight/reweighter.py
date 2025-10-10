@@ -151,7 +151,9 @@ class Reweighter:
             val = getattr(split, key, None)
         if val is None:
             return None
-        arr = np.asarray(val, dtype=np.float64).reshape(-1)
+        arr = np.array(val, dtype=np.float64, copy=False, order="C")
+        if arr.ndim != 1:
+            arr = np.reshape(arr, (-1,), order="C")
         if arr.size == 0:
             return None
         return arr
@@ -201,15 +203,28 @@ class Reweighter:
                 f"Split '{thermo.shard_id}' is empty (no frames) and cannot be reweighted"
             )
 
-        exponent = -(self.beta_ref - thermo.beta_sim) * thermo.energy
+        energy = thermo.energy
+        assert energy is not None
+        delta_beta = self.beta_ref - thermo.beta_sim
+        base = np.empty_like(energy, dtype=np.float64)
+        np.multiply(energy, -delta_beta, out=base, casting="unsafe")
         if thermo.bias is not None:
-            exponent -= self.beta_ref * thermo.bias
-        exponent = np.clip(
-            exponent - np.max(exponent),
+            if thermo.bias.shape[0] != n_frames:
+                raise ValueError(
+                    f"Split '{thermo.shard_id}' bias length mismatch: "
+                    f"{thermo.bias.shape[0]} != {n_frames}"
+                )
+            np.subtract(base, self.beta_ref * thermo.bias, out=base)
+
+        max_exponent = float(np.max(base))
+        np.subtract(base, max_exponent, out=base)
+        np.clip(
+            base,
             const.NUMERIC_EXP_CLIP_MIN,
             const.NUMERIC_EXP_CLIP_MAX,
+            out=base,
         )
-        base = np.exp(exponent, dtype=np.float64)
+        np.exp(base, out=base)
 
         if thermo.base_weights is not None:
             if thermo.base_weights.shape[0] != n_frames:
@@ -217,14 +232,15 @@ class Reweighter:
                     f"Split '{thermo.shard_id}' base_weights length mismatch: "
                     f"{thermo.base_weights.shape[0]} != {n_frames}"
                 )
-            base = base * thermo.base_weights
+            np.multiply(base, thermo.base_weights, out=base)
 
-        total = float(np.sum(base))
+        total = float(np.sum(base, dtype=np.float64))
         if not math.isfinite(total) or total <= 0.0:
             raise ValueError(
                 f"Split '{thermo.shard_id}' produced non-finite or non-positive weight sum ({total})"
             )
-        weights = base / total
+        np.divide(base, total, out=base)
+        weights = base
 
         if mode == AnalysisReweightMode.TRAM:
             # Placeholder: TRAM identical to MBAR single-ensemble for now.
