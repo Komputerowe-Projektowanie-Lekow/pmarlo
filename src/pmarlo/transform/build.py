@@ -106,7 +106,10 @@ def _collect_demux_temperatures(meta: Dict[str, Any]) -> List[float]:
         coerced = _coerce_float(candidate)
         if coerced is None:
             continue
-        if all(abs(coerced - existing) > const.NUMERIC_PROGRESS_MIN_FRACTION for existing in temps):
+        if all(
+            abs(coerced - existing) > const.NUMERIC_PROGRESS_MIN_FRACTION
+            for existing in temps
+        ):
             temps.append(coerced)
     return temps
 

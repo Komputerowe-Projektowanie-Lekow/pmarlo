@@ -114,7 +114,8 @@ class ProgressPrinter:
         bar = "#" * filled + "-" * (self.bar_width - filled)
         elapsed = time.monotonic() - self.start_t
         eta = (
-            (elapsed / max(const.NUMERIC_PROGRESS_MIN_FRACTION, current)) * (self.total - current)
+            (elapsed / max(const.NUMERIC_PROGRESS_MIN_FRACTION, current))
+            * (self.total - current)
             if current > 0
             else 0.0
         )

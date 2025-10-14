@@ -11,7 +11,6 @@ import torch  # type: ignore
 from sklearn.preprocessing import StandardScaler  # type: ignore
 
 from pmarlo import constants as const
-
 from pmarlo.ml.deeptica.whitening import apply_output_transform
 
 from .core.model import apply_output_whitening as core_apply_output_whitening

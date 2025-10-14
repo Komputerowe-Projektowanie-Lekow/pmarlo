@@ -6,6 +6,7 @@ from typing import Any, Dict, Mapping, MutableMapping, Sequence
 import numpy as np
 
 from pmarlo import constants as const
+
 from .discretize import _coerce_array, _normalise_splits
 from .project_cv import apply_whitening_from_metadata
 
@@ -95,7 +96,10 @@ def _inv_symmetric_sqrt(mat: np.ndarray, regularisation: float) -> np.ndarray:
 
 
 def _canonical_correlations(
-    X: np.ndarray, Y: np.ndarray, *, regularisation: float = const.NUMERIC_RELATIVE_TOLERANCE
+    X: np.ndarray,
+    Y: np.ndarray,
+    *,
+    regularisation: float = const.NUMERIC_RELATIVE_TOLERANCE,
 ) -> list[float]:
     """Compute canonical correlations between two 2D arrays.
 

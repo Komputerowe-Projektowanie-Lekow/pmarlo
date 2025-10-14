@@ -688,7 +688,25 @@ class WorkflowBackend:
             "n_states": int(config.n_microstates),
             "seed": actual_seed,
         }
-        fingerprint_changed = fingerprint != requested_fingerprint
+        msm_obj = getattr(br, "msm", None)
+        feature_schema_payload: Dict[str, Any] | None = None
+        if isinstance(msm_obj, Mapping):
+            schema_candidate = msm_obj.get("feature_schema")
+        else:
+            schema_candidate = getattr(msm_obj, "feature_schema", None)
+        if isinstance(schema_candidate, Mapping):
+            feature_schema_payload = {
+                "names": list(schema_candidate.get("names", [])),
+                "n_features": int(schema_candidate.get("n_features", 0)),
+            }
+            fingerprint["feature_schema"] = feature_schema_payload
+
+        fingerprint_compare = {
+            "mode": fingerprint.get("mode"),
+            "n_states": fingerprint.get("n_states"),
+            "seed": fingerprint.get("seed"),
+        }
+        fingerprint_changed = fingerprint_compare != requested_fingerprint
 
         guardrail_violations: List[Dict[str, Any]] = []
         if total_pairs_val < 5000:

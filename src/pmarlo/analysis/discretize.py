@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, Mapping, MutableMapping, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence
 
 import numpy as np
 from sklearn.cluster import KMeans, MiniBatchKMeans
+
+from .counting import expected_pairs
+from .errors import CountingLogicError, PruningFailedError
+from .validation import validate_features
 
 logger = logging.getLogger("pmarlo")
 
@@ -26,8 +30,18 @@ class MSMDiscretizationResult:
     lag_time: int
     diag_mass: float
     cluster_mode: str
+    assignment_masks: Dict[str, np.ndarray] = field(default_factory=dict)
+    segment_lengths: Dict[str, List[int]] = field(default_factory=dict)
+    segment_strides: Dict[str, List[int]] = field(default_factory=dict)
+    counted_pairs: Dict[str, int] = field(default_factory=dict)
+    expected_pairs: Dict[str, int] = field(default_factory=dict)
     feature_schema: Dict[str, Any] = field(default_factory=dict)
     fingerprint: Dict[str, Any] = field(default_factory=dict)
+    feature_stats: Dict[str, Any] = field(default_factory=dict)
+    counts_before_prune: np.ndarray | None = None
+    state_counts_before_prune: np.ndarray | None = None
+    state_counts: np.ndarray | None = None
+    pruned_state_indices: np.ndarray | None = None
 
 
 class FeatureMismatchError(ValueError):
@@ -74,6 +88,8 @@ class NoAssignmentsError(RuntimeError):
             f" '{self.split}'. Preview (up to 10 rows): {preview_repr}; "
             f"centroid norms: {centers_repr}"
         )
+
+
 def _looks_like_split(value: Any) -> bool:
     if isinstance(value, (Mapping, MutableMapping)):
         candidate = value.get("X")
@@ -183,9 +199,7 @@ def _diff_feature_names(expected: Sequence[str], actual: Sequence[str]) -> list[
 
     missing = [name for name in expected_list if name not in actual_set]
     if missing:
-        differences.append(
-            "missing: " + ", ".join(repr(name) for name in missing)
-        )
+        differences.append("missing: " + ", ".join(repr(name) for name in missing))
 
     unexpected = [name for name in actual_list if name not in expected_set]
     if unexpected:
@@ -253,6 +267,126 @@ def _coerce_weights(weights: Any, n_frames: int, split_name: str) -> np.ndarray 
             f" expected {n_frames}",
         )
     return arr
+
+
+def _resolve_shard_segments_for_split(
+    dataset: DatasetLike,
+    split_name: str,
+    split: Any,
+    total_frames: int,
+) -> tuple[list[int], list[int]]:
+    lengths: list[int] = []
+    strides: list[int] = []
+
+    def _append(length: Any, stride_value: Any) -> None:
+        try:
+            length_int = int(length)
+        except Exception:
+            return
+        if length_int <= 0:
+            return
+        try:
+            stride_int = 1 if stride_value is None else int(stride_value)
+        except Exception:
+            stride_int = 1
+        if stride_int <= 0:
+            stride_int = 1
+        lengths.append(length_int)
+        strides.append(stride_int)
+
+    if isinstance(split, Mapping):
+        segments_meta = split.get("segments") or split.get("__segments__")
+        if isinstance(segments_meta, Iterable):
+            for entry in segments_meta:
+                if isinstance(entry, Mapping):
+                    length_val = entry.get("length")
+                    if length_val is None:
+                        start = entry.get("start")
+                        stop = entry.get("stop")
+                        if start is not None and stop is not None:
+                            try:
+                                length_val = int(stop) - int(start)
+                            except Exception:
+                                length_val = None
+                    stride_val = entry.get("stride") or entry.get(
+                        "effective_frame_stride"
+                    )
+                else:
+                    length_val = entry
+                    stride_val = None
+                if length_val is not None:
+                    _append(length_val, stride_val)
+        if not lengths:
+            raw_lengths = split.get("segment_lengths")
+            if isinstance(raw_lengths, Iterable):
+                for value in raw_lengths:
+                    _append(value, None)
+
+    if not lengths and isinstance(dataset, Mapping):
+        shards = dataset.get("__shards__")
+        if isinstance(shards, Iterable):
+            for entry in shards:
+                if not isinstance(entry, Mapping):
+                    continue
+                split_label = entry.get("split")
+                if split_label is not None and str(split_label) != split_name:
+                    continue
+                length_val = entry.get("length")
+                if length_val is None:
+                    start = entry.get("start")
+                    stop = entry.get("stop")
+                    if start is not None and stop is not None:
+                        try:
+                            length_val = int(stop) - int(start)
+                        except Exception:
+                            length_val = None
+                stride_val = entry.get("effective_frame_stride")
+                if length_val is not None:
+                    _append(length_val, stride_val)
+
+    consumed = 0
+    sanitised_lengths: list[int] = []
+    sanitised_strides: list[int] = []
+    for length, stride in zip(lengths, strides):
+        if consumed >= total_frames:
+            break
+        remaining = total_frames - consumed
+        value = min(length, remaining)
+        if value <= 0:
+            continue
+        sanitised_lengths.append(value)
+        sanitised_strides.append(max(1, stride))
+        consumed += value
+
+    if not sanitised_lengths and total_frames > 0:
+        sanitised_lengths = [total_frames]
+        sanitised_strides = [1]
+
+    return sanitised_lengths, sanitised_strides
+
+
+def _lengths_to_segments(
+    lengths: Sequence[int], total_frames: int
+) -> list[tuple[int, int]]:
+    segments: list[tuple[int, int]] = []
+    offset = 0
+    for value in lengths:
+        try:
+            length_int = int(value)
+        except Exception:
+            continue
+        if length_int <= 0:
+            continue
+        start = offset
+        stop = min(total_frames, offset + length_int)
+        if stop > start:
+            segments.append((start, stop))
+        offset = stop
+        if offset >= total_frames:
+            break
+    if not segments:
+        segments.append((0, total_frames))
+    return segments
 
 
 def _minibatch_threshold(n_frames: int, n_features: int) -> bool:
@@ -358,7 +492,16 @@ class _GridDiscretizer:
         return coords
 
 
-def _iter_segments(length: int) -> Iterable[tuple[int, int]]:
+def _iter_segments(
+    length: int, segments: Iterable[tuple[int, int]] | None = None
+) -> Iterable[tuple[int, int]]:
+    if segments is not None:
+        for start, stop in segments:
+            start_idx = max(0, int(start))
+            stop_idx = min(length, int(stop))
+            if stop_idx > start_idx:
+                yield start_idx, stop_idx
+        return
     yield 0, length
 
 
@@ -368,23 +511,67 @@ def _weighted_counts(
     n_states: int,
     lag_time: int,
     weights: np.ndarray | None = None,
-) -> np.ndarray:
+    segments: Iterable[tuple[int, int]] | None = None,
+    stride: int = 1,
+) -> tuple[np.ndarray, int]:
     counts = np.zeros((n_states, n_states), dtype=np.float64)
     if labels.size == 0 or lag_time <= 0:
-        return counts
+        return counts, 0
 
-    for start, stop in _iter_segments(labels.size):
+    total_pairs = 0
+    step = max(1, int(stride))
+
+    for start, stop in _iter_segments(labels.size, segments):
         length = stop - start
         if length <= lag_time:
             continue
-        src = labels[start : stop - lag_time]
-        dst = labels[start + lag_time : stop]
+        src = labels[start : stop - lag_time : step]
+        dst = labels[start + lag_time : stop : step]
+        if src.size == 0:
+            continue
         if weights is not None:
-            w = weights[start : stop - lag_time]
-            np.add.at(counts, (src, dst), w)
+            seg_weights = weights[start : stop - lag_time : step]
         else:
-            np.add.at(counts, (src, dst), 1.0)
-    return counts
+            seg_weights = None
+        valid = (src >= 0) & (dst >= 0)
+        if not np.any(valid):
+            continue
+        if seg_weights is not None:
+            np.add.at(counts, (src[valid], dst[valid]), seg_weights[valid])
+        else:
+            np.add.at(counts, (src[valid], dst[valid]), 1.0)
+        total_pairs += int(np.count_nonzero(valid))
+    return counts, total_pairs
+
+
+def _compute_state_counts(
+    labels: np.ndarray,
+    *,
+    n_states: int,
+    weights: np.ndarray | None = None,
+) -> np.ndarray:
+    if n_states <= 0:
+        return np.zeros((0,), dtype=np.float64)
+    valid = (labels >= 0) & (labels < n_states)
+    if not np.any(valid):
+        return np.zeros((n_states,), dtype=np.float64)
+    if weights is not None:
+        counts = np.bincount(
+            labels[valid],
+            weights=weights[valid],
+            minlength=n_states,
+        )
+    else:
+        counts = np.bincount(labels[valid], minlength=n_states)
+    return counts.astype(np.float64, copy=False)
+
+
+def _remap_states(labels: np.ndarray, mapping: np.ndarray) -> np.ndarray:
+    remapped = np.full_like(labels, -1)
+    valid = (labels >= 0) & (labels < mapping.size)
+    remapped_valid = mapping[labels[valid]]
+    remapped[valid] = remapped_valid
+    return remapped.astype(np.int32, copy=False)
 
 
 def _normalise_counts(C: np.ndarray) -> np.ndarray:
@@ -403,6 +590,7 @@ def discretize_dataset(
     frame_weights: (
         Mapping[str, Sequence[float]] | Sequence[float] | np.ndarray | None
     ) = None,
+    min_out_count: int = 0,
     random_state: int | None = None,
 ) -> MSMDiscretizationResult:
     """Discretise continuous CVs into microstates and build MSM statistics."""
@@ -416,6 +604,10 @@ def discretize_dataset(
     train_key = "train" if "train" in splits else next(iter(splits))
     train_data = _coerce_array(splits[train_key])
     feature_schema = _extract_feature_schema(splits[train_key], train_data.shape[1])
+    feature_names = list(feature_schema.get("names", []))
+
+    stats_by_split: Dict[str, Dict[str, Any]] = {}
+    stats_by_split[train_key] = validate_features(train_data, feature_names)
 
     if cluster_mode == "kmeans":
         discretizer = _KMeansDiscretizer(n_microstates, random_state=random_state)
@@ -424,30 +616,189 @@ def discretize_dataset(
     else:
         raise ValueError("cluster_mode must be 'kmeans' or 'grid'")
 
-    discretizer.fit(train_data)
+    discretizer.fit(train_data, feature_schema)
+    fitted_schema = discretizer.feature_schema or feature_schema
+    feature_schema = fitted_schema
+    feature_names = list(feature_schema.get("names", []))
+    stats_by_split[train_key]["feature_names"] = feature_names
+    stats_by_split[train_key]["n_features"] = int(
+        feature_schema.get("n_features", train_data.shape[1])
+    )
 
+    segment_lengths_by_split: Dict[str, List[int]] = {}
+    segment_strides_by_split: Dict[str, List[int]] = {}
     assignments: Dict[str, np.ndarray] = {}
+    assignment_masks: Dict[str, np.ndarray] = {}
     max_state = -1
+
     for name, split in splits.items():
         X = _coerce_array(split)
         split_schema = _extract_feature_schema(split, X.shape[1])
         _validate_feature_schema(feature_schema, split_schema, split_name=name)
-        labels = discretizer.transform(X)
+        split_names = list(split_schema.get("names", []))
+        stats = stats_by_split.get(name)
+        if stats is None:
+            stats = validate_features(X, split_names)
+            stats_by_split[name] = stats
+        stats["feature_names"] = split_names
+        stats["n_features"] = int(split_schema.get("n_features", X.shape[1]))
+
+        split_lengths, split_strides = _resolve_shard_segments_for_split(
+            dataset, name, split, X.shape[0]
+        )
+        segment_lengths_by_split[name] = split_lengths
+        segment_strides_by_split[name] = split_strides
+        stats["segment_lengths"] = list(split_lengths)
+        stats["expected_pairs"] = expected_pairs(split_lengths, lag_time, 1)
+        stats["segment_strides"] = list(split_strides)
+
+        labels = discretizer.transform(
+            X,
+            split_schema,
+            split_name=name,
+        )
+        labels = np.asarray(labels, dtype=np.int32)
+        valid_mask = np.isfinite(labels) & (labels >= 0)
+        n_assigned = int(np.count_nonzero(valid_mask))
+        unique_states = (
+            np.unique(labels[valid_mask])
+            if n_assigned
+            else np.asarray([], dtype=np.int32)
+        )
+        logger.debug(
+            "Split %s state assignment summary: %d assigned frames across %d states",
+            name,
+            n_assigned,
+            unique_states.size,
+        )
+        if n_assigned == 0:
+            preview = np.array(X[:10], dtype=np.float64, copy=False)
+            centers = discretizer.centers
+            center_norms = (
+                None
+                if centers is None
+                else np.linalg.norm(np.asarray(centers, dtype=np.float64), axis=1)
+            )
+            raise NoAssignmentsError(
+                name,
+                preview=preview,
+                center_norms=center_norms,
+            )
         assignments[name] = labels
+        assignment_masks[name] = valid_mask.astype(bool, copy=False)
         if labels.size:
             max_state = max(max_state, int(labels.max()))
 
     n_states = max_state + 1 if max_state >= 0 else 0
 
-    train_labels = assignments[train_key]
+    train_labels = np.asarray(assignments[train_key], dtype=np.int32, copy=False)
+    train_mask = assignment_masks[train_key]
+    if not np.all(train_mask):
+        preview = np.array(train_data[:10], dtype=np.float64, copy=False)
+        centers = discretizer.centers
+        center_norms = (
+            None
+            if centers is None
+            else np.linalg.norm(np.asarray(centers, dtype=np.float64), axis=1)
+        )
+        raise NoAssignmentsError(
+            train_key,
+            preview=preview,
+            center_norms=center_norms,
+        )
+
     weights = _coerce_weights(frame_weights, train_labels.size, train_key)
 
-    counts = _weighted_counts(
+    train_lengths = segment_lengths_by_split.get(train_key) or [train_labels.size]
+    train_segments = _lengths_to_segments(train_lengths, train_labels.size)
+
+    counts, counted_pairs_train = _weighted_counts(
         train_labels,
         n_states=n_states,
         lag_time=lag_time,
         weights=weights,
+        segments=train_segments,
     )
+    counts_before_prune = counts.copy()
+    counted_pairs_before = counted_pairs_train
+    expected_pairs_train = expected_pairs(train_lengths, lag_time, 1)
+
+    state_counts_before = _compute_state_counts(
+        train_labels,
+        n_states=n_states,
+        weights=weights,
+    )
+
+    row_sums_before = counts_before_prune.sum(axis=1)
+    zero_rows_before = int(np.count_nonzero(row_sums_before == 0))
+    pruned_state_indices: np.ndarray | None = None
+    zero_rows_after = zero_rows_before
+    min_out_threshold = max(0, int(min_out_count))
+
+    if zero_rows_before > 0:
+        prune_mask = row_sums_before == 0
+        if min_out_threshold > 0:
+            prune_mask |= row_sums_before < float(min_out_threshold)
+        keep_mask = ~prune_mask
+        if not np.any(keep_mask):
+            raise PruningFailedError(
+                f"Pruning removed all microstates (zero_rows={zero_rows_before}, "
+                f"min_out_count={min_out_threshold})"
+            )
+        pruned_state_indices = np.where(prune_mask)[0].astype(np.int32, copy=False)
+        mapping = np.full(n_states, -1, dtype=np.int32)
+        mapping[keep_mask] = np.arange(int(np.count_nonzero(keep_mask)), dtype=np.int32)
+
+        for split_name, labels in list(assignments.items()):
+            remapped = _remap_states(
+                np.asarray(labels, dtype=np.int32, copy=False), mapping
+            )
+            assignments[split_name] = remapped
+            mask = assignment_masks.get(split_name)
+            if mask is not None:
+                assignment_masks[split_name] = np.asarray(mask, dtype=bool) & (
+                    remapped >= 0
+                )
+
+        train_labels = assignments[train_key]
+        n_states = int(np.count_nonzero(keep_mask))
+        counts, counted_pairs_train = _weighted_counts(
+            train_labels,
+            n_states=n_states,
+            lag_time=lag_time,
+            weights=weights,
+            segments=train_segments,
+        )
+        row_sums_after = counts.sum(axis=1)
+        zero_rows_after = int(np.count_nonzero(row_sums_after == 0))
+        if zero_rows_after > 0:
+            raise PruningFailedError(
+                f"Pruning left {zero_rows_after} zero-row microstates "
+                f"(min_out_count={min_out_threshold})"
+            )
+
+    state_counts_final = _compute_state_counts(
+        train_labels,
+        n_states=n_states,
+        weights=weights,
+    )
+
+    if expected_pairs_train > 0 and counted_pairs_train == 0:
+        raise CountingLogicError(
+            f"No transition pairs counted for split '{train_key}' "
+            f"despite expected {expected_pairs_train} pairs"
+        )
+
+    stats_by_split[train_key]["expected_pairs"] = int(expected_pairs_train)
+    stats_by_split[train_key]["counted_pairs_before_prune"] = int(counted_pairs_before)
+    stats_by_split[train_key]["counted_pairs"] = int(counted_pairs_train)
+    stats_by_split[train_key]["zero_rows_before_prune"] = int(zero_rows_before)
+    stats_by_split[train_key]["zero_rows_after_prune"] = int(zero_rows_after)
+    if pruned_state_indices is not None and pruned_state_indices.size:
+        stats_by_split[train_key]["pruned_state_indices"] = pruned_state_indices.astype(
+            int
+        ).tolist()
+        stats_by_split[train_key]["prune_min_out_count"] = int(min_out_threshold)
 
     transition = _normalise_counts(counts)
 
@@ -475,10 +826,25 @@ def discretize_dataset(
             "names": list(feature_schema.get("names", [])),
             "n_features": int(feature_schema.get("n_features", 0)),
         },
+        "expected_pairs": int(expected_pairs_train),
+        "counted_pairs": int(counted_pairs_train),
+        "segment_lengths": {train_key: train_lengths},
+        "segment_strides": {train_key: segment_strides_by_split.get(train_key, [])},
+        "zero_rows_before_prune": int(zero_rows_before),
+        "zero_rows_after_prune": int(zero_rows_after),
+        "pruned_state_count": (
+            int(pruned_state_indices.size) if pruned_state_indices is not None else 0
+        ),
+        "min_out_count": int(min_out_threshold),
     }
 
     return MSMDiscretizationResult(
         assignments=assignments,
+        assignment_masks=assignment_masks,
+        segment_lengths=segment_lengths_by_split,
+        segment_strides=segment_strides_by_split,
+        counted_pairs={train_key: int(counted_pairs_train)},
+        expected_pairs={train_key: int(expected_pairs_train)},
         centers=discretizer.centers,
         counts=counts,
         transition_matrix=transition,
@@ -487,4 +853,9 @@ def discretize_dataset(
         cluster_mode=cluster_mode,
         feature_schema=feature_schema,
         fingerprint=fingerprint,
+        feature_stats=stats_by_split,
+        counts_before_prune=counts_before_prune,
+        state_counts_before_prune=state_counts_before,
+        state_counts=state_counts_final,
+        pruned_state_indices=pruned_state_indices,
     )

@@ -11,6 +11,9 @@ import numpy as np
 
 from pmarlo.markov_state_model.free_energy import FESResult
 
+from .counting import expected_pairs
+from .errors import CountingLogicError
+
 __all__ = [
     "AnalysisDebugData",
     "CountingLogicError",
@@ -18,10 +21,6 @@ __all__ = [
     "export_analysis_debug",
     "total_pairs_from_shards",
 ]
-
-
-class CountingLogicError(RuntimeError):
-    """Raised when pair-counting invariants are violated."""
 
 
 @dataclass
@@ -107,15 +106,11 @@ def compute_analysis_debug(
     state_counts = _count_state_visits(dtrajs, n_states)
     total_frames_state = int(state_counts.sum())
 
-    frames_declared_all = [
-        int(entry.get("frames_declared", 0)) for entry in shards_raw
-    ]
+    frames_declared_all = [int(entry.get("frames_declared", 0)) for entry in shards_raw]
     frames_loaded_all = [
         int(entry.get("frames_loaded", entry.get("length", 0))) for entry in shards_raw
     ]
-    effective_stride_raw = [
-        entry.get("effective_frame_stride") for entry in shards_raw
-    ]
+    effective_stride_raw = [entry.get("effective_frame_stride") for entry in shards_raw]
     stride_values = [int(s) for s in effective_stride_raw if s and s > 0]
     max_stride = max(stride_values) if stride_values else 1
     preview_truncated_ids = [
@@ -203,7 +198,9 @@ def compute_analysis_debug(
         if entry.get("last_timestamp") is not None
     ]
     effective_tau_frames = int(lag * max_stride) if lag > 0 else 0
-    total_pairs_predicted = total_pairs_from_shards(shard_lengths, lag)
+    stride_for_pairs = 1 if count_mode == "sliding" else max(1, lag)
+    expected_pair_count = expected_pairs(shard_lengths, lag, stride_for_pairs)
+    total_pairs_predicted = expected_pair_count
 
     summary: Dict[str, Any] = {
         "tau_frames": int(lag),
@@ -219,6 +216,9 @@ def compute_analysis_debug(
             float(largest_cover) if largest_cover is not None else None
         ),
         "component_sizes": [int(len(comp)) for comp in components],
+        "stride": int(stride_for_pairs),
+        "expected_pairs": int(expected_pair_count),
+        "counted_pairs": int(total_pairs),
         "per_shard_lengths": shard_lengths,
         "shards": shards_raw,
         "frames_declared": frames_declared_all,
@@ -315,6 +315,20 @@ def export_analysis_debug(
         flags_path = output_dir / "flags.json"
         flags_path.write_text(json.dumps(_make_json_ready(flags), indent=2))
         summary_payload["flags_file"] = flags_path.name
+
+    feature_stats = _extract_feature_stats(build_result)
+    if isinstance(feature_stats, Mapping) and feature_stats:
+        stats_path = output_dir / "feature_stats.json"
+        stats_path.write_text(json.dumps(_make_json_ready(feature_stats), indent=2))
+        summary_payload["feature_stats_file"] = stats_path.name
+
+    msm_obj = getattr(build_result, "msm", None)
+    assignment_arrays, assignment_splits = _maybe_export_assignments(
+        msm_obj, output_dir
+    )
+    if assignment_arrays:
+        arrays_written.update(assignment_arrays)
+        summary_payload["state_assignment_splits"] = assignment_splits
 
     summary_path = output_dir / "summary.json"
     summary_path.write_text(json.dumps(summary_payload, indent=2))
@@ -509,9 +523,7 @@ def _strongly_connected_components(
     if n == 0:
         return [], np.zeros((0,), dtype=int)
 
-    adjacency = [
-        np.where(counts[i] > 0.0)[0].astype(int).tolist() for i in range(n)
-    ]
+    adjacency = [np.where(counts[i] > 0.0)[0].astype(int).tolist() for i in range(n)]
     solver = _TarjanSCC(adjacency)
     return solver.run()
 
@@ -571,6 +583,71 @@ def _collect_result_summary(build_result: Any) -> Dict[str, Any]:
     if isinstance(artifacts, Mapping):
         summary["artifact_keys"] = sorted(str(k) for k in artifacts.keys())
     return summary
+
+
+def _extract_feature_stats(build_result: Any) -> Mapping[str, Any] | None:
+    if build_result is None:
+        return None
+
+    direct = getattr(build_result, "feature_stats", None)
+    if isinstance(direct, Mapping):
+        return direct
+
+    msm_obj = getattr(build_result, "msm", None)
+    stats = getattr(msm_obj, "feature_stats", None)
+    if isinstance(stats, Mapping):
+        return stats
+
+    artifacts = getattr(build_result, "artifacts", None)
+    if isinstance(artifacts, Mapping):
+        stats = artifacts.get("feature_stats")
+        if isinstance(stats, Mapping):
+            return stats
+    return None
+
+
+def _maybe_export_assignments(
+    msm_obj: Any,
+    output_dir: Path,
+) -> Tuple[Dict[str, str], List[str]]:
+    if msm_obj is None:
+        return {}, []
+
+    assignments = getattr(msm_obj, "assignments", None)
+    if not isinstance(assignments, Mapping):
+        return {}, []
+
+    masks = getattr(msm_obj, "assignment_masks", None)
+    if not isinstance(masks, Mapping):
+        masks = {}
+
+    written: Dict[str, str] = {}
+    splits: List[str] = []
+
+    for split_name, labels in assignments.items():
+        safe_name = _sanitise_name(split_name)
+        state_path = output_dir / f"state_ids_{safe_name}.npy"
+        np.save(state_path, np.asarray(labels, dtype=np.int32))
+        written[f"state_ids[{split_name}]"] = state_path.name
+        splits.append(str(split_name))
+
+        mask = masks.get(split_name)
+        if mask is not None:
+            mask_path = output_dir / f"valid_mask_{safe_name}.npy"
+            np.save(mask_path, np.asarray(mask, dtype=bool))
+            written[f"valid_mask[{split_name}]"] = mask_path.name
+
+    return written, sorted(splits)
+
+
+def _sanitise_name(name: str) -> str:
+    safe_chars = []
+    for ch in str(name):
+        if ch.isalnum() or ch in ("-", "_", "."):
+            safe_chars.append(ch)
+        else:
+            safe_chars.append("_")
+    return "".join(safe_chars)
 
 
 def _make_json_ready(obj: Any) -> Any:

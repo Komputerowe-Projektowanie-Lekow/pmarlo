@@ -404,7 +404,10 @@ class CurriculumConfig:
         object.__setattr__(self, "warmup_epochs", warmup)
         frac = float(self.val_fraction)
         if not 0.0 < frac < 1.0:
-            frac = min(max(frac, const.DEEPTICA_MIN_BATCH_FRACTION), const.DEEPTICA_MAX_BATCH_FRACTION)
+            frac = min(
+                max(frac, const.DEEPTICA_MIN_BATCH_FRACTION),
+                const.DEEPTICA_MAX_BATCH_FRACTION,
+            )
             object.__setattr__(self, "val_fraction", frac)
         if float(self.learning_rate) <= 0:
             raise ValueError("learning_rate must be positive")

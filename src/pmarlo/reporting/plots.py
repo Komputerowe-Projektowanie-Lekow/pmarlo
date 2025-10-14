@@ -213,8 +213,16 @@ def fes2d(
                 or y_lo >= y_hi
             ):
                 # Degenerate, return a trivial surface
-                xe = np.linspace(float(np.min(x)), float(np.max(x)) + const.NUMERIC_RELATIVE_TOLERANCE, 41)
-                ye = np.linspace(float(np.min(y)), float(np.max(y)) + const.NUMERIC_RELATIVE_TOLERANCE, 41)
+                xe = np.linspace(
+                    float(np.min(x)),
+                    float(np.max(x)) + const.NUMERIC_RELATIVE_TOLERANCE,
+                    41,
+                )
+                ye = np.linspace(
+                    float(np.min(y)),
+                    float(np.max(y)) + const.NUMERIC_RELATIVE_TOLERANCE,
+                    41,
+                )
                 H = np.zeros((len(xe) - 1, len(ye) - 1), dtype=float)
                 return np.full_like(H, np.nan), xe, ye, "Invalid FES ranges"
         nb = max(40, int(np.sqrt(len(x)) / 4))

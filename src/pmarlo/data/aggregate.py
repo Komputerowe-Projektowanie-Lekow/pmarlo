@@ -302,9 +302,9 @@ def _build_shard_info(meta: Any, path: Path, X_np: np.ndarray, dtraj: Any) -> di
             or source_dict.get("run_dir")
         )
         if effective_stride and effective_stride > 1:
-            info.setdefault("notes", {})[
-                "stride_ratio"
-            ] = stride_ratio if stride_ratio is not None else effective_stride
+            info.setdefault("notes", {})["stride_ratio"] = (
+                stride_ratio if stride_ratio is not None else effective_stride
+            )
         time_fields: dict[str, Any] = {}
         first_ts = None
         last_ts = None
@@ -316,7 +316,7 @@ def _build_shard_info(meta: Any, path: Path, X_np: np.ndarray, dtraj: Any) -> di
                 time_fields[key] = value
                 if ("first" in key_lower or "start" in key_lower) and first_ts is None:
                     first_ts = value
-                if ("last" in key_lower or "stop" in key_lower or "end" in key_lower):
+                if "last" in key_lower or "stop" in key_lower or "end" in key_lower:
                     last_ts = value
         if time_fields:
             info["time_metadata"] = time_fields

@@ -1,4 +1,4 @@
- (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
+ (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF'
 diff --git a/changelog.d/20260215_codex_reweight_optimisation.md b/changelog.d/20260215_codex_reweight_optimisation.md
 new file mode 100644
 index 0000000000000000000000000000000000000000..3293436a3c8469f9e33b21b06e5b1cd9c49daace
@@ -15,7 +15,7 @@ index 55a17b751eb891d09a8562e793e0153c43b1b2ec..49a614efc9b13c46f66ceec363e2f5b1
 --- a/src/pmarlo/reweight/reweighter.py
 +++ b/src/pmarlo/reweight/reweighter.py
 @@ -129,124 +129,140 @@ class Reweighter:
- 
+
          splits: Dict[str, _SplitThermo] = {}
          for name, split in splits_raw.items():
              shard_id = self._coerce_shard_id(name, split)
@@ -32,7 +32,7 @@ index 55a17b751eb891d09a8562e793e0153c43b1b2ec..49a614efc9b13c46f66ceec363e2f5b1
              )
              splits[str(name)] = thermo
          return splits
- 
+
      def _coerce_optional_array(self, split: object, key: str) -> np.ndarray | None:
          if isinstance(split, Mapping):
              val = split.get(key)
@@ -47,7 +47,7 @@ index 55a17b751eb891d09a8562e793e0153c43b1b2ec..49a614efc9b13c46f66ceec363e2f5b1
          if arr.size == 0:
              return None
          return arr
- 
+
      def _coerce_shard_id(self, name: str, split: object) -> str:
          candidate = None
          if isinstance(split, Mapping):
@@ -60,7 +60,7 @@ index 55a17b751eb891d09a8562e793e0153c43b1b2ec..49a614efc9b13c46f66ceec363e2f5b1
          if candidate is None:
              return str(name)
          return str(candidate)
- 
+
      def _coerce_beta(self, split: object) -> float:
          beta = None
          temp = None
@@ -79,20 +79,20 @@ index 55a17b751eb891d09a8562e793e0153c43b1b2ec..49a614efc9b13c46f66ceec363e2f5b1
              if T > 0 and math.isfinite(T):
                  return 1.0 / (const.BOLTZMANN_CONSTANT_KJ_PER_MOL * T)
          raise ValueError("Each split must define beta or temperature_K for reweighting")
- 
+
      def _compute_split_weights(self, thermo: _SplitThermo, mode: str) -> np.ndarray:
          # Fail-fast: energy is required (bias alone insufficient for temperature reweighting)
          if thermo.energy is None:
              raise ValueError(
                  f"Split '{thermo.shard_id}' missing required 'energy' array for reweighting"
              )
- 
+
          n_frames = thermo.n_frames
          if n_frames <= 0:
              raise ValueError(
                  f"Split '{thermo.shard_id}' is empty (no frames) and cannot be reweighted"
              )
- 
+
 -        exponent = -(self.beta_ref - thermo.beta_sim) * thermo.energy
 +        energy = thermo.energy
 +        assert energy is not None
@@ -120,7 +120,7 @@ index 55a17b751eb891d09a8562e793e0153c43b1b2ec..49a614efc9b13c46f66ceec363e2f5b1
          )
 -        base = np.exp(exponent, dtype=np.float64)
 +        np.exp(base, out=base)
- 
+
          if thermo.base_weights is not None:
              if thermo.base_weights.shape[0] != n_frames:
                  raise ValueError(
@@ -129,7 +129,7 @@ index 55a17b751eb891d09a8562e793e0153c43b1b2ec..49a614efc9b13c46f66ceec363e2f5b1
                  )
 -            base = base * thermo.base_weights
 +            np.multiply(base, thermo.base_weights, out=base)
- 
+
 -        total = float(np.sum(base))
 +        total = float(np.sum(base, dtype=np.float64))
          if not math.isfinite(total) or total <= 0.0:
@@ -139,12 +139,12 @@ index 55a17b751eb891d09a8562e793e0153c43b1b2ec..49a614efc9b13c46f66ceec363e2f5b1
 -        weights = base / total
 +        np.divide(base, total, out=base)
 +        weights = base
- 
+
          if mode == AnalysisReweightMode.TRAM:
              # Placeholder: TRAM identical to MBAR single-ensemble for now.
              return weights.astype(np.float64, copy=False)
          return weights.astype(np.float64, copy=False)
- 
+
      def _store_split_weights(
          self,
          dataset: AnalysisDataset,
@@ -170,8 +170,8 @@ index 8e14a750b490d8dddae788481b20851e748da7f8..fd20f108a71c4949d09e380624ef2a11
 +++ b/tests/unit/reweight/test_reweighter.py
 @@ -74,25 +74,65 @@ def test_reweighter_non_positive_sum_raises():
      assert "non-finite or non-positive" in str(ei.value)
- 
- 
+
+
  def test_reweighter_deterministic_cache():
      energy = np.array([0.5, 0.1, 0.3], dtype=np.float64)
      ds = make_dataset(energy)
@@ -181,8 +181,8 @@ index 8e14a750b490d8dddae788481b20851e748da7f8..fd20f108a71c4949d09e380624ef2a11
      second = rw.apply(ds)["s1"]
      assert first.shape == second.shape
      np.testing.assert_allclose(first, second, rtol=0, atol=0)
- 
- 
+
+
  def test_bias_changes_relative_weights():
      # Without bias: lower energy -> higher weight. Add a bias that inverts ordering.
      energy = np.array([1.0, 2.0], dtype=np.float64)
@@ -234,6 +234,6 @@ index 8e14a750b490d8dddae788481b20851e748da7f8..fd20f108a71c4949d09e380624ef2a11
 +    mbar = Reweighter(temperature_ref_K=290.0).apply(ds_mbar, mode="MBAR")["s1"]
 +
 +    np.testing.assert_allclose(tram, mbar, rtol=0, atol=0)
- 
+
 EOF
 )

@@ -5,9 +5,9 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import numpy as np
+from scipy.special import erfcinv
 
 from pmarlo import constants as const
-from scipy.special import erfcinv
 
 
 def compute_exchange_statistics(
@@ -151,7 +151,9 @@ def retune_temperature_ladder(
 
         delta_beta = betas[i + 1] - betas[i]
         # Clamp rate to avoid division by zero when acceptance is perfect
-        rate_clamped = float(np.clip(rate, const.NUMERIC_MIN_RATE, const.NUMERIC_MAX_RATE))
+        rate_clamped = float(
+            np.clip(rate, const.NUMERIC_MIN_RATE, const.NUMERIC_MAX_RATE)
+        )
         ratio = erfcinv(target_acceptance) / erfcinv(rate_clamped)
         suggested_dbeta = float(delta_beta * ratio)
         pair_stats.append(

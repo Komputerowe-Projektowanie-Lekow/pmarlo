@@ -17,7 +17,6 @@ from typing import Any, Callable, Iterable, List, Optional, Sequence
 import numpy as np
 
 from pmarlo import constants as const
-
 from pmarlo.features.pairs import scaled_time_pairs
 from pmarlo.utils.errors import TemperatureConsistencyError
 
