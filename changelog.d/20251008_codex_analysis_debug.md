@@ -16,3 +16,4 @@
 
 ## Fixed
 - Reordered `MSMDiscretizationResult` dataclass fields so mandatory analysis outputs (counts, transition matrices, etc.) register correctly when the module import runs under Python 3.12.
+- Restored Poetry metadata (`name`, `description`, `authors`) so `poetry install --with dev,tests` operates in package mode without validation errors.
