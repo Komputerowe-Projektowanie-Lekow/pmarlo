@@ -19,6 +19,6 @@
 - Reordered `MSMDiscretizationResult` dataclass fields so mandatory analysis outputs (counts, transition matrices, etc.) register correctly when the module import runs under Python 3.12.
 - Restored Poetry metadata (`name`, `description`, `authors`) so `poetry install --with dev,tests` operates in package mode without validation errors.
 - CI now installs Poetry 2.1.3 to stay compatible with the checked-in `poetry.lock`, unblocking `poetry install --with dev,tests` on GitHub runners.
-- GitHub Actions now rewrites cached `.testmondata` permissions so pytest/testmon can update its SQLite cache instead of raising `sqlite3.OperationalError: attempt to write a readonly database`.
+- GitHub Actions now clears `.testmondata` before running pytest, preventing stale testmon caches from causing readonly SQLite failures or xdist worker crashes.
 - Aligned MSM discretizer `fit`/`transform` signatures with feature-schema-aware callers so datasets can pass metadata without triggering `TypeError`, while maintaining schema validation during transformations.
 - Corrected `expected_pairs(...)` to keep per-shard stride alignment when zero-length segments are present, matching the simulated transition counts in integration tests.

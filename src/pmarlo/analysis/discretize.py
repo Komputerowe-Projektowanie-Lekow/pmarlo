@@ -296,68 +296,36 @@ def _coerce_weights(weights: Any, n_frames: int, split_name: str) -> np.ndarray 
     return arr
 
 
-def _resolve_shard_segments_for_split(
-    dataset: DatasetLike,
-    split_name: str,
-    split: Any,
-    total_frames: int,
-) -> tuple[list[int], list[int]]:
+def _append_segment(
+    lengths: list[int],
+    strides: list[int],
+    length: Any,
+    stride_value: Any,
+) -> None:
+    try:
+        length_int = int(length)
+    except Exception:
+        return
+    if length_int <= 0:
+        return
+    try:
+        stride_int = 1 if stride_value is None else int(stride_value)
+    except Exception:
+        stride_int = 1
+    if stride_int <= 0:
+        stride_int = 1
+    lengths.append(length_int)
+    strides.append(stride_int)
+
+
+def _segments_from_split_metadata(split: Mapping[str, Any]) -> tuple[list[int], list[int]]:
     lengths: list[int] = []
     strides: list[int] = []
 
-    def _append(length: Any, stride_value: Any) -> None:
-        try:
-            length_int = int(length)
-        except Exception:
-            return
-        if length_int <= 0:
-            return
-        try:
-            stride_int = 1 if stride_value is None else int(stride_value)
-        except Exception:
-            stride_int = 1
-        if stride_int <= 0:
-            stride_int = 1
-        lengths.append(length_int)
-        strides.append(stride_int)
-
-    if isinstance(split, Mapping):
-        segments_meta = split.get("segments") or split.get("__segments__")
-        if isinstance(segments_meta, Iterable):
-            for entry in segments_meta:
-                if isinstance(entry, Mapping):
-                    length_val = entry.get("length")
-                    if length_val is None:
-                        start = entry.get("start")
-                        stop = entry.get("stop")
-                        if start is not None and stop is not None:
-                            try:
-                                length_val = int(stop) - int(start)
-                            except Exception:
-                                length_val = None
-                    stride_val = entry.get("stride") or entry.get(
-                        "effective_frame_stride"
-                    )
-                else:
-                    length_val = entry
-                    stride_val = None
-                if length_val is not None:
-                    _append(length_val, stride_val)
-        if not lengths:
-            raw_lengths = split.get("segment_lengths")
-            if isinstance(raw_lengths, Iterable):
-                for value in raw_lengths:
-                    _append(value, None)
-
-    if not lengths and isinstance(dataset, Mapping):
-        shards = dataset.get("__shards__")
-        if isinstance(shards, Iterable):
-            for entry in shards:
-                if not isinstance(entry, Mapping):
-                    continue
-                split_label = entry.get("split")
-                if split_label is not None and str(split_label) != split_name:
-                    continue
+    segments_meta = split.get("segments") or split.get("__segments__")
+    if isinstance(segments_meta, Iterable):
+        for entry in segments_meta:
+            if isinstance(entry, Mapping):
                 length_val = entry.get("length")
                 if length_val is None:
                     start = entry.get("start")
@@ -367,10 +335,58 @@ def _resolve_shard_segments_for_split(
                             length_val = int(stop) - int(start)
                         except Exception:
                             length_val = None
-                stride_val = entry.get("effective_frame_stride")
-                if length_val is not None:
-                    _append(length_val, stride_val)
+                stride_val = entry.get("stride") or entry.get("effective_frame_stride")
+            else:
+                length_val = entry
+                stride_val = None
+            if length_val is not None:
+                _append_segment(lengths, strides, length_val, stride_val)
 
+    if not lengths:
+        raw_lengths = split.get("segment_lengths")
+        if isinstance(raw_lengths, Iterable):
+            for value in raw_lengths:
+                _append_segment(lengths, strides, value, None)
+
+    return lengths, strides
+
+
+def _segments_from_dataset_shards(
+    dataset: DatasetLike, split_name: str
+) -> tuple[list[int], list[int]]:
+    lengths: list[int] = []
+    strides: list[int] = []
+
+    shards = dataset.get("__shards__") if isinstance(dataset, Mapping) else None
+    if not isinstance(shards, Iterable):
+        return lengths, strides
+
+    for entry in shards:
+        if not isinstance(entry, Mapping):
+            continue
+        split_label = entry.get("split")
+        if split_label is not None and str(split_label) != split_name:
+            continue
+        length_val = entry.get("length")
+        if length_val is None:
+            start = entry.get("start")
+            stop = entry.get("stop")
+            if start is not None and stop is not None:
+                try:
+                    length_val = int(stop) - int(start)
+                except Exception:
+                    length_val = None
+        stride_val = entry.get("effective_frame_stride")
+        if length_val is not None:
+            _append_segment(lengths, strides, length_val, stride_val)
+    return lengths, strides
+
+
+def _truncate_segments(
+    lengths: Sequence[int],
+    strides: Sequence[int],
+    total_frames: int,
+) -> tuple[list[int], list[int]]:
     consumed = 0
     sanitised_lengths: list[int] = []
     sanitised_strides: list[int] = []
@@ -378,18 +394,38 @@ def _resolve_shard_segments_for_split(
         if consumed >= total_frames:
             break
         remaining = total_frames - consumed
-        value = min(length, remaining)
+        value = min(int(length), remaining)
         if value <= 0:
             continue
         sanitised_lengths.append(value)
-        sanitised_strides.append(max(1, stride))
+        sanitised_strides.append(max(1, int(stride)))
         consumed += value
 
     if not sanitised_lengths and total_frames > 0:
-        sanitised_lengths = [total_frames]
-        sanitised_strides = [1]
-
+        return [total_frames], [1]
     return sanitised_lengths, sanitised_strides
+
+
+def _resolve_shard_segments_for_split(
+    dataset: DatasetLike,
+    split_name: str,
+    split: Any,
+    total_frames: int,
+) -> tuple[list[int], list[int]]:
+    lengths: list[int] = []
+    strides: list[int] = []
+
+    if isinstance(split, Mapping):
+        meta_lengths, meta_strides = _segments_from_split_metadata(split)
+        lengths.extend(meta_lengths)
+        strides.extend(meta_strides)
+
+    if not lengths:
+        shard_lengths, shard_strides = _segments_from_dataset_shards(dataset, split_name)
+        lengths.extend(shard_lengths)
+        strides.extend(shard_strides)
+
+    return _truncate_segments(lengths, strides, total_frames)
 
 
 def _lengths_to_segments(
@@ -650,26 +686,19 @@ def _normalise_counts(C: np.ndarray) -> np.ndarray:
     return T
 
 
-def discretize_dataset(
-    dataset: DatasetLike,
+def _prepare_discretizer_and_schema(
+    splits: Mapping[str, Any],
     *,
-    cluster_mode: str = "kmeans",
-    n_microstates: int = 150,
-    lag_time: int = 1,
-    frame_weights: (
-        Mapping[str, Sequence[float]] | Sequence[float] | np.ndarray | None
-    ) = None,
-    min_out_count: int = 0,
-    random_state: int | None = None,
-) -> MSMDiscretizationResult:
-    """Discretise continuous CVs into microstates and build MSM statistics."""
-
-    if lag_time < 1:
-        raise ValueError("lag_time must be >= 1")
-
-    splits = _normalise_splits(dataset)
-    discretizer: _KMeansDiscretizer | _GridDiscretizer
-
+    cluster_mode: str,
+    n_microstates: int,
+    random_state: int | None,
+) -> tuple[
+    str,
+    np.ndarray,
+    Dict[str, Any],
+    Dict[str, Dict[str, Any]],
+    _KMeansDiscretizer | _GridDiscretizer,
+]:
     train_key = "train" if "train" in splits else next(iter(splits))
     train_data = _coerce_array(splits[train_key])
     feature_schema = _extract_feature_schema(splits[train_key], train_data.shape[1])
@@ -693,6 +722,131 @@ def discretize_dataset(
     stats_by_split[train_key]["n_features"] = int(
         feature_schema.get("n_features", train_data.shape[1])
     )
+    return train_key, train_data, feature_schema, stats_by_split, discretizer
+
+
+def _process_split_assignment(
+    dataset: DatasetLike,
+    split_name: str,
+    split: Any,
+    feature_schema: Mapping[str, Any],
+    discretizer: _KMeansDiscretizer | _GridDiscretizer,
+    *,
+    lag_time: int,
+    stats_by_split: Dict[str, Dict[str, Any]],
+) -> tuple[np.ndarray, np.ndarray, list[int], list[int]]:
+    X = _coerce_array(split)
+    split_schema = _extract_feature_schema(split, X.shape[1])
+    _validate_feature_schema(feature_schema, split_schema, split_name=split_name)
+
+    split_names = list(split_schema.get("names", []))
+    stats = stats_by_split.get(split_name)
+    if stats is None:
+        stats = validate_features(X, split_names)
+        stats_by_split[split_name] = stats
+    stats["feature_names"] = split_names
+    stats["n_features"] = int(split_schema.get("n_features", X.shape[1]))
+
+    split_lengths, split_strides = _resolve_shard_segments_for_split(
+        dataset, split_name, split, X.shape[0]
+    )
+    stats["segment_lengths"] = list(split_lengths)
+    stats["expected_pairs"] = expected_pairs(split_lengths, lag_time, 1)
+    stats["segment_strides"] = list(split_strides)
+
+    labels = discretizer.transform(
+        X,
+        feature_schema=split_schema,
+        split_name=split_name,
+    )
+    labels = np.asarray(labels, dtype=np.int32)
+    valid_mask = np.isfinite(labels) & (labels >= 0)
+    n_assigned = int(np.count_nonzero(valid_mask))
+    unique_states = (
+        np.unique(labels[valid_mask])
+        if n_assigned
+        else np.asarray([], dtype=np.int32)
+    )
+    logger.debug(
+        "Split %s state assignment summary: %d assigned frames across %d states",
+        split_name,
+        n_assigned,
+        unique_states.size,
+    )
+    if n_assigned == 0:
+        preview = np.array(X[:10], dtype=np.float64, copy=False)
+        centers = discretizer.centers
+        center_norms = (
+            None
+            if centers is None
+            else np.linalg.norm(np.asarray(centers, dtype=np.float64), axis=1)
+        )
+        raise NoAssignmentsError(
+            split_name,
+            preview=preview,
+            center_norms=center_norms,
+        )
+
+    return (
+        labels,
+        valid_mask.astype(bool, copy=False),
+        list(split_lengths),
+        list(split_strides),
+    )
+
+
+def _ensure_train_assignments(
+    train_key: str,
+    train_data: np.ndarray,
+    discretizer: _KMeansDiscretizer | _GridDiscretizer,
+    train_mask: np.ndarray,
+) -> None:
+    if np.all(train_mask):
+        return
+    preview = np.array(train_data[:10], dtype=np.float64, copy=False)
+    centers = discretizer.centers
+    center_norms = (
+        None
+        if centers is None
+        else np.linalg.norm(np.asarray(centers, dtype=np.float64), axis=1)
+    )
+    raise NoAssignmentsError(
+        train_key,
+        preview=preview,
+        center_norms=center_norms,
+    )
+
+
+def discretize_dataset(
+    dataset: DatasetLike,
+    *,
+    cluster_mode: str = "kmeans",
+    n_microstates: int = 150,
+    lag_time: int = 1,
+    frame_weights: (
+        Mapping[str, Sequence[float]] | Sequence[float] | np.ndarray | None
+    ) = None,
+    min_out_count: int = 0,
+    random_state: int | None = None,
+) -> MSMDiscretizationResult:
+    """Discretise continuous CVs into microstates and build MSM statistics."""
+
+    if lag_time < 1:
+        raise ValueError("lag_time must be >= 1")
+
+    splits = _normalise_splits(dataset)
+    (
+        train_key,
+        train_data,
+        feature_schema,
+        stats_by_split,
+        discretizer,
+    ) = _prepare_discretizer_and_schema(
+        splits,
+        cluster_mode=cluster_mode,
+        n_microstates=n_microstates,
+        random_state=random_state,
+    )
 
     segment_lengths_by_split: Dict[str, List[int]] = {}
     segment_strides_by_split: Dict[str, List[int]] = {}
@@ -701,60 +855,24 @@ def discretize_dataset(
     max_state = -1
 
     for name, split in splits.items():
-        X = _coerce_array(split)
-        split_schema = _extract_feature_schema(split, X.shape[1])
-        _validate_feature_schema(feature_schema, split_schema, split_name=name)
-        split_names = list(split_schema.get("names", []))
-        stats = stats_by_split.get(name)
-        if stats is None:
-            stats = validate_features(X, split_names)
-            stats_by_split[name] = stats
-        stats["feature_names"] = split_names
-        stats["n_features"] = int(split_schema.get("n_features", X.shape[1]))
-
-        split_lengths, split_strides = _resolve_shard_segments_for_split(
-            dataset, name, split, X.shape[0]
+        (
+            labels,
+            valid_mask,
+            split_lengths,
+            split_strides,
+        ) = _process_split_assignment(
+            dataset,
+            name,
+            split,
+            feature_schema,
+            discretizer,
+            lag_time=lag_time,
+            stats_by_split=stats_by_split,
         )
+        assignments[name] = labels
+        assignment_masks[name] = valid_mask
         segment_lengths_by_split[name] = split_lengths
         segment_strides_by_split[name] = split_strides
-        stats["segment_lengths"] = list(split_lengths)
-        stats["expected_pairs"] = expected_pairs(split_lengths, lag_time, 1)
-        stats["segment_strides"] = list(split_strides)
-
-        labels = discretizer.transform(
-            X,
-            split_schema,
-            split_name=name,
-        )
-        labels = np.asarray(labels, dtype=np.int32)
-        valid_mask = np.isfinite(labels) & (labels >= 0)
-        n_assigned = int(np.count_nonzero(valid_mask))
-        unique_states = (
-            np.unique(labels[valid_mask])
-            if n_assigned
-            else np.asarray([], dtype=np.int32)
-        )
-        logger.debug(
-            "Split %s state assignment summary: %d assigned frames across %d states",
-            name,
-            n_assigned,
-            unique_states.size,
-        )
-        if n_assigned == 0:
-            preview = np.array(X[:10], dtype=np.float64, copy=False)
-            centers = discretizer.centers
-            center_norms = (
-                None
-                if centers is None
-                else np.linalg.norm(np.asarray(centers, dtype=np.float64), axis=1)
-            )
-            raise NoAssignmentsError(
-                name,
-                preview=preview,
-                center_norms=center_norms,
-            )
-        assignments[name] = labels
-        assignment_masks[name] = valid_mask.astype(bool, copy=False)
         if labels.size:
             max_state = max(max_state, int(labels.max()))
 
@@ -762,19 +880,7 @@ def discretize_dataset(
 
     train_labels = np.asarray(assignments[train_key], dtype=np.int32, copy=False)
     train_mask = assignment_masks[train_key]
-    if not np.all(train_mask):
-        preview = np.array(train_data[:10], dtype=np.float64, copy=False)
-        centers = discretizer.centers
-        center_norms = (
-            None
-            if centers is None
-            else np.linalg.norm(np.asarray(centers, dtype=np.float64), axis=1)
-        )
-        raise NoAssignmentsError(
-            train_key,
-            preview=preview,
-            center_norms=center_norms,
-        )
+    _ensure_train_assignments(train_key, train_data, discretizer, train_mask)
 
     weights = _coerce_weights(frame_weights, train_labels.size, train_key)
 
