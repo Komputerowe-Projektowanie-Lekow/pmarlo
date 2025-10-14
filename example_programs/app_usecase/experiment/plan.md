@@ -1,4 +1,4 @@
-## context 
+## context
 
 - What role exactly does the Deeptica ML model play in this loop? Are you using it to learn collective variables (CVs) _before_ MSM construction, or also using its learned space to drive new simulations?
 the deeptica ml model is for training the CV's for the next simulations so we get more data about the FES more quickly. its like the normal CV(RMSD) but found with eigenvalues which helps to make it faster, and i want to train in on the shards like this in the dataset t_1 ) 1 shard t_2) 2 shard(the one that was run by the first model with one shard) t_n) n shards(that which were model was trained on previous one)
@@ -96,11 +96,11 @@ app_usecase/app/experiment_outputs/
 The learned DeepTICA CV in this multi-temperature scenario should ideally capture a slow mode relevant to _T<sub>ref</sub>_. To validate this, we compare the reweighted results using the DeepTICA CV against the reference and against the original CV results:
 
 - The reweighted FES at _T<sub>ref</sub>_ computed on the DeepTICA CV coordinate should still match the reference FES within similar bounds (JS divergence ≤ 0.05, FES RMSE ≤ 0.4 _k<sub>B</sub>T_). Any improvement or change can be noted (e.g. perhaps DeepTICA CV yields slightly lower JS due to focusing on slow variables, which would be a positive sign).
-    
+
 - The MSM built on the DeepTICA CV should pass the same guardrails (SCC, etc.), confirming that the learned CV did not break connectivity. If DeepTICA indeed found a better reaction coordinate, we might observe **higher implied timescales** or better state separation in the MSM. This isn’t a formal requirement for the test, but it’s an interesting outcome to monitor (e.g. compare the slowest implied timescale or spectral gap between original CV vs DeepTICA CV MSM).
-    
+
 - Also check weight consistency: since DeepTICA doesn’t directly affect weights (that’s purely from TRAM/MBAR), this is more about ensuring that using a different CV for analysis post-reweight doesn’t change the population distribution. The stationary distribution from the DeepTICA-based analysis at _T<sub>ref</sub>_ should be very close to that from the original analysis (they’re both attempting to estimate the same truth, just via different feature transformations).
-    
+
 
 Overall, E1 with DeepTICA proves that even with heterogeneous input data, the pipeline can learn a collective variable and produce a biased analysis that is consistent with known results. If any part of DeepTICA fails here (e.g. if the combined data somehow confuses the trainer), it should be caught: for example, if shards were too short or mis-specified, the `mlcv_deeptica` artifact might show `skipped=True` with a reason like "no_pairs" or an exception. In such a case, the acceptance report should flag it, because we expect DeepTICA to work given the design of E1 (with overlapping ladders and adequate data).
 
