@@ -23,3 +23,4 @@
 - GitHub Actions now clears `.testmondata` before running pytest, preventing stale testmon caches from causing readonly SQLite failures or xdist worker crashes.
 - Aligned MSM discretizer `fit`/`transform` signatures with feature-schema-aware callers so datasets can pass metadata without triggering `TypeError`, while maintaining schema validation during transformations.
 - Corrected `expected_pairs(...)` to keep per-shard stride alignment when zero-length segments are present, matching the simulated transition counts in integration tests.
+- Tightened typing across reweighting, CV validation, and discretiser helpers so mypy passes cleanly while keeping runtime behaviour unchanged.

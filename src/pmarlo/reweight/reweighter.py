@@ -172,8 +172,8 @@ class Reweighter:
         return str(candidate)
 
     def _coerce_beta(self, split: object) -> float:
-        beta = None
-        temp = None
+        beta: object | None = None
+        temp: object | None = None
         if isinstance(split, Mapping):
             beta = split.get("beta")
             temp = split.get("temperature_K")
@@ -181,13 +181,13 @@ class Reweighter:
             beta = getattr(split, "beta", None)
             temp = getattr(split, "temperature_K", None)
         if beta is not None:
-            beta_val = float(beta)
+            beta_val: float = float(beta)
             if beta_val > 0 and math.isfinite(beta_val):
-                return beta_val
+                return float(beta_val)
         if temp is not None:
-            T = float(temp)
+            T: float = float(temp)
             if T > 0 and math.isfinite(T):
-                return 1.0 / (const.BOLTZMANN_CONSTANT_KJ_PER_MOL * T)
+                return float(1.0 / (const.BOLTZMANN_CONSTANT_KJ_PER_MOL * T))
         raise ValueError("Each split must define beta or temperature_K for reweighting")
 
     def _compute_split_weights(self, thermo: _SplitThermo, mode: str) -> np.ndarray:

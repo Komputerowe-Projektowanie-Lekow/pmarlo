@@ -73,7 +73,7 @@ def _validate_canonical_inputs(X: np.ndarray, Y: np.ndarray) -> int:
         raise CanonicalCorrelationError("X and Y must be 2D arrays")
     if not np.isfinite(X).all() or not np.isfinite(Y).all():
         raise CanonicalCorrelationError("X and Y must contain only finite values")
-    n = min(X.shape[0], Y.shape[0])
+    n = min(int(X.shape[0]), int(Y.shape[0]))
     if n < 2:
         logger.error("Canonical correlation: insufficient paired samples (n=%d < 2)", n)
         raise InsufficientSamplesError(f"Need at least 2 paired samples, got {n}")
