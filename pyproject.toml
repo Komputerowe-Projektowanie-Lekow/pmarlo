@@ -84,6 +84,10 @@ where = ["src"]
 
 # ────────────────────────── Dev-tooling groups ────────────────────────
 [tool.poetry]
+name = "pmarlo"
+description = "Protein Markov State Model Analysis with Replica Exchange"
+authors = ["PMARLO Development Team <konrad.jan.gorzelanczyk@gmail.com>"]
+readme = "README.md"
 packages = [{include = "pmarlo", from = "src"}]
 version = "0.0.0"  # placeholder for Poetry; real version comes from setuptools-scm
 
