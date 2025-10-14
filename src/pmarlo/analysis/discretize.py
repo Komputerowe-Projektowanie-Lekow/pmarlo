@@ -247,6 +247,33 @@ def _validate_feature_schema(
         )
 
 
+def _normalise_feature_schema_for_fit(
+    feature_schema: Mapping[str, Any] | None,
+    n_features: int,
+) -> Dict[str, Any]:
+    schema = dict(feature_schema or {})
+    observed = int(schema.get("n_features", n_features))
+    if observed != n_features:
+        raise ValueError(
+            "Feature schema reports "
+            f"{observed} features, but training data has {n_features}"
+        )
+
+    names = list(schema.get("names") or [])
+    if names:
+        if len(names) != n_features:
+            raise ValueError(
+                "Feature schema names length "
+                f"{len(names)} does not match n_features {n_features}"
+            )
+        schema["names"] = [str(name) for name in names]
+    else:
+        schema["names"] = [f"feature_{idx}" for idx in range(n_features)]
+
+    schema["n_features"] = n_features
+    return schema
+
+
 def _coerce_weights(weights: Any, n_frames: int, split_name: str) -> np.ndarray | None:
     if weights is None:
         return None
@@ -403,8 +430,17 @@ class _KMeansDiscretizer:
         self.n_states = int(n_states)
         self.random_state = random_state
         self.model: KMeans | MiniBatchKMeans | None = None
+        self.feature_schema: Dict[str, Any] | None = None
 
-    def fit(self, X: np.ndarray) -> None:
+    def fit(
+        self,
+        X: np.ndarray,
+        feature_schema: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.feature_schema = _normalise_feature_schema_for_fit(
+            feature_schema,
+            X.shape[1],
+        )
         if _minibatch_threshold(X.shape[0], X.shape[1]):
             self.model = MiniBatchKMeans(
                 n_clusters=self.n_states,
@@ -418,9 +454,21 @@ class _KMeansDiscretizer:
             )
         self.model.fit(X)
 
-    def transform(self, X: np.ndarray) -> np.ndarray:
+    def transform(
+        self,
+        X: np.ndarray,
+        feature_schema: Mapping[str, Any] | None = None,
+        *,
+        split_name: str | None = None,
+    ) -> np.ndarray:
         if self.model is None:
             raise RuntimeError("Discretizer has not been fitted")
+        if feature_schema is not None and self.feature_schema is not None:
+            _validate_feature_schema(
+                self.feature_schema,
+                feature_schema,
+                split_name=split_name or "split",
+            )
         labels = self.model.predict(X)
         return labels.astype(np.int32, copy=False)
 
@@ -439,8 +487,17 @@ class _GridDiscretizer:
         self.target_states = max(int(target_states), 1)
         self.edges: list[np.ndarray] = []
         self.mapping: Dict[tuple[int, ...], int] = {}
+        self.feature_schema: Dict[str, Any] | None = None
 
-    def fit(self, X: np.ndarray) -> None:
+    def fit(
+        self,
+        X: np.ndarray,
+        feature_schema: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.feature_schema = _normalise_feature_schema_for_fit(
+            feature_schema,
+            X.shape[1],
+        )
         n_features = X.shape[1]
         bins_per_dim = max(int(round(self.target_states ** (1.0 / n_features))), 1)
         self.edges = []
@@ -467,9 +524,21 @@ class _GridDiscretizer:
             indices.append(idx)
         return np.vstack(indices).T
 
-    def transform(self, X: np.ndarray) -> np.ndarray:
+    def transform(
+        self,
+        X: np.ndarray,
+        feature_schema: Mapping[str, Any] | None = None,
+        *,
+        split_name: str | None = None,
+    ) -> np.ndarray:
         if not self.edges:
             raise RuntimeError("Discretizer has not been fitted")
+        if feature_schema is not None and self.feature_schema is not None:
+            _validate_feature_schema(
+                self.feature_schema,
+                feature_schema,
+                split_name=split_name or "split",
+            )
         combos = self._compute_indices(X)
         labels = np.empty(combos.shape[0], dtype=np.int32)
         for i, combo in enumerate(combos):
