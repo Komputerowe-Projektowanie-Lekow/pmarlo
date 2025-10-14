@@ -51,6 +51,11 @@ jobs:
           key: testmon-${{ runner.os }}-${{ hashFiles('poetry.lock', 'pyproject.toml', 'src/**/*.py', 'tests/**/*.py') }}
           restore-keys: |
             testmon-${{ runner.os }}-
+      - name: Ensure testmon cache is writable
+        run: |
+          if [ -d .testmondata ]; then
+            chmod -R u+w .testmondata
+          fi
       - name: Install dependencies
         run: poetry install --with dev,tests
       - name: Run fast unit suite
@@ -85,6 +90,11 @@ jobs:
           key: testmon-${{ runner.os }}-${{ hashFiles('poetry.lock', 'pyproject.toml', 'src/**/*.py', 'tests/**/*.py') }}
           restore-keys: |
             testmon-${{ runner.os }}-
+      - name: Ensure testmon cache is writable
+        run: |
+          if [ -d .testmondata ]; then
+            chmod -R u+w .testmondata
+          fi
       - name: Install dependencies
         run: poetry install --with dev,tests
       - name: Run smoke integration suite
@@ -128,6 +138,11 @@ jobs:
           key: testmon-${{ runner.os }}-${{ hashFiles('poetry.lock', 'pyproject.toml', 'src/**/*.py', 'tests/**/*.py') }}
           restore-keys: |
             testmon-${{ runner.os }}-
+      - name: Ensure testmon cache is writable
+        run: |
+          if [ -d .testmondata ]; then
+            chmod -R u+w .testmondata
+          fi
       - name: Install dependencies
         run: poetry install --with dev,tests
       - name: Run full unit + integration suite
