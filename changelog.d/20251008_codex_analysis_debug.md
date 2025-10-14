@@ -14,6 +14,7 @@
 - MSM discretisation now aborts when post-whitening CVs contain non-finite values or zero variance columns, logging column statistics for every split.
 - KMeans/Grid discretizers persist the training feature schema and refuse to transform splits whose names or order diverge, raising `FeatureMismatchError` with detailed differences.
 - GitHub Actions test workflow now runs on pushes to both `main` and `development`, ensuring consistent CI coverage across active branches.
+- Tau derivation, segment resolution, and shard metadata assembly gained helper-based refactors so the lint complexity caps are met without altering runtime behaviour or validations.
 
 ## Fixed
 - Reordered `MSMDiscretizationResult` dataclass fields so mandatory analysis outputs (counts, transition matrices, etc.) register correctly when the module import runs under Python 3.12.

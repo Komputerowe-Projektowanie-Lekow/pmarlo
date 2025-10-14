@@ -253,15 +253,10 @@ def _maybe_temperature(meta: Any) -> float | None:
         return None
 
 
-def _build_shard_info(meta: Any, path: Path, X_np: np.ndarray, dtraj: Any) -> dict:
-    bias_arr = _maybe_read_bias(path.with_name(f"{meta.shard_id}.npz"))
-    uid = _unique_shard_uid(meta, path)
-    shard_dtraj = None if dtraj is None else np.asarray(dtraj, dtype=np.int32)
-
-    source_attr = getattr(meta, "source", {})
-    source_dict = dict(source_attr) if isinstance(source_attr, dict) else {}
-
-    frames_loaded = int(X_np.shape[0])
+def _compute_stride_metadata(
+    meta: Any,
+    frames_loaded: int,
+) -> tuple[int, int | None, float | None, bool]:
     frames_declared = int(getattr(meta, "n_frames", frames_loaded))
     stride_ratio = None
     if frames_loaded > 0 and frames_declared > 0:
@@ -269,24 +264,38 @@ def _build_shard_info(meta: Any, path: Path, X_np: np.ndarray, dtraj: Any) -> di
     effective_stride = None
     if stride_ratio is not None and stride_ratio > 0:
         effective_stride = max(1, int(round(stride_ratio)))
+    preview_truncated = bool(frames_loaded > 0 and frames_declared > frames_loaded)
+    return frames_declared, effective_stride, stride_ratio, preview_truncated
 
-    info: dict[str, Any] = {
-        "id": str(uid),
-        "legacy_id": str(getattr(meta, "shard_id", path.stem)),
-        "start": 0,
-        "stop": frames_loaded,
-        "dtraj": shard_dtraj,
-        "bias_potential": bias_arr,
-        "temperature": float(meta.temperature),
-        "source": source_dict,
-        "frames_loaded": frames_loaded,
-        "frames_declared": frames_declared,
-        "effective_frame_stride": effective_stride,
-        "preview_truncated": bool(
-            frames_loaded > 0 and frames_declared > frames_loaded
-        ),
-    }
 
+def _extract_time_metadata(
+    source_dict: Mapping[str, Any],
+) -> tuple[dict[str, Any], Any, Any]:
+    time_fields: dict[str, Any] = {}
+    first_ts = None
+    last_ts = None
+    for key, value in source_dict.items():
+        if not isinstance(key, str):
+            continue
+        key_lower = key.lower()
+        if "time" not in key_lower:
+            continue
+        time_fields[key] = value
+        if ("first" in key_lower or "start" in key_lower) and first_ts is None:
+            first_ts = value
+        if "last" in key_lower or "stop" in key_lower or "end" in key_lower:
+            last_ts = value
+    return time_fields, first_ts, last_ts
+
+
+def _augment_with_source_metadata(
+    info: dict[str, Any],
+    source_dict: Mapping[str, Any],
+    path: Path,
+    *,
+    effective_stride: int | None,
+    stride_ratio: float | None,
+) -> None:
     try:
         info["source_path"] = str(
             Path(
@@ -305,19 +314,7 @@ def _build_shard_info(meta: Any, path: Path, X_np: np.ndarray, dtraj: Any) -> di
             info.setdefault("notes", {})["stride_ratio"] = (
                 stride_ratio if stride_ratio is not None else effective_stride
             )
-        time_fields: dict[str, Any] = {}
-        first_ts = None
-        last_ts = None
-        for key, value in source_dict.items():
-            if not isinstance(key, str):
-                continue
-            key_lower = key.lower()
-            if "time" in key_lower:
-                time_fields[key] = value
-                if ("first" in key_lower or "start" in key_lower) and first_ts is None:
-                    first_ts = value
-                if "last" in key_lower or "stop" in key_lower or "end" in key_lower:
-                    last_ts = value
+        time_fields, first_ts, last_ts = _extract_time_metadata(source_dict)
         if time_fields:
             info["time_metadata"] = time_fields
         if first_ts is not None:
@@ -326,6 +323,46 @@ def _build_shard_info(meta: Any, path: Path, X_np: np.ndarray, dtraj: Any) -> di
             info["last_timestamp"] = last_ts
     except Exception:
         pass
+
+
+def _build_shard_info(meta: Any, path: Path, X_np: np.ndarray, dtraj: Any) -> dict:
+    bias_arr = _maybe_read_bias(path.with_name(f"{meta.shard_id}.npz"))
+    uid = _unique_shard_uid(meta, path)
+    shard_dtraj = None if dtraj is None else np.asarray(dtraj, dtype=np.int32)
+
+    source_attr = getattr(meta, "source", {})
+    source_dict = dict(source_attr) if isinstance(source_attr, dict) else {}
+
+    frames_loaded = int(X_np.shape[0])
+    (
+        frames_declared,
+        effective_stride,
+        stride_ratio,
+        preview_truncated,
+    ) = _compute_stride_metadata(meta, frames_loaded)
+
+    info: dict[str, Any] = {
+        "id": str(uid),
+        "legacy_id": str(getattr(meta, "shard_id", path.stem)),
+        "start": 0,
+        "stop": frames_loaded,
+        "dtraj": shard_dtraj,
+        "bias_potential": bias_arr,
+        "temperature": float(meta.temperature),
+        "source": source_dict,
+        "frames_loaded": frames_loaded,
+        "frames_declared": frames_declared,
+        "effective_frame_stride": effective_stride,
+        "preview_truncated": preview_truncated,
+    }
+
+    _augment_with_source_metadata(
+        info,
+        source_dict,
+        path,
+        effective_stride=effective_stride,
+        stride_ratio=stride_ratio,
+    )
 
     return info
 
