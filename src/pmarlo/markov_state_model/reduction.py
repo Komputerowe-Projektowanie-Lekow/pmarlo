@@ -209,7 +209,10 @@ def vamp_reduce(
 
 
 def _manual_vamp(
-    X: np.ndarray, lag: int = 1, n_components: int = 2, epsilon: float = const.NUMERIC_ABSOLUTE_TOLERANCE
+    X: np.ndarray,
+    lag: int = 1,
+    n_components: int = 2,
+    epsilon: float = const.NUMERIC_ABSOLUTE_TOLERANCE,
 ) -> np.ndarray:
     """Manual VAMP implementation using SVD-based approach."""
     n_frames = X.shape[0]

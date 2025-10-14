@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -60,6 +61,25 @@ def test_export_analysis_debug_writes_expected_files(tmp_path: Path) -> None:
         stationary_distribution=np.array([0.4, 0.4, 0.2]),
         cluster_populations=np.array([0.5, 0.3, 0.2]),
     )
+    br.msm = SimpleNamespace(
+        assignments={"train": np.array([0, 1, 0, 1, 0], dtype=int)},
+        assignment_masks={"train": np.ones(5, dtype=bool)},
+    )
+    br.artifacts = {
+        "feature_stats": {
+            "train": {
+                "feature_names": ["cv1"],
+                "n_rows": 5,
+                "n_features": 1,
+                "finite_rows": 5,
+                "non_finite_entries": 0,
+                "means": [0.0],
+                "stds": [1.0],
+                "mins": [-1.0],
+                "maxs": [1.0],
+            }
+        }
+    }
 
     info = export_analysis_debug(
         output_dir=tmp_path,
@@ -72,8 +92,12 @@ def test_export_analysis_debug_writes_expected_files(tmp_path: Path) -> None:
     summary_path: Path = info["summary"]
     assert summary_path.exists()
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["state_assignment_splits"] == ["train"]
+    assert summary["stride"] == 1
     assert summary["dataset_hash"] == "abc123"
     assert summary["arrays"]["transition_counts"] == "transition_counts.npy"
+    assert summary["counted_pairs"] == summary["total_pairs"]
+    assert summary["expected_pairs"] == summary["total_pairs_predicted"]
 
     counts_file = tmp_path / summary["arrays"]["transition_counts"]
     assert counts_file.exists()
@@ -83,3 +107,12 @@ def test_export_analysis_debug_writes_expected_files(tmp_path: Path) -> None:
     state_counts_file = tmp_path / summary["arrays"]["state_counts"]
     assert np.array_equal(np.load(state_counts_file), debug_data.state_counts)
 
+    stats_file = summary_path.parent / summary["feature_stats_file"]
+    assert stats_file.exists()
+    stats_payload = json.loads(stats_file.read_text(encoding="utf-8"))
+    assert "train" in stats_payload
+
+    state_ids_path = summary_path.parent / summary["arrays"]["state_ids[train]"]
+    mask_path = summary_path.parent / summary["arrays"]["valid_mask[train]"]
+    assert np.array_equal(np.load(state_ids_path), br.msm.assignments["train"])
+    assert np.array_equal(np.load(mask_path), br.msm.assignment_masks["train"])

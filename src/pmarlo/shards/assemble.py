@@ -24,7 +24,10 @@ def select_shards(root: Path, *, temperature_K: Optional[float] = None) -> List[
     out: List[Path] = []
     for json_path in jsons:
         meta = load_shard_meta(json_path)
-        if abs(meta.temperature_K - float(temperature_K)) < const.NUMERIC_ABSOLUTE_TOLERANCE:
+        if (
+            abs(meta.temperature_K - float(temperature_K))
+            < const.NUMERIC_ABSOLUTE_TOLERANCE
+        ):
             out.append(json_path)
     return out
 

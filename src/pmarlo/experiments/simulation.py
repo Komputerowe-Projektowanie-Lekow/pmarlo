@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Dict, Optional, cast
 import numpy as np
 
 from pmarlo import constants as const
+
 from .benchmark_utils import (
     build_baseline_object,
     compute_threshold_comparison,
@@ -240,9 +241,7 @@ def _compute_transition_diagnostics(
                 evals, evecs = np.linalg.eig(T.T)
                 idx = int(np.argmax(np.real(evals)))
                 pi = np.real(evecs[:, idx])
-                pi = np.abs(pi) / max(
-                    np.sum(np.abs(pi)), const.NUMERIC_MIN_POSITIVE
-                )
+                pi = np.abs(pi) / max(np.sum(np.abs(pi)), const.NUMERIC_MIN_POSITIVE)
                 ent = compute_stationary_entropy(pi)
                 db_mad = compute_detailed_balance_mad(T, pi)
             except Exception:

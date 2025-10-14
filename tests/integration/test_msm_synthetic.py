@@ -5,7 +5,9 @@ import numpy as np
 from pmarlo.analysis.debug_export import compute_analysis_debug
 
 
-def simulate_two_well(n: int, tau_corr: int = 800, noise: float = 0.05, seed: int = 0) -> tuple[np.ndarray, np.ndarray]:
+def simulate_two_well(
+    n: int, tau_corr: int = 800, noise: float = 0.05, seed: int = 0
+) -> tuple[np.ndarray, np.ndarray]:
     """Simulate a 1D overdamped Langevin trajectory in a double-well potential."""
     rng = np.random.default_rng(seed)
     x = np.zeros(n, dtype=float)

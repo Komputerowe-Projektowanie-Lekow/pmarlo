@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
-from hypothesis import HealthCheck, given, settings, strategies as st
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
 from pmarlo.analysis.debug_export import total_pairs_from_shards
 

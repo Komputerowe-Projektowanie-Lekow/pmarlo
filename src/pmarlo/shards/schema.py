@@ -92,7 +92,10 @@ def validate_invariants(shard: Shard) -> None:
         "t_index must be contiguous starting at 0",
     )
 
-    _require(abs(float(shard.dt_ps) - float(meta.dt_ps)) < const.NUMERIC_MIN_POSITIVE, "dt_ps mismatch")
+    _require(
+        abs(float(shard.dt_ps) - float(meta.dt_ps)) < const.NUMERIC_MIN_POSITIVE,
+        "dt_ps mismatch",
+    )
 
     n = meta.n_frames
     for name, arr in {

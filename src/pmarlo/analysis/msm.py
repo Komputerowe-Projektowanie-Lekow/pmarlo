@@ -48,6 +48,7 @@ def prepare_msm_discretization(
     n_microstates: int = 150,
     lag_time: int = 1,
     frame_weights: Mapping[str, Any] | Any | None = None,
+    min_out_count: int = 0,
     random_state: int | None = None,
     apply_whitening: bool = True,
 ) -> MSMDiscretizationResult:
@@ -61,11 +62,36 @@ def prepare_msm_discretization(
             if candidate is not None:
                 frame_weights = candidate
 
-    return discretize_dataset(
+    result = discretize_dataset(
         dataset,
         cluster_mode=cluster_mode,
         n_microstates=n_microstates,
         lag_time=lag_time,
         frame_weights=frame_weights,
+        min_out_count=min_out_count,
         random_state=random_state,
     )
+
+    if isinstance(dataset, MutableMapping):
+        artifacts = dataset.setdefault("__artifacts__", {})  # type: ignore[assignment]
+        if isinstance(artifacts, MutableMapping):
+            artifacts["feature_stats"] = result.feature_stats  # type: ignore[index]
+            artifacts["state_assignments"] = {
+                split: {
+                    "n_assigned": int(np.count_nonzero(mask)),
+                    "total": int(mask.size),
+                }
+                for split, mask in result.assignment_masks.items()
+            }
+            artifacts["segment_lengths"] = result.segment_lengths  # type: ignore[index]
+            artifacts["segment_strides"] = result.segment_strides  # type: ignore[index]
+            artifacts["expected_pairs"] = result.expected_pairs  # type: ignore[index]
+            artifacts["counted_pairs"] = result.counted_pairs  # type: ignore[index]
+            if result.pruned_state_indices is not None:
+                artifacts["pruned_state_indices"] = result.pruned_state_indices.tolist()  # type: ignore[index]
+            if result.state_counts is not None:
+                artifacts["state_counts_post_prune"] = result.state_counts.tolist()  # type: ignore[index]
+            if result.state_counts_before_prune is not None:
+                artifacts["state_counts_pre_prune"] = result.state_counts_before_prune.tolist()  # type: ignore[index]
+
+    return result

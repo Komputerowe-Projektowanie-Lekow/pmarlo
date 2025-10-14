@@ -296,9 +296,7 @@ def _build_curriculum_config(
         grad_clip_norm=grad_clip,
         log_every=int(max(1, getattr(cfg, "log_every", 1))),
         checkpoint_dir=checkpoint_path,
-        vamp_eps=float(
-            getattr(cfg, "vamp_eps", const.DEEPTICA_DEFAULT_VAMP_EPS)
-        ),
+        vamp_eps=float(getattr(cfg, "vamp_eps", const.DEEPTICA_DEFAULT_VAMP_EPS)),
         vamp_eps_abs=float(
             getattr(cfg, "vamp_eps_abs", const.DEEPTICA_DEFAULT_VAMP_EPS_ABS)
         ),

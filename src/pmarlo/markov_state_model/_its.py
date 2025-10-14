@@ -668,7 +668,11 @@ class ITSMixin:
             eigenvals = np.sort(eigenvals)[::-1]
             eig = eigenvals[1 : n_timescales + 1]
             # Robustify against tiny negative rounding; keep within (0,1)
-            eig = np.clip(np.abs(eig), const.NUMERIC_MIN_POSITIVE, 1.0 - const.NUMERIC_MIN_POSITIVE)
+            eig = np.clip(
+                np.abs(eig),
+                const.NUMERIC_MIN_POSITIVE,
+                1.0 - const.NUMERIC_MIN_POSITIVE,
+            )
             eig_samples.append(eig)
         eig_arr = np.asarray(eig_samples, dtype=float)
 
@@ -832,7 +836,9 @@ class ITSMixin:
         sym = 0.5 * (sym + sym.T)
         w = np.sort(np.linalg.eigvalsh(sym))[::-1]
         eig = w[1 : n_timescales + 1]
-        eig = np.clip(np.abs(eig), const.NUMERIC_MIN_POSITIVE, 1.0 - const.NUMERIC_MIN_POSITIVE)
+        eig = np.clip(
+            np.abs(eig), const.NUMERIC_MIN_POSITIVE, 1.0 - const.NUMERIC_MIN_POSITIVE
+        )
         evals = np.zeros((n_timescales,), dtype=float)
         evals[: eig.shape[0]] = eig
         ts_arr = safe_timescales(lag, evals)

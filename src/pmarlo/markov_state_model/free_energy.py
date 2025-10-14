@@ -6,10 +6,10 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, Optional, Tuple
 
 import numpy as np
-
-from pmarlo import constants as const
 from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter
+
+from pmarlo import constants as const
 
 
 @dataclass

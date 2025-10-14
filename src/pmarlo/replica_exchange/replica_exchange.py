@@ -22,7 +22,6 @@ from openmm import Platform, unit
 from openmm.app import PDBFile, Simulation
 
 from pmarlo import constants as const
-
 from pmarlo.transform.progress import ProgressCB, ProgressPrinter, ProgressReporter
 
 from ..demultiplexing.demux import demux_trajectories as _demux_trajectories

@@ -6,7 +6,12 @@ from pathlib import Path
 
 import numpy as np
 
-from example_programs.app_usecase.app.backend import BuildArtifact, BuildConfig, WorkspaceLayout, WorkflowBackend
+from example_programs.app_usecase.app.backend import (
+    BuildArtifact,
+    BuildConfig,
+    WorkflowBackend,
+    WorkspaceLayout,
+)
 from pmarlo.data.shard import write_shard
 
 
@@ -82,9 +87,13 @@ def _run_build(
 def test_fingerprint_changes_invalidate_cache(tmp_path):
     backend, shard_paths = _make_workspace(tmp_path)
 
-    artifact_a, dir_a, summary_a = _run_build(backend, shard_paths, n_states=40, lag=3000)
+    artifact_a, dir_a, summary_a = _run_build(
+        backend, shard_paths, n_states=40, lag=3000
+    )
     time.sleep(1.1)
-    artifact_b, dir_b, summary_b = _run_build(backend, shard_paths, n_states=60, lag=3000)
+    artifact_b, dir_b, summary_b = _run_build(
+        backend, shard_paths, n_states=60, lag=3000
+    )
 
     assert summary_a["fingerprint"]["n_states"] == 40
     assert summary_b["fingerprint"]["n_states"] == 60
