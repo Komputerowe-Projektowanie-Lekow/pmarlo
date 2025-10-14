@@ -42,7 +42,9 @@ def _normalise_feature_names(names: Sequence[str] | None, n_features: int) -> Li
     return cleaned
 
 
-def _collect_column_stats(array: np.ndarray, names: Iterable[str]) -> Dict[str, Any]:
+def _collect_column_stats(
+    array: np.ndarray, names: Iterable[str]
+) -> Dict[str, List[float]]:
     means: List[float] = []
     stds: List[float] = []
     mins: List[float] = []
@@ -127,14 +129,16 @@ def validate_features(
         "CV validation: %d/%d rows contain only finite values", finite_rows, n_rows
     )
 
-    stats = {
+    column_stats = _collect_column_stats(array, names)
+
+    stats: Dict[str, Any] = {
         "feature_names": names,
         "n_rows": int(n_rows),
         "n_features": int(n_features),
         "finite_rows": finite_rows,
         "non_finite_entries": non_finite_entries,
     }
-    stats.update(_collect_column_stats(array, names))
+    stats.update(column_stats)
 
     if finite_rows == 0:
         raise ValidationError(
@@ -151,7 +155,8 @@ def validate_features(
         )
 
     problematic: List[str] = []
-    for name, std in zip(names, stats["stds"]):
+    stds = column_stats["stds"]
+    for name, std in zip(names, stds):
         if not np.isfinite(std) or std <= const.NUMERIC_MIN_POSITIVE:
             problematic.append(name)
 

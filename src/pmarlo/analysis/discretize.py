@@ -711,6 +711,7 @@ def _prepare_discretizer_and_schema(
     stats_by_split: Dict[str, Dict[str, Any]] = {}
     stats_by_split[train_key] = validate_features(train_data, feature_names)
 
+    discretizer: _KMeansDiscretizer | _GridDiscretizer
     if cluster_mode == "kmeans":
         discretizer = _KMeansDiscretizer(n_microstates, random_state=random_state)
     elif cluster_mode == "grid":
