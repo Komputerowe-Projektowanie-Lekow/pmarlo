@@ -318,7 +318,9 @@ def _append_segment(
     strides.append(stride_int)
 
 
-def _segments_from_split_metadata(split: Mapping[str, Any]) -> tuple[list[int], list[int]]:
+def _segments_from_split_metadata(
+    split: Mapping[str, Any],
+) -> tuple[list[int], list[int]]:
     lengths: list[int] = []
     strides: list[int] = []
 
@@ -421,7 +423,9 @@ def _resolve_shard_segments_for_split(
         strides.extend(meta_strides)
 
     if not lengths:
-        shard_lengths, shard_strides = _segments_from_dataset_shards(dataset, split_name)
+        shard_lengths, shard_strides = _segments_from_dataset_shards(
+            dataset, split_name
+        )
         lengths.extend(shard_lengths)
         strides.extend(shard_strides)
 
@@ -763,9 +767,7 @@ def _process_split_assignment(
     valid_mask = np.isfinite(labels) & (labels >= 0)
     n_assigned = int(np.count_nonzero(valid_mask))
     unique_states = (
-        np.unique(labels[valid_mask])
-        if n_assigned
-        else np.asarray([], dtype=np.int32)
+        np.unique(labels[valid_mask]) if n_assigned else np.asarray([], dtype=np.int32)
     )
     logger.debug(
         "Split %s state assignment summary: %d assigned frames across %d states",
@@ -814,6 +816,84 @@ def _ensure_train_assignments(
         train_key,
         preview=preview,
         center_norms=center_norms,
+    )
+
+
+def _prune_zero_rows_if_needed(
+    counts: np.ndarray,
+    counted_pairs_train: int,
+    train_labels: np.ndarray,
+    assignments: Dict[str, np.ndarray],
+    assignment_masks: Dict[str, np.ndarray],
+    *,
+    zero_rows_before: int,
+    row_sums_before: np.ndarray,
+    min_out_threshold: int,
+    lag_time: int,
+    weights: np.ndarray | None,
+    train_segments: Iterable[tuple[int, int]],
+    train_key: str,
+) -> tuple[np.ndarray, int, np.ndarray, np.ndarray | None, int, int]:
+    n_states = counts.shape[0]
+    if zero_rows_before == 0:
+        return (
+            counts,
+            counted_pairs_train,
+            train_labels,
+            None,
+            zero_rows_before,
+            n_states,
+        )
+
+    prune_mask = row_sums_before == 0
+    if min_out_threshold > 0:
+        prune_mask |= row_sums_before < float(min_out_threshold)
+    keep_mask = ~prune_mask
+    if not np.any(keep_mask):
+        raise PruningFailedError(
+            f"Pruning removed all microstates (zero_rows={zero_rows_before}, "
+            f"min_out_count={min_out_threshold})"
+        )
+
+    pruned_state_indices = np.where(prune_mask)[0].astype(np.int32, copy=False)
+    mapping = np.full(n_states, -1, dtype=np.int32)
+    mapping[keep_mask] = np.arange(int(np.count_nonzero(keep_mask)), dtype=np.int32)
+
+    for split_name, labels in list(assignments.items()):
+        remapped = _remap_states(
+            np.asarray(labels, dtype=np.int32, copy=False), mapping
+        )
+        assignments[split_name] = remapped
+        mask = assignment_masks.get(split_name)
+        if mask is not None:
+            assignment_masks[split_name] = np.asarray(mask, dtype=bool) & (
+                remapped >= 0
+            )
+
+    train_labels = assignments[train_key]
+    n_states = int(np.count_nonzero(keep_mask))
+    counts, counted_pairs_train = _weighted_counts(
+        train_labels,
+        n_states=n_states,
+        lag_time=lag_time,
+        weights=weights,
+        segments=train_segments,
+    )
+    row_sums_after = counts.sum(axis=1)
+    zero_rows_after = int(np.count_nonzero(row_sums_after == 0))
+    if zero_rows_after > 0:
+        raise PruningFailedError(
+            f"Pruning left {zero_rows_after} zero-row microstates "
+            f"(min_out_count={min_out_threshold})"
+        )
+
+    return (
+        counts,
+        counted_pairs_train,
+        train_labels,
+        pruned_state_indices,
+        zero_rows_after,
+        n_states,
     )
 
 
@@ -906,51 +986,28 @@ def discretize_dataset(
 
     row_sums_before = counts_before_prune.sum(axis=1)
     zero_rows_before = int(np.count_nonzero(row_sums_before == 0))
-    pruned_state_indices: np.ndarray | None = None
-    zero_rows_after = zero_rows_before
     min_out_threshold = max(0, int(min_out_count))
-
-    if zero_rows_before > 0:
-        prune_mask = row_sums_before == 0
-        if min_out_threshold > 0:
-            prune_mask |= row_sums_before < float(min_out_threshold)
-        keep_mask = ~prune_mask
-        if not np.any(keep_mask):
-            raise PruningFailedError(
-                f"Pruning removed all microstates (zero_rows={zero_rows_before}, "
-                f"min_out_count={min_out_threshold})"
-            )
-        pruned_state_indices = np.where(prune_mask)[0].astype(np.int32, copy=False)
-        mapping = np.full(n_states, -1, dtype=np.int32)
-        mapping[keep_mask] = np.arange(int(np.count_nonzero(keep_mask)), dtype=np.int32)
-
-        for split_name, labels in list(assignments.items()):
-            remapped = _remap_states(
-                np.asarray(labels, dtype=np.int32, copy=False), mapping
-            )
-            assignments[split_name] = remapped
-            mask = assignment_masks.get(split_name)
-            if mask is not None:
-                assignment_masks[split_name] = np.asarray(mask, dtype=bool) & (
-                    remapped >= 0
-                )
-
-        train_labels = assignments[train_key]
-        n_states = int(np.count_nonzero(keep_mask))
-        counts, counted_pairs_train = _weighted_counts(
-            train_labels,
-            n_states=n_states,
-            lag_time=lag_time,
-            weights=weights,
-            segments=train_segments,
-        )
-        row_sums_after = counts.sum(axis=1)
-        zero_rows_after = int(np.count_nonzero(row_sums_after == 0))
-        if zero_rows_after > 0:
-            raise PruningFailedError(
-                f"Pruning left {zero_rows_after} zero-row microstates "
-                f"(min_out_count={min_out_threshold})"
-            )
+    (
+        counts,
+        counted_pairs_train,
+        train_labels,
+        pruned_state_indices,
+        zero_rows_after,
+        n_states,
+    ) = _prune_zero_rows_if_needed(
+        counts,
+        counted_pairs_train,
+        train_labels,
+        assignments,
+        assignment_masks,
+        zero_rows_before=zero_rows_before,
+        row_sums_before=row_sums_before,
+        min_out_threshold=min_out_threshold,
+        lag_time=lag_time,
+        weights=weights,
+        train_segments=train_segments,
+        train_key=train_key,
+    )
 
     state_counts_final = _compute_state_counts(
         train_labels,

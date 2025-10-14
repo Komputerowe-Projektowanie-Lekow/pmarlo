@@ -264,7 +264,6 @@ def _validate_user_taus(user_taus: Sequence[int], min_length: int) -> list[int]:
 # --- Public tau API ----------------------------------------------------------------
 
 
-
 def derive_taus(
     dataset: DatasetLike | Sequence[int],
     *,
@@ -312,7 +311,9 @@ def derive_taus(
     return taus
 
 
-def _validate_tau_parameters(*, max_lags: int, min_lag: int, fraction_max: float) -> None:
+def _validate_tau_parameters(
+    *, max_lags: int, min_lag: int, fraction_max: float
+) -> None:
     if max_lags < 1:
         raise ValueError(f"max_lags must be >=1, got {max_lags}")
     if min_lag < 1:
@@ -435,7 +436,6 @@ def _derive_base_taus(
             f"(base={list(base)}, min_length={min_length}, min_lag={min_lag})"
         )
     return taus
-
 
 
 # --- Public diagnostics API ------------------------------------------------------

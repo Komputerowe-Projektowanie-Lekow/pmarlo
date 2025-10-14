@@ -15,6 +15,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
+from pmarlo import constants as const
 from pmarlo.features.deeptica.losses import VAMP2Loss
 
 logger = logging.getLogger(__name__)
