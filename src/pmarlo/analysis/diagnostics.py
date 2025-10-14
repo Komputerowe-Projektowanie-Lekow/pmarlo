@@ -264,6 +264,7 @@ def _validate_user_taus(user_taus: Sequence[int], min_length: int) -> list[int]:
 # --- Public tau API ----------------------------------------------------------------
 
 
+
 def derive_taus(
     dataset: DatasetLike | Sequence[int],
     *,
@@ -273,60 +274,54 @@ def derive_taus(
     geometric: bool = True,
     base: Sequence[int] | None = None,
 ) -> list[int]:
-    """Derive a validated list of autocorrelation lag times (taus) dynamically.
+    """Return a validated list of autocorrelation lag times for the dataset."""
 
-    This replaces reliance on a hardcoded fixed set by computing a concise,
-    information-spanning sequence of lag values tailored to the dataset.
+    _validate_tau_parameters(
+        max_lags=max_lags,
+        min_lag=min_lag,
+        fraction_max=fraction_max,
+    )
 
-    Strategy (default geometric=True):
-      * Determine the minimum split length ``L`` across all splits.
-      * Define an upper bound ``U = max(min_lag+1, floor(L * fraction_max))``.
-      * Generate up to ``max_lags`` geometrically spaced integers between
-        ``min_lag`` and ``U`` (exclusive of ``L``), ensuring strict increase
-        and uniqueness.
-      * Always enforce:  min_lag >= 1, max_lags >= 1, 0 < fraction_max <= 1.
+    lengths = _collect_tau_lengths(dataset)
+    min_length = _ensure_minimum_length(lengths, min_lag=min_lag)
 
-    If ``geometric`` is False and ``base`` is provided, we validate the base
-    list and filter to values < L (legacy compatibility path). If ``base`` is
-    None and ``geometric`` is False, a ValueError is raised (explicit design –
-    no silent fallbacks).
+    if geometric:
+        taus = _derive_geometric_taus(
+            min_length=min_length,
+            min_lag=min_lag,
+            fraction_max=fraction_max,
+            max_lags=max_lags,
+            base=base,
+        )
+        strategy = "geometric"
+    else:
+        taus = _derive_base_taus(
+            base=base,
+            min_length=min_length,
+            min_lag=min_lag,
+        )
+        strategy = "base-filter"
 
-    Parameters
-    ----------
-    dataset : mapping-like OR sequence[int]
-        Dataset with splits or a raw sequence of split lengths.
-    max_lags : int, default 8
-        Maximum number of lag values to attempt to generate.
-    min_lag : int, default 2
-        Smallest lag to consider (1 is allowed if explicitly set, but 0 never returned).
-    fraction_max : float, default 0.5
-        Fraction of the minimum split length used as an upper bound cap.
-    geometric : bool, default True
-        Whether to use geometric spacing. If False, requires a ``base`` sequence.
-    base : sequence[int] | None, default None
-        Optional legacy base list; if provided with geometric=True it will be
-        ignored (a warning is logged). If provided with geometric=False it's
-        validated & filtered below the minimum length.
+    logger.info(
+        "Derived taus %s (strategy=%s, min_length=%d, n_splits=%d)",
+        taus,
+        strategy,
+        min_length,
+        len(lengths),
+    )
+    return taus
 
-    Returns
-    -------
-    list[int]
-        Strictly increasing list of lags, each < minimum split length.
 
-    Raises
-    ------
-    ValueError
-        On invalid parameters, inability to determine lengths, or empty result.
-    """
-    # Validate parameter primitives early.
+def _validate_tau_parameters(*, max_lags: int, min_lag: int, fraction_max: float) -> None:
     if max_lags < 1:
         raise ValueError(f"max_lags must be >=1, got {max_lags}")
     if min_lag < 1:
         raise ValueError(f"min_lag must be >=1, got {min_lag}")
-    if not (0 < fraction_max <= 1):
+    if not 0 < fraction_max <= 1:
         raise ValueError(f"fraction_max must be in (0,1], got {fraction_max}")
 
-    # Acquire split lengths.
+
+def _collect_tau_lengths(dataset: DatasetLike | Sequence[int]) -> list[int]:
     if isinstance(dataset, (Mapping, MutableMapping)) and not isinstance(
         dataset, (list, tuple)
     ):
@@ -340,85 +335,107 @@ def derive_taus(
                 continue
             lengths.append(int(arr.shape[0]))
     else:
-        lengths = [int(l) for l in dataset]  # type: ignore[arg-type]
+        lengths = [int(length) for length in dataset]  # type: ignore[arg-type]
 
     if not lengths:
         raise ValueError("No split lengths available for tau derivation")
-    if any(l <= 0 for l in lengths):
+    if any(length <= 0 for length in lengths):
         raise ValueError(f"Non-positive split length encountered: {lengths}")
+    return lengths
 
-    min_len = min(lengths)
-    if min_len <= min_lag:
+
+def _ensure_minimum_length(lengths: Sequence[int], *, min_lag: int) -> int:
+    min_length = min(lengths)
+    if min_length <= min_lag:
         raise ValueError(
-            f"Minimum split length {min_len} is not greater than min_lag {min_lag}; cannot derive taus."
+            "Minimum split length "
+            f"{min_length} is not greater than min_lag {min_lag}; cannot derive taus."
+        )
+    return min_length
+
+
+def _derive_geometric_taus(
+    *,
+    min_length: int,
+    min_lag: int,
+    fraction_max: float,
+    max_lags: int,
+    base: Sequence[int] | None,
+) -> list[int]:
+    if base is not None:
+        logger.warning(
+            "derive_taus: 'base' provided but ignored because geometric=True"
         )
 
-    if geometric:
-        if base is not None:
-            logger.warning(
-                "derive_taus: 'base' provided but ignored because geometric=True"
-            )
-        upper_bound = int(max(min_lag + 1, np.floor(min_len * fraction_max)))
-        # Ensure upper_bound < min_len.
-        upper_bound = min(upper_bound, min_len - 1)
-        if upper_bound <= min_lag:
-            raise ValueError(
-                f"Upper bound {upper_bound} not greater than min_lag {min_lag}; cannot derive taus."
-            )
-        # Geometric spacing: sample exponents uniformly in log-space.
-        # Use np.linspace over log values inclusive of endpoints, then round & filter.
-        start = np.log(min_lag)
-        stop = np.log(upper_bound)
-        raw = np.exp(np.linspace(start, stop, num=max_lags))
-        # Convert to ints, enforce >= min_lag and < min_len.
-        candidates = [int(round(v)) for v in raw]
-        # Deduplicate while preserving order and enforce bounds & strict increase.
-        taus: list[int] = []
-        last = 0
-        for t in candidates:
-            if t < min_lag or t >= min_len:
-                continue
-            if t <= last:
-                continue
-            taus.append(t)
-            last = t
-        if not taus:
-            raise ValueError(
-                f"Geometric tau derivation yielded empty set (min_len={min_len}, min_lag={min_lag}, upper={upper_bound})."
-            )
-    else:
-        if base is None:
-            raise ValueError("Non-geometric tau derivation requires a 'base' sequence")
-        if not base:
-            raise ValueError("Base tau candidate sequence is empty")
-        invalid = [
-            b for b in base if (not isinstance(b, (int, np.integer))) or int(b) <= 0
-        ]
-        if invalid:
-            raise ValueError(
-                f"Base tau sequence must contain only positive integers, got invalid entries {invalid}"
-            )
-        taus = []
-        seen: set[int] = set()
-        for b in base:
-            t = int(b)
-            if t >= min_len or t in seen or t < min_lag:
-                continue
-            taus.append(t)
-            seen.add(t)
-        if not taus:
-            raise ValueError(
-                f"Base tau filtering produced empty set (base={list(base)}, min_len={min_len}, min_lag={min_lag})"
-            )
+    upper_bound = int(max(min_lag + 1, np.floor(min_length * fraction_max)))
+    upper_bound = min(upper_bound, min_length - 1)
+    if upper_bound <= min_lag:
+        raise ValueError(
+            "Upper bound "
+            f"{upper_bound} not greater than min_lag {min_lag}; cannot derive taus."
+        )
 
-    logger.info(
-        "Derived taus %s (strategy=%s, min_length=%d, n_splits=%d)",
-        taus,
-        "geometric" if geometric else "base-filter",
-        min_len,
-        len(lengths),
-    )
+    start = np.log(min_lag)
+    stop = np.log(upper_bound)
+    raw = np.exp(np.linspace(start, stop, num=max_lags))
+    candidates = [int(round(value)) for value in raw]
+
+    taus: list[int] = []
+    last = 0
+    for tau_candidate in candidates:
+        if tau_candidate < min_lag or tau_candidate >= min_length:
+            continue
+        if tau_candidate <= last:
+            continue
+        taus.append(tau_candidate)
+        last = tau_candidate
+
+    if not taus:
+        raise ValueError(
+            "Geometric tau derivation yielded empty set "
+            f"(min_length={min_length}, min_lag={min_lag}, upper={upper_bound})."
+        )
     return taus
+
+
+def _derive_base_taus(
+    *,
+    base: Sequence[int] | None,
+    min_length: int,
+    min_lag: int,
+) -> list[int]:
+    if base is None:
+        raise ValueError("Non-geometric tau derivation requires a 'base' sequence")
+    if not base:
+        raise ValueError("Base tau candidate sequence is empty")
+
+    invalid = [
+        candidate
+        for candidate in base
+        if (not isinstance(candidate, (int, np.integer))) or int(candidate) <= 0
+    ]
+    if invalid:
+        raise ValueError(
+            "Base tau sequence must contain only positive integers, "
+            f"got invalid entries {invalid}"
+        )
+
+    taus: list[int] = []
+    seen: set[int] = set()
+    for candidate in base:
+        tau_value = int(candidate)
+        if tau_value >= min_length or tau_value in seen or tau_value < min_lag:
+            continue
+        taus.append(tau_value)
+        seen.add(tau_value)
+
+    if not taus:
+        raise ValueError(
+            "Base tau filtering produced empty set "
+            f"(base={list(base)}, min_length={min_length}, min_lag={min_lag})"
+        )
+    return taus
+
 
 
 # --- Public diagnostics API ------------------------------------------------------
