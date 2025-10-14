@@ -5,14 +5,12 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from pmarlo.features.deeptica_trainer.loops import (
-    checkpoint_if_better,
-    compute_grad_norm,
-    compute_loss_and_score,
-    make_metrics,
-    prepare_batch,
-    record_metrics,
-)
+from pmarlo.ml.deeptica.trainer import checkpoint_if_better
+from pmarlo.ml.deeptica.trainer import compute_grad_norm
+from pmarlo.ml.deeptica.trainer import compute_loss_and_score
+from pmarlo.ml.deeptica.trainer import make_metrics
+from pmarlo.ml.deeptica.trainer import prepare_batch
+from pmarlo.ml.deeptica.trainer import record_metrics
 
 
 class _DummyLoss(torch.nn.Module):

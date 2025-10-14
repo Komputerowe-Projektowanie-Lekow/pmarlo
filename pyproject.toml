@@ -133,6 +133,7 @@ pytest-testmon = "^2.1"
 pytest-picked = "^0.5"
 tox = "^4.14"
 deeptime = ">=0.4.5,<0.5"
+torch = {version = ">=2.2,<3.0", source = "pytorch-cpu"}
 
 [tool.poetry.group.docs.dependencies]
 sphinx = "^7.3"

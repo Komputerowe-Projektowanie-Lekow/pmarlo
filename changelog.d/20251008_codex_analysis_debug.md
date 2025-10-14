@@ -26,3 +26,5 @@
 - Corrected `expected_pairs(...)` to keep per-shard stride alignment when zero-length segments are present, matching the simulated transition counts in integration tests.
 - Tightened typing across reweighting, CV validation, and discretiser helpers so mypy passes cleanly while keeping runtime behaviour unchanged.
 - Added `deeptime` to the dedicated tests dependency group so deeptime-backed unit suites stay active on CI instead of skipping.
+- DeepTICA training tests now import helpers from `pmarlo.ml.deeptica.trainer`, bypassing the deprecated compatibility shim that previously raised during CI when extras were missing.
+- Tests dependency group now installs the CPU `torch` build so DeepTICA smoke tests have the ML stack available on GitHub runners.
