@@ -15,6 +15,7 @@
 - KMeans/Grid discretizers persist the training feature schema and refuse to transform splits whose names or order diverge, raising `FeatureMismatchError` with detailed differences.
 - GitHub Actions test workflow now runs on pushes to both `main` and `development`, ensuring consistent CI coverage across active branches.
 - Tau derivation, segment resolution, and shard metadata assembly gained helper-based refactors so the lint complexity caps are met without altering runtime behaviour or validations.
+- Smoke suite now executes on direct pushes to `development`, mirroring pull-request coverage for the branch.
 
 ## Fixed
 - Reordered `MSMDiscretizationResult` dataclass fields so mandatory analysis outputs (counts, transition matrices, etc.) register correctly when the module import runs under Python 3.12.
@@ -24,3 +25,4 @@
 - Aligned MSM discretizer `fit`/`transform` signatures with feature-schema-aware callers so datasets can pass metadata without triggering `TypeError`, while maintaining schema validation during transformations.
 - Corrected `expected_pairs(...)` to keep per-shard stride alignment when zero-length segments are present, matching the simulated transition counts in integration tests.
 - Tightened typing across reweighting, CV validation, and discretiser helpers so mypy passes cleanly while keeping runtime behaviour unchanged.
+- Added `deeptime` to the dedicated tests dependency group so deeptime-backed unit suites stay active on CI instead of skipping.
