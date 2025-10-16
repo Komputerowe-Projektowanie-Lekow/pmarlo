@@ -1,4 +1,33 @@
 
+<a id='changelog-0.99.0'></a>
+# 0.99.0 — 2025-10-16
+
+## Added
+- Introduced unit coverage for the shared `kT` helper, including SciPy and fallback execution paths.
+- Shared `pmarlo.utils.temperature` helpers with focused tests to extract shard temperatures from nested metadata consistently.
+- Verification tests for the shared path resolution helper covering current working directory, repository root, and custom search roots.
+- Regression tests covering mask/inpaint semantics of the shared free-energy converter.
+
+## Changed
+- Consolidated trajectory and MSM loading path resolution through `pmarlo.utils.path_utils.resolve_project_path`, eliminating divergent fallback behaviour.
+- Demux shard filtering, shard JSON parsing, and shard readers now reuse the shared helper to normalise temperature provenance across subsystems.
+- Centralised shard index discovery in `pmarlo.shards.indexing.initialise_shard_indices` and updated the API/data emitters to reuse the helper so shard numbering and seed allocation stay consistent without duplicating glob logic.
+- DeepTICA curriculum config now leaves checkpoint_dir unset unless supplied, which prevents stray tmp_models/ and checkpoint folders; the trainer module also exposes the legacy batching helpers directly so downstream imports stay stable without touching TensorBoard extras.
+- cluster_microstates now warns when scikit-learn collapses multiple clusters into one and trims any excess centers instead of raising, keeping MSM builds resilient to degenerate inputs.
+- Developer utilities live under the scripts package so CLI helpers share a single home across the repository.
+- Consolidated shard validation helper into pmarlo.utils.validation so schema modules share one implementation.
+- Centralized shard JSON loading through `pmarlo.utils.json_io.load_json_file`, consolidating metadata parsing with clearer decode errors across shard readers.
+- Centralised the Boltzmann density→free-energy conversion into `free_energy_from_density` so Ramachandran and MSM workflows share identical numerics.
+- Unified shard read/write logic onto the canonical schema via pmarlo.data.shard wrappers so example and core code consume a single format.
+- Experiment inputs regenerated in-place to include canonical metadata (feature_spec, dt_ps, temperature) with filenames aligned to canonical shard IDs.
+
+## Removed
+- Cleared legacy DeepTICA artefacts (checkpoints/, tmp_models/, runs/, and bias/) from the workspace so 
+new runs start clean.
+
+## Fixed
+- Consolidated thermal energy calculation into a shared helper to eliminate drift between free-energy and plotting code paths.
+- Runner no longer trips legacy shard validation errors when loading example datasets.
 
 <a id='changelog-0.98.0'></a>
 # 0.98.0 — 2025-10-16

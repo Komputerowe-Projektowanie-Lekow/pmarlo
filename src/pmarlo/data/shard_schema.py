@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Literal, Optional
 
 from pmarlo import constants as const
+from pmarlo.utils.validation import require
 
 SCHEMA_VERSION = const.SHARD_SCHEMA_VERSION
 
@@ -71,23 +72,18 @@ class ReplicaShard(BaseShard):
     temperature_K: None = None
 
 
-def _require(cond: bool, msg: str) -> None:
-    if not cond:
-        raise ValueError(msg)
-
-
 def validate_fields(
     kind: str, temperature_K: Optional[float], replica_index: Optional[int]
 ) -> None:
     """Validate mutual exclusion/requirement between temperature and replica index."""
     if kind == "demux":
-        _require(temperature_K is not None, "demux shard requires temperature_K")
-        _require(replica_index is None, "demux shard forbids replica_index")
+        require(temperature_K is not None, "demux shard requires temperature_K")
+        require(replica_index is None, "demux shard forbids replica_index")
     elif kind == "replica":
-        _require(
+        require(
             replica_index is not None and int(replica_index) >= 0,
             "replica shard requires non-negative replica_index",
         )
-        _require(temperature_K is None, "replica shard forbids temperature_K")
+        require(temperature_K is None, "replica shard forbids temperature_K")
     else:
         raise ValueError(f"invalid shard kind: {kind}")

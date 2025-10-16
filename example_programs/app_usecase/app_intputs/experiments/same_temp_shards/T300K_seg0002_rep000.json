@@ -1,0 +1,35 @@
+{
+  "schema_version": "2.0",
+  "shard_id": "T300K_seg0002_rep000",
+  "temperature_K": 300.0,
+  "beta": 0.40090785,
+  "replica_id": 0,
+  "segment_id": 2,
+  "exchange_window_id": 0,
+  "n_frames": 1000,
+  "dt_ps": 0.0179856,
+  "feature_spec": {
+    "name": "app_usecase_features",
+    "scaler": "identity",
+    "columns": [
+      "Rg",
+      "RMSD_ref"
+    ]
+  },
+  "provenance": {
+    "seed": 123456791,
+    "manifest_notes": [
+      {
+        "Source": "REMD run with ladder 300/320/340 K; demuxed 300 K track."
+      },
+      "Saved-frame spacing dt_ps derived from demux metadata.",
+      "Uniform weights expected; no TRAM/MBAR for E0."
+    ],
+    "source": {
+      "kind": "demux",
+      "run_id": "E0_same_temp_synthetic",
+      "temperature_K": 300.0,
+      "traj": "T300K_seg0002_rep000.npz"
+    }
+  }
+}

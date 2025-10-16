@@ -42,6 +42,7 @@ from .markov_state_model._msm_utils import (
     lump_micro_to_macro_T as _lump_micro_to_macro_T,
 )
 from .markov_state_model._msm_utils import pcca_like_macrostates as _pcca_like
+from .shards.indexing import initialise_shard_indices
 
 _run_ck: Any = None
 try:  # pragma: no cover - optional plotting dependency
@@ -1565,7 +1566,8 @@ def emit_shards_rg_rmsd_windowed(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     ref, ca_sel = _load_reference_and_selection(md, pdb_file, reference)
-    next_idx, start_idx, seed_base = _initialise_shard_indices(out_dir, seed_start)
+    shard_state = initialise_shard_indices(out_dir, seed_start)
+    next_idx = shard_state.next_index
     emit_progress = _make_emit_callback(ProgressReporter(progress_callback))
     shard_paths: list[Path] = []
     files = [Path(p) for p in traj_files]
@@ -1610,8 +1612,7 @@ def emit_shards_rg_rmsd_windowed(
             window,
             hop,
             next_idx,
-            start_idx,
-            seed_base,
+            shard_state.seed_for,
             out_dir,
             traj_path,
             write_shard,
@@ -1656,25 +1657,6 @@ def _load_reference_and_selection(
         ref = top0[0]
     ca_sel = top0.topology.select("name CA")
     return ref, ca_sel if ca_sel.size else None
-
-
-def _initialise_shard_indices(
-    out_dir: Path,
-    seed_start: int,
-) -> tuple[int, int, int]:
-    """Determine the next shard index and corresponding RNG seed base."""
-
-    existing = []
-    for shard_file in sorted(out_dir.glob("shard_*.json")):
-        try:
-            existing.append(int(shard_file.stem.split("_")[1]))
-        except Exception:
-            continue
-
-    next_idx = (max(existing) + 1) if existing else 0
-    start_idx = next_idx
-    seed_base = int(seed_start) + start_idx
-    return next_idx, start_idx, seed_base
 
 
 def _make_emit_callback(reporter: Any) -> Callable[[str, dict], None]:
@@ -1786,8 +1768,7 @@ def _emit_windows(
     window: int,
     hop: int,
     next_idx: int,
-    start_idx: int,
-    seed_base: int,
+    seed_for: Callable[[int], int],
     out_dir: Path,
     traj_path: Path,
     write_shard: Callable[..., Path],
@@ -1825,7 +1806,7 @@ def _emit_windows(
             cvs=cvs,
             dtraj=None,
             periodic={"Rg": False, "RMSD_ref": False},
-            seed=int(seed_base + (next_idx - start_idx)),
+            seed=int(seed_for(next_idx)),
             temperature=float(temperature),
             source=source,
         )

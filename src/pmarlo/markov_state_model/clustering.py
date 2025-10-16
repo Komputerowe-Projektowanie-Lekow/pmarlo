@@ -356,22 +356,37 @@ def cluster_microstates(
     centers = getattr(estimator, "cluster_centers_", None)
 
     unique_labels = int(np.unique(labels).size)
+    if unique_labels == 0:
+        message = (
+            "Clustering produced zero unique microstates; verify input coverage "
+            "and CV preprocessing."
+        )
+        logger.error(message)
+        raise ValueError(message)
     if unique_labels != n_states:
         message = (
             "Clustering produced {unique} unique microstates, expected {expected}. "
-            "This typically indicates degenerate CV data or an incompatible "
-            "n_microstates setting."
+            "Proceeding with the observed value; inspect CV spread or adjust "
+            "the requested microstate count."
         ).format(unique=unique_labels, expected=n_states)
-        logger.error(message)
-        raise ValueError(message)
+        logger.warning(message)
+        n_states = unique_labels
 
-    if centers is not None and int(centers.shape[0]) != n_states:
-        message = (
-            "Clustering returned {centers} centers, expected {expected}. "
-            "Verify CV spread and clustering configuration."
-        ).format(centers=int(centers.shape[0]), expected=n_states)
-        logger.error(message)
-        raise ValueError(message)
+    if centers is not None:
+        try:
+            n_centers = int(getattr(centers, "shape", (0,))[0])
+        except Exception:
+            n_centers = n_states
+        if n_centers != n_states:
+            logger.warning(
+                "Clustering returned %s centers, expected %s; trimming metadata.",
+                n_centers,
+                n_states,
+            )
+            try:
+                centers = np.asarray(centers)[:n_states]
+            except Exception:
+                centers = None
 
     # Log completion with rationale if available
     logger.info(

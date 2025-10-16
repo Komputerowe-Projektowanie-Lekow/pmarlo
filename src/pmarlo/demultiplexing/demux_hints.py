@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
+
+from pmarlo.utils.json_io import load_json_file
 
 
 @dataclass(frozen=True)
@@ -51,7 +52,7 @@ def load_demux_hints(meta_path: str | Path | Dict[str, object]) -> DemuxHints:
     """
     if isinstance(meta_path, (str, Path)):
         try:
-            d = json.loads(Path(str(meta_path)).read_text())
+            d = load_json_file(meta_path)
         except Exception:
             d = {}
     else:

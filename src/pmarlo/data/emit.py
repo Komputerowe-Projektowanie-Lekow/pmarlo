@@ -17,6 +17,8 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 import numpy as np
 
+from pmarlo.shards.indexing import initialise_shard_indices
+
 from .shard import write_shard
 
 ProgressCB = Callable[[str, Mapping[str, Any]], None]
@@ -96,15 +98,8 @@ def emit_shards_from_trajectories(
     paths.sort()
 
     # Determine next shard index to avoid overwriting existing outputs
-    existing_indices: List[int] = []
-    for existing_json in sorted(out_dir.glob("shard_*.json")):
-        stem = existing_json.stem
-        try:
-            existing_indices.append(int(stem.split("_")[1]))
-        except (IndexError, ValueError):
-            continue
-    start_index = max(existing_indices) + 1 if existing_indices else 0
-    seed_offset = int(seed_start) + start_index
+    shard_state = initialise_shard_indices(out_dir, seed_start)
+    start_index = shard_state.start_index
 
     json_paths: List[Path] = []
 
@@ -152,7 +147,7 @@ def emit_shards_from_trajectories(
             cvs=cvs,
             dtraj=dtraj,
             periodic=periodic,
-            seed=int(seed_offset + i),
+            seed=shard_state.seed_for(shard_index),
             temperature=float(temperature),
             source=dict(source_info),
         )

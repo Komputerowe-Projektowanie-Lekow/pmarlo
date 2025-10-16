@@ -1,0 +1,381 @@
+{
+  "tau_frames": 6,
+  "count_mode": "sliding",
+  "total_frames_declared": 5000,
+  "total_frames_with_states": 0,
+  "total_pairs": 0,
+  "counts_shape": [
+    0,
+    0
+  ],
+  "zero_rows": 0,
+  "states_observed": 0,
+  "largest_scc_size": 0,
+  "largest_scc_frame_fraction": null,
+  "component_sizes": [],
+  "stride": 1,
+  "expected_pairs": 4970,
+  "counted_pairs": 0,
+  "per_shard_lengths": [
+    1000,
+    1000,
+    1000,
+    1000,
+    1000
+  ],
+  "shards": [
+    {
+      "id": "E0_same_temp_synthetic|T300K_seg0000_rep000|T300K_seg0000_rep000.npz",
+      "legacy_id": "T300K_seg0000_rep000",
+      "start": 0,
+      "stop": 1000,
+      "length": 1000,
+      "temperature": 300.0,
+      "frames_declared": 1000,
+      "frames_loaded": 1000,
+      "effective_frame_stride": 1,
+      "preview_truncated": false,
+      "source": {
+        "kind": "demux",
+        "run_id": "E0_same_temp_synthetic",
+        "temperature_K": 300.0,
+        "traj": "T300K_seg0000_rep000.npz"
+      },
+      "source_path": "C:\\Users\\konrad_guest\\Documents\\GitHub\\pmarlo\\T300K_seg0000_rep000.npz",
+      "run_uid": "E0_same_temp_synthetic"
+    },
+    {
+      "id": "E0_same_temp_synthetic|T300K_seg0001_rep000|T300K_seg0001_rep000.npz",
+      "legacy_id": "T300K_seg0001_rep000",
+      "start": 1000,
+      "stop": 2000,
+      "length": 1000,
+      "temperature": 300.0,
+      "frames_declared": 1000,
+      "frames_loaded": 1000,
+      "effective_frame_stride": 1,
+      "preview_truncated": false,
+      "source": {
+        "kind": "demux",
+        "run_id": "E0_same_temp_synthetic",
+        "temperature_K": 300.0,
+        "traj": "T300K_seg0001_rep000.npz"
+      },
+      "source_path": "C:\\Users\\konrad_guest\\Documents\\GitHub\\pmarlo\\T300K_seg0001_rep000.npz",
+      "run_uid": "E0_same_temp_synthetic"
+    },
+    {
+      "id": "E0_same_temp_synthetic|T300K_seg0002_rep000|T300K_seg0002_rep000.npz",
+      "legacy_id": "T300K_seg0002_rep000",
+      "start": 2000,
+      "stop": 3000,
+      "length": 1000,
+      "temperature": 300.0,
+      "frames_declared": 1000,
+      "frames_loaded": 1000,
+      "effective_frame_stride": 1,
+      "preview_truncated": false,
+      "source": {
+        "kind": "demux",
+        "run_id": "E0_same_temp_synthetic",
+        "temperature_K": 300.0,
+        "traj": "T300K_seg0002_rep000.npz"
+      },
+      "source_path": "C:\\Users\\konrad_guest\\Documents\\GitHub\\pmarlo\\T300K_seg0002_rep000.npz",
+      "run_uid": "E0_same_temp_synthetic"
+    },
+    {
+      "id": "E0_same_temp_synthetic|T300K_seg0003_rep000|T300K_seg0003_rep000.npz",
+      "legacy_id": "T300K_seg0003_rep000",
+      "start": 3000,
+      "stop": 4000,
+      "length": 1000,
+      "temperature": 300.0,
+      "frames_declared": 1000,
+      "frames_loaded": 1000,
+      "effective_frame_stride": 1,
+      "preview_truncated": false,
+      "source": {
+        "kind": "demux",
+        "run_id": "E0_same_temp_synthetic",
+        "temperature_K": 300.0,
+        "traj": "T300K_seg0003_rep000.npz"
+      },
+      "source_path": "C:\\Users\\konrad_guest\\Documents\\GitHub\\pmarlo\\T300K_seg0003_rep000.npz",
+      "run_uid": "E0_same_temp_synthetic"
+    },
+    {
+      "id": "E0_same_temp_synthetic|T300K_seg0004_rep000|T300K_seg0004_rep000.npz",
+      "legacy_id": "T300K_seg0004_rep000",
+      "start": 4000,
+      "stop": 5000,
+      "length": 1000,
+      "temperature": 300.0,
+      "frames_declared": 1000,
+      "frames_loaded": 1000,
+      "effective_frame_stride": 1,
+      "preview_truncated": false,
+      "source": {
+        "kind": "demux",
+        "run_id": "E0_same_temp_synthetic",
+        "temperature_K": 300.0,
+        "traj": "T300K_seg0004_rep000.npz"
+      },
+      "source_path": "C:\\Users\\konrad_guest\\Documents\\GitHub\\pmarlo\\T300K_seg0004_rep000.npz",
+      "run_uid": "E0_same_temp_synthetic"
+    }
+  ],
+  "frames_declared": [
+    1000,
+    1000,
+    1000,
+    1000,
+    1000
+  ],
+  "frames_loaded": [
+    1000,
+    1000,
+    1000,
+    1000,
+    1000
+  ],
+  "effective_strides": [
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "per_shard_effective_strides": [
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "effective_stride_map": {
+    "E0_same_temp_synthetic|T300K_seg0000_rep000|T300K_seg0000_rep000.npz": 1,
+    "E0_same_temp_synthetic|T300K_seg0001_rep000|T300K_seg0001_rep000.npz": 1,
+    "E0_same_temp_synthetic|T300K_seg0002_rep000|T300K_seg0002_rep000.npz": 1,
+    "E0_same_temp_synthetic|T300K_seg0003_rep000|T300K_seg0003_rep000.npz": 1,
+    "E0_same_temp_synthetic|T300K_seg0004_rep000|T300K_seg0004_rep000.npz": 1
+  },
+  "effective_stride_max": 1,
+  "preview_truncated": [],
+  "effective_tau_frames": 6,
+  "total_pairs_predicted": 4970,
+  "first_timestamps": [],
+  "last_timestamps": [],
+  "temperatures": [
+    300.0
+  ],
+  "diag_mass": NaN,
+  "warnings": [
+    {
+      "code": "TOTAL_PAIRS_LT_5000",
+      "message": "Too few (t, t+tau) pairs for reliable MSM (observed 0, requires >=5000)."
+    }
+  ],
+  "fingerprint": {
+    "mode": "kmeans",
+    "n_states": 120,
+    "seed": 90210
+  },
+  "analysis_guardrail_violations": [
+    {
+      "code": "total_pairs_lt_5000",
+      "actual": 0
+    },
+    {
+      "code": "largest_scc_coverage_lt_0.9",
+      "actual": null
+    }
+  ],
+  "analysis_expected_effective_tau_frames": 6,
+  "analysis_healthy": false,
+  "discretizer_fingerprint_changed": false,
+  "component_labels": [],
+  "state_counts": [],
+  "counts_nonzero": 0,
+  "counts_density": 0.0,
+  "dataset_hash": "26bc450d58356f1630a4865b45a7ad67c5ac2f43248e2222c643d74e5dda3ffe",
+  "config": {
+    "lag": 6,
+    "bins": {
+      "Rg": 72,
+      "RMSD_ref": 72
+    },
+    "seed": 90210,
+    "temperature": 300.0,
+    "learn_cv": true,
+    "deeptica_params": {
+      "lag_fallback": [
+        6,
+        5,
+        4,
+        3
+      ],
+      "min_pairs": 2500,
+      "train": {
+        "epochs": 80,
+        "patience": 12,
+        "batch_size": 256,
+        "learning_rate": 0.0005
+      },
+      "validation": {
+        "split_fraction": 0.15,
+        "stride": 2
+      },
+      "export": {
+        "max_components": 3,
+        "store_latent": true
+      }
+    },
+    "notes": {
+      "experiment": "E0_same_temp",
+      "manifest_path": "C:\\Users\\konrad_guest\\Documents\\GitHub\\pmarlo\\example_programs\\app_usecase\\app_intputs\\experiments\\same_temp_shards\\manifest.yaml",
+      "reweight_mode_requested": "IDENTITY",
+      "config_snapshot": {
+        "transform": {
+          "description": "Homogeneous shards at identical temperature; DeepTICA should succeed with uniform weights.",
+          "data": {
+            "shards_glob": "../same_temp_shards/shard_*.json",
+            "reference_manifest": "../same_temp_shards/manifest.yaml"
+          },
+          "seeds": {
+            "global": 90210,
+            "shuffle": 90211,
+            "deeptica": 90212
+          },
+          "preprocessing": {
+            "center": true,
+            "scale": true,
+            "whitening": false,
+            "drop_nan": true
+          },
+          "deeptica": {
+            "enabled": true,
+            "lag_fallback": [
+              6,
+              5,
+              4,
+              3
+            ],
+            "min_pairs": 2500,
+            "train": {
+              "epochs": 80,
+              "patience": 12,
+              "batch_size": 256,
+              "learning_rate": 0.0005
+            },
+            "validation": {
+              "split_fraction": 0.15,
+              "stride": 2
+            },
+            "export": {
+              "max_components": 3,
+              "store_latent": true
+            }
+          },
+          "outputs": {
+            "artifact_prefix": "same_temp",
+            "save_debug_bundle": true
+          }
+        },
+        "discretize": {
+          "engine": "kmeans",
+          "scaler": "standard",
+          "random_state": 777,
+          "max_iter": 500,
+          "tol": 0.0001,
+          "n_init": 3,
+          "chunk_size": 10000,
+          "n_clusters": 120,
+          "lag_steps": 6,
+          "guardrails": {
+            "min_scc_fraction": 0.9,
+            "max_empty_fraction": 0.3,
+            "max_diagonal_mass": 0.95
+          },
+          "postprocess": {
+            "merge_small_clusters": true,
+            "min_cluster_population": 25
+          }
+        },
+        "reweighter": {
+          "mode": "identity",
+          "reference_temperature_K": 300.0,
+          "notes": [
+            "Weights expected to remain uniform (~1/N).",
+            "Still validate energy arrays to catch missing metadata."
+          ]
+        },
+        "msm": {
+          "estimator": "bayesian",
+          "enforce_reversibility": true,
+          "confidence_level": 0.95,
+          "n_timescales": 6,
+          "implied_timescale_lags": [
+            2,
+            4,
+            6,
+            8,
+            10,
+            12
+          ],
+          "seeds": {
+            "bootstrap": 1337,
+            "validation": 1441
+          },
+          "lag_steps": 6,
+          "count_threshold": 5,
+          "guardrails": {
+            "min_scc_fraction": 0.9,
+            "max_empty_fraction": 0.3,
+            "max_diagonal_mass": 0.95
+          },
+          "acceptance_checks": {
+            "js_stationary_max": 0.02,
+            "fes_rmse_max_kbt": 0.2,
+            "deeptica_pairs_min": 2500
+          }
+        }
+      }
+    },
+    "apply_cv_whitening": false,
+    "cluster_mode": "kmeans",
+    "n_microstates": 120,
+    "kmeans_kwargs": {
+      "n_init": 50
+    },
+    "reweight_mode": "IDENTITY",
+    "fes_method": "kde",
+    "fes_bandwidth": "scott",
+    "fes_min_count_per_bin": 1
+  },
+  "result": {
+    "n_frames": 6,
+    "n_shards": 5,
+    "feature_names": [
+      "Rg",
+      "RMSD_ref"
+    ],
+    "messages": [],
+    "artifact_keys": [
+      "fes_quality",
+      "mlcv_deeptica",
+      "shards_count",
+      "shards_used"
+    ]
+  },
+  "arrays": {
+    "transition_counts": "transition_counts.npy",
+    "state_counts": "state_counts.npy",
+    "component_labels": "component_labels.npy",
+    "transition_matrix": "transition_matrix.npy",
+    "stationary_distribution": "stationary_distribution.npy",
+    "fes": "fes.json"
+  },
+  "diagnostics_file": "diagnostics.json",
+  "flags_file": "flags.json"
+}

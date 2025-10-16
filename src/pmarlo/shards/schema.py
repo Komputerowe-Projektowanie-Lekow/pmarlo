@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
 from pmarlo import constants as const
+from pmarlo.utils.validation import require as _require
 
 __all__ = [
     "FeatureSpec",
@@ -123,8 +124,3 @@ def validate_invariants(shard: Shard) -> None:
         meta.shard_id == expected_id,
         f"shard_id '{meta.shard_id}' does not match canonical '{expected_id}'",
     )
-
-
-def _require(condition: bool, message: str) -> None:
-    if not condition:
-        raise ValueError(message)

@@ -8,11 +8,12 @@ ambiguities. All downstream code should use the parsed objects here and treat
 filenames as opaque.
 """
 
-import json
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 from pmarlo.io.shard_id import parse_shard_id
+from pmarlo.utils.json_io import load_json_file
+from pmarlo.utils.temperature import primary_temperature
 
 from .shard_schema import (
     SCHEMA_VERSION,
@@ -56,7 +57,7 @@ def load_shard_meta(json_path: Path) -> BaseShard:
     names alone.
     """
     json_path = Path(json_path)
-    raw = json.loads(json_path.read_text())
+    raw = load_json_file(json_path)
 
     # Legacy v1: enrich using strict inference from declared source path only
     schema_version = str(raw.get("schema_version", "pmarlo.shard.v1"))
@@ -84,11 +85,7 @@ def load_shard_meta(json_path: Path) -> BaseShard:
         if isinstance(source_meta.get("run_id"), str)
         else None
     )
-    temperature_K = (
-        source_meta.get("temperature_K")
-        if source_meta.get("temperature_K") is not None
-        else None
-    )
+    temperature_K = primary_temperature(source_meta)
     replica_index = (
         source_meta.get("replica_index")
         if source_meta.get("replica_index") is not None
@@ -100,12 +97,14 @@ def load_shard_meta(json_path: Path) -> BaseShard:
         parsed_kind, fields = _infer_kind_from_source_path(traj_path)
         kind = kind or fields.get("kind")
         run_id = run_id or fields.get("run_id")
-        temperature_K = (
-            temperature_K if temperature_K is not None else fields.get("temperature_K")
-        )
+        if temperature_K is None:
+            temperature_K = primary_temperature(fields)
         replica_index = (
             replica_index if replica_index is not None else fields.get("replica_index")
         )
+
+    if temperature_K is None:
+        temperature_K = primary_temperature(raw)
 
     # Validate mutual requirements
     if kind is None or run_id is None:

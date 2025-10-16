@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
+import shutil
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -119,6 +121,8 @@ def train_deeptica_pipeline(
             idx_tau,
             weights_arr,
         )
+
+    _cleanup_legacy_artifacts(Path.cwd())
 
     net, whitening_info = apply_output_whitening(net, prep.Z, idx_tau, apply=False)
     net.eval()
@@ -272,11 +276,7 @@ def _build_curriculum_config(
         if batches_per_epoch <= 0:
             batches_per_epoch = None
     checkpoint_dir = getattr(cfg, "checkpoint_dir", None)
-    checkpoint_path = (
-        _Path(checkpoint_dir)
-        if checkpoint_dir
-        else Path.cwd() / "checkpoints" / "deeptica" / run_stamp
-    )
+    checkpoint_path = _Path(checkpoint_dir) if checkpoint_dir else None
     cfg_kwargs = dict(
         tau_schedule=schedule,
         val_tau=int(getattr(cfg, "val_tau", 0) or schedule[-1]),
@@ -315,8 +315,6 @@ def _build_curriculum_config(
         max_batches_per_epoch=batches_per_epoch,
     )
     curriculum_cfg = config_cls(**cfg_kwargs)
-    if curriculum_cfg.checkpoint_dir is not None:
-        _Path(curriculum_cfg.checkpoint_dir).mkdir(parents=True, exist_ok=True)
     return curriculum_cfg
 
 
@@ -446,3 +444,27 @@ def _write_training_summary(
         )
     except Exception:  # pragma: no cover - diagnostic only
         pass
+
+
+def _cleanup_legacy_artifacts(base_dir: Path) -> None:
+    """Remove legacy Deeptica artefacts (runs/tmp_models) if they linger."""
+
+    runs_root = base_dir / "runs"
+    removed_tb = False
+    for name in ("deeptica", "deeptica_tb"):
+        candidate = runs_root / name
+        if candidate.exists():
+            shutil.rmtree(candidate, ignore_errors=True)
+            removed_tb = True
+    if removed_tb:
+        with contextlib.suppress(FileNotFoundError, OSError):
+            if not any(runs_root.iterdir()):
+                runs_root.rmdir()
+
+    deeptica_tmp = base_dir / "tmp_models" / "deeptica"
+    if deeptica_tmp.exists():
+        shutil.rmtree(deeptica_tmp, ignore_errors=True)
+        parent = deeptica_tmp.parent
+        with contextlib.suppress(FileNotFoundError, OSError):
+            if not any(parent.iterdir()):
+                parent.rmdir()

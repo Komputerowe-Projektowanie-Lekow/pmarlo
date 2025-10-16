@@ -9,7 +9,17 @@ import numbers
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterator, List, Mapping, Optional, Sequence, TypedDict, cast
+from typing import (
+    Any,
+    Dict,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    TypedDict,
+    cast,
+)
 
 import numpy as np
 import torch
@@ -21,6 +31,156 @@ from pmarlo.features.deeptica.losses import VAMP2Loss
 logger = logging.getLogger(__name__)
 
 MetricMapping = Mapping[str, object]
+
+
+def prepare_batch(
+    batch: Sequence[tuple[np.ndarray, np.ndarray, np.ndarray | None]],
+    *,
+    torch_mod=torch,
+    device: torch.device | str = "cpu",
+    use_weights: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    """Convert a batch of NumPy arrays into tensors on the requested device."""
+
+    if torch_mod is None:
+        raise NotImplementedError(
+            "DeepTICA training helpers require the optional 'pmarlo[mlcv]' extras"
+        )
+    if not batch:
+        raise ValueError("empty batch provided to prepare_batch")
+
+    dev = torch_mod.device(device) if not isinstance(device, torch.device) else device
+    x_t_list: list[torch.Tensor] = []
+    x_tau_list: list[torch.Tensor] = []
+    weight_list: list[torch.Tensor] = []
+
+    for item in batch:
+        if len(item) != 3:
+            raise ValueError("batch elements must be 3-tuples (x_t, x_tau, weights)")
+        xt_arr, xtau_arr, weights = item
+        xt_tensor = torch_mod.as_tensor(
+            np.asarray(xt_arr, dtype=np.float32), device=dev
+        )
+        xtau_tensor = torch_mod.as_tensor(
+            np.asarray(xtau_arr, dtype=np.float32), device=dev
+        )
+        x_t_list.append(xt_tensor)
+        x_tau_list.append(xtau_tensor)
+        if use_weights and weights is not None:
+            weight_tensor = torch_mod.as_tensor(
+                np.asarray(weights, dtype=np.float32), device=dev
+            ).reshape(-1)
+            weight_list.append(weight_tensor)
+
+    x_t = torch_mod.cat(x_t_list, dim=0) if len(x_t_list) > 1 else x_t_list[0]
+    x_tau = torch_mod.cat(x_tau_list, dim=0) if len(x_tau_list) > 1 else x_tau_list[0]
+
+    total_frames = x_t.shape[0]
+    if not use_weights:
+        weights_tensor: torch.Tensor | None = None
+    elif weight_list:
+        weights_tensor = (
+            torch_mod.cat(weight_list, dim=0)
+            if len(weight_list) > 1
+            else weight_list[0]
+        )
+        if weights_tensor.numel() != total_frames:
+            raise ValueError("weights length does not match batch size")
+    else:
+        weights_tensor = torch_mod.full(
+            (total_frames,), 1.0 / float(max(1, total_frames)), device=dev
+        )
+
+    return x_t, x_tau, weights_tensor
+
+
+def compute_loss_and_score(
+    model: torch.nn.Module,
+    loss_module: torch.nn.Module,
+    x_t: torch.Tensor,
+    x_tau: torch.Tensor,
+    weights: torch.Tensor | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Forward pass helper returning the loss/score pair."""
+
+    z_t = model(x_t)
+    z_tau = model(x_tau)
+    return loss_module(z_t, z_tau, weights)
+
+
+def compute_grad_norm(parameters: Sequence[torch.nn.Parameter]) -> float:
+    """Compute the L2 norm of gradients across the provided parameters."""
+
+    total = 0.0
+    for param in parameters:
+        if param.grad is None:
+            continue
+        grad = param.grad.detach()
+        total += float(torch.sum(grad * grad).item())
+    return float(math.sqrt(total)) if total > 0.0 else 0.0
+
+
+def make_metrics(
+    *,
+    loss: torch.Tensor,
+    score: torch.Tensor,
+    tau: int,
+    optimizer: torch.optim.Optimizer,
+    grad_norm: float,
+) -> dict[str, float]:
+    """Package scalar training metrics into a serialisable mapping."""
+
+    lr = 0.0
+    if optimizer.param_groups:
+        lr = float(optimizer.param_groups[0].get("lr", 0.0))
+
+    return {
+        "loss": float(loss.detach().cpu().item()),
+        "vamp2": float(score.detach().cpu().item()),
+        "tau": float(int(tau)),
+        "learning_rate": lr,
+        "grad_norm": float(grad_norm),
+    }
+
+
+def record_metrics(
+    history: list[dict[str, float]],
+    metrics: dict[str, float],
+    *,
+    model: torch.nn.Module | None = None,
+) -> None:
+    """Append metrics to the in-memory history and model hook if provided."""
+
+    history.append(dict(metrics))
+    if model is None:
+        return
+    steps = getattr(model, "training_history", None)
+    if not isinstance(steps, dict):
+        steps = {}
+    step_list = list(steps.get("steps", []))
+    step_list.append(dict(metrics))
+    steps["steps"] = step_list
+    setattr(model, "training_history", steps)
+
+
+def checkpoint_if_better(
+    *,
+    torch_mod: Any,
+    model_net: torch.nn.Module,
+    checkpoint_path: Path | str,
+    metrics: Mapping[str, float],
+    metric_name: str,
+    best_score: float,
+) -> float:
+    """Persist model weights when the tracked metric improves."""
+
+    score = float(metrics.get(metric_name, float("-inf")))
+    if score <= best_score:
+        return best_score
+    path = Path(checkpoint_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch_mod.save(model_net.state_dict(), path)
+    return score
 
 
 def _metric_scalar(metrics: MetricMapping, key: str, default: float = 0.0) -> float:

@@ -9,11 +9,11 @@ Try to avoid the complexity at all cost. It's currently overbloated and in a nee
 
 
 ## Developer utilities
-Helper scripts now live in the top-level ``tools`` package and are executed
+Helper scripts now live in the top-level ``scripts`` package and are executed
 directly with Python. They are not part of the distributed ``pmarlo`` package.
 
-* ``python -m tools.check_extras_parity`` verifies that the optional dependency
+* ``python -m scripts.check_extras_parity`` verifies that the optional dependency
   groups declared in ``[project.optional-dependencies]`` stay in sync with
   ``[tool.poetry.extras]``.
-* ``python -m tools.lines_report`` generates the language statistics report
+* ``python -m scripts.lines_report`` generates the language statistics report
   based on ``pygount`` statistics.
