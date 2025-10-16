@@ -22,6 +22,7 @@ from .metrics import GuardrailReport, Metrics
 
 __all__ = ["WorkflowConfig", "JointWorkflow"]
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -145,10 +146,12 @@ class JointWorkflow:
         concatenated_weights = np.concatenate(frame_weights)
         concatenated_weights = concatenated_weights / concatenated_weights.sum()
 
+        kmeans_kwargs = {"n_init": 50}
         clustering = cluster_microstates(
             concatenated,
             n_states=self.cfg.n_clusters,
             random_state=None,
+            **kmeans_kwargs,
         )
 
         labels = clustering.labels

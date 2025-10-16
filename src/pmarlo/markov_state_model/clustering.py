@@ -355,6 +355,24 @@ def cluster_microstates(
     labels = cast(np.ndarray, estimator.fit_predict(Y).astype(int))
     centers = getattr(estimator, "cluster_centers_", None)
 
+    unique_labels = int(np.unique(labels).size)
+    if unique_labels != n_states:
+        message = (
+            "Clustering produced {unique} unique microstates, expected {expected}. "
+            "This typically indicates degenerate CV data or an incompatible "
+            "n_microstates setting."
+        ).format(unique=unique_labels, expected=n_states)
+        logger.error(message)
+        raise ValueError(message)
+
+    if centers is not None and int(centers.shape[0]) != n_states:
+        message = (
+            "Clustering returned {centers} centers, expected {expected}. "
+            "Verify CV spread and clustering configuration."
+        ).format(centers=int(centers.shape[0]), expected=n_states)
+        logger.error(message)
+        raise ValueError(message)
+
     # Log completion with rationale if available
     logger.info(
         "Clustering completed: requested=%s, actual=%d%s",

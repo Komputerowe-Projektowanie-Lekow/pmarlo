@@ -36,7 +36,9 @@ def run_conformation_finder(
     specs = feature_specs or ["phi_psi"]
     X, cols, periodic = api.compute_features(traj, feature_specs=specs)
     Y = api.reduce_features(X, method="vamp", lag=lag, n_components=3)
-    labels = api.cluster_microstates(Y, method="minibatchkmeans", n_states=20)
+    labels = api.cluster_microstates(
+        Y, method="minibatchkmeans", n_states=20, n_init=50
+    )
     n_states = int(np.max(labels) + 1)
     # Prepare dataset for provenance-first builder
     # Map requested FES pair to named CVs if provided; else pick first two

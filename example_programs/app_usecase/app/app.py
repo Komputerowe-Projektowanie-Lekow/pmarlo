@@ -448,7 +448,7 @@ def _ensure_session_defaults() -> None:
     st.session_state.setdefault("train_val_tau", 20)
     st.session_state.setdefault("train_epochs_per_tau", 15)
     st.session_state.setdefault("analysis_cluster_mode", "kmeans")
-    st.session_state.setdefault("analysis_n_microstates", 150)
+    st.session_state.setdefault("analysis_n_microstates", 20)
     st.session_state.setdefault("analysis_reweight_mode", "MBAR")
     st.session_state.setdefault("analysis_fes_method", "kde")
     st.session_state.setdefault("analysis_fes_bandwidth", "scott")
@@ -1024,7 +1024,7 @@ def main() -> None:
             n_microstates = col_micro.number_input(
                 "Number of microstates",
                 min_value=2,
-                value=int(st.session_state.get("analysis_n_microstates", 150)),
+                value=int(st.session_state.get("analysis_n_microstates", 20)),
                 step=1,
                 key="analysis_n_microstates",
             )
