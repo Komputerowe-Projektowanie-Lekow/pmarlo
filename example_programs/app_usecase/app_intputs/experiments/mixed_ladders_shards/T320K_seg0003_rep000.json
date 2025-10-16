@@ -1,0 +1,35 @@
+{
+  "schema_version": "2.0",
+  "shard_id": "T320K_seg0003_rep000",
+  "temperature_K": 320.0,
+  "beta": 0.37585111,
+  "replica_id": 0,
+  "segment_id": 3,
+  "exchange_window_id": 0,
+  "n_frames": 1000,
+  "dt_ps": 0.0179856,
+  "feature_spec": {
+    "name": "app_usecase_features",
+    "scaler": "identity",
+    "columns": [
+      "Rg",
+      "RMSD_ref"
+    ]
+  },
+  "provenance": {
+    "seed": 222003,
+    "manifest_notes": [
+      "All shards originate from the same REMD ladder (300/320/340 K).",
+      {
+        ".npz must include": "X, t_index, dt_ps, and potential energy U_kJ (or document your key in loader)."
+      },
+      "Reduced energies for MBAR are computed as beta * U_kJ."
+    ],
+    "source": {
+      "kind": "demux",
+      "run_id": "E1_mixed_ladders_synthetic",
+      "temperature_K": 320.0,
+      "traj": "T320K_seg0003_rep000.npz"
+    }
+  }
+}

@@ -6,6 +6,7 @@ from typing import Optional, Tuple
 import numpy as np
 
 from pmarlo import constants as const
+from pmarlo.utils.thermodynamics import kT_kJ_per_mol
 
 
 def save_transition_matrix_heatmap(
@@ -146,23 +147,6 @@ def save_pmf_line(
     plt.savefig(filepath, dpi=200)
     plt.close()
     return str(filepath) if filepath.exists() else None
-
-
-def _kT_kJ_per_mol(temperature_kelvin: float) -> float:
-    try:
-        from scipy import constants
-
-        return float(constants.k * temperature_kelvin * constants.Avogadro / 1000.0)
-    except Exception:
-        # Fallback constant if SciPy is unavailable
-        return float(
-            const.BOLTZMANN_CONSTANT_J_PER_K
-            * temperature_kelvin
-            * const.AVOGADRO_NUMBER
-            / 1000.0
-        )
-
-
 def fes2d(
     x,
     y,
@@ -241,7 +225,7 @@ def fes2d(
     else:
         warn = None
 
-    kT = _kT_kJ_per_mol(float(temperature))
+    kT = kT_kJ_per_mol(float(temperature))
     F = -kT * np.log(H + const.NUMERIC_MIN_POSITIVE)
     # Assign +inf to truly empty (below min_count) bins to avoid misleading minima
     F = np.where(H >= max(1, int(min_count)), F, np.inf)

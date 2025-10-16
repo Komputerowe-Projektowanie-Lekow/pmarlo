@@ -1,0 +1,33 @@
+{
+  "schema_version": "2.0",
+  "shard_id": "T284K_seg0000_rep000",
+  "temperature_K": 284.0,
+  "beta": 0.42349421,
+  "replica_id": 0,
+  "segment_id": 0,
+  "exchange_window_id": 0,
+  "n_frames": 1000,
+  "dt_ps": 0.0179856,
+  "feature_spec": {
+    "name": "app_usecase_features",
+    "scaler": "identity",
+    "columns": [
+      "Rg",
+      "RMSD_ref"
+    ]
+  },
+  "provenance": {
+    "seed": 41002,
+    "manifest_notes": [
+      "Two independent REMD runs with non-overlapping ladders around T_ref=300 K (negative control).",
+      "Each shard .json should include provenance.temperature_ladder_K for its ladder and provenance.expected_failure set to \"no_temperature_overlap\".",
+      ".npz must include X, t_index, dt_ps, and potential energy U_kJ (reduced energies computed as beta * U_kJ)."
+    ],
+    "source": {
+      "kind": "demux",
+      "run_id": "E2_disjoint_ladders_synthetic",
+      "temperature_K": 284.0,
+      "traj": "T284K_seg0000_rep000.npz"
+    }
+  }
+}

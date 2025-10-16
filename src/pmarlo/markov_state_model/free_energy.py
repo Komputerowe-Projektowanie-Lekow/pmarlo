@@ -10,6 +10,7 @@ from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter
 
 from pmarlo import constants as const
+from pmarlo.utils.thermodynamics import kT_kJ_per_mol
 
 
 @dataclass
@@ -243,11 +244,59 @@ class FESResult:
         return restored
 
 
-def _kT_kJ_per_mol(temperature_kelvin: float) -> float:
-    from scipy import constants
+def free_energy_from_density(
+    density: NDArray[np.float64],
+    temperature: float,
+    *,
+    mask: NDArray[np.bool_] | None = None,
+    inpaint: bool = False,
+    tiny: float | None = None,
+) -> NDArray[np.float64]:
+    """Convert a normalised probability density into a free-energy surface.
 
-    # Cast to float because scipy.constants may be typed as Any
-    return float(constants.k * temperature_kelvin * constants.Avogadro / 1000.0)
+    Parameters
+    ----------
+    density
+        Array containing non-negative probability densities. The array is not
+        modified in-place.
+    temperature
+        Simulation temperature in Kelvin used to compute :math:`kT`.
+    mask
+        Optional boolean mask identifying bins that should be reported as NaN
+        (typically empty histogram bins). The mask is ignored when ``inpaint``
+        is ``True`` because callers have already filled those bins.
+    inpaint
+        If ``True`` skip applying ``mask`` so that bins filled via inpainting
+        remain finite.
+    tiny
+        Optional floor used to guard against ``log(0)``. Defaults to the
+        machine-dependent ``np.finfo(float).tiny``.
+    """
+
+    if temperature <= 0:
+        raise ValueError("temperature must be positive when computing free energy")
+
+    density_arr = np.array(density, dtype=np.float64, copy=False)
+    tiny_val = float(tiny if tiny is not None else np.finfo(np.float64).tiny)
+    kT = kT_kJ_per_mol(float(temperature))
+
+    # Avoid RuntimeWarning: divide by zero encountered in log by clipping first
+    # and only assigning +inf where true zeros occurred. Using errstate keeps
+    # logs clean without changing semantics.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        log_density = np.log(np.clip(density_arr, tiny_val, None))
+        free_energy = -kT * log_density
+
+    result = np.where(density_arr > tiny_val, free_energy, np.inf)
+    if mask is not None:
+        mask_arr = np.array(mask, dtype=bool, copy=False)
+        if not inpaint:
+            result = np.where(mask_arr, np.nan, result)
+
+    if np.any(np.isfinite(result)):
+        result = result - np.nanmin(result)
+
+    return result
 
 
 logger = logging.getLogger(__name__)
@@ -358,12 +407,7 @@ def generate_1d_pmf(
         H = gaussian_filter(
             H, sigma=float(smoothing_sigma), mode="wrap" if periodic else "reflect"
         )
-    kT = _kT_kJ_per_mol(temperature)
-    tiny = np.finfo(float).tiny
-    H_clipped = np.clip(H, tiny, None)
-    F = np.where(H > 0, -kT * np.log(H_clipped), np.inf)
-    if np.any(np.isfinite(F)):
-        F -= np.nanmin(F)
+    F = free_energy_from_density(H, temperature)
     return PMFResult(
         F=F, edges=edges, counts=H, periodic=periodic, temperature=temperature
     )
@@ -549,18 +593,13 @@ def generate_2d_fes(  # noqa: C901
         final_mask: NDArray[np.bool_] = np.zeros_like(mask, dtype=bool)
     else:
         final_mask = mask
-    kT = _kT_kJ_per_mol(temperature)
-    tiny = np.finfo(float).tiny
-    # Avoid RuntimeWarning: divide by zero encountered in log by clipping first
-    # and only assigning +inf where true zeros occurred. Using errstate keeps
-    # logs clean without changing semantics.
-    with np.errstate(divide="ignore", invalid="ignore"):
-        F_safe = -kT * np.log(np.clip(density, tiny, None))
-    F: NDArray[np.float64] = np.where(density > tiny, F_safe, np.inf)
-    if not inpaint:
-        F = np.where(final_mask, np.nan, F)
-    if np.any(np.isfinite(F)):
-        F -= np.nanmin(F)
+
+    F: NDArray[np.float64] = free_energy_from_density(
+        density,
+        temperature,
+        mask=final_mask,
+        inpaint=inpaint_flag,
+    )
     # Fraction of empty (below min_count) bins
     empty_bins_fraction = float(np.count_nonzero(final_mask)) / np.prod(H_density.shape)
     metadata = {

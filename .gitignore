@@ -94,6 +94,7 @@ typelog.txt
 
 /checkpoints/
 /runs/
+/tmp_models/
 /tests/checkpoints/
 
 changes.patch

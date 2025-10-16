@@ -5,6 +5,8 @@ from typing import Callable, Sequence
 
 import mdtraj as md
 
+from pmarlo.utils.path_utils import resolve_project_path
+
 
 class LoadingMixin:
     # Attributes provided by host class
@@ -72,23 +74,7 @@ class LoadingMixin:
         return self._parse_atom_selection(topo, atom_selection)
 
     def _resolve_topology_path(self):
-        # Resolve topology path robustly for test environments
-        topo_path = self.topology_file
-        if isinstance(topo_path, str):
-            from pathlib import Path as _Path
-
-            p = _Path(topo_path)
-            if not p.exists():
-                try:
-                    root = _Path(__file__).resolve().parents[3]
-                    alt = root / topo_path.replace("/", "\\")
-                    if not alt.exists():
-                        alt = root / topo_path.replace("\\", "/")
-                    if alt.exists():
-                        topo_path = str(alt)
-                except Exception:
-                    pass
-        return topo_path
+        return resolve_project_path(self.topology_file)
 
     def _parse_atom_selection(
         self, topo: md.Topology, atom_selection: str | Sequence[int]
@@ -119,7 +105,7 @@ class LoadingMixin:
     ) -> md.Trajectory | None:
         from pmarlo.io import trajectory as traj_io
 
-        resolved_traj = traj_io._resolve_path(traj_file) or traj_file
+        resolved_traj = resolve_project_path(traj_file)
         path = Path(resolved_traj)
         if not path.exists():
             import logging as _logging
@@ -138,10 +124,11 @@ class LoadingMixin:
             f", selection={selection_str}" if selection_str else "",
         )
         joined: md.Trajectory | None = None
+        topo_path = resolve_project_path(self.topology_file)
 
         for chunk in traj_io.iterload(
             resolved_traj,
-            top=self.topology_file,
+            top=topo_path,
             stride=stride,
             atom_indices=atom_indices,
             chunk=chunk_size,

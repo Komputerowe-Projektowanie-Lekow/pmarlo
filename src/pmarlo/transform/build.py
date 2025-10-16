@@ -25,6 +25,8 @@ from typing import (
 import numpy as np
 
 from pmarlo import constants as const
+from pmarlo.utils.json_io import load_json_file
+from pmarlo.utils.temperature import collect_temperature_values
 
 from ..analysis import compute_diagnostics
 from ..analysis.fes import ensure_fes_inputs_whitened
@@ -68,7 +70,7 @@ def _load_or_train_model(
 @lru_cache(maxsize=512)
 def _load_shard_metadata_cached(path_str: str) -> Dict[str, Any]:
     try:
-        raw = json.loads(Path(path_str).read_text())
+        raw = load_json_file(path_str)
         return cast(Dict[str, Any], raw) if isinstance(raw, dict) else {}
     except Exception:
         return {}
@@ -103,26 +105,12 @@ def _coerce_float(value: Any) -> Optional[float]:
     return val
 
 
-def _collect_demux_temperatures(meta: Dict[str, Any]) -> List[float]:
-    temps: List[float] = []
-    if not isinstance(meta, dict):
-        return temps
+def _collect_demux_temperatures(meta: Mapping[str, Any] | None) -> List[float]:
+    """Compatibility shim delegating to the shared temperature collector."""
 
-    candidates = [meta.get("temperature")]
-    source = meta.get("source")
-    if isinstance(source, dict):
-        candidates.extend([source.get("temperature_K"), source.get("temperature")])
-
-    for candidate in candidates:
-        coerced = _coerce_float(candidate)
-        if coerced is None:
-            continue
-        if all(
-            abs(coerced - existing) > const.NUMERIC_PROGRESS_MIN_FRACTION
-            for existing in temps
-        ):
-            temps.append(coerced)
-    return temps
+    return list(
+        collect_temperature_values(meta, dedupe_tol=const.NUMERIC_PROGRESS_MIN_FRACTION)
+    )
 
 
 def _temperature_matches_target(
@@ -146,7 +134,9 @@ def _apply_demux_filter(
         if demux_temperature is None:
             filtered.append(shard_path)
             continue
-        temps = _collect_demux_temperatures(meta)
+        temps = collect_temperature_values(
+            meta, dedupe_tol=const.NUMERIC_PROGRESS_MIN_FRACTION
+        )
         if not temps:
             continue
         if _temperature_matches_target(temps, float(demux_temperature), tolerance):
@@ -215,7 +205,9 @@ def group_demux_shards_by_temperature(
         meta = _get_shard_metadata(shard_path)
         if not _is_demux_shard(shard_path, meta):
             continue
-        temps = _collect_demux_temperatures(meta)
+        temps = collect_temperature_values(
+            meta, dedupe_tol=const.NUMERIC_PROGRESS_MIN_FRACTION
+        )
         if not temps:
             continue
         temperature = temps[0]

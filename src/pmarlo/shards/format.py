@@ -9,6 +9,8 @@ from typing import Tuple
 
 import numpy as np
 
+from pmarlo.utils.json_io import load_json_file
+
 from .schema import FeatureSpec, Shard, ShardMeta, validate_invariants
 
 __all__ = [
@@ -67,7 +69,7 @@ def write_shard_npz_json(
 def read_shard_npz_json(npz_path: Path, json_path: Path) -> Shard:
     """Load shard arrays/metadata from canonical NPZ+JSON files."""
 
-    json_payload = json.loads(Path(json_path).read_text())
+    json_payload = load_json_file(json_path)
     feature_spec = FeatureSpec(
         name=str(json_payload["feature_spec"]["name"]),
         scaler=str(json_payload["feature_spec"]["scaler"]),
