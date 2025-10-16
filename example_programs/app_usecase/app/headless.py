@@ -6,9 +6,9 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from .backend import BuildConfig, WorkflowBackend, WorkspaceLayout
+from .backend import BuildConfig, BuildArtifact, WorkflowBackend, WorkspaceLayout
 
 
 def _make_layout(app_path: str | Path | None, workspace: str | Path | None) -> WorkspaceLayout:
@@ -59,6 +59,37 @@ def _load_optional_json(path: str | Path | None) -> Dict[str, object] | None:
     if not isinstance(data, dict):
         raise ValueError(f"Expected mapping in {file_path}, got {type(data).__name__}")
     return data
+
+
+def _load_analysis_summary(
+    artifact: BuildArtifact,
+) -> Tuple[Dict[str, Any], Optional[Path]]:
+    """Return analysis summary dict and the path it was loaded from."""
+
+    summary_data: Dict[str, Any] = {}
+    summary_path: Optional[Path] = None
+
+    if artifact.debug_dir:
+        candidate = artifact.debug_dir / "summary.json"
+        try:
+            with candidate.open("r", encoding="utf-8") as handle:
+                loaded = json.load(handle)
+            if isinstance(loaded, dict):
+                summary_data = loaded
+                summary_path = candidate
+                return summary_data, summary_path
+        except FileNotFoundError:
+            pass
+        except json.JSONDecodeError as exc:
+            print(
+                f"Warning: Failed to parse {candidate}: {exc}",
+                file=sys.stderr,
+            )
+
+    if isinstance(artifact.debug_summary, dict):
+        summary_data = dict(artifact.debug_summary)
+
+    return summary_data, summary_path
 
 
 def _resolve_shards(
@@ -141,7 +172,11 @@ def cmd_run_analysis(args: argparse.Namespace) -> int:
             json.dumps(artifact.discretizer_fingerprint, indent=2),
             file=sys.stdout,
         )
-    summary = artifact.debug_summary or {}
+
+    summary, summary_path = _load_analysis_summary(artifact)
+    if summary_path:
+        print(f"Summary JSON: {summary_path}", file=sys.stdout)
+
     stride_map = summary.get("effective_stride_map") or {}
     if stride_map:
         print("Effective stride map:", json.dumps(stride_map, indent=2), file=sys.stdout)
@@ -155,12 +190,28 @@ def cmd_run_analysis(args: argparse.Namespace) -> int:
         last_repr = ', '.join(str(val) for val in last_ts) if last_ts else 'n/a'
         print('First timestamps:', first_repr, '| Last timestamps:', last_repr, file=sys.stdout)
     guardrail = summary.get("analysis_guardrail_violations") or []
-    print("Analysis healthy:", summary.get("analysis_healthy", True), file=sys.stdout)
-    if guardrail:
+    analysis_healthy = bool(summary.get("analysis_healthy", True))
+    print("Analysis healthy:", analysis_healthy, file=sys.stdout)
+    if analysis_healthy and guardrail:
         print("Guardrail violations:", json.dumps(guardrail, indent=2), file=sys.stdout)
     if artifact.debug_summary:
         print("Debug summary:", file=sys.stdout)
         print(json.dumps(artifact.debug_summary, indent=2), file=sys.stdout)
+    if not analysis_healthy:
+        location = f" ({summary_path})" if summary_path else ""
+        print(
+            f"Analysis failed: analysis_healthy=false{location}",
+            file=sys.stderr,
+        )
+        if guardrail:
+            print(
+                "Guardrail violations:",
+                json.dumps(guardrail, indent=2),
+                file=sys.stderr,
+            )
+        else:
+            print("Guardrail violations: none reported.", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -244,7 +295,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser_run.add_argument(
         "--microstates",
         type=int,
-        default=150,
+        default=20,
         help="Number of microstates for MSM construction.",
     )
     parser_run.add_argument(

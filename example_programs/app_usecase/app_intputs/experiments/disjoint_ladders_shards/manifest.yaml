@@ -1,0 +1,87 @@
+experiment: E2_disjoint_ladders
+reference_temperature_K: 300.0
+beta_reference: 0.40090785
+expected_outcome: fail_reweighting
+
+deep_tica:
+  lag_frames: 6
+  seed: 4210
+  skip_if_no_pairs: true
+
+reweighting:
+  strategy: tram
+  tref_window_K: [296.0, 304.0]
+  ess_min_fraction: 0.3
+  fail_on_low_overlap: true
+
+temperature_ladders:
+  - ladder_id: L_low
+    temps_K: [260.0, 268.0, 276.0, 284.0]
+    betas_kJ_inv_mol: [0.46258598, 0.44877744, 0.43576940, 0.42349421]
+  - ladder_id: H_high
+    temps_K: [320.0, 328.0, 336.0, 344.0]
+    betas_kJ_inv_mol: [0.37585111, 0.36668401, 0.35795344, 0.34962894]
+
+shards:
+  # --- low ladder (Run L) ---
+  - shard_id: L_268_000
+    npz: 268shard_0000.npz
+    json: 268shard_0000.json
+    seed: 41000
+    frames: 1000
+    dt_ps: 0.0179856
+    temperature_K: 268.0
+    beta: 0.44877744
+    ladder_id: L_low
+    segment_id: 0
+
+  - shard_id: L_268_001
+    npz: 268shard_0001.npz
+    json: 268shard_0001.json
+    seed: 41001
+    frames: 1000
+    dt_ps: 0.0179856
+    temperature_K: 268.0
+    beta: 0.44877744
+    ladder_id: L_low
+    segment_id: 1
+
+  - shard_id: L_284_000
+    npz: 284shard_0000.npz
+    json: 284shard_0000.json
+    seed: 41002
+    frames: 1000
+    dt_ps: 0.0179856
+    temperature_K: 284.0
+    beta: 0.42349421
+    ladder_id: L_low
+    segment_id: 0
+
+  # --- high ladder (Run H) ---
+  - shard_id: H_320_000
+    npz: 320shard_0000.npz
+    json: 320shard_0000.json
+    seed: 41003
+    frames: 1000
+    dt_ps: 0.0179856
+    temperature_K: 320.0
+    beta: 0.37585111
+    ladder_id: H_high
+    segment_id: 0
+
+  - shard_id: H_336_000
+    npz: 336shard_0000.npz
+    json: 336shard_0000.json
+    seed: 41004
+    frames: 1000
+    dt_ps: 0.0179856
+    temperature_K: 336.0
+    beta: 0.35795344
+    ladder_id: H_high
+    segment_id: 0
+
+notes:
+  - Two independent REMD runs with non-overlapping ladders around T_ref=300 K (negative control).
+  - Each shard .json should include provenance.temperature_ladder_K for its ladder and
+    provenance.expected_failure: "no_temperature_overlap".
+  - .npz must include X, t_index, dt_ps, and potential energy U_kJ (reduced energies computed as beta * U_kJ).

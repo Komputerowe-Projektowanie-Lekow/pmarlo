@@ -322,9 +322,12 @@ class BuildConfig:
     learn_cv: bool = False
     deeptica_params: Optional[Dict[str, Any]] = None
     notes: Dict[str, Any] = field(default_factory=dict)
-    apply_cv_whitening: bool = True
+    apply_cv_whitening: bool = False
     cluster_mode: str = "kmeans"
-    n_microstates: int = 150
+    n_microstates: int = 20
+    kmeans_kwargs: Dict[str, Any] = field(
+        default_factory=lambda: {"n_init": 50}
+    )
     reweight_mode: str = "MBAR"
     fes_method: str = "kde"
     fes_bandwidth: str | float = "scott"
@@ -584,6 +587,7 @@ class WorkflowBackend:
             analysis_notes["model_dir"] = str(self.layout.models_dir)
         analysis_notes["apply_cv_whitening_requested"] = bool(config.apply_cv_whitening)
         analysis_notes["apply_cv_whitening_enforced"] = True
+        analysis_notes["kmeans_kwargs"] = dict(config.kmeans_kwargs)
         analysis_notes["analysis_overrides"] = {
             "cluster_mode": str(config.cluster_mode),
             "n_microstates": int(config.n_microstates),
@@ -591,6 +595,7 @@ class WorkflowBackend:
             "fes_method": str(config.fes_method),
             "fes_bandwidth": config.fes_bandwidth,
             "fes_min_count_per_bin": int(config.fes_min_count_per_bin),
+            "kmeans_kwargs": dict(config.kmeans_kwargs),
         }
         requested_fingerprint = {
             "mode": str(config.cluster_mode),
@@ -633,6 +638,7 @@ class WorkflowBackend:
             learn_cv=bool(config.learn_cv),
             deeptica_params=config.deeptica_params,
             notes=analysis_notes,
+            kmeans_kwargs=dict(config.kmeans_kwargs),
         )
 
         summary = debug_data.summary
@@ -824,6 +830,7 @@ class WorkflowBackend:
             analysis_notes["analysis_preview_truncated"] = preview_truncated
         analysis_notes["analysis_guardrail_violations"] = guardrail_violations
         analysis_notes["discretizer_fingerprint_changed"] = bool(fingerprint_changed)
+        analysis_notes["analysis_kmeans_kwargs"] = dict(config.kmeans_kwargs)
         analysis_notes.pop("discretizer_fingerprint_requested", None)
 
         try:
@@ -845,6 +852,7 @@ class WorkflowBackend:
         flags["analysis_effective_stride_max"] = int(stride_max)
         flags["analysis_healthy"] = analysis_healthy
         flags["analysis_guardrail_violations"] = guardrail_violations
+        flags["analysis_kmeans_kwargs"] = dict(config.kmeans_kwargs)
         if stride_values:
             flags["analysis_effective_stride_values"] = list(stride_values)
         if stride_map:
@@ -864,6 +872,7 @@ class WorkflowBackend:
             "fes_bandwidth": config.fes_bandwidth,
             "fes_min_count_per_bin": int(config.fes_min_count_per_bin),
             "apply_whitening": bool(config.apply_cv_whitening),
+            "kmeans_kwargs": dict(config.kmeans_kwargs),
         }
         flags.setdefault("analysis_overrides", overrides)
         flags.setdefault("analysis_reweight_mode", str(config.reweight_mode))
@@ -929,6 +938,7 @@ class WorkflowBackend:
                 "apply_cv_whitening": bool(config.apply_cv_whitening),
                 "cluster_mode": str(config.cluster_mode),
                 "n_microstates": int(config.n_microstates),
+                "kmeans_kwargs": _sanitize_artifacts(config.kmeans_kwargs),
                 "reweight_mode": str(config.reweight_mode),
                 "fes_method": str(config.fes_method),
                 "fes_bandwidth": config.fes_bandwidth,
@@ -1080,7 +1090,13 @@ class WorkflowBackend:
             notes.update(entry_notes)
         apply_whitening = bool(entry.get("apply_cv_whitening", True))
         cluster_mode = str(entry.get("cluster_mode", "kmeans"))
-        n_microstates = int(entry.get("n_microstates", 150))
+        n_microstates = int(entry.get("n_microstates", 20))
+        kmeans_kwargs_raw = entry.get("kmeans_kwargs")
+        kmeans_kwargs = (
+            dict(kmeans_kwargs_raw)
+            if isinstance(kmeans_kwargs_raw, dict)
+            else {"n_init": 50}
+        )
         reweight_mode = str(entry.get("reweight_mode", "MBAR"))
         fes_method = str(entry.get("fes_method", "kde"))
         bw_raw = entry.get("fes_bandwidth", "scott")
@@ -1104,6 +1120,7 @@ class WorkflowBackend:
             fes_method=fes_method,
             fes_bandwidth=fes_bandwidth,
             fes_min_count_per_bin=min_count,
+            kmeans_kwargs=kmeans_kwargs,
         )
 
     def training_config_from_entry(self, entry: Dict[str, Any]) -> TrainingConfig:

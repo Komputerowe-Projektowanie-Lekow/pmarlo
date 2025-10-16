@@ -1703,6 +1703,8 @@ def _collect_rg_rmsd(
     rg_parts: list[np.ndarray] = []
     rmsd_parts: list[np.ndarray] = []
     total_frames = 0
+    raw_frames = 0
+    invalid_total = 0
     stride_val = int(max(1, stride))
     for chunk in iterload(
         str(traj_path),
@@ -1714,11 +1716,62 @@ def _collect_rg_rmsd(
             chunk = chunk.superpose(reference, atom_indices=ca_sel)
         except Exception:
             pass
-        rg_parts.append(md_module.compute_rg(chunk).astype(np.float64))
-        rmsd_parts.append(
-            md_module.rmsd(chunk, reference, atom_indices=ca_sel).astype(np.float64)
+        n_chunk = int(chunk.n_frames)
+        chunk_start = raw_frames
+        raw_frames += n_chunk
+        rg_chunk = md_module.compute_rg(chunk).astype(np.float64)
+        rmsd_chunk = md_module.rmsd(chunk, reference, atom_indices=ca_sel).astype(
+            np.float64
         )
-        total_frames += int(chunk.n_frames)
+        finite_mask = np.isfinite(rg_chunk) & np.isfinite(rmsd_chunk)
+        valid_count = int(np.count_nonzero(finite_mask))
+        invalid_count = int(finite_mask.size - valid_count)
+        if invalid_count:
+            invalid_total += invalid_count
+            bad_idx = np.where(~finite_mask)[0]
+            for rel_idx in bad_idx[:10]:
+                global_idx = chunk_start + int(rel_idx)
+                rg_val = rg_chunk[rel_idx]
+                rmsd_val = rmsd_chunk[rel_idx]
+                issues: list[str] = []
+                if not np.isfinite(rg_val):
+                    issues.append(
+                        "Rg="
+                        + (
+                            "NaN"
+                            if np.isnan(rg_val)
+                            else ("+inf" if rg_val > 0 else "-inf")
+                        )
+                    )
+                if not np.isfinite(rmsd_val):
+                    issues.append(
+                        "RMSD_ref="
+                        + (
+                            "NaN"
+                            if np.isnan(rmsd_val)
+                            else ("+inf" if rmsd_val > 0 else "-inf")
+                        )
+                    )
+                logger.warning(
+                    "Discarding frame %d from '%s' due to non-finite CVs (%s)",
+                    global_idx,
+                    traj_path,
+                    ", ".join(issues) if issues else "unknown issue",
+                )
+        if valid_count:
+            rg_parts.append(rg_chunk[finite_mask])
+            rmsd_parts.append(rmsd_chunk[finite_mask])
+            total_frames += valid_count
+
+    if invalid_total:
+        logger.warning(
+            "Discarded %d frames with invalid CV values while processing '%s'; "
+            "retained %d of %d frames.",
+            invalid_total,
+            traj_path,
+            total_frames,
+            raw_frames,
+        )
 
     rg = np.concatenate(rg_parts) if rg_parts else np.zeros((0,), dtype=np.float64)
     rmsd = (
@@ -1885,12 +1938,14 @@ def build_from_shards(
     n_macrostates: int | None = None,
     notes: dict | None = None,
     progress_callback=None,
+    kmeans_kwargs: dict | None = None,
 ):
     """Aggregate shard JSONs and build a bundle with an app-friendly API.
 
     - Optional LEARN_CV(method="deeptica") is prepended to the plan when requested.
     - Adds SMOOTH_FES step to the plan by default.
     - Computes and records global bin edges into notes["cv_bin_edges"].
+    - Optional ``kmeans_kwargs`` are forwarded to the clustering step to tune K-means.
     - Returns (BuildResult, dataset_hash).
     """
     import numpy as _np
@@ -1904,7 +1959,7 @@ def build_from_shards(
 
     model_dir = _extract_model_dir(notes)
     plan = _build_transform_plan(learn_cv, deeptica_params, lag, model_dir)
-    opts = _build_opts(seed, temperature, lag)
+    opts = _build_opts(seed, temperature, lag, kmeans_kwargs)
     all_notes = _merge_notes_with_edges(notes, edges)
     n_states = _determine_macrostates(n_macrostates, deeptica_params)
     applied = _AppliedOpts(
@@ -2012,13 +2067,19 @@ def _build_transform_plan(
     return _TransformPlan(steps=tuple(steps))
 
 
-def _build_opts(seed: int, temperature: float, lag: int) -> _BuildOpts:
+def _build_opts(
+    seed: int,
+    temperature: float,
+    lag: int,
+    kmeans_kwargs: dict | None = None,
+) -> _BuildOpts:
     """Create BuildOpts with a simple lag candidate ladder."""
 
     return _BuildOpts(
         seed=int(seed),
         temperature=float(temperature),
         lag_candidates=(int(lag), int(2 * lag), int(3 * lag)),
+        kmeans_kwargs=dict(kmeans_kwargs or {}),
     )
 
 

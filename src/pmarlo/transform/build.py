@@ -9,7 +9,18 @@ from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union, cast
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+    cast,
+)
 
 import numpy as np
 
@@ -303,6 +314,7 @@ class BuildOpts:
     chunk_size: int = 1000
     debug: bool = False
     verbose: bool = False
+    kmeans_kwargs: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.lag_candidates is not None:
@@ -1022,6 +1034,204 @@ def _ensure_msm_whitened(dataset: Any) -> None:
         logger.debug("Failed to apply CV whitening before MSM build", exc_info=True)
 
 
+def _infer_cv_issue(cv_name: str, value: float) -> str:
+    name = (cv_name or "").lower()
+    if np.isnan(value):
+        root = "Value became NaN during preprocessing"
+    else:
+        root = "Value reached an infinite magnitude"
+    if "rmsd" in name:
+        return f"{root}; check reference alignment and atom selections."
+    if name in {"rg", "radius_of_gyration"}:
+        return f"{root}; verify that the structure has non-zero extent and no missing atoms."
+    return f"{root}; inspect upstream CV computation."
+
+
+def _locate_shard(
+    shards: Sequence[dict], frame_idx: int
+) -> tuple[dict | None, int | None]:
+    for shard in shards:
+        try:
+            start = int(shard.get("start", 0))
+            stop = int(shard.get("stop", start))
+        except Exception:
+            continue
+        if start <= frame_idx < stop:
+            return shard, frame_idx - start
+    return None, None
+
+
+def _resolve_diagnostics_dir(
+    dataset: Mapping[str, Any], opts: BuildOpts
+) -> Path | None:
+    candidates: list[Path] = []
+    custom_dir = getattr(opts, "diagnostics_dir", None)
+    if custom_dir:
+        try:
+            candidates.append(Path(custom_dir))
+        except Exception:
+            pass
+    shards = dataset.get("__shards__") if isinstance(dataset, Mapping) else None
+    if isinstance(shards, Sequence) and shards:
+        first = shards[0]
+        if isinstance(first, Mapping):
+            source_path = first.get("source_path")
+            if source_path:
+                try:
+                    candidates.append(Path(source_path).parent / "diagnostics")
+                except Exception:
+                    pass
+    candidates.append(Path.cwd() / "pmarlo_diagnostics")
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            return candidate
+        except Exception:
+            continue
+    return None
+
+
+def _prepare_cv_names(dataset: Mapping[str, Any], X: np.ndarray) -> list[str]:
+    names = dataset.get("cv_names") if isinstance(dataset, Mapping) else None
+    if not isinstance(names, (list, tuple)):
+        names = tuple()
+    resolved = [
+        str(n) if isinstance(n, str) else f"cv{idx}"
+        for idx, n in enumerate(names or [])
+    ]
+    if len(resolved) < X.shape[1]:
+        resolved.extend(f"cv{idx}" for idx in range(len(resolved), X.shape[1]))
+    return resolved
+
+
+def _report_non_finite_cv_values(
+    dataset: Mapping[str, Any], names: Sequence[str], X: np.ndarray
+) -> None:
+    invalid_mask = ~np.isfinite(X)
+    if not invalid_mask.any():
+        return
+    counts = invalid_mask.sum(axis=0)
+    for idx, count in enumerate(counts):
+        if count:
+            logger.error(
+                "Detected %d non-finite values in CV '%s'",
+                int(count),
+                names[idx] if idx < len(names) else f"cv{idx}",
+            )
+    shards_meta = dataset.get("__shards__") if isinstance(dataset, Mapping) else None
+    shards_seq = shards_meta if isinstance(shards_meta, Sequence) else ()
+    bad_locations = np.argwhere(invalid_mask)
+    for frame_idx, cv_idx in bad_locations[:20]:
+        cv_name = names[cv_idx] if cv_idx < len(names) else f"cv{cv_idx}"
+        value = X[frame_idx, cv_idx]
+        shard_info, local_idx = _locate_shard(shards_seq, int(frame_idx))
+        shard_id = (
+            shard_info.get("id") if isinstance(shard_info, Mapping) else "unknown"
+        )
+        traj_path = (
+            shard_info.get("source_path") if isinstance(shard_info, Mapping) else None
+        )
+        cause = _infer_cv_issue(cv_name, value)
+        logger.error(
+            "Invalid %s detected for CV '%s' at global frame %d "
+            "(shard=%s, local_frame=%s, traj=%s). %s",
+            "NaN" if np.isnan(value) else "Infinity",
+            cv_name,
+            int(frame_idx),
+            shard_id,
+            "n/a" if local_idx is None else int(local_idx),
+            traj_path,
+            cause,
+        )
+
+
+def _log_cv_statistics(names: Sequence[str], X: np.ndarray) -> None:
+    for idx in range(X.shape[1]):
+        col = X[:, idx]
+        finite = col[np.isfinite(col)]
+        cv_name = names[idx] if idx < len(names) else f"cv{idx}"
+        if finite.size == 0:
+            logger.warning(
+                "CV '%s' contains no finite values across %d frames",
+                cv_name,
+                X.shape[0],
+            )
+            continue
+        logger.info(
+            "CV '%s' stats over %d finite frames: mean=%.6f std=%.6f "
+            "min=%.6f max=%.6f",
+            cv_name,
+            int(finite.size),
+            float(np.mean(finite)),
+            float(np.std(finite)),
+            float(np.min(finite)),
+            float(np.max(finite)),
+        )
+
+
+def _save_cv_distribution_plot(
+    dataset: Mapping[str, Any], opts: BuildOpts, names: Sequence[str], X: np.ndarray
+) -> None:
+    if X.shape[1] < 2:
+        return
+    finite_rows = np.all(np.isfinite(X[:, :2]), axis=1)
+    finite_vals = X[finite_rows, :2]
+    if not finite_vals.size:
+        logger.warning(
+            "Skipping CV distribution plot; insufficient finite values in first two CVs"
+        )
+        return
+    sample = finite_vals
+    max_points = 100000
+    if sample.shape[0] > max_points:
+        rng = np.random.default_rng(42)
+        idxs = rng.choice(sample.shape[0], size=max_points, replace=False)
+        sample = sample[idxs]
+    diagnostics_dir = _resolve_diagnostics_dir(dataset, opts)
+    if diagnostics_dir is None:
+        logger.warning("Unable to determine diagnostics directory for CV plot")
+        return
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg", force=True)
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots(figsize=(6, 5))
+        hb = ax.hist2d(
+            sample[:, 0],
+            sample[:, 1],
+            bins=64,
+            cmap="viridis",
+        )
+        fig.colorbar(hb[3], ax=ax, label="count")
+        ax.set_xlabel(names[0] if names else "cv0")
+        ax.set_ylabel(names[1] if len(names) > 1 else "cv1")
+        ax.set_title("CV Distribution (finite values)")
+        fig.tight_layout()
+        out_path = diagnostics_dir / "cv_distribution.png"
+        fig.savefig(out_path, dpi=200)
+        plt.close(fig)
+        logger.info("Saved CV distribution plot to '%s'", out_path)
+    except Exception as exc:
+        logger.warning("Failed to save CV distribution plot: %s", exc)
+
+
+def _diagnose_cv_matrix(
+    dataset: Mapping[str, Any], opts: BuildOpts, matrix: np.ndarray
+) -> None:
+    try:
+        X = np.asarray(matrix, dtype=np.float64)
+        if X.ndim != 2 or X.size == 0:
+            return
+        names = _prepare_cv_names(dataset, X)
+        _report_non_finite_cv_values(dataset, names, X)
+        _log_cv_statistics(names, X)
+        _save_cv_distribution_plot(dataset, opts, names, X)
+    except Exception:
+        logger.debug("CV diagnostics failed", exc_info=True)
+
+
 def _cluster_continuous_trajectories(
     dataset: Dict[str, Any], opts: BuildOpts
 ) -> Optional[List[np.ndarray]]:
@@ -1034,6 +1244,7 @@ def _cluster_continuous_trajectories(
     logger.info(
         "No discrete trajectories found, clustering continuous CV data for MSM..."
     )
+    _diagnose_cv_matrix(dataset, opts, X)
     from ..markov_state_model.clustering import cluster_microstates
 
     clustering = cluster_microstates(
@@ -1041,6 +1252,7 @@ def _cluster_continuous_trajectories(
         n_states=opts.n_states,
         method="kmeans",
         random_state=opts.seed,
+        **(opts.kmeans_kwargs or {}),
     )
     labels = clustering.labels
     if labels is None or labels.size == 0:
