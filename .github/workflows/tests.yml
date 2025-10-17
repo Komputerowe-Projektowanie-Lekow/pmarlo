@@ -49,7 +49,7 @@ jobs:
       - name: Install dependencies
         run: poetry install --with dev,tests
       - name: Run fast unit suite
-        run: poetry run pytest --testmon -n auto
+        run: poetry run pytest --testmon -n auto tests/unit tests/devtools
 
   smoke:
     runs-on: ubuntu-latest
@@ -80,7 +80,7 @@ jobs:
       - name: Install dependencies
         run: poetry install --with dev,tests
       - name: Run smoke integration suite
-        run: poetry run pytest --testmon -m "integration and not slow" -n auto
+        run: poetry run pytest --testmon -m "integration and not slow" -n auto tests/integration
 
   full:
     runs-on: ubuntu-latest
@@ -118,4 +118,4 @@ jobs:
       - name: Install dependencies
         run: poetry install --with dev,tests
       - name: Run full unit + integration suite
-        run: poetry run pytest -m "unit or integration" -n auto
+        run: poetry run pytest tests/unit tests/devtools tests/integration -n auto

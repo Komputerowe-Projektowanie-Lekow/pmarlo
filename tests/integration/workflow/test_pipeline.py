@@ -14,6 +14,8 @@ from pmarlo.transform.pipeline import Pipeline, run_pmarlo
 # Evaluated by pytest.mark.skipif when using string condition
 skip_if_no_openmm = find_spec("openmm") is None
 
+pytestmark = pytest.mark.integration
+
 
 class TestPipeline:
     """Test cases for Pipeline class."""

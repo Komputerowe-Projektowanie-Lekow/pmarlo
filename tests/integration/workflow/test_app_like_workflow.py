@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from pmarlo.data.aggregate import aggregate_and_build
 from pmarlo.data.emit import emit_shards_from_trajectories
@@ -10,6 +11,8 @@ from pmarlo.data.shard import read_shard
 from pmarlo.transform.build import AppliedOpts, BuildOpts, BuildResult
 from pmarlo.transform.plan import TransformPlan, TransformStep
 from pmarlo.utils.path_utils import ensure_directory
+
+pytestmark = pytest.mark.integration
 
 
 def _simple_extractor_factory(n_frames: int = 60):

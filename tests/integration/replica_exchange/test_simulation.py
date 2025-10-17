@@ -20,6 +20,8 @@ from pmarlo.replica_exchange.simulation import (
     prepare_system,
 )
 
+pytestmark = pytest.mark.integration
+
 
 class TestSimulation:
     """Test cases for Simulation class."""

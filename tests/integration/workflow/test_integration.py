@@ -15,6 +15,8 @@ pytest.importorskip("mdtraj")
 from pmarlo import Pipeline, Protein
 from pmarlo.protein.protein import HAS_PDBFIXER
 
+pytestmark = pytest.mark.integration
+
 
 class TestPackageImports:
     """Test that all package imports work correctly."""

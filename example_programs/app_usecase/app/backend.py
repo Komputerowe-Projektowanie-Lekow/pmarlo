@@ -315,6 +315,7 @@ class TrainingResult:
     build_result: BuildResult
     created_at: str
     checkpoint_dir: Optional[Path] = None
+    cv_model_bundle: Optional[Dict[str, Any]] = None  # Paths to exported CV model files
 
 
 @dataclass
@@ -368,6 +369,20 @@ class WorkflowBackend:
         run_label = _slugify(config.label) or f"run-{_timestamp()}"
         run_dir = self.layout.sims_dir / run_label
         ensure_directory(run_dir)
+        
+        # Prepare CV model info if provided
+        cv_kwargs = {}
+        if config.cv_model_bundle:
+            try:
+                from pmarlo.features.deeptica import load_cv_model_info
+                cv_info = load_cv_model_info(config.cv_model_bundle, model_name="deeptica_cv_model")
+                cv_kwargs["cv_model_path"] = cv_info["model_path"]
+                cv_kwargs["cv_scaler_mean"] = cv_info["scaler_params"]["mean"]
+                cv_kwargs["cv_scaler_scale"] = cv_info["scaler_params"]["scale"]
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning(f"Could not load CV model: {exc}")
+        
         traj_files, temps = run_replica_exchange(
             pdb_file=str(config.pdb_path),
             output_dir=str(run_dir),
@@ -385,6 +400,7 @@ class WorkflowBackend:
                 else None
             ),
             temperature_schedule_mode=config.temperature_schedule_mode,
+            **cv_kwargs,
         )
         created = _timestamp()
         result = SimulationResult(
@@ -602,12 +618,47 @@ class WorkflowBackend:
             # Remove the handler so it doesn't persist
             pmarlo_logger.removeHandler(file_handler)
             file_handler.close()
+        # Export CV model for OpenMM integration
+        cv_model_bundle_info = None
+        try:
+            from pmarlo.features.deeptica import export_cv_model
+            
+            # Load the trained model from bundle
+            import pickle
+            with open(bundle_path, "rb") as f:
+                bundle_data = pickle.load(f)
+            
+            network = bundle_data.get("network")
+            scaler = bundle_data.get("scaler")
+            history = br.get("history", {})
+            
+            if network is not None and scaler is not None:
+                pmarlo_logger.info("Exporting CV model for OpenMM integration...")
+                cv_bundle = export_cv_model(
+                    network=network,
+                    scaler=scaler,
+                    history=history,
+                    output_dir=checkpoint_dir,
+                    model_name="deeptica_cv_model",
+                )
+                cv_model_bundle_info = {
+                    "model_path": str(cv_bundle.model_path),
+                    "scaler_path": str(cv_bundle.scaler_path),
+                    "config_path": str(cv_bundle.config_path),
+                    "metadata_path": str(cv_bundle.metadata_path),
+                    "cv_dim": cv_bundle.cv_dim,
+                }
+                pmarlo_logger.info(f"CV model exported to {cv_bundle.model_path}")
+        except Exception as exc:
+            pmarlo_logger.warning(f"Could not export CV model: {exc}")
+        
         result = TrainingResult(
             bundle_path=bundle_path.resolve(),
             dataset_hash=ds_hash,
             build_result=br,
             created_at=stamp,
             checkpoint_dir=checkpoint_dir,
+            cv_model_bundle=cv_model_bundle_info,
         )
         self.state.append_model(
             {

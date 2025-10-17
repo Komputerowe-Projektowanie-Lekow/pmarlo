@@ -970,6 +970,9 @@ def run_replica_exchange(
     random_state: int | None = None,
     start_from_checkpoint: str | Path | None = None,
     start_from_pdb: str | Path | None = None,
+    cv_model_path: str | Path | None = None,
+    cv_scaler_mean: Any | None = None,
+    cv_scaler_scale: Any | None = None,
     jitter_start: bool = False,
     jitter_sigma_A: float = 0.05,
     velocity_reseed: bool = False,
@@ -1024,6 +1027,16 @@ def run_replica_exchange(
             temperature_schedule_mode=temperature_schedule_mode,
         )
     )
+    # Set CV model parameters if provided
+    if cv_model_path is not None:
+        remd.cv_model_path = str(cv_model_path)
+        if cv_scaler_mean is not None:
+            import numpy as np
+            remd.cv_scaler_mean = np.asarray(cv_scaler_mean, dtype=np.float64)
+        if cv_scaler_scale is not None:
+            import numpy as np
+            remd.cv_scaler_scale = np.asarray(cv_scaler_scale, dtype=np.float64)
+    
     remd.plan_reporter_stride(
         total_steps=int(total_steps), equilibration_steps=int(equil), target_frames=5000
     )

@@ -1,5 +1,9 @@
+import pytest
+
 from pmarlo.transform.plan import TransformPlan, TransformStep
 from pmarlo.transform.runner import TransformManifest, apply_plan
+
+pytestmark = pytest.mark.integration
 
 
 def test_transform_manifest_retry_logic(tmp_path):
