@@ -1,52 +1,11 @@
 import copy
-import importlib
-import pathlib
-import sys
-import types
-
 import numpy as np
 import pytest
 
 _KB_KJ_PER_MOL = 0.00831446261815324
 
-
-def _prepare_modules():
-    for name in list(sys.modules):
-        if name.startswith("pmarlo.workflow.finalize"):
-            sys.modules.pop(name)
-        if name.startswith("pmarlo.reweight"):
-            sys.modules.pop(name)
-        if name == "pmarlo.analysis" or name.startswith("pmarlo.analysis."):
-            sys.modules.pop(name)
-
-    base = pathlib.Path("src/pmarlo")
-    pmarlo_pkg = types.ModuleType("pmarlo")
-    pmarlo_pkg.__path__ = [str(base)]
-    sys.modules["pmarlo"] = pmarlo_pkg
-
-    ml_pkg = sys.modules.setdefault("pmarlo.ml", types.ModuleType("pmarlo.ml"))
-    if not hasattr(ml_pkg, "__path__"):
-        ml_pkg.__path__ = []
-
-    deeptica_pkg = types.ModuleType("pmarlo.ml.deeptica")
-    deeptica_pkg.__path__ = []
-    sys.modules["pmarlo.ml.deeptica"] = deeptica_pkg
-
-    whitening_mod = types.ModuleType("pmarlo.ml.deeptica.whitening")
-
-    def _identity_transform(Y, mean, W, already_applied):
-        return np.asarray(Y, dtype=np.float64)
-
-    whitening_mod.apply_output_transform = _identity_transform
-    sys.modules["pmarlo.ml.deeptica.whitening"] = whitening_mod
-    deeptica_pkg.apply_output_transform = _identity_transform
-
-    finalize_mod = importlib.import_module("pmarlo.workflow.finalize")
-    reweight_mod = importlib.import_module("pmarlo.reweight")
-    AnalysisConfig = finalize_mod.AnalysisConfig
-    finalize_dataset = finalize_mod.finalize_dataset
-    AnalysisReweightMode = reweight_mod.AnalysisReweightMode
-    return AnalysisConfig, finalize_dataset, AnalysisReweightMode
+from pmarlo.reweight import AnalysisReweightMode
+from pmarlo.workflow.finalize import AnalysisConfig, finalize_dataset
 
 
 def _biased_dataset(seed: int = 0) -> dict:
@@ -87,7 +46,6 @@ def _biased_dataset(seed: int = 0) -> dict:
 
 
 def test_finalize_reweight_changes_stationary_and_fes():
-    AnalysisConfig, finalize_dataset, AnalysisReweightMode = _prepare_modules()
     dataset = _biased_dataset()
 
     cfg_none = AnalysisConfig(
@@ -131,7 +89,6 @@ def test_finalize_reweight_changes_stationary_and_fes():
 
 
 def test_finalize_requires_thermo_information():
-    AnalysisConfig, finalize_dataset, AnalysisReweightMode = _prepare_modules()
     dataset = {
         "splits": {
             "train": {

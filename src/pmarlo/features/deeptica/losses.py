@@ -115,14 +115,10 @@ class VAMP2Loss(nn.Module):
         L0, C00 = self._stable_cholesky(C00, eye)
         Lt, Ctt = self._stable_cholesky(Ctt, eye)
 
-        try:
-            left = torch.linalg.solve_triangular(L0, C0t, upper=False)
-            right = torch.linalg.solve_triangular(
-                Lt, left.transpose(-1, -2), upper=False
-            )
-        except AttributeError:  # pragma: no cover - legacy torch fallback
-            left = torch.triangular_solve(C0t, L0, upper=False)[0]
-            right = torch.triangular_solve(left.transpose(-1, -2), Lt, upper=False)[0]
+        left = torch.linalg.solve_triangular(L0, C0t, upper=False)
+        right = torch.linalg.solve_triangular(
+            Lt, left.transpose(-1, -2), upper=False
+        )
         K = right.transpose(-1, -2)
 
         score = torch.sum(K * K)

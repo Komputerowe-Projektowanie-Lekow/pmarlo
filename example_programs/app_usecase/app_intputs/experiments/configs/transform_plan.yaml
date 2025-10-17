@@ -15,7 +15,7 @@ experiments:
       drop_nan: true
     deeptica:
       enabled: true
-      lag_fallback: [6, 5, 4, 3]
+      lag: 3
       min_pairs: 2500
       train:
         epochs: 80
@@ -48,7 +48,7 @@ experiments:
       drop_nan: true
     deeptica:
       enabled: true
-      lag_fallback: [8, 6, 5, 4]
+      lag: 4
       min_pairs: 4000
       train:
         epochs: 100
@@ -81,7 +81,7 @@ experiments:
       drop_nan: true
     deeptica:
       enabled: true
-      lag_fallback: [6, 5, 4]
+      lag: 4
       min_pairs: 3500
       skip_on_failure: true
       train:

@@ -106,29 +106,6 @@ def _resolve_deeptica(transform_cfg: Mapping[str, Any]) -> tuple[bool, Dict[str,
     cfg = dict(deeptica_cfg)
     enabled = bool(cfg.pop("enabled", True))
 
-    if "lag_fallback" in cfg:
-        fallback = cfg["lag_fallback"]
-        cleaned: list[int] = []
-        if isinstance(fallback, (list, tuple)):
-            for entry in fallback:
-                try:
-                    candidate = int(entry)
-                except (TypeError, ValueError):
-                    continue
-                if candidate > 0:
-                    cleaned.append(candidate)
-        elif fallback is not None:
-            try:
-                candidate = int(fallback)
-            except (TypeError, ValueError):
-                candidate = None
-            if candidate and candidate > 0:
-                cleaned.append(int(candidate))
-        if cleaned:
-            cfg["lag_fallback"] = cleaned
-        else:
-            cfg.pop("lag_fallback", None)
-
     if "skip_on_failure" in cfg:
         cfg["skip_on_failure"] = bool(cfg["skip_on_failure"])
 
@@ -501,7 +478,6 @@ def _sanitize_deeptica_payload(raw: Mapping[str, Any]) -> Dict[str, Any]:
         "pairs_total",
         "warnings",
         "lag_candidates",
-        "lag_fallback",
     ]
     for field in fields:
         if field in raw:

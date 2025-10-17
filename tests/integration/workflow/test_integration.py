@@ -35,16 +35,14 @@ class TestPackageImports:
         assert callable(Simulation)
         assert callable(MarkovStateModel)
         assert callable(Pipeline)
-        # LegacyPipeline removed
-
     def test_convenience_function_import(self):
         """Test importing convenience functions."""
         from pmarlo.transform.pipeline import run_pmarlo
 
         assert callable(run_pmarlo)
 
-    def test_legacy_function_imports(self):
-        """Test importing legacy functions."""
+    def test_removed_function_imports(self):
+        """Test importing removed functions."""
         from pmarlo.replica_exchange.simulation import (
             build_transition_model,
             feature_extraction,

@@ -30,7 +30,7 @@ remember that each matrix experiment should follow a specific path based on the 
 ## Data Scale
 - Aim for **≥ 25k–50k total transitions** per experiment so that guardrail thresholds (e.g. `total_pairs_lt_5000`) are not triggered spuriously. A practical recipe is **5 shards × 10k frames** each (with lag > 1) – or 5 × 4k frames if your discretization yields very dense transitions. This ensures robust statistics for MSM and adequate data for reweighting.
 - Fix RNG seeds everywhere (simulation mocker, train/val splits, model inits) to ensure reproducibility. Deterministic outputs will make it easier to detect regressions: any deviation in weights, CVs, or FES beyond tolerance will signal a change in behavior.
-- **DeepTICA considerations**: Ensure each shard is long enough to yield time-lagged pairs for the ML CV training. In practice, each shard’s length should exceed the chosen lag time (e.g. lag 5 frames) so that `pairs_total > 0`. Starting with a small lag (e.g. 2–5) is recommended to guarantee some pairs on all shards. If `pairs_total == 0` for a given lag, consider aggregating more frames or using a shorter lag; the pipeline’s fallback ladder (if configured) will try smaller lags automatically. By having at least a few thousand pairs, we improve the stability of DeepTICA training and subsequent FES/MSM analysis.
+- **DeepTICA considerations**: Ensure each shard is long enough to yield time-lagged pairs for the ML CV training. In practice, each shard’s length should exceed the chosen lag time (e.g. lag 5 frames) so that `pairs_total > 0`. Starting with a small lag (e.g. 2–5) is recommended to guarantee some pairs on all shards. If `pairs_total == 0` for a given lag, aggregate more frames or explicitly configure a smaller lag; the pipeline now fails fast instead of auto-selecting alternatives. By having at least a few thousand pairs, we improve the stability of DeepTICA training and subsequent FES/MSM analysis.
 
 ## structure
 ```
@@ -49,7 +49,7 @@ app_usecase/app/app_inputs/
    │  ├─ ...
    │  └─ manifest.yaml
    ├─ configs/
-   │  ├─ transform_plan.yaml          # includes DeepTICA settings (e.g. lag time, fallback)
+  │  ├─ transform_plan.yaml          # includes DeepTICA settings (e.g. lag time)
    │  ├─ discretize.yaml
    │  ├─ reweighter.yaml              # MBAR/TRAM knobs + β grid (T ladder definition)
    │  └─ msm.yaml

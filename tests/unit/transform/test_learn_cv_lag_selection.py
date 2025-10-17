@@ -3,8 +3,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-mlc = pytest.importorskip("mlcolvar")
-torch = pytest.importorskip("torch")
+pytest.importorskip("mlcolvar")
+pytest.importorskip("torch")
 
 
 def _make_dataset_with_shards(lengths: list[int], k: int = 3, T: float = 300.0):
@@ -35,20 +35,18 @@ def _make_dataset_with_shards(lengths: list[int], k: int = 3, T: float = 300.0):
     }
 
 
-def test_lag_fallback_enables_training_when_smaller_lag_works():
+def test_learn_cv_uses_requested_lag_only():
     from pmarlo.transform.build import AppliedOpts, BuildOpts, build_result
     from pmarlo.transform.plan import TransformPlan, TransformStep
 
-    # Shards are too short for lag=5 but are sufficient for lag=2
-    ds = _make_dataset_with_shards([3, 3], k=3)
+    ds = _make_dataset_with_shards([32, 32], k=3)
     plan = TransformPlan(
         steps=(
             TransformStep(
                 "LEARN_CV",
                 {
                     "method": "deeptica",
-                    "lag": 5,
-                    "lag_fallback": [5, 4, 3, 2, 1],
+                    "lag": 3,
                     "n_out": 2,
                     "hidden": (8, 8),
                     "max_epochs": 1,
@@ -58,7 +56,7 @@ def test_lag_fallback_enables_training_when_smaller_lag_works():
             ),
         )
     )
-    applied = AppliedOpts(bins={"cv1": 8, "cv2": 8}, lag=2)
+    applied = AppliedOpts(bins={"cv1": 8, "cv2": 8}, lag=3)
     opts = BuildOpts(seed=11, temperature=300.0)
 
     res = build_result(ds, opts=opts, plan=plan, applied=applied)
@@ -66,11 +64,10 @@ def test_lag_fallback_enables_training_when_smaller_lag_works():
     assert isinstance(art, dict)
     if not art.get("applied", False):
         pytest.skip("DeepTICA extras unavailable")
-    assert art.get("applied") is True
-    assert art.get("reason") == "ok"
-    # Confirm fallback used a lag <= 2
-    assert int(art.get("lag_used", 999)) <= 2
-    # Ladder recorded and attempts present
-    assert isinstance(art.get("lag_fallback"), list)
-    at = art.get("attempts")
-    assert isinstance(at, list) and len(at) >= 2
+
+    assert art.get("lag_used") == 3
+    assert art.get("lag_candidates") == [3]
+    assert "lag_fallback" not in art
+    attempts = art.get("attempts")
+    assert isinstance(attempts, list) and len(attempts) == 1
+    assert attempts[0].get("lag") == 3

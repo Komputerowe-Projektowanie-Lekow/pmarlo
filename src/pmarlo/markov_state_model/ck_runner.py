@@ -293,7 +293,7 @@ def run_ck(
         logger.info("Macrostate analysis succeeded")
         _save_outputs_and_plot(result, out)
         return result
-    logger.info("Attempting microstate fallback analysis")
+    logger.info("Attempting microstate-only analysis")
     _perform_micro_analysis(
         filtered_trajs, C1_micro, lag_time, top_n_micro, min_trans, factors_list, result
     )

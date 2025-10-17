@@ -28,11 +28,9 @@ def test_apply_whitening_applies_transform_and_sets_flag() -> None:
     assert metadata["output_transform_applied"] is True
 
 
-def test_apply_whitening_returns_original_when_metadata_missing() -> None:
+def test_apply_whitening_raises_when_metadata_missing() -> None:
     values = np.array([[2.0, 5.0]], dtype=np.float64)
     metadata = {"output_mean": None, "output_transform": None}
 
-    whitened, applied = apply_whitening_from_metadata(values, metadata)
-
-    np.testing.assert_allclose(whitened, values)
-    assert applied is False
+    with pytest.raises(ValueError):
+        apply_whitening_from_metadata(values, metadata)

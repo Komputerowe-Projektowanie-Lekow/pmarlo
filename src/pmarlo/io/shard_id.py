@@ -19,7 +19,7 @@ _REPLICA_PATTERN = re.compile(r"replica_(?P<rep>\d+)", re.IGNORECASE)
 
 @dataclass(frozen=True)
 class ShardId:
-    """Lightweight shard identifier that mirrors the legacy API surface."""
+    """Lightweight shard identifier mirroring the previous API surface."""
 
     run_id: str
     source_kind: str

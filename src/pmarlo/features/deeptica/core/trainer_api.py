@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import os
-import shutil
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -18,6 +16,11 @@ from torch import nn
 
 from pmarlo import constants as const
 from pmarlo.utils.path_utils import ensure_directory
+
+from pmarlo.ml.deeptica.trainer import (
+    CurriculumConfig,
+    DeepTICACurriculumTrainer,
+)
 
 from .dataset import split_sequences
 from .history import vamp2_proxy
@@ -71,9 +74,9 @@ def train_deeptica_pipeline(
     weights_arr = np.asarray(pair_info.weights, dtype=np.float32).reshape(-1)
     pair_diagnostics = dict(pair_info.diagnostics)
 
-    fallback_lag = int(prep.tau_schedule[-1])
+    requested_lag = int(prep.tau_schedule[-1])
     usable_pairs, coverage, short_shards, total_possible, lag_used = (
-        _log_pair_diagnostics(pair_diagnostics, len(arrays), fallback_lag)
+        _log_pair_diagnostics(pair_diagnostics, len(arrays), requested_lag)
     )
 
     net.eval()
@@ -84,46 +87,21 @@ def train_deeptica_pipeline(
     sequences = split_sequences(prep.Z, lengths)
 
     history: dict[str, Any]
-    history_source = "curriculum_trainer"
     summary_dir: Optional[Path] = None
 
-    try:
-        from pmarlo.ml.deeptica.trainer import (
-            CurriculumConfig,
-            DeepTICACurriculumTrainer,
-        )
-
-        curriculum_cfg = _build_curriculum_config(
-            cfg,
-            prep.tau_schedule,
-            run_stamp=f"{int(t0)}-{os.getpid()}",
-            config_cls=CurriculumConfig,
-        )
-        summary_dir = (
-            Path(curriculum_cfg.checkpoint_dir)
-            if curriculum_cfg.checkpoint_dir is not None
-            else None
-        )
-        trainer = DeepTICACurriculumTrainer(net, curriculum_cfg)
-        history = trainer.fit(sequences)
-    except Exception as exc:  # pragma: no cover - depends on optional extras
-        logger.warning(
-            "Curriculum trainer unavailable; falling back to legacy .fit(): %s",
-            exc,
-        )
-        history = {}
-        history_source = "legacy-fit"
-        _legacy_fit_model(
-            net,
-            cfg,
-            prep.Z,
-            prep.tau_schedule,
-            idx_t,
-            idx_tau,
-            weights_arr,
-        )
-
-    _cleanup_legacy_artifacts(Path.cwd())
+    curriculum_cfg = _build_curriculum_config(
+        cfg,
+        prep.tau_schedule,
+        run_stamp=f"{int(t0)}-{os.getpid()}",
+        config_cls=CurriculumConfig,
+    )
+    summary_dir = (
+        Path(curriculum_cfg.checkpoint_dir)
+        if curriculum_cfg.checkpoint_dir is not None
+        else None
+    )
+    trainer = DeepTICACurriculumTrainer(net, curriculum_cfg)
+    history = trainer.fit(sequences)
 
     net, whitening_info = apply_output_whitening(net, prep.Z, idx_tau, apply=False)
     net.eval()
@@ -142,7 +120,7 @@ def train_deeptica_pipeline(
     history.setdefault("val_loss_curve", [])
     history.setdefault("val_score_curve", [])
     history.setdefault("grad_norm_curve", [])
-    history["history_source"] = history_source
+    history["history_source"] = "curriculum_trainer"
     history["wall_time_s"] = float(history.get("wall_time_s", time.time() - t0))
     history["vamp2_before"] = float(obj_before)
     history["vamp2_after"] = float(obj_after)
@@ -213,13 +191,13 @@ def _forward_to_numpy(net: nn.Module, data: np.ndarray) -> np.ndarray:
 def _log_pair_diagnostics(
     diagnostics: dict[str, Any],
     n_shards: int,
-    fallback_lag: int,
+    requested_lag: int,
 ) -> tuple[int, float, list[int], int, int]:
     usable_pairs = int(diagnostics.get("usable_pairs", 0))
     coverage = float(diagnostics.get("pair_coverage", 0.0))
     short_shards = list(diagnostics.get("short_shards", []))
     total_possible = int(diagnostics.get("total_possible_pairs", 0))
-    lag_used = int(diagnostics.get("lag_used", fallback_lag))
+    lag_used = int(diagnostics.get("lag_used", requested_lag))
 
     if short_shards:
         logger.warning(
@@ -317,45 +295,6 @@ def _build_curriculum_config(
     )
     curriculum_cfg = config_cls(**cfg_kwargs)
     return curriculum_cfg
-
-
-def _legacy_fit_model(
-    net: nn.Module,
-    cfg: Any,
-    Z: np.ndarray,
-    tau_schedule: tuple[int, ...],
-    idx_t: np.ndarray,
-    idx_tau: np.ndarray,
-    weights: np.ndarray,
-) -> None:
-    if not hasattr(net, "fit"):
-        return
-    try:
-        net.fit(  # type: ignore[attr-defined]
-            Z,
-            lagtime=int(tau_schedule[-1]),
-            idx_t=np.asarray(idx_t, dtype=int),
-            idx_tlag=np.asarray(idx_tau, dtype=int),
-            weights=np.asarray(weights, dtype=np.float32),
-            batch_size=int(getattr(cfg, "batch_size", 256)),
-            max_epochs=int(getattr(cfg, "max_epochs", 200)),
-            early_stopping_patience=int(getattr(cfg, "early_stopping", 25)),
-            shuffle=False,
-        )
-    except TypeError:
-        try:
-            net.fit(  # type: ignore[attr-defined]
-                Z,
-                lagtime=int(tau_schedule[-1]),
-                batch_size=int(getattr(cfg, "batch_size", 256)),
-                max_epochs=int(getattr(cfg, "max_epochs", 200)),
-            )
-        except Exception as exc:  # pragma: no cover - diagnostic only
-            logger.warning("Legacy DeepTICA fit fallback failed: %s", exc)
-    except Exception as exc:  # pragma: no cover - diagnostic only
-        logger.warning("Legacy DeepTICA fit raised an error: %s", exc)
-
-
 def _compute_output_variance(outputs: np.ndarray) -> Optional[list[float]]:
     try:
         if outputs.size == 0:
@@ -445,27 +384,3 @@ def _write_training_summary(
         )
     except Exception:  # pragma: no cover - diagnostic only
         pass
-
-
-def _cleanup_legacy_artifacts(base_dir: Path) -> None:
-    """Remove legacy Deeptica artefacts (runs/tmp_models) if they linger."""
-
-    runs_root = base_dir / "runs"
-    removed_tb = False
-    for name in ("deeptica", "deeptica_tb"):
-        candidate = runs_root / name
-        if candidate.exists():
-            shutil.rmtree(candidate, ignore_errors=True)
-            removed_tb = True
-    if removed_tb:
-        with contextlib.suppress(FileNotFoundError, OSError):
-            if not any(runs_root.iterdir()):
-                runs_root.rmdir()
-
-    deeptica_tmp = base_dir / "tmp_models" / "deeptica"
-    if deeptica_tmp.exists():
-        shutil.rmtree(deeptica_tmp, ignore_errors=True)
-        parent = deeptica_tmp.parent
-        with contextlib.suppress(FileNotFoundError, OSError):
-            if not any(parent.iterdir()):
-                parent.rmdir()

@@ -107,7 +107,7 @@ def run_conformation_finder(
                 }
             )
 
-    # Use builder-produced FES if available; fallback to API helper
+    # Use builder-produced FES if available; otherwise call the API helper
     if result.fes is not None:
         F = result.fes
         fes_names = tuple(result.metadata.fes.get("names", ("cv0", "cv1")))  # type: ignore[assignment]

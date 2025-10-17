@@ -1126,6 +1126,13 @@ class DeepTICACurriculumTrainer:
 
     @staticmethod
     def _resolve_device(spec: str) -> str:
-        if spec.lower() == "auto":
-            return "cuda" if torch.cuda.is_available() else "cpu"
-        return spec
+        resolved = spec.strip()
+        if resolved.lower() == "auto":
+            raise ValueError(
+                "Automatic device selection is no longer supported; specify an explicit device"
+            )
+        if resolved.startswith("cuda") and not torch.cuda.is_available():
+            raise RuntimeError(
+                "CUDA device requested but torch reports no available CUDA runtime"
+            )
+        return resolved
