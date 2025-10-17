@@ -43,9 +43,12 @@
 - Normalized DeepTICA pair diagnostics to cap usable pair counts by actual frame counts, keeping coverage ≤100% in trainer telemetry.
 - Added explicit `tomli` dependency and switched tooling imports away from `tomllib` so Python 3.10 environments can execute parity checks.
 - Hardened LEARN_CV failure handling to detect missing `lightning`/`pytorch_lightning` installations and emit structured `missing_dependency:*` skip records instead of aborting the build.
+- **Fixed lazy loading import error for CV functions**: Updated `__getattr__` in `src/pmarlo/features/deeptica/__init__.py` to check standalone exports (like `load_cv_model_info`) before trying to load from `_full` module, preventing "cannot import name" errors
+- **Enhanced CV integration error handling**: Added comprehensive logging and warnings in `backend.py` for missing openmm-torch, CPU-only PyTorch performance warnings, and graceful degradation when CV models can't be loaded
 - **Fixed GitHub Actions test collection failure**: Added `tests/integration` to `testpaths` in `pyproject.toml` and added `@pytest.mark.integration` markers to all integration test files to enable proper test discovery.
 - **Fixed GitHub Actions pytest exit code 5 issue**: Updated all GitHub Actions workflow test commands to explicitly specify test directories (`tests/unit tests/devtools tests/integration`) instead of relying on marker filters alone, preventing pytest from collecting unmarked tests incorrectly.
 - **Fixed tomli import error in Python 3.11+**: Updated `scripts/check_extras_parity.py` to use `tomllib` from the standard library for Python 3.11+ instead of the external `tomli` package, fixing test collection errors in devtools tests.
+- Restored Poetry package metadata (`name`, `description`, `authors`) in `[tool.poetry]` to satisfy package-mode CI checks while keeping it synchronized with the canonical `[project]` metadata.
 
 ### Testing
 - Loaded every example shard with `pmarlo.data.shard_io.load_shard_meta`.
