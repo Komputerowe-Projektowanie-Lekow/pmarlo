@@ -1,3 +1,17 @@
+<a id='changelog-0.101.0'></a>
+# 0.101.0 — 2025-10-16
+
+## Fixed
+- Replaced custom weighted mean and variance calculations in `analysis.fes` with NumPy's `average` implementation to leverage built-in numerical stability.
+- Reused `numpy.cov` in canonical correlation diagnostics and MSM reduction fallbacks to avoid maintaining manual covariance code.
+- Replaced the custom NaN-safe centering in `markov_state_model.reduction._preprocess` with a scikit-learn pipeline for consistent feature scaling.
+- Replaced the bespoke DeeptiCA whitening covariance logic with scikit-learn's `ShrunkCovariance` and SciPy-based transforms to rely on well-tested numerical routines.
+- Replaced the DeepTICA StandardScaler fallback with scikit-learn's implementation to leverage the maintained feature set.
+
+
+## Testing
+- Added unit tests that confirm the TICA, VAMP, and diagnostics fallbacks call into `numpy.cov`.
+
 <a id='changelog-0.100.0'></a>
 # 0.100.0 — 2025-10-16
 

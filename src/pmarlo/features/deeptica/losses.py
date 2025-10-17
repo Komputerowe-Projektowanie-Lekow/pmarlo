@@ -57,22 +57,24 @@ class VAMP2Loss(nn.Module):
 
         if weights is None:
             w = torch.full(
-                (z0.shape[0], 1), 1.0 / float(z0.shape[0]), device=device, dtype=dtype
+                (z0.shape[0],), 1.0 / float(z0.shape[0]), device=device, dtype=dtype
             )
         else:
-            w = weights.reshape(-1, 1).to(device=device, dtype=dtype)
+            w = weights.reshape(-1).to(device=device, dtype=dtype)
             w = torch.clamp(w, min=0.0)
             total = torch.clamp(w.sum(), min=const.NUMERIC_MIN_POSITIVE)
             w = w / total
 
-        mean0 = torch.sum(z0 * w, dim=0, keepdim=True)
-        meant = torch.sum(zt * w, dim=0, keepdim=True)
-        z0_c = z0 - mean0
-        zt_c = zt - meant
+        w_col = w.reshape(-1, 1)
+        mean0 = torch.sum(z0 * w_col, dim=0, keepdim=True)
+        meant = torch.sum(zt * w_col, dim=0, keepdim=True)
 
-        C00 = z0_c.T @ (z0_c * w)
-        Ctt = zt_c.T @ (zt_c * w)
-        C0t = z0_c.T @ (zt_c * w)
+        stacked = torch.cat((z0, zt), dim=1)
+        cov = torch.cov(stacked.T, correction=0, aweights=w)
+        dim = z0.shape[-1]
+        C00 = cov[:dim, :dim]
+        Ctt = cov[dim:, dim:]
+        C0t = cov[:dim, dim:]
 
         diag_c00 = torch.diagonal(C00, dim1=-2, dim2=-1)
         diag_ctt = torch.diagonal(Ctt, dim1=-2, dim2=-1)

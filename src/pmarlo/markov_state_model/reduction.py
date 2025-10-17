@@ -12,19 +12,69 @@ try:  # pragma: no cover - optional SciPy dependency
 except Exception:  # pragma: no cover - SciPy optional
     scipy_eigh = None
 
+try:  # pragma: no cover - scikit-learn is an optional heavy dependency at runtime
+    from sklearn.impute import SimpleImputer
+    from sklearn.preprocessing import StandardScaler
+except Exception:  # pragma: no cover - keep working if scikit-learn missing
+    SimpleImputer = None
+    StandardScaler = None
 
-def _preprocess(X: np.ndarray, scale: bool = True) -> np.ndarray:
-    """Center and optionally scale features in a NaN-safe manner."""
-    Xp = np.asarray(X, dtype=float)
-    mean = np.nanmean(Xp, axis=0, keepdims=True)
+
+def _nan_safe_manual_preprocess(X: np.ndarray, scale: bool) -> np.ndarray:
+    """Fallback preprocessing using the previous manual implementation."""
+
+    mean = np.nanmean(X, axis=0, keepdims=True)
     mean = cast(np.ndarray, np.nan_to_num(mean, nan=0.0))
-    Xp = cast(np.ndarray, np.nan_to_num(Xp - mean, nan=0.0))
+    centered = cast(np.ndarray, np.nan_to_num(X - mean, nan=0.0))
     if scale:
-        std = np.nanstd(Xp, axis=0, keepdims=True)
+        std = np.nanstd(centered, axis=0, keepdims=True)
         std = np.nan_to_num(std, nan=1.0)
         std[std == 0] = 1.0
-        Xp = Xp / std
-    return np.nan_to_num(Xp, nan=0.0)
+        centered = centered / std
+    return np.nan_to_num(centered, nan=0.0)
+
+
+def _preprocess(X: np.ndarray, scale: bool = True) -> np.ndarray:
+    """Center and optionally scale features using scikit-learn with NaN handling."""
+
+    Xp = np.asarray(X, dtype=float)
+
+    if Xp.size == 0:
+        return cast(np.ndarray, np.zeros_like(Xp, dtype=float))
+
+    # ``StandardScaler`` requires 2D input. Preserve the original dimensionality
+    # so callers receive the same shape that they passed in.
+    squeeze_1d = False
+    if Xp.ndim == 1:
+        Xp = Xp.reshape(-1, 1)
+        squeeze_1d = True
+
+    if SimpleImputer is None or StandardScaler is None:
+        result = _nan_safe_manual_preprocess(Xp, scale=scale)
+    else:
+        imputer = SimpleImputer(strategy="mean")
+        try:
+            X_imputed = imputer.fit_transform(Xp)
+        except ValueError:
+            # Columns that are entirely NaN raise ``ValueError`` for ``strategy='mean'``.
+            # Fall back to a constant fill that mirrors the legacy behaviour of
+            # treating missing values as zeros.
+            imputer = SimpleImputer(strategy="constant", fill_value=0.0)
+            X_imputed = imputer.fit_transform(Xp)
+
+        scaler = StandardScaler(with_mean=True, with_std=scale)
+        try:
+            result = scaler.fit_transform(X_imputed)
+        except ValueError:
+            # If scikit-learn encounters an edge case (e.g. a single sample), use the
+            # stable manual routine as a safety net.
+            result = _nan_safe_manual_preprocess(X_imputed, scale=scale)
+        else:
+            result = np.nan_to_num(result, nan=0.0)
+
+    if squeeze_1d:
+        result = result.reshape(-1)
+    return cast(np.ndarray, result)
 
 
 def pca_reduce(
@@ -118,6 +168,78 @@ def tica_reduce(
     # Simple manual TICA implementation as last resort
     return _manual_tica(X_prep, lag=lag, n_components=n_components)
 
+def _covariance_block(
+    X_t: np.ndarray,
+    X_t_lag: np.ndarray,
+    *,
+    regularization: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute covariance and cross-covariance matrices via :func:`numpy.cov`.
+
+    Parameters
+    ----------
+    X_t, X_t_lag:
+        Arrays containing aligned samples ``(n_frames, n_features)`` representing
+        ``X(t)`` and ``X(t + lag)`` respectively.
+    regularization:
+        Optional diagonal term added to the auto-covariance blocks.  This mirrors
+        the behaviour of the manual fallbacks which previously sprinkled
+        ``epsilon`` to stabilise inverses.
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray, np.ndarray]
+        ``(C_00, C_0t, C_tt)`` where ``C_00`` and ``C_tt`` are the auto-covariance
+        matrices for ``X_t`` and ``X_t_lag`` and ``C_0t`` is the cross-covariance
+        between them.
+    """
+
+    X_t = np.asarray(X_t, dtype=float)
+    X_t_lag = np.asarray(X_t_lag, dtype=float)
+    n_features = X_t.shape[1]
+
+    # ``np.cov`` expects observations along rows when ``rowvar=False``.
+    stacked = np.hstack((X_t, X_t_lag))
+    cov_full = np.cov(stacked, rowvar=False)
+
+    C_00 = np.array(cov_full[:n_features, :n_features], copy=False)
+    C_0t = np.array(cov_full[:n_features, n_features:], copy=False)
+    C_tt = np.array(cov_full[n_features:, n_features:], copy=False)
+
+    if regularization:
+        reg = regularization * np.eye(n_features)
+        C_00 = C_00 + reg
+        C_tt = C_tt + reg
+
+    return C_00, C_0t, C_tt
+
+
+def _lagged_covariances(
+    X: np.ndarray, lag: int, *, epsilon: float = 0.0, ddof: int | None = None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return lagged covariance blocks computed via :func:`numpy.cov`."""
+
+    X_t = X[:-lag]
+    X_t_lag = X[lag:]
+    n_features = X.shape[1]
+    if X_t.shape[0] <= 1:
+        zeros = np.zeros((n_features, n_features), dtype=X.dtype)
+        if epsilon:
+            eye = np.eye(n_features, dtype=X.dtype)
+            return zeros + epsilon * eye, zeros + epsilon * eye, zeros
+        return zeros, zeros, zeros
+
+    combined = np.concatenate((X_t, X_t_lag), axis=1)
+    cov = np.cov(combined, rowvar=False, ddof=ddof)
+    C_00 = cov[:n_features, :n_features]
+    C_11 = cov[n_features:, n_features:]
+    C_01 = cov[:n_features, n_features:]
+    if epsilon:
+        eye = np.eye(n_features, dtype=C_00.dtype)
+        C_00 = C_00 + epsilon * eye
+        C_11 = C_11 + epsilon * eye
+    return C_00, C_11, C_01
+
 
 def _manual_tica(X: np.ndarray, lag: int = 1, n_components: int = 2) -> np.ndarray:
     """Manual TICA implementation using generalized eigenvalue problem."""
@@ -127,15 +249,7 @@ def _manual_tica(X: np.ndarray, lag: int = 1, n_components: int = 2) -> np.ndarr
             f"Lag time {lag} must be less than number of frames {n_frames}"
         )
 
-    # Compute covariance matrices
-    X_t = X[:-lag]  # X(t)
-    X_t_lag = X[lag:]  # X(t+lag)
-
-    # Instantaneous covariance C_00
-    C_00 = np.cov(X_t.T)
-
-    # Time-lagged covariance C_0t
-    C_0t = np.cov(X_t.T, X_t_lag.T)[: X.shape[1], X.shape[1] :]
+    C_00, _, C_0t = _lagged_covariances(X, lag, ddof=None)
 
     # Solve generalized eigenvalue problem
     try:
@@ -221,14 +335,7 @@ def _manual_vamp(
             f"Lag time {lag} must be less than number of frames {n_frames}"
         )
 
-    # Split data
-    X_t = X[:-lag]  # X(t)
-    X_t_lag = X[lag:]  # X(t+lag)
-
-    # Compute covariance matrices with regularization
-    C_00 = np.cov(X_t.T) + epsilon * np.eye(X.shape[1])
-    C_11 = np.cov(X_t_lag.T) + epsilon * np.eye(X.shape[1])
-    C_01 = np.cov(X_t.T, X_t_lag.T)[: X.shape[1], X.shape[1] :]
+    C_00, C_11, C_01 = _lagged_covariances(X, lag, epsilon=epsilon, ddof=None)
 
     try:
         # VAMP-2 score optimization via SVD
@@ -242,7 +349,7 @@ def _manual_vamp(
         U, s, Vt = np.linalg.svd(K, full_matrices=False)
 
         # Transform functions
-        psi = np.linalg.solve(L_00, U[:, :n_components].T).T
+        psi = np.linalg.solve(L_00, U[:, :n_components])
 
         # Apply transformation
         return X @ psi
