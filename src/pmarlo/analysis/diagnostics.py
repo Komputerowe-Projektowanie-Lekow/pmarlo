@@ -4,6 +4,7 @@ import logging
 from typing import Any, Dict, Mapping, MutableMapping, Sequence
 
 import numpy as np
+from sklearn.cross_decomposition import CCA
 
 from pmarlo import constants as const
 
@@ -85,15 +86,19 @@ def _center(X: np.ndarray) -> np.ndarray:
 
 
 def _covariance(Xc: np.ndarray, n: int) -> np.ndarray:
-    # Use unbiased denominator (n-1) with guard for numerical stability
-    return (Xc.T @ Xc) / max(n - 1, 1)
+    """Delegate covariance estimation to :func:`numpy.cov` for robustness."""
+
+    if Xc.size == 0:
+        return np.zeros((Xc.shape[1], Xc.shape[1]), dtype=Xc.dtype)
+    if n <= 1:
+        return np.zeros((Xc.shape[1], Xc.shape[1]), dtype=Xc.dtype)
+    return np.cov(Xc, rowvar=False, ddof=1)
 
 
 def _inv_symmetric_sqrt(mat: np.ndarray, regularisation: float) -> np.ndarray:
     eigvals, eigvecs = np.linalg.eigh(mat + regularisation * np.eye(mat.shape[0]))
     eigvals = np.clip(eigvals, a_min=regularisation, a_max=None)
     return eigvecs @ np.diag(1.0 / np.sqrt(eigvals)) @ eigvecs.T
-
 
 def _canonical_correlations(
     X: np.ndarray,
@@ -103,41 +108,37 @@ def _canonical_correlations(
 ) -> list[float]:
     """Compute canonical correlations between two 2D arrays.
 
-    Implements a small, SOLID-style pipeline:
-      * Validation (_validate_canonical_inputs)
-      * Centering (_center)
-      * Covariance computation (_covariance)
-      * Whitening (_inv_symmetric_sqrt)
-      * SVD decomposition (np.linalg.svd)
-
     Raises
     ------
     InsufficientSamplesError
         If fewer than two paired samples are available.
     CanonicalCorrelationError
-        If numerical linear algebra fails (eigendecomposition / SVD) or inputs invalid.
+        If numerical linear algebra fails (sklearn CCA) or inputs invalid.
     """
     n = _validate_canonical_inputs(X, Y)
     # Truncate to common length
     X = X[:n]
     Y = Y[:n]
-    Xc = _center(X)
-    Yc = _center(Y)
-    Sxx = _covariance(Xc, n)
-    Syy = _covariance(Yc, n)
-    Sxy = (Xc.T @ Yc) / max(n - 1, 1)
+    n_components = min(X.shape[1], Y.shape[1], n)
+    if n_components <= 0:
+        return []
     try:
-        inv_sqrt_x = _inv_symmetric_sqrt(Sxx, regularisation)
-        inv_sqrt_y = _inv_symmetric_sqrt(Syy, regularisation)
-    except np.linalg.LinAlgError as exc:  # pragma: no cover - rare numerical failure
-        raise CanonicalCorrelationError(f"Eigen decomposition failed: {exc}") from exc
-    M = inv_sqrt_x @ Sxy @ inv_sqrt_y
-    try:
-        _, s, _ = np.linalg.svd(M, full_matrices=False)
-    except np.linalg.LinAlgError as exc:  # pragma: no cover - rare numerical failure
-        raise CanonicalCorrelationError(f"SVD failed: {exc}") from exc
-    s = np.clip(s, 0.0, 1.0)
-    return [float(val) for val in s]
+        cca = CCA(n_components=n_components, scale=False, max_iter=5000)
+        X_c, Y_c = cca.fit_transform(X, Y)
+    except ValueError as exc:  # pragma: no cover - validation/fit failures are rare
+        raise CanonicalCorrelationError(f"CCA fitting failed: {exc}") from exc
+    correlations: list[float] = []
+    for idx in range(n_components):
+        x_comp = X_c[:, idx]
+        y_comp = Y_c[:, idx]
+        numerator = float(np.dot(x_comp, y_comp))
+        denominator = float(np.linalg.norm(x_comp) * np.linalg.norm(y_comp))
+        if denominator <= regularisation:
+            corr = 0.0
+        else:
+            corr = numerator / denominator
+        correlations.append(float(np.clip(abs(corr), 0.0, 1.0)))
+    return correlations
 
 
 # --- Autocorrelation helpers (refactored for SOLID) ------------------------------

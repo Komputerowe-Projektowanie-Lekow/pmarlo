@@ -4,6 +4,8 @@ from typing import Any, Iterable
 
 import numpy as np
 import torch  # type: ignore
+from scipy.linalg import eigh, eigvalsh
+from sklearn.covariance import ShrunkCovariance
 
 from pmarlo import constants as const
 
@@ -29,6 +31,9 @@ __all__ = [
     "WhitenWrapper",
     "PrePostWrapper",
 ]
+
+
+_DEFAULT_SHRINKAGE = 0.02
 
 
 def resolve_activation_module(name: str):
@@ -127,15 +132,12 @@ def apply_output_whitening(
 
     mean = np.mean(outputs, axis=0)
     centered = outputs - mean
-    n = max(1, centered.shape[0] - 1)
-    C0 = (centered.T @ centered) / float(n)
 
-    C0_reg = _regularize(C0)
-    eigvals, eigvecs = np.linalg.eigh(C0_reg)
-    eigvals = np.clip(eigvals, max(eig_floor, const.NUMERIC_MIN_EIGEN_CLIP), None)
-    inv_sqrt = eigvecs @ np.diag(1.0 / np.sqrt(eigvals)) @ eigvecs.T
+    covariance = _estimate_covariance(centered)
+    inv_sqrt, cond_c00 = _derive_whitening_transform(
+        covariance, eig_floor=eig_floor
+    )
     output_var = centered.var(axis=0, ddof=1).astype(float).tolist()
-    cond_c00 = float(eigvals.max() / eigvals.min())
 
     var_zt = output_var
     cond_ctt = None
@@ -148,11 +150,10 @@ def apply_output_whitening(
                 tau_out = tau_out.detach().cpu().numpy()
         tau_center = tau_out - mean
         var_zt = tau_center.var(axis=0, ddof=1).astype(float).tolist()
-        n_tau = max(1, tau_center.shape[0] - 1)
-        Ct = (tau_center.T @ tau_center) / float(n_tau)
-        Ct_reg = _regularize(Ct)
-        eig_ct = np.linalg.eigvalsh(Ct_reg)
-        eig_ct = np.clip(eig_ct, max(eig_floor, const.NUMERIC_MIN_EIGEN_CLIP), None)
+        tau_covariance = _estimate_covariance(tau_center)
+        eig_ct = eigvalsh(tau_covariance, check_finite=False)
+        floor_value = max(eig_floor, const.NUMERIC_MIN_EIGEN_CLIP)
+        eig_ct = np.clip(eig_ct, floor_value, None)
         cond_ctt = float(eig_ct.max() / eig_ct.min())
 
     transform = inv_sqrt if apply else np.eye(inv_sqrt.shape[0], dtype=np.float64)
@@ -246,16 +247,45 @@ def build_network(cfg: Any, scaler, *, seed: int) -> torch.nn.Module:
     return wrap_network(cfg, scaler, seed=seed)
 
 
-def _regularize(mat: np.ndarray) -> np.ndarray:
-    sym = 0.5 * (mat + mat.T)
-    dim = sym.shape[0]
-    eye = np.eye(dim, dtype=np.float64)
-    trace = float(np.trace(sym))
+def _estimate_covariance(samples: np.ndarray) -> np.ndarray:
+    samples = np.asarray(samples, dtype=np.float64)
+    if samples.size == 0:
+        return np.eye(0, dtype=np.float64)
+
+    n_samples, n_features = samples.shape
+    if n_features == 0:
+        return np.empty((0, 0), dtype=np.float64)
+
+    if n_samples <= 1:
+        return np.eye(n_features, dtype=np.float64)
+
+    estimator = ShrunkCovariance(
+        shrinkage=_DEFAULT_SHRINKAGE, assume_centered=True, store_precision=False
+    )
+    estimator.fit(samples)
+    covariance = estimator.covariance_.astype(np.float64, copy=False)
+    covariance = 0.5 * (covariance + covariance.T)
+
+    trace = float(np.trace(covariance))
     trace = max(trace, const.NUMERIC_MIN_POSITIVE)
-    mu = trace / float(max(1, dim))
+    mu = trace / float(max(1, n_features))
     ridge = mu * const.NUMERIC_RIDGE_SCALE
-    alpha = 0.02
-    return (1.0 - alpha) * sym + (alpha * mu + ridge) * eye
+    if ridge > 0:
+        covariance = covariance + np.eye(n_features, dtype=np.float64) * ridge
+
+    return covariance
+
+
+def _derive_whitening_transform(
+    covariance: np.ndarray, *, eig_floor: float
+) -> tuple[np.ndarray, float]:
+    eig_floor = max(eig_floor, const.NUMERIC_MIN_EIGEN_CLIP)
+    eigvals, eigvecs = eigh(covariance, check_finite=False)
+    eigvals = np.clip(eigvals, eig_floor, None)
+    cond = float(eigvals.max() / eigvals.min())
+    transform = eigvecs @ np.diag(1.0 / np.sqrt(eigvals)) @ eigvecs.T
+    transform = np.asarray(np.real_if_close(transform), dtype=np.float64)
+    return transform, cond
 
 
 class WhitenWrapper(torch.nn.Module):  # type: ignore[misc]

@@ -3,7 +3,12 @@ import sys
 import numpy as np
 import pytest
 
-from pmarlo.markov_state_model.reduction import pca_reduce, tica_reduce
+from pmarlo.markov_state_model import reduction as reduction_module
+from pmarlo.markov_state_model.reduction import (
+    pca_reduce,
+    tica_reduce,
+    vamp_reduce,
+)
 
 
 def test_pca_reduce_matches_sklearn():
@@ -64,5 +69,53 @@ def test_tica_reduce_nan_handling(monkeypatch):
     X[10, 0] = np.nan
     # force fallback implementation
     monkeypatch.setitem(sys.modules, "deeptime", None)
+    monkeypatch.setitem(sys.modules, "pyemma", None)
     result = tica_reduce(X, lag=3, n_components=2, scale=True)
+    assert np.isfinite(result).all()
+
+
+def test_manual_tica_uses_numpy_cov(monkeypatch):
+    rng = np.random.default_rng(4)
+    X = rng.normal(size=(200, 5))
+    monkeypatch.setitem(sys.modules, "deeptime", None)
+    monkeypatch.setitem(sys.modules, "pyemma", None)
+    monkeypatch.setattr(reduction_module, "scipy_eigh", None)
+
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    original_cov = reduction_module.np.cov
+
+    def spy_cov(*args: object, **kwargs: object) -> np.ndarray:
+        calls.append((args, kwargs))
+        return original_cov(*args, **kwargs)
+
+    monkeypatch.setattr(reduction_module.np, "cov", spy_cov)
+    _ = tica_reduce(X, lag=2, n_components=2, scale=False)
+    assert calls, "expected numpy.cov to be invoked during manual TICA fallback"
+
+
+def test_manual_vamp_uses_numpy_cov(monkeypatch):
+    rng = np.random.default_rng(5)
+    X = rng.normal(size=(220, 4))
+    monkeypatch.setitem(sys.modules, "deeptime", None)
+    monkeypatch.setitem(sys.modules, "pyemma", None)
+
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    original_cov = reduction_module.np.cov
+
+    def spy_cov(*args: object, **kwargs: object) -> np.ndarray:
+        calls.append((args, kwargs))
+        return original_cov(*args, **kwargs)
+
+    monkeypatch.setattr(reduction_module.np, "cov", spy_cov)
+    _ = vamp_reduce(X, lag=2, n_components=2, scale=False)
+    assert calls, "expected numpy.cov to be invoked during manual VAMP fallback"
+
+
+def test_vamp_reduce_nan_handling(monkeypatch):
+    rng = np.random.default_rng(6)
+    X = rng.normal(size=(400, 5))
+    X[5, 2] = np.nan
+    monkeypatch.setitem(sys.modules, "deeptime", None)
+    monkeypatch.setitem(sys.modules, "pyemma", None)
+    result = vamp_reduce(X, lag=4, n_components=2, scale=True)
     assert np.isfinite(result).all()

@@ -113,3 +113,23 @@ def test_canonical_correlation_raises_on_insufficient_samples():
     compute_diagnostics, InsufficientSamplesError = _load_compute_and_exc()
     with pytest.raises(InsufficientSamplesError):
         compute_diagnostics(dataset)
+
+
+def test_covariance_uses_numpy_cov(monkeypatch):
+    import pmarlo.analysis.diagnostics as diagnostics_module
+
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    original_cov = diagnostics_module.np.cov
+
+    def spy_cov(*args: object, **kwargs: object) -> np.ndarray:
+        calls.append((args, kwargs))
+        return original_cov(*args, **kwargs)
+
+    monkeypatch.setattr(diagnostics_module.np, "cov", spy_cov)
+    rng = np.random.default_rng(7)
+    X = rng.normal(size=(40, 3))
+    centered = X - np.mean(X, axis=0, keepdims=True)
+    result = diagnostics_module._covariance(centered, centered.shape[0])
+    assert calls, "expected numpy.cov to be used inside _covariance"
+    expected = original_cov(centered, rowvar=False, ddof=1)
+    assert np.allclose(result, expected)

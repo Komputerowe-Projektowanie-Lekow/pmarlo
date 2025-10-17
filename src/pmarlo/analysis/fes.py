@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Mapping, MutableMapping, Sequence
 
 import numpy as np
+from scipy import ndimage
 
 from pmarlo import constants as const
 
@@ -77,8 +78,8 @@ def _compute_bandwidth(
         return value
 
     selector_norm = str(selector).lower()
-    mean = float(np.sum(weights * coord))
-    var = float(np.sum(weights * (coord - mean) ** 2))
+    mean = float(np.average(coord, weights=weights))
+    var = float(np.average((coord - mean) ** 2, weights=weights))
     std = np.sqrt(var) if var > 0 else 1.0
     d = 2.0
     n_eff = max(ess, 1.0)
@@ -190,22 +191,21 @@ def _smooth_sparse_bins(hist: np.ndarray, min_count: int) -> tuple[np.ndarray, i
     if not np.any(mask):
         return hist, 0
 
+    kernel = np.array([[1.0, 1.0, 1.0], [1.0, 0.0, 1.0], [1.0, 1.0, 1.0]], dtype=np.float64)
+    neighbor_sum = ndimage.convolve(hist, kernel, mode="nearest")
+    neighbor_count = ndimage.convolve(np.ones_like(hist, dtype=np.float64), kernel, mode="nearest")
+    neighbor_mean = np.divide(
+        neighbor_sum,
+        neighbor_count,
+        out=np.zeros_like(hist, dtype=np.float64),
+        where=neighbor_count > 0,
+    )
+
     smoothed = hist.copy()
-    padded = np.pad(hist, 1, mode="edge")
-    coords = np.argwhere(mask)
-    smoothed_bins = 0
-    for i, j in coords:
-        patch = padded[i : i + 3, j : j + 3]
-        neighborhood = patch.reshape(-1)
-        center_idx = neighborhood.size // 2
-        neighborhood = np.delete(neighborhood, center_idx)
-        neighbor_mean = float(np.mean(neighborhood)) if neighborhood.size else 0.0
-        if neighbor_mean <= 0.0:
-            continue
-        target = max(neighbor_mean, float(min_count))
-        if target > smoothed[i, j]:
-            smoothed[i, j] = target
-            smoothed_bins += 1
+    targets = np.maximum(neighbor_mean, float(min_count))
+    update_mask = mask & (neighbor_mean > 0.0) & (targets > smoothed)
+    smoothed[update_mask] = targets[update_mask]
+    smoothed_bins = int(np.count_nonzero(update_mask))
     return smoothed, smoothed_bins
 
 
