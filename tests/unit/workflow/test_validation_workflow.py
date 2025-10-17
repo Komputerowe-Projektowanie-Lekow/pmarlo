@@ -8,6 +8,7 @@ and diagnostic message formatting.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from pmarlo.workflow.validation import (
     format_validation_report,
@@ -101,6 +102,19 @@ class TestValidateBuildResult:
         assert any(
             "references shards not present" in msg for msg in validation["errors"]
         )
+
+    def test_non_canonical_shard_ids_raise(self, tmp_path):
+        """Non-canonical shard identifiers should raise immediately."""
+        run_dir = tmp_path / "run-20250906-170155"
+        run_dir.mkdir()
+
+        f = run_dir / "demux_T300K.dcd"
+        f.touch()
+
+        build_result = {"artifacts": {"shards_used": ["demux_T300K"]}}
+
+        with pytest.raises(ValueError):
+            validate_build_result(build_result, [f])
 
     def test_mixed_source_kinds(self, tmp_path):
         """Test validation with mixed demux and replica files."""

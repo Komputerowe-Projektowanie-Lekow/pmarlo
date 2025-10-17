@@ -6,7 +6,7 @@ from typing import Iterator
 
 import numpy as np
 
-from pmarlo.features.deeptica.core.pairs import PairInfo
+from pmarlo.pairs.core import PairInfo
 from pmarlo.samplers import BalancedTempSampler
 
 __all__ = ["BalancedTempSampler", "iter_pair_batches"]

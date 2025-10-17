@@ -20,12 +20,11 @@ def make_dataset(
     if bias is not None:
         split["bias"] = bias
     if base is not None:
-        # Allow either canonical or legacy to ensure both paths work
         split["w_frame"] = base
     return {"splits": {"s1": split}}
 
 
-def test_reweighter_produces_w_frame_and_alias_weights():
+def test_reweighter_produces_w_frame_only():
     energy = np.array([1.0, 2.0, 3.0], dtype=np.float64)
     ds = make_dataset(energy)
     rw = Reweighter(temperature_ref_K=300.0)
@@ -33,13 +32,20 @@ def test_reweighter_produces_w_frame_and_alias_weights():
     assert "s1" in out
     # Canonical key present
     assert "w_frame" in ds["splits"]["s1"]
-    # Legacy alias also present and numerically identical
-    assert "weights" in ds["splits"]["s1"]
-    np.testing.assert_allclose(
-        ds["splits"]["s1"]["w_frame"], ds["splits"]["s1"]["weights"], rtol=0, atol=0
-    )
     np.testing.assert_allclose(out["s1"], ds["splits"]["s1"]["w_frame"], rtol=0, atol=0)
     np.testing.assert_allclose(out["s1"].sum(), 1.0, rtol=1e-12, atol=1e-12)
+
+
+def test_reweighter_rejects_old_weights_alias():
+    energy = np.array([1.0, 2.0, 3.0], dtype=np.float64)
+    ds = make_dataset(energy)
+    ds["splits"]["s1"]["weights"] = np.array([0.2, 0.3, 0.5], dtype=np.float64)
+    rw = Reweighter(temperature_ref_K=300.0)
+
+    with pytest.raises(ValueError) as excinfo:
+        rw.apply(ds)
+
+    assert "deprecated key 'weights'" in str(excinfo.value)
 
 
 def test_reweighter_uses_existing_base_weights():

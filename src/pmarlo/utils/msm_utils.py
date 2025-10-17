@@ -4,6 +4,12 @@ import logging
 from dataclasses import dataclass
 
 import numpy as np
+from deeptime.markov.tools.analysis import (
+    is_transition_matrix,
+    stationary_distribution as _dt_stationary_distribution,
+)
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import connected_components
 
 from pmarlo import constants as const
 
@@ -67,8 +73,7 @@ def candidate_lag_ladder(
 
     filtered: list[int] = [x for x in base if lo <= x <= hi]
     if not filtered:
-        logger.warning("No predefined lags in range [%s, %s]", lo, hi)
-        return [lo] if lo == hi else [lo, hi]
+        raise ValueError(f"No predefined lag values available in range [{lo}, {hi}]")
 
     if n_candidates is None or n_candidates >= len(filtered):
         return filtered
@@ -162,13 +167,6 @@ def check_transition_matrix(
 ) -> None:
     """Validate a transition matrix and stationary distribution."""
 
-    from deeptime.markov.tools.analysis import (
-        is_transition_matrix,
-    )
-    from deeptime.markov.tools.analysis import (
-        stationary_distribution as _dt_stationary_distribution,
-    )
-
     if T.ndim != 2 or T.shape[0] != T.shape[1]:
         raise ValueError("transition matrix must be square")
     if pi.shape != (T.shape[0],):
@@ -178,6 +176,9 @@ def check_transition_matrix(
 
     T = np.asarray(T, dtype=float)
     pi = np.asarray(pi, dtype=float)
+
+    if np.any(T < 0.0):
+        raise ValueError("Negative probabilities in transition matrix")
 
     if not is_transition_matrix(T, tol=row_tol):
         raise ValueError("transition matrix fails stochasticity checks")
@@ -195,29 +196,21 @@ def check_transition_matrix(
 
     is_reducible = False
     if T.shape[0] > 1:
-        try:
-            from scipy.sparse import csr_matrix
-            from scipy.sparse.csgraph import strongly_connected_components
-
-            adjacency = csr_matrix((T > const.NUMERIC_MIN_RATE).astype(int))
-            n_components, labels = strongly_connected_components(
-                adjacency, directed=True, connection="strong"
-            )
-            if n_components > 1:
-                recurrent = np.ones(n_components, dtype=bool)
-                for state in range(T.shape[0]):
-                    comp_idx = labels[state]
-                    if not recurrent[comp_idx]:
-                        continue
-                    mask = labels != comp_idx
-                    if np.any((T[state] > const.NUMERIC_MIN_RATE) & mask):
-                        recurrent[comp_idx] = False
-                if np.sum(recurrent) > 1:
-                    is_reducible = True
-        except Exception:
-            # Fall back to the conservative assumption that the chain may
-            # be reducible if invariance holds but comparison fails.
-            pass
+        adjacency = csr_matrix((T > const.NUMERIC_MIN_RATE).astype(int))
+        n_components, labels = connected_components(
+            adjacency, directed=True, connection="strong"
+        )
+        if n_components > 1:
+            recurrent = np.ones(n_components, dtype=bool)
+            for state in range(T.shape[0]):
+                comp_idx = labels[state]
+                if not recurrent[comp_idx]:
+                    continue
+                mask = labels != comp_idx
+                if np.any((T[state] > const.NUMERIC_MIN_RATE) & mask):
+                    recurrent[comp_idx] = False
+            if np.sum(recurrent) > 1:
+                is_reducible = True
 
     try:
         pi_ref = np.asarray(

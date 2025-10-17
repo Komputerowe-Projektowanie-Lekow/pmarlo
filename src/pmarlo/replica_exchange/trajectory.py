@@ -2,11 +2,7 @@ from __future__ import annotations
 
 # 'Optional' was unused; keep imports minimal to satisfy flake8
 
-try:
-    # Import lazily, but this file is small and safe to import
-    from openmm.app import DCDReporter as _DCDReporter
-except Exception:  # pragma: no cover - only occurs when OpenMM missing
-    _DCDReporter = object  # type: ignore
+from openmm.app import DCDReporter as _DCDReporter
 
 
 class ClosableDCDReporter(_DCDReporter):
@@ -20,9 +16,9 @@ class ClosableDCDReporter(_DCDReporter):
         super().__init__(file, reportInterval)
 
     def close(self) -> None:
-        try:
-            if hasattr(self, "_out") and getattr(self, "_out"):
-                self._out.close()  # type: ignore[attr-defined]
-        except Exception:
-            # Best-effort close; ignore if reporter structure differs
-            pass
+        if not hasattr(self, "_out"):
+            raise AttributeError("OpenMM DCDReporter no longer exposes '_out'")
+        handle = getattr(self, "_out")
+        if handle is None:
+            raise RuntimeError("ClosableDCDReporter._out is None; file already closed")
+        handle.close()

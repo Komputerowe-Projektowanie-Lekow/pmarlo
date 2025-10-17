@@ -15,6 +15,9 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import psutil
+from openmm import OpenMMException, Platform
+
 from pmarlo.utils.path_utils import ensure_directory
 
 
@@ -53,15 +56,8 @@ def _get_base_cpu_string() -> Optional[str]:
 
 def _get_gpu_info_via_openmm() -> Optional[str]:
     """Return a short GPU descriptor using OpenMM if CUDA is available."""
-    platform = _import_openmm_platform()
-    if platform is None:
-        return None
-    try:
-        if _openmm_platform_by_name_exists(platform, "CUDA"):
-            return "CUDA available"
-    except Exception:
-        # Mirror original behavior: treat errors as unavailable
-        return None
+    if _openmm_platform_by_name_exists(Platform, "CUDA"):
+        return "CUDA available"
     return None
 
 
@@ -83,13 +79,8 @@ def _get_python_version() -> str:
 
 def _get_cpu_count_via_psutil() -> Optional[int]:
     """Return logical CPU count via psutil if available."""
-    try:
-        import psutil  # type: ignore
-
-        count = psutil.cpu_count(logical=True)
-        return int(count) if isinstance(count, int) else None
-    except Exception:
-        return None
+    count = psutil.cpu_count(logical=True)
+    return int(count) if isinstance(count, int) else None
 
 
 def _format_cpu_info(
@@ -103,16 +94,6 @@ def _format_cpu_info(
     return base_cpu
 
 
-def _import_openmm_platform():
-    """Return OpenMM Platform class if importable, else None."""
-    try:
-        from openmm import Platform  # type: ignore
-
-        return Platform
-    except Exception:
-        return None
-
-
 def _preferred_openmm_platform_order() -> List[str]:
     """Return the preferred probing order for OpenMM platforms."""
     return ["CUDA", "CPU", "Reference", "OpenCL"]
@@ -122,9 +103,9 @@ def _openmm_platform_by_name_exists(platform_cls: Any, name: str) -> bool:
     """True if an OpenMM platform with the given name is available."""
     try:
         platform_cls.getPlatformByName(name)
-        return True
-    except Exception:
+    except OpenMMException:
         return False
+    return True
 
 
 def _first_available_openmm_platform(
@@ -132,22 +113,15 @@ def _first_available_openmm_platform(
 ) -> Optional[str]:
     """Return the first available platform name, respecting the provided order."""
     for name in order:
-        try:
-            if _openmm_platform_by_name_exists(platform_cls, name):
-                return name
-        except Exception:
-            # Continue probing on any unexpected error
-            continue
+        if _openmm_platform_by_name_exists(platform_cls, name):
+            return name
     return None
 
 
 def _detect_best_openmm_platform() -> Optional[str]:
     """Detect the most suitable OpenMM platform name, or None if unavailable."""
-    platform_cls = _import_openmm_platform()
-    if platform_cls is None:
-        return None
     order = _preferred_openmm_platform_order()
-    return _first_available_openmm_platform(platform_cls, order)
+    return _first_available_openmm_platform(Platform, order)
 
 
 def _build_environment_payload(
@@ -158,7 +132,7 @@ def _build_environment_payload(
     os_name: str,
     python_version: str,
 ) -> Dict[str, Any]:
-    """Assemble the environment payload with sane fallbacks."""
+    """Assemble the environment payload with required telemetry."""
     return {
         "platform": platform_name or "unknown",
         "cpu_info": cpu_info or "unknown",
@@ -169,14 +143,10 @@ def _build_environment_payload(
 
 
 def _safe_read_json(path: Path) -> Optional[Any]:
-    try:
-        if not path.exists():
-            return None
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        # Malformed JSON – stop processing per requirements
-        return {"error": f"Parse error reading {str(path)}"}
+    if not path.exists():
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 def _safe_write_json(path: Path, data: Any) -> None:
@@ -200,12 +170,12 @@ def update_trend(
     """Append run to trend.json (oldest to newest)."""
     trend_path = dir_root / "trend.json"
     existing = _safe_read_json(trend_path)
-    if isinstance(existing, dict) and "error" in existing:
-        return  # stop on parse error
-    if not isinstance(existing, list):
+    if existing is None:
         trend: List[Dict[str, Any]] = []
-    else:
+    elif isinstance(existing, list):
         trend = existing
+    else:
+        raise ValueError("trend.json must contain a list of runs")
     trend.append(run_object)
     if len(trend) > max_entries:
         trend = trend[-max_entries:]

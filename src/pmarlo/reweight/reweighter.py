@@ -1,11 +1,9 @@
 """Frame reweighting helpers for MSM and FES analysis.
 
-Reweighting helpers for downstream MSM/FES analysis.
-
-Fail-fast policy: Missing required thermodynamic data (energy) or invalid
-normalization (non-finite / non-positive sum) now raises a ValueError instead of
-silently substituting uniform weights. This enforces the "no silent fallback"
-requirement in the reweight module AGENTS spec.
+Reweighting helpers for downstream MSM/FES analysis with strict failure
+semantics: missing required thermodynamic data (energy) or invalid
+normalization (non-finite / non-positive sum) raises a :class:`ValueError`
+instead of substituting uniform weights.
 """
 
 from __future__ import annotations
@@ -63,10 +61,9 @@ class Reweighter:
     """Compute per-frame analysis weights relative to a reference temperature.
 
     Fail-fast semantics:
-      * If a split lacks an energy array, reweighting aborts with ValueError.
-      * If normalization produces a non-finite or non-positive sum, raises ValueError.
-      * No silent uniform-weight fallbacks are performed.
-      * Canonical output key: w_frame (legacy alias 'weights' also written for backward compatibility).
+      * If a split lacks an energy array, reweighting aborts with ``ValueError``.
+      * If normalization produces a non-finite or non-positive sum, a ``ValueError`` is raised.
+      * Canonical output key: ``w_frame``.
     """
 
     def __init__(self, temperature_ref_K: float) -> None:
@@ -130,10 +127,13 @@ class Reweighter:
         splits: Dict[str, _SplitThermo] = {}
         for name, split in splits_raw.items():
             shard_id = self._coerce_shard_id(name, split)
-            # Prefer canonical key w_frame, fall back to legacy 'weights'
             base_w = self._coerce_optional_array(split, "w_frame")
             if base_w is None:
-                base_w = self._coerce_optional_array(split, "weights")
+                if self._has_key(split, "weights"):
+                    raise ValueError(
+                        f"Split '{shard_id}' provides base weights under deprecated key "
+                        "'weights'; use 'w_frame' instead"
+                    )
             thermo = _SplitThermo(
                 shard_id=shard_id,
                 beta_sim=self._coerce_beta(split),
@@ -157,6 +157,11 @@ class Reweighter:
         if arr.size == 0:
             return None
         return arr
+
+    def _has_key(self, split: object, key: str) -> bool:
+        if isinstance(split, Mapping):
+            return key in split
+        return hasattr(split, key)
 
     def _coerce_shard_id(self, name: str, split: object) -> str:
         candidate = None
@@ -262,14 +267,6 @@ class Reweighter:
             if isinstance(split, MutableMapping):
                 # Write canonical key
                 split["w_frame"] = weights
-                # Legacy alias for backward compatibility (do not overwrite if existing differs in length)
-                legacy = split.get("weights")
-                if legacy is None or (
-                    isinstance(legacy, np.ndarray)
-                    and legacy.shape == weights.shape
-                    and np.allclose(legacy, weights)
-                ):
-                    split["weights"] = weights
         cache = dataset.setdefault("__weights__", {})
         if isinstance(cache, MutableMapping):
             cache[shard_id] = weights

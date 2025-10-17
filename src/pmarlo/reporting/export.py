@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
+import numpy as np
+
 from pmarlo.utils.path_utils import ensure_directory
 
 
@@ -16,16 +18,11 @@ def _normalize_for_json_row(row: Dict[str, Any]) -> Dict[str, Any]:
     """
     out: Dict[str, Any] = {}
     for k, v in row.items():
-        try:
-            import numpy as np  # local import to avoid hard dep here
-
-            if isinstance(v, (np.generic,)):
-                out[k] = v.item()
-            elif isinstance(v, np.ndarray):
-                out[k] = v.tolist()
-            else:
-                out[k] = v
-        except Exception:
+        if isinstance(v, np.generic):
+            out[k] = v.item()
+        elif isinstance(v, np.ndarray):
+            out[k] = v.tolist()
+        else:
             out[k] = v
     return out
 

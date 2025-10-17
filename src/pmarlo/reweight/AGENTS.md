@@ -36,7 +36,7 @@ Once the splits are validated, reweighting proceeds deterministically for each s
 
 These weights are attached back to the dataset but only as new data. Specifically, after computing each split’s weight array w_frame, the module:
 
-Inserts it into dataset["splits"][split_name]["weights"] and updates a global dataset["frame_weights"][split_name] mapping (if the dataset is a mutable mapping).
+Inserts it into dataset["splits"][split_name]["w_frame"] and updates a global dataset["frame_weights"][split_name] mapping (if the dataset is a mutable mapping).
 
 Caches it internally in Reweighter._cache[shard_id] so that reweighting the same shard again (with same ref temperature) does not recompute the weights.
 
@@ -58,7 +58,7 @@ In the full workflow, reweighting “sits” right after shards are loaded and o
 3. Cache semantics. If reweighting is called multiple times in a run, repeated splits (same shard_id) will reuse cached weights. This cache assumes the shard’s thermodynamic arrays (energy/bias) have not changed. Clearing the cache requires creating a new Reweighter instance.
 4. Consistent key usage. Store weights arrays under w_frame. When writing NPZ sidecars for shards, use w_frame (not some alternate key). In-memory, the convenience dictionary should also use w_frame entries. This ensures downstream tools always find weights by the same key.
 5.No mixed batches. Feed only shards of a single kind (ensemble) into Reweighter.apply at once. Partition mixed inputs ahead of time. The code assumes each shard’s data stand alone and will throw or misbehave if you mix “replica” and “demux” shards, or multiple temperatures in one split.
-6. Logging on fallback. If any split lacks energy/bias (and thus cannot be reweighted), do not quietly continue. Log an error including the shard ID and reason, and skip or abort as decided by policy. (The trainer may interpret missing weights as uniform after a logged failure.)
+6. Log explicit failures. If any split lacks energy/bias (and thus cannot be reweighted), do not quietly continue. Log an error including the shard ID and reason, and skip or abort as decided by policy. (The trainer may interpret missing weights as uniform after a logged failure.)
 8/ Versioning and defaults. The mode enum AnalysisReweightMode may be extended in future. Freeze the meaning of "MBAR" and "TRAM" now: "TRAM" is currently mapped to MBAR internally. If adding new modes or changing behavior, bump the module version and update documentation accordingly. Avoid changing defaults silently.
 
 # Wanted outcomes
@@ -73,7 +73,7 @@ In the full workflow, reweighting “sits” right after shards are loaded and o
 1. Deterministic behavior. Given the same input shards and T_ref, calling Reweighter.apply(dataset, mode="MBAR") twice should yield byte-for-byte identical w_frame arrays. Similarly, setting mode="TRAM" (currently an alias for MBAR) must also produce the same deterministic output.
 2. Missing energy or bias. If a shard split lacks both energy and bias arrays, the reweighter should NOT silently return uniform weights. Instead, it logs an error (e.g. "No energy/bias for shard X – cannot compute weights") and stops processing. Downstream code might then treat this as an explicit "no weights" case (equivalent to all weights equal) but only after the failure is recorded.
 3. Immutability of input. If dataset is backed by NPZ shard files, reweighting must leave them untouched. For example, do not rewrite the NPZ to insert weights. Instead, write a separate "weights sidecar" or return a shard_id → w_frame mapping so that another step can attach the weights later.
-4. Consistent w_frame key. All code (file loaders, analysis tools) should expect the reweighted weights under a key named w_frame, not, say, weights or frame_weights. The Reweighter.apply() method will set split["weights"] in the dataset for convenience, but we treat that as an internal choice. Externally, the agreed key for output is w_frame.
+4. Consistent w_frame key. All code (file loaders, analysis tools) should expect the reweighted weights under a key named w_frame, not, say, weights or frame_weights. The Reweighter.apply() method writes split["w_frame"] in the dataset; downstream tooling must rely on that canonical name.
 5. Single ensemble input. Suppose you have shards from two different simulation ensembles (e.g. temperatures 300K and 350K, or two different Hamiltonians). You must call the reweighter separately for each ensemble. Do not pass them together, as mixing kinds violates an invariant.
 6. Use in training vs analysis. During model training (e.g. DeepTICA), you may optionally feed w_frame as sample_weight. If w_frame is absent, training should behave identically as if weights were uniform – but note in documentation that “training without provided weights” occurred. In final analysis, however, reweighting is mandatory: before clustering/MSM/FES we must always have applied reweighting to the common T_ref.
 7. Future estimators. Right now only MBAR (and TRAM-as-MBAR) are implemented. If in the future a new estimator (e.g. a different multi-ensemble algorithm) is added, it should be plugged into the Reweighter interface without changing how callers use it. The mode enum allows addition of new names, but existing behavior for "MBAR" and "TRAM" remains fixed.

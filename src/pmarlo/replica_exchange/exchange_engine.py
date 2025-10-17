@@ -25,17 +25,12 @@ class ExchangeEngine:
         beta_j = 1.0 / (unit.MOLAR_GAS_CONSTANT_R * temp_j * unit.kelvin)
         e_i = energies[i]
         e_j = energies[j]
-        if not hasattr(e_i, "value_in_unit"):
-            e_i = float(e_i) * unit.kilojoules_per_mole
-        if not hasattr(e_j, "value_in_unit"):
-            e_j = float(e_j) * unit.kilojoules_per_mole
+        if not hasattr(e_i, "value_in_unit") or not hasattr(e_j, "value_in_unit"):
+            raise TypeError("Energies must be OpenMM quantities with value_in_unit")
         # Correct Metropolis acceptance for exchanging temperatures of two states
         # Δ = (β_i - β_j) * (U_j - U_i)
         delta_q = (beta_i - beta_j) * (e_j - e_i)
-        try:
-            delta = delta_q.value_in_unit(unit.dimensionless)
-        except Exception:
-            delta = float(delta_q)
+        delta = delta_q.value_in_unit(unit.dimensionless)
         return float(min(1.0, np.exp(delta)))
 
     def accept(self, prob: float) -> bool:

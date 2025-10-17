@@ -9,6 +9,9 @@ These tests verify that different components work together correctly.
 
 import pytest
 
+pytest.importorskip("openmm")
+pytest.importorskip("mdtraj")
+
 from pmarlo import Pipeline, Protein
 from pmarlo.protein.protein import HAS_PDBFIXER
 
