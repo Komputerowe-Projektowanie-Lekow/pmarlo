@@ -137,20 +137,34 @@ def emit_shards_from_trajectories(
             },
         )
         cvs, dtraj, source_info = extract_cvs(traj)
-        names, _ = _validate_cvs(cvs)
-        periodic = {
+        names, n_frames = _validate_cvs(cvs)
+        column_order = tuple(cvs.keys())
+        periodic_flags = {
             name: bool((periodic_by_cv or {}).get(name, False)) for name in names
         }
-        shard_id = f"shard_{shard_index:04d}"
+        seed = shard_state.seed_for(shard_index)
+        source = dict(source_info)
+        replica_id = int(source.get("replica_id", 0))
+        segment_id = int(source.get("segment_id", shard_index))
+        exchange_window_id = int(source.get("exchange_window_id", 0))
+        source.setdefault("replica_id", replica_id)
+        source.setdefault("segment_id", segment_id)
+        source.setdefault("exchange_window_id", exchange_window_id)
+        source.setdefault("seed", seed)
+        source.setdefault("n_frames", n_frames)
+        ordered_periodic = [bool(periodic_flags.get(name, False)) for name in column_order]
+        source.setdefault("periodic", ordered_periodic)
+        t_kelvin = int(round(float(temperature)))
+        shard_id = f"T{t_kelvin}K_seg{segment_id:04d}_rep{replica_id:03d}"
         json_path = write_shard(
             out_dir=out_dir,
             shard_id=shard_id,
             cvs=cvs,
             dtraj=dtraj,
-            periodic=periodic,
-            seed=shard_state.seed_for(shard_index),
+            periodic=periodic_flags,
+            seed=seed,
             temperature=float(temperature),
-            source=dict(source_info),
+            source=source,
         )
         json_paths.append(json_path.resolve())
         _emit(
@@ -161,9 +175,7 @@ def emit_shards_from_trajectories(
                 "shard": shard_id,
                 # Frames processed in this input if extractor provided it
                 "frames": int(
-                    source_info.get("n_frames", 0)
-                    if isinstance(source_info, dict)
-                    else 0
+                    source.get("n_frames", 0) if isinstance(source, dict) else 0
                 ),
                 # Keep progress fields consistent for ETA
                 "current": int(i + 1),

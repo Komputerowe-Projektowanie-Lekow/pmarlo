@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import importlib.util
 from typing import List, Optional
 
 import numpy as np
-from deeptime.decomposition import TICA, VAMP
 from sklearn.decomposition import PCA, IncrementalPCA
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
@@ -84,6 +82,8 @@ def tica_reduce(
 ) -> np.ndarray:
     """TICA (Time-lagged Independent Component Analysis) reduction.
 
+    Requires deeptime library to be installed.
+
     Parameters
     ----------
     X : np.ndarray
@@ -100,8 +100,9 @@ def tica_reduce(
     np.ndarray
         TICA-transformed data (n_frames, n_components).
     """
-    X_prep = _preprocess(X, scale=scale)
+    from deeptime.decomposition import TICA  # type: ignore
 
+    X_prep = _preprocess(X, scale=scale)
     tica = TICA(lagtime=lag, dim=n_components)
     model = tica.fit(X_prep)
     transformed = model.transform(X_prep)
@@ -116,6 +117,8 @@ def vamp_reduce(
     epsilon: float = const.NUMERIC_ABSOLUTE_TOLERANCE,
 ) -> np.ndarray:
     """VAMP (Variational Approach for Markov Processes) reduction.
+
+    Requires deeptime library to be installed.
 
     Parameters
     ----------
@@ -135,8 +138,9 @@ def vamp_reduce(
     np.ndarray
         VAMP-transformed data (n_frames, n_components).
     """
-    X_prep = _preprocess(X, scale=scale)
+    from deeptime.decomposition import VAMP  # type: ignore
 
+    X_prep = _preprocess(X, scale=scale)
     vamp = VAMP(lagtime=lag, dim=n_components, epsilon=epsilon)
     model = vamp.fit([X_prep])
     transformed = model.transform(X_prep)
@@ -187,16 +191,12 @@ def reduce_features(
 
 
 def get_available_methods() -> List[str]:
-    """Get list of available reduction methods based on installed packages.
+    """Get list of available reduction methods.
 
     Returns
     -------
     List[str]
-        List of available methods.
+        List of available methods: ['pca', 'tica', 'vamp'].
+        Note: TICA and VAMP require deeptime library.
     """
-    methods = ["pca"]
-
-    if importlib.util.find_spec("deeptime") is not None:
-        methods.extend(["tica", "vamp"])
-
-    return methods
+    return ["pca", "tica", "vamp"]

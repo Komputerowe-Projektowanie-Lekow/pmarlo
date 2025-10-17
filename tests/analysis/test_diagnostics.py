@@ -115,56 +115,36 @@ def test_canonical_correlation_raises_on_insufficient_samples():
         compute_diagnostics(dataset)
 
 
-def test_covariance_uses_numpy_cov(monkeypatch):
-    import pmarlo.analysis.diagnostics as diagnostics_module
+def test_covariance_computes_correctly():
+    """Test that covariance computation produces correct results."""
+    from pmarlo.analysis.diagnostics import _covariance
 
-    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
-    original_cov = diagnostics_module.np.cov
-
-    def spy_cov(*args: object, **kwargs: object) -> np.ndarray:
-        calls.append((args, kwargs))
-        return original_cov(*args, **kwargs)
-
-    monkeypatch.setattr(diagnostics_module.np, "cov", spy_cov)
     rng = np.random.default_rng(7)
     X = rng.normal(size=(40, 3))
     centered = X - np.mean(X, axis=0, keepdims=True)
-    result = diagnostics_module._covariance(centered, centered.shape[0])
-    assert calls, "expected numpy.cov to be used inside _covariance"
-    expected = original_cov(centered, rowvar=False, ddof=1)
+    
+    result = _covariance(centered, centered.shape[0])
+    expected = np.cov(centered, rowvar=False, ddof=1)
+    
+    assert result.shape == (3, 3)
     assert np.allclose(result, expected)
+    # Verify covariance matrix is symmetric
+    assert np.allclose(result, result.T)
 
 
-def test_canonical_correlation_uses_sklearn(monkeypatch):
-    import pmarlo.analysis.diagnostics as diagnostics_module
+def test_canonical_correlations_computes_correctly():
+    """Test that canonical correlation analysis produces valid outputs."""
+    from pmarlo.analysis.diagnostics import _canonical_correlations
 
-    class DummyCCA:
-        def __init__(self, *, n_components: int, scale: bool, max_iter: int):
-            self.params = {
-                "n_components": n_components,
-                "scale": scale,
-                "max_iter": max_iter,
-            }
-            self._called = False
-
-        def fit_transform(
-            self, X: np.ndarray, Y: np.ndarray
-        ) -> tuple[np.ndarray, np.ndarray]:
-            self._called = True
-            return X, Y
-
-    created: list[DummyCCA] = []
-
-    def factory(*, n_components: int, scale: bool, max_iter: int) -> DummyCCA:
-        inst = DummyCCA(n_components=n_components, scale=scale, max_iter=max_iter)
-        created.append(inst)
-        return inst
-
-    monkeypatch.setattr(diagnostics_module, "CCA", factory)
     rng = np.random.default_rng(42)
-    X = rng.normal(size=(8, 3))
-    Y = rng.normal(size=(8, 2))
-    correlations = diagnostics_module._canonical_correlations(X, Y)
-    assert correlations, "expected non-empty correlations from patched CCA"
-    assert created, "expected custom CCA factory to be invoked"
-    assert all(inst._called for inst in created), "expected fit_transform to run"
+    X = rng.normal(size=(50, 3))
+    Y = rng.normal(size=(50, 2))
+    
+    correlations = _canonical_correlations(X, Y)
+    
+    # Should return min(n_features_X, n_features_Y) correlations
+    assert len(correlations) == 2
+    # All correlations should be between 0 and 1
+    assert all(0 <= corr <= 1 for corr in correlations)
+    # Correlations should be finite
+    assert all(np.isfinite(corr) for corr in correlations)

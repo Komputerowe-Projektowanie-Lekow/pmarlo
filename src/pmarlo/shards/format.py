@@ -42,6 +42,7 @@ def write_shard_npz_json(
         dt_ps=np.array(shard.dt_ps, dtype=np.float32),
         energy=_optional_array(shard.energy, np.float32),
         bias=_optional_array(shard.bias, np.float32),
+        bias_potential=_optional_array(shard.bias, np.float32),
         w_frame=_optional_array(shard.w_frame, np.float32),
     )
 

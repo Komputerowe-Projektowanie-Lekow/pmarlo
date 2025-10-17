@@ -506,7 +506,7 @@ def generate_2d_fes(  # noqa: C901
         span = float(value_range[1] - value_range[0])
         if arr.size <= 1 or not np.isfinite(span) or span <= 0:
             return 0
-        bandwidth = 2.0 * iqr(arr, rng=(25, 75), scale="raw", nan_policy="omit")
+        bandwidth = 2.0 * iqr(arr, rng=(25, 75), nan_policy="omit")
         bandwidth /= np.cbrt(max(1, arr.size))
         if not np.isfinite(bandwidth) or bandwidth <= eps:
             return 0

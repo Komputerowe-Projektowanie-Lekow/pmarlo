@@ -137,7 +137,19 @@ def retune_temperature_ladder(
     if len(temperatures) < 2:
         raise ValueError("At least two temperatures are required")
 
-    betas = 1.0 / np.asarray(temperatures, dtype=float)
+    temps = np.asarray(temperatures, dtype=float)
+    if temps.ndim != 1:
+        temps = temps.ravel()
+
+    temp_diffs = np.diff(temps)
+    if temp_diffs.size and np.any(temp_diffs == 0.0):
+        raise ValueError("Input temperatures must be strictly monotonic")
+    if temp_diffs.size and not (
+        np.all(temp_diffs > 0.0) or np.all(temp_diffs < 0.0)
+    ):
+        raise ValueError("Input temperatures must be strictly monotonic")
+
+    betas = 1.0 / temps
     pair_stats: List[Dict[str, Any]] = []
     total_attempts = 0
     total_accepts = 0
@@ -148,8 +160,10 @@ def retune_temperature_ladder(
     )
     erfc_target = erfcinv(target_acceptance_clamped)
     delta_betas = np.diff(betas)
-    if np.any(delta_betas <= 0.0):
+    if np.any(delta_betas == 0.0):
         raise ValueError("Input temperatures must be strictly monotonic")
+    delta_beta_magnitudes = np.abs(delta_betas)
+    span_sign = 1.0 if betas[-1] >= betas[0] else -1.0
 
     pair_data: List[Dict[str, Any]] = []
     sensitivities: List[float] = []
@@ -162,7 +176,7 @@ def retune_temperature_ladder(
         total_attempts += att
         total_accepts += acc
 
-        delta_beta = delta_betas[i]
+        delta_beta = delta_beta_magnitudes[i]
         # Clamp rate to avoid division by zero when acceptance is perfect
         rate_clamped = float(
             np.clip(rate, const.NUMERIC_MIN_RATE, const.NUMERIC_MAX_RATE)
@@ -184,9 +198,9 @@ def retune_temperature_ladder(
 
     global_acceptance = total_accepts / max(1, total_attempts)
 
-    beta_min = float(betas[0])
-    beta_max = float(betas[-1])
-    total_span = beta_max - beta_min
+    beta_start = float(betas[0])
+    beta_end = float(betas[-1])
+    total_span = float(np.sum(delta_beta_magnitudes))
 
     sensitivities_arr = np.asarray(sensitivities, dtype=float)
     initial_deltas_arr = np.asarray(initial_deltas, dtype=float)
@@ -236,13 +250,11 @@ def retune_temperature_ladder(
     optimized_deltas = _params_to_deltas(optimized_params)
     predicted_acceptance = erfc(sensitivities_arr * optimized_deltas)
 
-    new_betas = np.concatenate(
-        (
-            np.asarray([beta_min]),
-            beta_min + np.cumsum(optimized_deltas, dtype=float),
-        )
-    )
-    new_betas[-1] = beta_max
+    signed_deltas = optimized_deltas * span_sign
+    new_betas = np.empty_like(betas, dtype=float)
+    new_betas[0] = beta_start
+    new_betas[1:] = beta_start + np.cumsum(signed_deltas, dtype=float)
+    new_betas[-1] = beta_end
     suggested_temps = (1.0 / new_betas).tolist()
 
     pair_stats = []
