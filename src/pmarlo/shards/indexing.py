@@ -31,13 +31,24 @@ def _collect_existing_indices(out_dir: Path) -> list[int]:
     """Scan an output directory and return sorted shard indices."""
 
     indices: list[int] = []
-    for shard_file in sorted(Path(out_dir).glob("shard_*.json")):
+    out_path = Path(out_dir)
+    # Legacy pattern: shard_XXXX.json
+    for shard_file in sorted(out_path.glob("shard_*.json")):
         stem = shard_file.stem
         try:
             indices.append(int(stem.split("_")[1]))
         except (IndexError, ValueError):
             continue
-    return indices
+    # Canonical pattern: T{temp}K_segXXXX_repYYY.json
+    for shard_file in sorted(out_path.glob("T*K_seg*_rep*.json")):
+        stem = shard_file.stem
+        try:
+            parts = stem.split("_")
+            seg_part = next(part for part in parts if part.startswith("seg"))
+            indices.append(int(seg_part.removeprefix("seg")))
+        except (StopIteration, ValueError):
+            continue
+    return sorted(set(indices))
 
 
 def initialise_shard_indices(

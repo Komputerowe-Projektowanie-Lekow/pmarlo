@@ -187,6 +187,38 @@ def check_transition_matrix(
         raise ValueError("stationary distribution must be normalisable")
     pi_norm = pi / pi_sum
 
+    residual = np.max(np.abs(pi_norm @ T - pi_norm)) if T.size else 0.0
+    if residual > stat_tol:
+        raise ValueError(
+            f"provided stationary distribution fails invariance check (max residual {residual})"
+        )
+
+    is_reducible = False
+    if T.shape[0] > 1:
+        try:
+            from scipy.sparse import csr_matrix
+            from scipy.sparse.csgraph import strongly_connected_components
+
+            adjacency = csr_matrix((T > const.NUMERIC_MIN_RATE).astype(int))
+            n_components, labels = strongly_connected_components(
+                adjacency, directed=True, connection="strong"
+            )
+            if n_components > 1:
+                recurrent = np.ones(n_components, dtype=bool)
+                for state in range(T.shape[0]):
+                    comp_idx = labels[state]
+                    if not recurrent[comp_idx]:
+                        continue
+                    mask = labels != comp_idx
+                    if np.any((T[state] > const.NUMERIC_MIN_RATE) & mask):
+                        recurrent[comp_idx] = False
+                if np.sum(recurrent) > 1:
+                    is_reducible = True
+        except Exception:
+            # Fall back to the conservative assumption that the chain may
+            # be reducible if invariance holds but comparison fails.
+            pass
+
     try:
         pi_ref = np.asarray(
             _dt_stationary_distribution(T, check_inputs=False), dtype=float
@@ -198,8 +230,23 @@ def check_transition_matrix(
         raise ValueError("stationary distribution size mismatch")
 
     diff = np.abs(pi_norm - pi_ref)
+    ignore_states = np.zeros(diff.shape, dtype=bool)
+    support_mask = pi_norm > stat_tol
+    if support_mask.any():
+        for idx_state in range(T.shape[0]):
+            if pi_norm[idx_state] > stat_tol:
+                continue
+            incoming = T[support_mask, idx_state]
+            if np.any(incoming > const.NUMERIC_MIN_RATE):
+                continue
+            ignore_states[idx_state] = True
+    else:
+        ignore_states[:] = True
+    if ignore_states.any():
+        diff[ignore_states] = 0.0
+        is_reducible = True
     max_err = float(np.max(diff)) if diff.size else 0.0
-    if max_err > stat_tol:
+    if max_err > stat_tol and not is_reducible:
         idx = int(np.argmax(diff))
         raise ValueError(
             f"Stationary distribution mismatch at state {idx} with error {max_err}"
