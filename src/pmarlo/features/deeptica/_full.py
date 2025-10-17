@@ -163,6 +163,7 @@ class DeepTICAConfig:
     weight_decay: float = const.DEEPTICA_DEFAULT_WEIGHT_DECAY
     log_every: int = 1
     seed: int = 0
+    device: str = "cpu"
     reweight_mode: str = "scaled_time"  # or "none"
     # New knobs for loaders and validation split
     val_frac: float = 0.1
@@ -345,6 +346,25 @@ class DeepTICAModel:
         history = _load_training_history(path)
         return cls(cfg, scaler, net, training_history=history)
 
+    def to_torchscript(self, path: Path) -> Path:
+        path = Path(path)
+        ensure_directory(path.parent)
+        self.net.eval()
+        # Trace with single precision (typical for inference)
+        example = torch.zeros(1, int(self.scaler.mean_.shape[0]), dtype=torch.float32)
+        _mark_module_scripting_safe(self.net)
+        base = getattr(self.net, "inner", None)
+        if base is not None:
+            _mark_module_scripting_safe(base)
+        ts = torch.jit.trace(self.net.to(torch.float32), example)
+        out = path.with_suffix(".ts")
+        try:
+            ts.save(str(out))
+        except Exception:
+            # Fallback to torch.jit.save for broader compatibility
+            torch.jit.save(ts, str(out))
+        return out
+
 
 def _load_deeptica_config(path: Path) -> DeepTICAConfig:
     data = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
@@ -394,25 +414,6 @@ def _load_training_history(path: Path) -> Optional[dict[str, Any]]:
     if isinstance(data, dict):
         return cast(dict[str, Any], data)
     return None
-
-    def to_torchscript(self, path: Path) -> Path:
-        path = Path(path)
-        ensure_directory(path.parent)
-        self.net.eval()
-        # Trace with single precision (typical for inference)
-        example = torch.zeros(1, int(self.scaler.mean_.shape[0]), dtype=torch.float32)
-        _mark_module_scripting_safe(self.net)
-        base = getattr(self.net, "inner", None)
-        if base is not None:
-            _mark_module_scripting_safe(base)
-        ts = torch.jit.trace(self.net.to(torch.float32), example)
-        out = path.with_suffix(".ts")
-        try:
-            ts.save(str(out))
-        except Exception:
-            # Fallback to torch.jit.save for broader compatibility
-            torch.jit.save(ts, str(out))
-        return out
 
 
 def _mark_module_scripting_safe(module: Any) -> None:

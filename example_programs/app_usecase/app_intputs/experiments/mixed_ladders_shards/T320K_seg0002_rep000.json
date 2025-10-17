@@ -7,7 +7,7 @@
   "segment_id": 2,
   "exchange_window_id": 0,
   "n_frames": 1000,
-  "dt_ps": 0.0179856,
+  "dt_ps": 0.017985599115490913,
   "feature_spec": {
     "name": "app_usecase_features",
     "scaler": "identity",
@@ -29,7 +29,52 @@
       "kind": "demux",
       "run_id": "E1_mixed_ladders_synthetic",
       "temperature_K": 320.0,
-      "traj": "T320K_seg0002_rep000.npz"
-    }
+      "traj": "T320K_seg0002_rep000.npz",
+      "topology": "../../3gd8-fixed.pdb",
+      "segment_id": 2,
+      "replica_id": 0,
+      "range": [
+        0,
+        1000
+      ],
+      "n_frames": 1000,
+      "exchange_window_id": 0
+    },
+    "created_at": "2024-01-01T00:00:00Z",
+    "kind": "demux",
+    "run_id": "E1_mixed_ladders_synthetic",
+    "replica_id": 0,
+    "segment_id": 2,
+    "exchange_window_id": 0,
+    "n_frames": 1000,
+    "periodic": [
+      false,
+      false
+    ],
+    "temperature_K": 320.0,
+    "beta": 0.37585111,
+    "dt_ps": 0.017985599115490913,
+    "topology": "../../3gd8-fixed.pdb",
+    "traj": "T320K_seg0002_rep000.npz",
+    "traj_files": [
+      "T320K_seg0002_rep000.npz"
+    ],
+    "range": [
+      0,
+      1000
+    ],
+    "analysis_temperatures": [
+      300.0,
+      320.0,
+      340.0
+    ],
+    "feature_spec_name": "app_usecase_features",
+    "feature_scaler": "identity",
+    "temperature_ladder_K": [
+      300.0,
+      320.0,
+      340.0
+    ],
+    "temperature_schedule_mode": null
   }
 }

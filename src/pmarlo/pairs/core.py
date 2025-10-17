@@ -132,8 +132,8 @@ def _build_uniform_pairs(
             idx_parts.append(offset + i)
             tau_parts.append(offset + j)
         offset += n
-    idx = concatenate_or_empty(idx_parts, dtype=np.int64, copy=False)
-    tau = concatenate_or_empty(tau_parts, dtype=np.int64, copy=False)
+    idx = concatenate_or_empty(idx_parts, dtype=np.int64, shape=(0,), copy=False)
+    tau = concatenate_or_empty(tau_parts, dtype=np.int64, shape=(0,), copy=False)
     return idx, tau
 
 

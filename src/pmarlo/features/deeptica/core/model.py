@@ -173,16 +173,20 @@ def construct_deeptica_core(cfg: Any, scaler) -> tuple[Any, list[int]]:
     in_dim = int(np.asarray(getattr(scaler, "mean_", []), dtype=np.float64).shape[0])
     layers = [in_dim, *resolve_hidden_layers(cfg), int(getattr(cfg, "n_out", 2))]
     activation_name = str(getattr(cfg, "activation", "gelu")).lower().strip() or "gelu"
+    
+    # Use a safe activation for mlcolvar (it doesn't support all activations like gelu)
+    # We'll override the network immediately after with our custom activation support
+    safe_activation = "relu" if activation_name not in {"relu", "elu", "tanh", "softplus"} else activation_name
+    
     core = DeepTICA(
         layers=layers,
         n_cvs=int(getattr(cfg, "n_out", 2)),
-        activation=activation_name,
-        options={"norm_in": False},
+        options={"norm_in": False, "nn": {"activation": safe_activation}},
     )
     override_core_mlp(
         core,
         layers,
-        activation_name,
+        activation_name,  # Use the actual desired activation
         bool(getattr(cfg, "linear_head", False)),
         hidden_dropout=getattr(cfg, "hidden_dropout", None),
         layer_norm_hidden=bool(getattr(cfg, "layer_norm_hidden", False)),
@@ -225,15 +229,7 @@ def strip_batch_norm(module: Any) -> None:
 def wrap_network(cfg: Any, scaler, *, seed: int) -> torch.nn.Module:
     set_all_seeds(seed)
     core, layers = construct_deeptica_core(cfg, scaler)
-    override_core_mlp(
-        core,
-        layers,
-        str(getattr(cfg, "activation", "gelu")).lower().strip() or "gelu",
-        bool(getattr(cfg, "linear_head", False)),
-        hidden_dropout=getattr(cfg, "hidden_dropout", None),
-        layer_norm_hidden=bool(getattr(cfg, "layer_norm_hidden", False)),
-    )
-    strip_batch_norm(core)
+    # Note: override_core_mlp and strip_batch_norm are already called in construct_deeptica_core
     net = wrap_with_preprocessing_layers(core, cfg, scaler)
     torch.manual_seed(int(seed))
     return net

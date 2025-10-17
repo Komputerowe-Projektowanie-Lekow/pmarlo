@@ -180,6 +180,14 @@ class FeaturesMixin:
         tica = _DT_TICA(lagtime=int(max(1, lag or 1)), dim=n_components)
         tica_model = tica.fit(Xs).fetch_model()
         Ys = [tica_model.transform(x) for x in Xs]
-        combined = np.vstack(Ys) if Ys else self.features
+        
+        # Apply TICA transformation and drop lag frames from each trajectory
         drop = int(max(0, lag))
+        if drop > 0:
+            # Drop the last 'lag' frames from each trajectory since they don't have t+lag pairs
+            Ys_trimmed = [y[:-drop] if y.shape[0] > drop else np.empty((0, y.shape[1]), dtype=y.dtype) for y in Ys]
+            self.features = np.vstack(Ys_trimmed) if Ys_trimmed else self.features
+        else:
+            self.features = np.vstack(Ys) if Ys else self.features
+        
         self.tica_components_ = n_components  # type: ignore[attr-defined]

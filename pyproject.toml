@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 name            = "pmarlo"
 description     = "Protein Markov State Model Analysis with Replica Exchange"
 readme          = "README.md"
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.10,<3.13"
 license = { file = "LICENSE" }
 
 
@@ -47,16 +47,17 @@ dependencies = [
   "mlcolvar>=1.2",
   "scikit-learn>=1.2,<2.0",
   "deeptime>=0.4.5,<0.5",
+  "typing-extensions>=4.8",
 ]
 
 # ─────────────────────── Optional runtime extras ──────────────────────
 
 [project.optional-dependencies]
-mlcv = ["torch>=2.2", "deeptime>=0.4.5,<0.5"]
+mlcv = ["torch>=2.2", "lightning>=2.0", "deeptime>=0.4.5,<0.5"]
 app = ["streamlit>=1.31", "plotly>=5.15", "matplotlib>=3.8"]
 analysis = ["matplotlib>=3.8", "deeptime>=0.4.5,<0.5"]
 fixer = ["pdbfixer>=1.9; python_version < '3.12'", "black>=25.0", "isort>=5.10.1", "ruff>=0.5"]
-all = ["torch>=2.2", "deeptime>=0.4.5,<0.5", "streamlit>=1.31", "plotly>=5.15", "matplotlib>=3.8", "pdbfixer>=1.9; python_version < '3.12'", "black>=25.0", "isort>=5.10.1", "ruff>=0.5"]
+all = ["torch>=2.2", "lightning>=2.0", "deeptime>=0.4.5,<0.5", "streamlit>=1.31", "plotly>=5.15", "matplotlib>=3.8", "pdbfixer>=1.9; python_version < '3.12'", "black>=25.0", "isort>=5.10.1", "ruff>=0.5"]
 
 # ───────────────────── URLs & entry-points / CLI ──────────────────────
 [project.urls]
@@ -98,7 +99,7 @@ url = "https://download.pytorch.org/whl/cpu"
 priority = "explicit"
 
 [tool.poetry.dependencies]
-python = ">=3.11,<3.13"
+python = ">=3.10,<3.13"
 # Core dependencies (keep in sync with [project] section)
 numpy = ">=1.24,<2.4"
 scipy = ">=1.10,<2.0"
@@ -111,11 +112,13 @@ pygount = ">=2.6,<3.2"
 mlcolvar = ">=1.2"
 scikit-learn = ">=1.2,<2.0"
 deeptime = ">=0.4.5,<0.5"
+typing-extensions = ">=4.8"
 # Optional dependencies (enabled via extras)
 matplotlib = {version = ">=3.8", optional = true}
 plotly = {version = ">=5.15", optional = true}
 streamlit = {version = ">=1.31", optional = true}
 torch = {version = ">=2.2,<3.0", optional = true, source = "pytorch-cpu"}
+lightning = {version = ">=2.0,<3.0", optional = true}
 pdbfixer = {version = ">=1.9", optional = true, markers = "python_version < '3.12'"}
 black = {version = ">=25.0", optional = true}
 isort = {version = ">=5.10.1", optional = true}
@@ -123,11 +126,11 @@ ruff = {version = ">=0.5", optional = true}
 
 # Keep these extras in sync with [project.optional-dependencies]
 [tool.poetry.extras]
-mlcv = ["torch", "deeptime"]
+mlcv = ["torch", "lightning", "deeptime"]
 app = ["streamlit", "plotly", "matplotlib"]
 analysis = ["matplotlib", "deeptime"]
 fixer = ["pdbfixer", "black", "isort", "ruff"]
-all = ["torch", "deeptime", "streamlit", "plotly", "matplotlib", "pdbfixer", "black", "isort", "ruff"]
+all = ["torch", "lightning", "deeptime", "streamlit", "plotly", "matplotlib", "pdbfixer", "black", "isort", "ruff"]
 
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^3.7"
@@ -152,7 +155,7 @@ sphinx-rtd-theme = "^2.0"
 # ───────────────────────── Formatting & linting ───────────────────────
 [tool.black]
 line-length    = 88
-target-version = ["py311", "py312"]
+target-version = ["py310", "py311", "py312"]
 include        = '\.pyi?$'
 extend-exclude = '''
 /(

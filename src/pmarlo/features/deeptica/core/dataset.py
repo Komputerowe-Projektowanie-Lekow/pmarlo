@@ -44,6 +44,11 @@ def create_loaders(dataset: Any, cfg: Any) -> DatasetBundle:
     splits = {"train": float(max(0.0, 1.0 - val_frac)), "val": float(val_frac)}
 
     dict_module = _instantiate_dict_module(dataset, batch_size, num_workers, splits)
+    
+    # Setup the module before accessing dataloaders (required by Lightning)
+    if hasattr(dict_module, "setup"):
+        dict_module.setup()
+    
     train_loader = dict_module.train_dataloader()
     val_loader = dict_module.val_dataloader()
 
@@ -82,18 +87,27 @@ def _instantiate_dict_module(
     dataset: Any, batch_size: int, num_workers: int, splits: dict[str, float]
 ) -> Any:
     params = signature(DictModule).parameters
-    kwargs = dict(
+    kwargs: dict[str, Any] = dict(
         dataset=dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=num_workers,
     )
-    if "split" in params:
+    
+    # Add num_workers only if supported
+    if "num_workers" in params:
+        kwargs["num_workers"] = num_workers
+    
+    if "lengths" in params:
+        # Convert splits dict to lengths tuple (train_frac, val_frac)
+        train_frac = splits.get("train", 0.9)
+        val_frac = splits.get("val", 0.1)
+        kwargs["lengths"] = (train_frac, val_frac)
+    elif "split" in params:
         kwargs["split"] = splits
     elif "splits" in params:
         kwargs["splits"] = splits
-    else:  # pragma: no cover - defensive
+    else:
         raise TypeError(
-            "DictModule signature missing 'split'/'splits'; update mlcolvar integration"
+            "DictModule signature missing 'lengths'/'split'/'splits'; incompatible mlcolvar version"
         )
     return DictModule(**kwargs)
