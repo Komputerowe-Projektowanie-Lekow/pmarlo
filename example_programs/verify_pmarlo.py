@@ -2,8 +2,10 @@
 # SPDX-License-Identifier: GNU GPLv3
 
 import logging
-import os
-from pathlib import Path
+
+from _example_support import assets_path, ensure_src_on_path
+
+ensure_src_on_path()
 
 from pmarlo import MarkovStateModel, Pipeline, Protein, ReplicaExchange, Simulation
 from pmarlo.replica_exchange.config import RemdConfig
@@ -17,8 +19,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Use relative path from the project root
-protein_path = os.path.join("../tests", "data", "3gd8-fixed.pdb")
+# Use the bundled protein asset packaged with the tests
+protein_path = str(assets_path("3gd8-fixed.pdb"))
 
 
 def verify_components():

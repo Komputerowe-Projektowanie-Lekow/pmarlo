@@ -1,18 +1,6 @@
 from __future__ import annotations
 
-"""
-Performance micro-benchmarks for legacy vs streaming demux.
-
-Notes
------
-- These tests are marked with ``@pytest.mark.perf`` and are skipped by default
-  unless the environment variable ``PMARLO_RUN_PERF`` is set. Run locally with:
-
-    PMARLO_RUN_PERF=1 poetry run pytest tests/perf/test_demux_perf.py -q
-
-- Uses ``pytest-benchmark`` if available to capture wall time.
-- Peak memory is measured via ``tracemalloc`` as an approximate indicator.
-"""
+"""Performance micro-benchmarks for the demux facade and streaming engine."""
 
 import os
 import tracemalloc
@@ -59,7 +47,7 @@ def _make_replicas(
     return str(pdb), dcds
 
 
-def _build_legacy_remd(pdb: str, dcds: list[str], tmp_path: Path):
+def _build_remd(pdb: str, dcds: list[str], tmp_path: Path):
     from pmarlo.replica_exchange.replica_exchange import ReplicaExchange
 
     remd = ReplicaExchange.__new__(ReplicaExchange)
@@ -87,11 +75,11 @@ def _benchmark_memory(func, *args, **kwargs):
         tracemalloc.stop()
 
 
-def test_perf_legacy_demux(benchmark, tmp_path: Path):
+def test_perf_demux_facade(benchmark, tmp_path: Path):
     from pmarlo.demultiplexing.demux import demux_trajectories
 
     pdb, dcds = _make_replicas(tmp_path)
-    remd = _build_legacy_remd(pdb, dcds, tmp_path)
+    remd = _build_remd(pdb, dcds, tmp_path)
 
     def _run():
         return demux_trajectories(remd, target_temperature=300.0, equilibration_steps=0)
@@ -103,7 +91,7 @@ def test_perf_legacy_demux(benchmark, tmp_path: Path):
     result = benchmark(_bench)
     # Attach memory info to output for human inspection
     path, cur, peak = result
-    print(f"legacy demux: out={path} peak_mem_bytes={peak}")
+    print(f"demux facade: out={path} peak_mem_bytes={peak}")
 
 
 def test_perf_streaming_demux(benchmark, tmp_path: Path):

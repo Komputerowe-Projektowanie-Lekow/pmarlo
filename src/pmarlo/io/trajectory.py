@@ -14,6 +14,8 @@ import os
 import sys
 from typing import Iterator, Sequence
 
+from pmarlo.utils.path_utils import resolve_project_path
+
 from . import verbose_plugin_logs
 
 if verbose_plugin_logs:
@@ -81,28 +83,6 @@ def _suppress_plugin_output() -> Iterator[None]:
                 logging.getLogger(name).setLevel(level)
 
 
-def _resolve_path(path: str | None) -> str | None:
-    """Resolve relative paths robustly for tests and different CWDs."""
-    if path is None:
-        return None
-    if os.path.isabs(path):
-        return path
-    alt = os.path.join(os.getcwd(), path)
-    if os.path.exists(alt):
-        return alt
-    try:
-        from pathlib import Path as _Path
-
-        # Repository root is three levels up from this file: io -> pmarlo -> src -> repo
-        root = _Path(__file__).resolve().parents[3]
-        candidate = root / path.replace("/", os.sep)
-        if candidate.exists():
-            return str(candidate)
-    except Exception:  # pragma: no cover
-        pass
-    return path
-
-
 def _make_iterload_generator(
     filename: str,
     *,
@@ -111,9 +91,16 @@ def _make_iterload_generator(
     atom_indices: Sequence[int] | None,
     chunk: int,
 ):
+    resolved_filename = resolve_project_path(filename)
+    resolved_top: str | md.Trajectory | None
+    if isinstance(top, (str, os.PathLike)):
+        resolved_top = resolve_project_path(top)
+    else:
+        resolved_top = top
+
     return md.iterload(
-        _resolve_path(filename) or filename,
-        top=_resolve_path(top) if isinstance(top, str) else top,
+        resolved_filename if resolved_filename is not None else filename,
+        top=resolved_top,
         stride=stride,
         atom_indices=atom_indices,
         chunk=chunk,

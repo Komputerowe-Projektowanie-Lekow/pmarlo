@@ -21,6 +21,7 @@ import openmm
 from openmm import Platform, unit
 from openmm.app import PDBFile, Simulation
 
+from pmarlo import constants as const
 from pmarlo.transform.progress import ProgressCB, ProgressPrinter, ProgressReporter
 
 from ..demultiplexing.demux import demux_trajectories as _demux_trajectories
@@ -28,6 +29,7 @@ from ..markov_state_model.results import REMDResult
 from ..utils.integrator import create_langevin_integrator
 from ..utils.naming import base_shape_str, permutation_name
 from ..utils.replica_utils import exponential_temperature_ladder
+from ..utils.validation import all_finite
 from .config import RemdConfig
 from .diagnostics import (
     compute_diffusion_metrics,
@@ -382,7 +384,18 @@ class ReplicaExchange:
                     "Failed to load resume PDB %s: %s", str(self.resume_pdb), exc
                 )
                 resume_positions = None
-        system = create_system(pdb, forcefield)
+        # Pass CV model info if available
+        cv_model_path = getattr(self, "cv_model_path", None)
+        cv_scaler_mean = getattr(self, "cv_scaler_mean", None)
+        cv_scaler_scale = getattr(self, "cv_scaler_scale", None)
+        
+        system = create_system(
+            pdb,
+            forcefield,
+            cv_model_path=cv_model_path,
+            cv_scaler_mean=cv_scaler_mean,
+            cv_scaler_scale=cv_scaler_scale,
+        )
         log_system_info(system, logger)
         self.metadynamics = setup_metadynamics(
             system, bias_variables, self.temperatures[0], self.output_dir
@@ -505,7 +518,7 @@ class ReplicaExchange:
                 f"  Initial energy for replica {replica_index}: {initial_energy}"
             )
             energy_val = initial_energy.value_in_unit(unit.kilojoules_per_mole)
-            if abs(energy_val) > 1e6:
+            if abs(energy_val) > const.NUMERIC_HARD_ENERGY_LIMIT:
                 logger.warning(
                     (
                         "  Very high initial energy ("
@@ -592,8 +605,8 @@ class ReplicaExchange:
         )
 
     def _validate_energy(self, energy, replica_index: int) -> None:
-        energy_str = str(energy).lower()
-        if "nan" in energy_str or "inf" in energy_str:
+        energy_val = float(energy.value_in_unit(unit.kilojoules_per_mole))
+        if not all_finite(energy_val):
             raise ValueError(
                 (
                     "Invalid energy ("
@@ -601,8 +614,7 @@ class ReplicaExchange:
                     f"{replica_index}"
                 )
             )
-        energy_val = energy.value_in_unit(unit.kilojoules_per_mole)
-        if abs(energy_val) > 1e5:
+        if abs(energy_val) > const.NUMERIC_SOFT_ENERGY_LIMIT:
             logger.warning(
                 (
                     f"  High final energy ({energy_val:.2e} kJ/mol) for "
@@ -612,7 +624,7 @@ class ReplicaExchange:
 
     def _validate_positions(self, positions, replica_index: int) -> None:
         pos_array = positions.value_in_unit(unit.nanometer)
-        if np.any(np.isnan(pos_array)) or np.any(np.isinf(pos_array)):
+        if not all_finite(pos_array):
             raise ValueError(
                 (
                     "Invalid positions detected after minimization for "
@@ -1051,7 +1063,14 @@ class ReplicaExchange:
         # Rescale velocities deterministically instead of redrawing
         Ti = self.temperatures[old_state_i]
         Tj = self.temperatures[old_state_j]
-        scale_ij = float(np.sqrt(max(1e-12, Tj / max(1e-12, Ti))))
+        scale_ij = float(
+            np.sqrt(
+                max(
+                    const.NUMERIC_MIN_POSITIVE,
+                    Tj / max(const.NUMERIC_MIN_POSITIVE, Ti),
+                )
+            )
+        )
         try:
             vi = self.contexts[replica_i].getState(getVelocities=True).getVelocities()
             vj = self.contexts[replica_j].getState(getVelocities=True).getVelocities()
@@ -2017,7 +2036,7 @@ def run_remd_simulation(
                 remd.tune_temperature_ladder()
                 remd.setup_replicas(bias_variables=bias_variables)
     else:
-        # Non-checkpoint mode (legacy)
+        # Non-checkpoint mode
         bias_variables = setup_bias_variables(pdb_file) if use_metadynamics else None
         remd = ReplicaExchange(
             pdb_file=pdb_file,

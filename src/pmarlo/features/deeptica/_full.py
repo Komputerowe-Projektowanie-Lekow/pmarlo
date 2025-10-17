@@ -10,7 +10,9 @@ import numpy as np
 import torch  # type: ignore
 from sklearn.preprocessing import StandardScaler  # type: ignore
 
+from pmarlo import constants as const
 from pmarlo.ml.deeptica.whitening import apply_output_transform
+from pmarlo.utils.path_utils import ensure_directory
 
 from .core.model import apply_output_whitening as core_apply_output_whitening
 from .core.model import construct_deeptica_core as core_construct_deeptica_core
@@ -108,7 +110,7 @@ def _apply_output_whitening(
     idx_tau,
     *,
     apply: bool = False,
-    eig_floor: float = 1e-4,
+    eig_floor: float = const.DEEPTICA_DEFAULT_EIGEN_FLOOR,
 ):
     return core_apply_output_whitening(
         net,
@@ -154,13 +156,14 @@ class DeepTICAConfig:
     n_out: int = 2
     hidden: Tuple[int, ...] = (32, 16)
     activation: str = "gelu"
-    learning_rate: float = 3e-4
+    learning_rate: float = const.DEEPTICA_DEFAULT_LEARNING_RATE
     batch_size: int = 1024
     max_epochs: int = 200
     early_stopping: int = 25
-    weight_decay: float = 1e-4
+    weight_decay: float = const.DEEPTICA_DEFAULT_WEIGHT_DECAY
     log_every: int = 1
     seed: int = 0
+    device: str = "cpu"
     reweight_mode: str = "scaled_time"  # or "none"
     # New knobs for loaders and validation split
     val_frac: float = 0.1
@@ -182,12 +185,12 @@ class DeepTICAConfig:
     tau_schedule: Tuple[int, ...] = field(default_factory=tuple)
     val_tau: Optional[int] = None
     epochs_per_tau: int = 15
-    vamp_eps: float = 1e-3
-    vamp_eps_abs: float = 1e-6
+    vamp_eps: float = const.DEEPTICA_DEFAULT_VAMP_EPS
+    vamp_eps_abs: float = const.DEEPTICA_DEFAULT_VAMP_EPS_ABS
     vamp_alpha: float = 0.15
-    vamp_cond_reg: float = 1e-4
+    vamp_cond_reg: float = const.DEEPTICA_DEFAULT_VAMP_COND_REG
     grad_norm_warn: Optional[float] = None
-    variance_warn_threshold: float = 1e-6
+    variance_warn_threshold: float = const.DEEPTICA_DEFAULT_VARIANCE_WARN_THRESHOLD
     mean_warn_threshold: float = 5.0
 
     @classmethod
@@ -289,7 +292,7 @@ class DeepTICAModel:
 
     def save(self, path: Path) -> None:
         path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_directory(path.parent)
         # Config
         meta = json.dumps(
             asdict(self.cfg), sort_keys=True, separators=(",", ":"), allow_nan=False
@@ -343,6 +346,33 @@ class DeepTICAModel:
         history = _load_training_history(path)
         return cls(cfg, scaler, net, training_history=history)
 
+    def to_torchscript(self, path: Path) -> Path:
+        path = Path(path)
+        ensure_directory(path.parent)
+        self.net.eval()
+        # Trace with single precision (typical for inference)
+        example = torch.zeros(1, int(self.scaler.mean_.shape[0]), dtype=torch.float32)
+        _mark_module_scripting_safe(self.net)
+        base = getattr(self.net, "inner", None)
+        if base is not None:
+            _mark_module_scripting_safe(base)
+        ts = torch.jit.trace(self.net.to(torch.float32), example)
+        out = path.with_suffix(".ts")
+        try:
+            ts.save(str(out))
+        except Exception:
+            # Fallback to torch.jit.save for broader compatibility
+            torch.jit.save(ts, str(out))
+        return out
+
+    def plumed_snippet(self, model_path: Path) -> str:
+        """Return a PLUMED snippet that references the exported TorchScript model."""
+        ts = Path(model_path).with_suffix(".ts").name
+        lines = [f"PYTORCH_MODEL FILE={ts} LABEL=mlcv"]
+        for i in range(int(self.cfg.n_out)):
+            lines.append(f"CV VALUE=mlcv.node-{i}")
+        return "\n".join(lines) + "\n"
+
 
 def _load_deeptica_config(path: Path) -> DeepTICAConfig:
     data = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
@@ -393,27 +423,14 @@ def _load_training_history(path: Path) -> Optional[dict[str, Any]]:
         return cast(dict[str, Any], data)
     return None
 
-    def to_torchscript(self, path: Path) -> Path:
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self.net.eval()
-        # Trace with single precision (typical for inference)
-        example = torch.zeros(1, int(self.scaler.mean_.shape[0]), dtype=torch.float32)
-        _mark_module_scripting_safe(self.net)
-        base = getattr(self.net, "inner", None)
-        if base is not None:
-            _mark_module_scripting_safe(base)
-        ts = torch.jit.trace(self.net.to(torch.float32), example)
-        out = path.with_suffix(".ts")
-        try:
-            ts.save(str(out))
-        except Exception:
-            # Fallback to torch.jit.save for broader compatibility
-            torch.jit.save(ts, str(out))
-        return out
 
-
-def _mark_module_scripting_safe(module: Any) -> None:
+def _mark_module_scripting_safe(module: Any, *, _seen: set[int] | None = None) -> None:
+    if _seen is None:
+        _seen = set()
+    marker = id(module)
+    if marker in _seen:
+        return
+    _seen.add(marker)
     try:
         if hasattr(module, "_jit_is_scripting"):
             setattr(module, "_jit_is_scripting", True)
@@ -426,15 +443,7 @@ def _mark_module_scripting_safe(module: Any) -> None:
     except Exception:
         return
     for _name, child in iterator:
-        _mark_module_scripting_safe(child)
-
-    def plumed_snippet(self, model_path: Path) -> str:
-        ts = Path(model_path).with_suffix(".ts").name
-        # Emit one CV line per output for convenience; users can rename labels in PLUMED input.
-        lines = [f"PYTORCH_MODEL FILE={ts} LABEL=mlcv"]
-        for i in range(int(self.cfg.n_out)):
-            lines.append(f"CV VALUE=mlcv.node-{i}")
-        return "\n".join(lines) + "\n"
+        _mark_module_scripting_safe(child, _seen=_seen)
 
 
 def train_deeptica(

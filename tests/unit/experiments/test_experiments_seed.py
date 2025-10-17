@@ -9,6 +9,7 @@ from pmarlo.experiments.replica_exchange import (
     run_replica_exchange_experiment,
 )
 from pmarlo.experiments.simulation import SimulationConfig, run_simulation_experiment
+from pmarlo.utils.path_utils import ensure_directory
 
 
 def test_simulation_experiment_uses_seed(monkeypatch, tmp_path):
@@ -29,7 +30,7 @@ def test_simulation_experiment_uses_seed(monkeypatch, tmp_path):
 
         def run_production(self, *_args, **_kwargs):
             p = tmp_path / "simulation" / "traj.dcd"
-            p.parent.mkdir(parents=True, exist_ok=True)
+            ensure_directory(p.parent)
             p.write_bytes(b"")
             return str(p)
 
@@ -110,7 +111,7 @@ def test_msm_experiment_uses_seed(monkeypatch, tmp_path):
             self.lag_time = 1
 
     def dummy_run_complete(*_args, **_kwargs):
-        (tmp_path / "msm").mkdir(parents=True, exist_ok=True)
+        ensure_directory(tmp_path / "msm")
         return DummyMSMObj()
 
     with patch("pmarlo.experiments.msm.run_complete_msm_analysis", dummy_run_complete):

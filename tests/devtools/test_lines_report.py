@@ -5,7 +5,7 @@ from typing import Mapping
 
 import pytest
 
-from tools.lines_report import (
+from scripts.lines_report import (
     FolderSummary,
     LangTotals,
     build_language_rows,

@@ -22,6 +22,3 @@ class TICAMixin:
 
     def _extract_tica_attributes(self, tica_model: object) -> None:
         raise NotImplementedError
-
-    def _fallback_discard(self, lag: int) -> None:
-        raise NotImplementedError

@@ -24,8 +24,5 @@ def create_langevin_integrator(
         2.0 * unit.femtoseconds,
     )
     if random_seed is not None:
-        try:
-            integrator.setRandomNumberSeed(int(random_seed))
-        except Exception:
-            pass
+        integrator.setRandomNumberSeed(int(random_seed))
     return integrator

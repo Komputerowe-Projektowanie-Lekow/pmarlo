@@ -21,6 +21,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from numpy.typing import NDArray
 
+from pmarlo.utils.path_utils import ensure_directory
+
+from ._msm_utils import _row_normalize
 from ._msm_utils import pcca_like_macrostates as _pcca_like
 
 logger = logging.getLogger(__name__)
@@ -31,12 +34,6 @@ class CKRunResult:
     mse: Dict[int, float] = field(default_factory=dict)
     mode: str = "micro"
     insufficient_k: List[int] = field(default_factory=list)
-
-
-def _row_normalize(C: NDArray[np.float64]) -> NDArray[np.float64]:
-    rows: NDArray[np.float64] = C.sum(axis=1).astype(np.float64, copy=False)
-    rows[rows == 0] = 1.0
-    return (C / rows[:, None]).astype(np.float64, copy=False)
 
 
 def _count_transitions(
@@ -274,7 +271,7 @@ def run_ck(
     factors_list = [int(f) for f in factors if int(f) > 1]
     _validate_inputs(dtrajs, lag_time, factors_list)
     out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out)
     result = CKRunResult()
     result.insufficient_k = factors_list.copy()
     logger.info(
@@ -296,7 +293,7 @@ def run_ck(
         logger.info("Macrostate analysis succeeded")
         _save_outputs_and_plot(result, out)
         return result
-    logger.info("Attempting microstate fallback analysis")
+    logger.info("Attempting microstate-only analysis")
     _perform_micro_analysis(
         filtered_trajs, C1_micro, lag_time, top_n_micro, min_trans, factors_list, result
     )

@@ -8,6 +8,8 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Tupl
 
 import numpy as np
 
+from pmarlo.utils.path_utils import ensure_directory
+
 from ..experiments.benchmark_utils import get_environment_info
 from .plan import TransformPlan
 
@@ -45,13 +47,9 @@ class _LearnCVAbort(RuntimeError):
 
 
 def _capture_env_payload() -> Dict[str, Any]:
-    """Return environment metadata with defensive fallbacks."""
+    """Return environment metadata collected from the runtime."""
 
-    try:
-        info = dict(get_environment_info())
-    except Exception as exc:  # pragma: no cover - defensive fallback
-        logger.debug("Failed to capture environment info: %s", exc)
-        info = {}
+    info = dict(get_environment_info())
     info.setdefault("python_exe", sys.executable)
     return info
 
@@ -67,7 +65,7 @@ def _extract_missing_modules(exc: BaseException) -> List[str]:
         if key in seen:
             return
         seen.add(key)
-        if isinstance(err, ModuleNotFoundError):
+        if isinstance(err, (ModuleNotFoundError, ImportError)):
             name = getattr(err, "name", None)
             if name:
                 names.add(str(name).split(".")[0])
@@ -92,22 +90,6 @@ def _extract_missing_modules(exc: BaseException) -> List[str]:
 def _format_missing_reason(mods: Sequence[str]) -> str:
     payload = ",".join(sorted(set(mods))) if mods else "unknown"
     return f"missing_dependency:{payload}"
-
-
-def _probe_optional_modules(names: Sequence[str]) -> List[str]:
-    import importlib
-
-    discovered: List[str] = []
-    for module_name in names:
-        try:
-            importlib.import_module(module_name)
-        except Exception as exc:
-            extracted = _extract_missing_modules(exc)
-            if extracted:
-                discovered.extend(extracted)
-            else:
-                discovered.append(module_name)
-    return sorted({str(name).split(".")[0] for name in discovered})
 
 
 def _compute_pairs_metadata(
@@ -186,28 +168,6 @@ def _finalize_learn_cv_context(
     return context
 
 
-def _make_dependency_outcome(
-    *,
-    lag_value: int,
-    missing: Sequence[str],
-    warnings: List[str],
-    per_shard: List[Dict[str, Any]],
-    pairs_total: int,
-) -> _LearnCVOutcome:
-    reason = _format_missing_reason(missing)
-    summary = {
-        "applied": False,
-        "skipped": True,
-        "reason": reason,
-        "lag": int(lag_value),
-        "lag_used": None,
-        "n_out": 0,
-        "missing": list(missing),
-    }
-    all_warnings = list(warnings) + ["missing_dependencies"]
-    return _LearnCVOutcome(summary, per_shard, all_warnings, pairs_total)
-
-
 def _extract_learn_cv_dataset(context: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
     dataset: Optional[Dict[str, Any]] = None
     uses_data_key = False
@@ -266,24 +226,10 @@ def _collect_lag_candidates(params: Dict[str, Any], tau_requested: int) -> List[
             return None
         return coerced if coerced > 0 else None
 
-    candidates: List[int] = []
     primary = _coerce_one(params.get("lag", tau_requested))
-    candidates.append(primary or tau_requested)
-
-    fallback = params.get("lag_fallback")
-    if isinstance(fallback, (list, tuple)):
-        for entry in fallback:
-            coerced = _coerce_one(entry)
-            if coerced is not None:
-                candidates.append(coerced)
-    elif fallback is not None:
-        coerced = _coerce_one(fallback)
-        if coerced is not None:
-            candidates.append(coerced)
-
-    if not candidates:
-        candidates = [tau_requested]
-    return candidates
+    if primary is None:
+        raise ValueError("LEARN_CV requires a positive integer lag value")
+    return [primary]
 
 
 @dataclass
@@ -382,7 +328,6 @@ def _build_no_pairs_outcome(
         "lag_used": None,
         "n_out": 0,
         "lag_candidates": [int(v) for v in selection.seen_lags],
-        "lag_fallback": [int(v) for v in selection.seen_lags],
         "attempts": selection.attempt_details,
     }
     return _LearnCVOutcome(
@@ -451,6 +396,11 @@ def _classify_training_failure(exc: BaseException) -> Tuple[str, Dict[str, Any]]
         payload["missing"] = missing
         return _format_missing_reason(missing), payload
     name = exc.__class__.__name__
+    message = str(exc)
+    if "DeviceDtypeModuleMixin" in message or "DeviceDtypeModuleMixin" in name:
+        mods = missing or ["lightning"]
+        payload["missing"] = mods
+        return _format_missing_reason(mods), payload
     if "PmarloApiIncompatibilityError" in name:
         return "api_incompatibility", payload
     return "exception", payload
@@ -482,6 +432,35 @@ def _make_training_failure_outcome(
         list(warnings) + [reason],
         selection.pairs_estimate,
     )
+
+
+def _build_missing_dependency_outcome(
+    *,
+    lag: int,
+    per_shard_info: List[Dict[str, Any]],
+    warnings: List[str],
+    pairs_estimate: int,
+    exc: BaseException,
+) -> _LearnCVOutcome:
+    missing = _extract_missing_modules(exc)
+    reason = _format_missing_reason(missing)
+    summary = {
+        "applied": False,
+        "skipped": True,
+        "reason": reason,
+        "lag": int(lag),
+        "lag_used": None,
+        "n_out": 0,
+        "pairs_total": max(0, int(pairs_estimate)),
+        "lag_candidates": [int(lag)],
+        "attempts": [],
+        "error": str(exc),
+    }
+    if missing:
+        summary["missing"] = missing
+    warning_list = list(warnings)
+    warning_list.append(reason)
+    return _LearnCVOutcome(summary, per_shard_info, warning_list, pairs_estimate)
 
 
 def _convert_history_array(value: Any) -> Any:
@@ -605,7 +584,7 @@ def _save_trained_model(
     if model_dir:
         try:
             base_dir = Path(model_dir)
-            base_dir.mkdir(parents=True, exist_ok=True)
+            ensure_directory(base_dir)
             stem = (
                 params.get("model_prefix")
                 or f"deeptica-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
@@ -636,39 +615,25 @@ def _ensure_deeptica_module(
     warnings: List[str],
     pairs_estimate: int,
 ) -> Any:
-    try:
-        import pmarlo.features.deeptica as deeptica_mod
-    except ImportError as exc:
-        outcome = _make_dependency_outcome(
-            lag_value=tau_requested,
-            missing=_extract_missing_modules(exc),
-            warnings=warnings,
-            per_shard=per_shard_info,
-            pairs_total=pairs_estimate,
-        )
-        raise _LearnCVAbort(outcome) from exc
+    import pmarlo.features.deeptica as deeptica_mod
 
     missing_exc = getattr(deeptica_mod, "_IMPORT_ERROR", None)
     if missing_exc is not None:
-        outcome = _make_dependency_outcome(
-            lag_value=tau_requested,
-            missing=_extract_missing_modules(missing_exc),
-            warnings=warnings,
-            per_shard=per_shard_info,
-            pairs_total=pairs_estimate,
-        )
-        raise _LearnCVAbort(outcome)
+        raise ImportError("DeepTICA extras unavailable") from missing_exc
+    import importlib
 
-    probe_missing = _probe_optional_modules(["lightning", "pytorch_lightning"])
-    if probe_missing:
-        outcome = _make_dependency_outcome(
-            lag_value=tau_requested,
-            missing=probe_missing,
-            warnings=warnings,
-            per_shard=per_shard_info,
-            pairs_total=pairs_estimate,
-        )
-        raise _LearnCVAbort(outcome)
+    missing: list[tuple[str, BaseException]] = []
+    for name in ("mlcolvar", "lightning", "pytorch_lightning"):
+        try:
+            importlib.import_module(name)
+        except Exception as exc:
+            missing.append((name, exc))
+    if missing:
+        primary = missing[0][1]
+        missing_names = ", ".join(sorted({entry[0] for entry in missing}))
+        raise ImportError(
+            f"DeepTICA extras unavailable: missing {missing_names}"
+        ) from primary
 
     return deeptica_mod
 
@@ -702,6 +667,15 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
             warnings=warnings,
             pairs_estimate=pairs_estimate,
         )
+    except ImportError as exc:
+        outcome = _build_missing_dependency_outcome(
+            lag=tau_requested,
+            per_shard_info=per_shard_info,
+            warnings=warnings,
+            pairs_estimate=pairs_estimate,
+            exc=exc,
+        )
+        return finalize(outcome)
     except _LearnCVAbort as abort:
         return finalize(abort.outcome)
 
@@ -778,8 +752,6 @@ def _require_deeptica_method(params: Dict[str, Any]) -> None:
 
 def _prepare_selection_warnings(selection: _LagSelection, lag_value: int) -> List[str]:
     warnings_list = list(selection.warnings)
-    if selection.seen_lags and lag_value != int(selection.seen_lags[0]):
-        warnings_list.append(f"lag_fallback_used:{lag_value}")
     selection.warnings = warnings_list
     return warnings_list
 
@@ -856,7 +828,6 @@ def _build_success_summary(
         "n_out": n_out,
         "pairs_total": int(pair_indices[0].shape[0]),
         "lag_candidates": [int(v) for v in selection.seen_lags],
-        "lag_fallback": [int(v) for v in selection.seen_lags],
         "attempts": selection.attempt_details,
     }
     summary.update(metrics)

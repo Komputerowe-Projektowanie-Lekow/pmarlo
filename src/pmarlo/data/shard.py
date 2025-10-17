@@ -1,151 +1,66 @@
 from __future__ import annotations
 
-"""
-Deterministic shard format for feature/CV slices.
+"""Canonical shard helpers exposing the historical pmarlo.data.shard API."""
 
-This module defines a minimal schema split into:
-- NPZ file with arrays: X (float64, n×k), dtraj (int32 1-D or empty),
-  and optional bias_potential (float64 1-D or empty)
-- JSON file with :class:`ShardMeta` describing provenance and an arrays hash
-
-Invariants:
-- CV arrays are 1-D, equal length; order of CV names is preserved
-- JSON bytes are canonical for identical inputs (sorted keys, canonical separators)
-- Integrity is verified by SHA-256 over dtype, shape, and raw bytes
-
-Example:
-    json_path = write_shard(
-        Path("shards"),
-        "shard_000",
-        {"phi": phi, "psi": psi},
-        None,
-        {"phi": True, "psi": False},
-        42,
-        300.0,
-        {"created_at": "1970-01-01T00:00:00Z"},
-    )
-    meta, X, dtraj = read_shard(json_path)
-"""
-
-import json
 from dataclasses import dataclass
-from hashlib import sha256
 from pathlib import Path
-from typing import Any, Dict, Iterable, Tuple
+from typing import Dict
 
 import numpy as np
 
+from pmarlo import constants as const
+from pmarlo.shards.format import read_shard_npz_json, write_shard_npz_json
+from pmarlo.shards.id import canonical_shard_id
+from pmarlo.shards.schema import FeatureSpec, Shard, ShardMeta
+from pmarlo.utils.path_utils import ensure_directory
+from pmarlo.utils.validation import require
+
+__all__ = ["write_shard", "read_shard", "_sha256_bytes"]
+
 
 @dataclass(frozen=True)
-class ShardMeta:
-    """Metadata describing a deterministic feature shard.
+class ShardDetails:
+    """Lightweight adapter exposing shard metadata for downstream consumers."""
 
-    JSON serialization is expected to be canonical via :func:`_canonical_json`.
-    """
+    meta: ShardMeta
+    source: Dict[str, object]
 
-    shard_id: str
-    seed: int
-    temperature: float
-    n_frames: int
-    cv_names: Tuple[str, ...]
-    periodic: Tuple[bool, ...]
-    created_at: str
-    source: Dict[str, Any]
-    arrays_hash: str
-    schema_version: str = "2.0"
+    @property
+    def shard_id(self) -> str:
+        return self.meta.shard_id
 
+    @property
+    def temperature_K(self) -> float:
+        return self.meta.temperature_K
 
-def _canonical_json(obj: Dict[str, Any]) -> str:
-    """Produce deterministic JSON string for dictionaries.
+    @property
+    def cv_names(self) -> tuple[str, ...]:
+        return tuple(self.meta.feature_spec.columns)
 
-    Keys are sorted, separators are canonical, and NaNs are not allowed.
-    """
-
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), allow_nan=False)
-
-
-def generate_canonical_shard_id_from_meta(meta: ShardMeta, json_path: Path) -> str:
-    """
-    Generate canonical shard ID from shard metadata.
-
-    This function attempts to construct a canonical shard identifier from the
-    metadata stored in a shard JSON file. It uses the source path information
-    to determine the canonical form.
-
-    Parameters
-    ----------
-    meta : ShardMeta
-        Shard metadata object
-    json_path : Path
-        Path to the shard JSON file
-
-    Returns
-    -------
-    str
-        Canonical shard identifier, or legacy format if parsing fails
-
-    Examples
-    --------
-    >>> meta = ShardMeta(...)
-    >>> canonical_id = generate_canonical_shard_id_from_meta(meta, Path("shard.json"))
-    >>> print(canonical_id)
-    'run-20250906-170155:demux:T300:0'
-    """
-    try:
-        # Extract source path from metadata
-        source = meta.source or {}
-        source_path_str = (
-            source.get("traj")
-            or source.get("path")
-            or source.get("file")
-            or source.get("source_path")
+    @property
+    def periodic(self) -> tuple[bool, ...]:
+        periodic = self.source.get("periodic")
+        require(
+            isinstance(periodic, (list, tuple))
+            and len(periodic) == len(self.meta.feature_spec.columns),
+            "periodic flags missing from shard provenance",
         )
-
-        if source_path_str:
-            source_path = Path(source_path_str)
-            try:
-                from pmarlo.io.shard_id import parse_shard_id
-
-                canonical_id = parse_shard_id(source_path).canonical()
-                return str(canonical_id)
-            except Exception:
-                pass
-
-        # Fallback to legacy format
-        run_uid = (
-            source.get("run_uid") or source.get("run_id") or source.get("run_dir") or ""
-        )
-        return f"{run_uid}|{meta.shard_id}|{str(json_path.resolve())}"
-
-    except Exception:
-        # Ultimate fallback
-        return f"fallback|{meta.shard_id}|{str(json_path.resolve())}"
+        return tuple(bool(v) for v in periodic)
 
 
-def _sha256_bytes(*arrays: np.ndarray) -> str:
-    """Compute SHA-256 over dtype, shape and raw bytes of given arrays.
-
-    Arrays are converted to C-contiguous layout for stable hashing.
-    """
-
-    h = sha256()
-    for arr in arrays:
-        a = np.ascontiguousarray(arr)
-        h.update(str(a.dtype.str).encode("utf-8"))
-        h.update(str(a.shape).encode("utf-8"))
-        h.update(a.tobytes())
-    return h.hexdigest()
-
-
-def _ensure_float64_column_stack(columns: Iterable[np.ndarray]) -> np.ndarray:
-    xs = [np.asarray(c, dtype=np.float64).reshape(-1) for c in columns]
-    if not xs:
-        raise ValueError("No CV arrays provided")
-    n = xs[0].shape[0]
-    for x in xs:
-        if x.shape[0] != n:
-            raise ValueError("All CV arrays must have the same length")
-    return np.column_stack(xs).astype(np.float64, copy=False)
+def _stack_columns(cvs: Dict[str, np.ndarray]) -> np.ndarray:
+    if not cvs:
+        raise ValueError("cvs dictionary must contain at least one column")
+    arrays = []
+    length = None
+    for key in cvs:
+        arr = np.asarray(cvs[key], dtype=np.float32).reshape(-1)
+        if length is None:
+            length = arr.shape[0]
+        elif arr.shape[0] != length:
+            raise ValueError("all CV arrays must have the same length")
+        arrays.append(arr)
+    return np.column_stack(arrays)
 
 
 def write_shard(
@@ -156,168 +71,156 @@ def write_shard(
     periodic: Dict[str, bool],
     seed: int,
     temperature: float,
-    source: Dict[str, Any],
+    source: Dict[str, object] | None = None,
     *,
     bias_potential: np.ndarray | None = None,
 ) -> Path:
-    """Write a deterministic shard as NPZ (arrays) + JSON (metadata).
-
-    Returns the path to the JSON file.
-    """
+    """Write a shard using the canonical NPZ+JSON schema."""
 
     out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    # Preserve insertion order of CV names to allow mismatch detection later
-    cv_names = tuple(cvs.keys())
-    X = _ensure_float64_column_stack([cvs[name] for name in cv_names])
+    ensure_directory(out_dir)
 
-    # dtraj is optional; when absent, store an empty int32 array in NPZ
-    if dtraj is None:
-        dtraj_arr = np.array([], dtype=np.int32)
-    else:
-        dtraj_arr = np.asarray(dtraj, dtype=np.int32).reshape(-1)
+    if source is None:
+        raise ValueError("source metadata is required")
 
-    # bias_potential is optional per-frame array (float64)
-    if bias_potential is None:
-        bias_arr = np.array([], dtype=np.float64)
-    else:
-        bias_arr = np.asarray(bias_potential, dtype=np.float64).reshape(-1)
+    source_dict: Dict[str, object] = dict(source)
+    for key in ("created_at", "kind", "run_id", "replica_id", "segment_id"):
+        require(key in source_dict, f"source missing required key '{key}'")
 
-    npz_path = out_dir / f"{shard_id}.npz"
-    # Use compressed NPZ; integrity is based on array bytes, not file bytes
-    np.savez_compressed(npz_path, X=X, dtraj=dtraj_arr, bias_potential=bias_arr)
+    kind = str(source_dict["kind"])
+    require(kind in {"demux", "replica"}, "kind must be 'demux' or 'replica'")
 
-    arrays_hash = (
-        _sha256_bytes(X) if dtraj_arr.size == 0 else _sha256_bytes(X, dtraj_arr)
-    )
-    n_frames = int(X.shape[0])
-    periodic_tuple = tuple(bool(periodic.get(name, False)) for name in cv_names)
+    replica_id = int(source_dict["replica_id"])
+    segment_id = int(source_dict["segment_id"])
+    exchange_window_id = int(source_dict.get("exchange_window_id", 0))
 
-    # created_at must be deterministic for identical inputs unless provided.
-    created_at = str(source.get("created_at", "1970-01-01T00:00:00Z"))
+    column_order = tuple(cvs.keys())
+    ordered_periodic = [bool((periodic or {}).get(name, False)) for name in column_order]
 
-    # Enrich source with explicit temperature_K and has_bias flags for provenance
-    enriched_source = dict(source)
-    try:
-        # Try to parse canonical provenance from a provided trajectory path
-        traj_path_str = (
-            enriched_source.get("traj")
-            or enriched_source.get("path")
-            or enriched_source.get("file")
-            or enriched_source.get("source_path")
-        )
-        if isinstance(traj_path_str, str) and traj_path_str:
-            try:
-                from pmarlo.io.shard_id import parse_shard_id as _parse_sid
+    t_kelvin = float(temperature)
+    X = _stack_columns(cvs)
+    n_frames = X.shape[0]
 
-                sid = _parse_sid(Path(traj_path_str), require_exists=False)
-                # DEMUX-first: store explicit kind/run_id and conditional role fields
-                enriched_source.update(
-                    {
-                        "kind": sid.source_kind,
-                        "run_id": sid.run_id,
-                    }
-                )
-                if sid.source_kind == "demux" and sid.temperature_K is not None:
-                    enriched_source["temperature_K"] = float(sid.temperature_K)
-                if sid.source_kind == "replica" and sid.replica_index is not None:
-                    enriched_source["replica_index"] = int(sid.replica_index)
-            except Exception:
-                # Best-effort only; leave as-is on failure
-                pass
-
-        enriched_source.update(
-            {
-                "temperature_K": float(temperature),
-                "has_bias": bool(bias_arr.size > 0),
-            }
-        )
-    except Exception:
-        # Guard against non-mapping inputs; fallback to a minimal dict
-        enriched_source = {
-            "temperature_K": float(temperature),
-            "has_bias": bool(bias_arr.size > 0),
+    source_dict.update(
+        {
+            "kind": kind,
+            "run_id": str(source_dict["run_id"]),
+            "replica_id": replica_id,
+            "segment_id": segment_id,
+            "exchange_window_id": exchange_window_id,
+            "seed": int(seed),
+            "n_frames": n_frames,
+            "periodic": ordered_periodic,
+            "temperature_K": t_kelvin,
         }
+    )
+
+    dt_ps = float(source_dict.get("dt_ps", 1.0))
+    feature_spec = FeatureSpec(
+        name=str(source_dict.get("feature_spec_name", "pmarlo_features")),
+        scaler=str(source_dict.get("feature_scaler", "identity")),
+        columns=tuple(str(k) for k in column_order),
+    )
+
+    bias_array: np.ndarray | None = None
+    if bias_potential is not None:
+        bias_array = np.asarray(bias_potential, dtype=np.float32).reshape(-1)
+        if bias_array.shape[0] != n_frames:
+            raise ValueError("bias_potential length must match number of frames")
+        source_dict["has_bias"] = True
+    else:
+        source_dict["has_bias"] = False
+
+    provenance = dict(source_dict)
+    if "source" not in provenance:
+        provenance["source"] = dict(source)
 
     meta = ShardMeta(
-        shard_id=str(shard_id),
-        seed=int(seed),
-        temperature=float(temperature),
-        n_frames=n_frames,
-        cv_names=cv_names,
-        periodic=periodic_tuple,
-        created_at=created_at,
-        source=enriched_source,
-        arrays_hash=arrays_hash,
+        schema_version=const.SHARD_SCHEMA_VERSION,
+        shard_id="placeholder",
+        temperature_K=t_kelvin,
+        beta=float(1.0 / (const.BOLTZMANN_CONSTANT_KJ_PER_MOL * t_kelvin)),
+        replica_id=replica_id,
+        segment_id=segment_id,
+        exchange_window_id=exchange_window_id,
+        n_frames=int(n_frames),
+        dt_ps=dt_ps,
+        feature_spec=feature_spec,
+        provenance=provenance,
+    )
+    canonical_id = canonical_shard_id(meta)
+    if shard_id != canonical_id:
+        raise ValueError(
+            f"shard_id '{shard_id}' does not match canonical '{canonical_id}'"
+        )
+
+    meta = ShardMeta(
+        schema_version=meta.schema_version,
+        shard_id=canonical_id,
+        temperature_K=meta.temperature_K,
+        beta=meta.beta,
+        replica_id=meta.replica_id,
+        segment_id=meta.segment_id,
+        exchange_window_id=meta.exchange_window_id,
+        n_frames=meta.n_frames,
+        dt_ps=meta.dt_ps,
+        feature_spec=meta.feature_spec,
+        provenance=meta.provenance,
     )
 
-    # Serialize metadata canonically
-    json_obj: Dict[str, Any] = {
-        "shard_id": meta.shard_id,
-        "seed": meta.seed,
-        "temperature": meta.temperature,
-        "n_frames": meta.n_frames,
-        "cv_names": list(meta.cv_names),
-        "periodic": list(meta.periodic),
-        "created_at": meta.created_at,
-        "source": meta.source,
-        "arrays_hash": meta.arrays_hash,
-        "schema_version": meta.schema_version,
-    }
-    json_str = _canonical_json(json_obj)
-    json_path = out_dir / f"{shard_id}.json"
-    json_path.write_text(json_str)
+    shard_obj = Shard(
+        meta=meta,
+        X=X.astype(np.float32, copy=False),
+        t_index=np.arange(n_frames, dtype=np.int64),
+        dt_ps=meta.dt_ps,
+        energy=None,
+        bias=bias_array,
+        w_frame=None,
+    )
+    npz_path, json_path = write_shard_npz_json(
+        shard_obj,
+        out_dir / f"{meta.shard_id}.npz",
+        out_dir / f"{meta.shard_id}.json",
+    )
+
+    if dtraj is not None:
+        dtraj_arr = np.asarray(dtraj, dtype=np.int32).reshape(-1)
+        with np.load(npz_path) as data:
+            payload = {name: data[name] for name in data.files}
+        payload["dtraj"] = dtraj_arr
+        np.savez_compressed(npz_path, **payload)
+
     return json_path
 
 
-def read_shard(json_path: Path) -> tuple[ShardMeta, np.ndarray, np.ndarray | None]:
-    """Read shard JSON + NPZ and verify integrity against the stored hash.
-
-    Raises ValueError on hash mismatch.
-    """
+def read_shard(json_path: Path) -> tuple[ShardDetails, np.ndarray, np.ndarray | None]:
+    """Read a shard in canonical format and return (meta, X, dtraj)."""
 
     json_path = Path(json_path)
-    data = json.loads(json_path.read_text())
+    shard = read_shard_npz_json(json_path.with_suffix(".npz"), json_path)
 
-    shard_id = str(data["shard_id"])  # prefer the JSON field for sanity
-    npz_path = json_path.with_name(f"{shard_id}.npz")
-    with np.load(npz_path) as f:
-        X = np.asarray(f["X"], dtype=np.float64)
-        dtraj_arr = np.asarray(f["dtraj"], dtype=np.int32)
-        # Optional field for forward-compatibility with extended schema
-        bias_arr = (
-            np.asarray(f["bias_potential"], dtype=np.float64)
-            if "bias_potential" in getattr(f, "files", [])
-            else np.array([], dtype=np.float64)
-        )
+    dtraj: np.ndarray | None = None
+    with np.load(json_path.with_suffix(".npz")) as data:
+        if "dtraj" in data.files:
+            arr = np.asarray(data["dtraj"], dtype=np.int32)
+            if arr.size > 0:
+                dtraj = arr
 
-    arrays_hash = (
-        _sha256_bytes(X) if dtraj_arr.size == 0 else _sha256_bytes(X, dtraj_arr)
-    )
-    if arrays_hash != data.get("arrays_hash"):
-        raise ValueError(
-            "Shard arrays hash mismatch: expected "
-            f"{data.get('arrays_hash')} but computed {arrays_hash}"
-        )
+    source = dict(shard.meta.provenance)
+    return ShardDetails(meta=shard.meta, source=source), shard.X.astype(
+        np.float64, copy=False
+    ), dtraj
 
-    # Preserve existing source, but ensure explicit temperature_K / has_bias keys
-    source_in = dict(data.get("source", {}))
-    if "temperature_K" not in source_in:
-        source_in["temperature_K"] = float(data.get("temperature", np.nan))
-    source_in["has_bias"] = bool(bias_arr.size > 0)
 
-    meta = ShardMeta(
-        shard_id=shard_id,
-        seed=int(data["seed"]),
-        temperature=float(data["temperature"]),
-        n_frames=int(data["n_frames"]),
-        cv_names=tuple(str(x) for x in data["cv_names"]),
-        periodic=tuple(bool(x) for x in data["periodic"]),
-        created_at=str(data["created_at"]),
-        source=source_in,
-        arrays_hash=str(data["arrays_hash"]),
-        schema_version=str(data.get("schema_version", "pmarlo.shard.v1")),
-    )
+def _sha256_bytes(*arrays: np.ndarray) -> str:
+    """Helper retained for deterministic hashing tests."""
 
-    dtraj_out: np.ndarray | None = None if dtraj_arr.size == 0 else dtraj_arr
-    return meta, X, dtraj_out
+    from hashlib import sha256
+
+    hasher = sha256()
+    for arr in arrays:
+        contiguous = np.ascontiguousarray(arr)
+        hasher.update(str(contiguous.dtype.str).encode("utf-8"))
+        hasher.update(str(contiguous.shape).encode("utf-8"))
+        hasher.update(contiguous.tobytes())
+    return hasher.hexdigest()

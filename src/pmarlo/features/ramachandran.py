@@ -8,7 +8,7 @@ import mdtraj as md  # type: ignore
 import numpy as np
 from numpy.typing import NDArray
 
-from ..markov_state_model.free_energy import _kT_kJ_per_mol, periodic_kde_2d
+from ..markov_state_model.free_energy import free_energy_from_density, periodic_kde_2d
 
 logger = logging.getLogger("pmarlo")
 
@@ -222,13 +222,12 @@ def compute_ramachandran_fes(
             masked_fraction * 100.0,
         )
 
-    kT = _kT_kJ_per_mol(temperature)
-    tiny = np.finfo(float).tiny
-    F = np.where(density > tiny, -kT * np.log(density), np.inf)
-    if not inpaint:
-        F = np.where(mask, np.nan, F)
-    if np.any(np.isfinite(F)):
-        F -= np.nanmin(F)
+    F = free_energy_from_density(
+        density,
+        temperature,
+        mask=mask,
+        inpaint=inpaint,
+    )
     finite_bins = int(np.isfinite(F).sum())
     result = RamachandranResult(
         F=F,

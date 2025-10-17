@@ -52,14 +52,8 @@ def finalize_dataset(dataset: DatasetLike, cfg: AnalysisConfig) -> Dict[str, Any
 
     if reweight_mode != AnalysisReweightMode.NONE:
         reweighter = Reweighter(cfg.temperature_ref_K)
-        try:
-            weights = reweighter.apply(dataset, mode=reweight_mode)
-            effective_mode = reweight_mode
-        except Exception:
-            weights = None
-            effective_mode = AnalysisReweightMode.NONE
-    else:
-        effective_mode = AnalysisReweightMode.NONE
+        weights = reweighter.apply(dataset, mode=reweight_mode)
+        effective_mode = reweight_mode
 
     msm = prepare_msm_discretization(
         dataset,

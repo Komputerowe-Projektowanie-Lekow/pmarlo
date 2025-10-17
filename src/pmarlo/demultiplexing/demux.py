@@ -25,6 +25,7 @@ from ..replica_exchange import config as _cfg
 from .demux_engine import demux_streaming
 from .demux_metadata import DemuxIntegrityError, DemuxMetadataDict, serialize_metadata
 from .demux_plan import build_demux_plan
+from .exchange_validation import normalize_exchange_mapping
 
 logger = logging.getLogger("pmarlo")
 
@@ -46,13 +47,6 @@ def _determine_default_stride(remd: Any) -> int:
     return int(max(1, getattr(remd, "dcd_stride", 1)))
 
 
-def _streaming_enabled() -> bool:
-    try:
-        return bool(getattr(_cfg, "DEMUX_STREAMING_ENABLED", True))
-    except Exception:
-        return True
-
-
 def demux_trajectories(
     remd: Any,
     *,
@@ -62,9 +56,9 @@ def demux_trajectories(
 ) -> Optional[str]:
     """Demultiplex trajectories to extract frames at a target temperature.
 
-    This facade routes to the streaming demux engine when the feature flag
-    ``pmarlo.replica_exchange.config.DEMUX_STREAMING_ENABLED`` is True, and
-    falls back to the legacy in‑memory implementation otherwise.
+    This facade always routes to the streaming demux engine and raises if the
+    streaming path encounters an unexpected error. The implementation no longer
+    provides alternate code paths or silent degradations.
 
     Parameters
     ----------
@@ -100,37 +94,21 @@ def demux_trajectories(
         return None
 
     default_stride = _determine_default_stride(remd)
-    use_streaming = _streaming_enabled()
-
-    if use_streaming:
-        try:
-            return _run_streaming_demux(
-                remd,
-                target_temperature,
-                actual_temp,
-                target_temp_idx,
-                default_stride,
-                equilibration_steps,
-                progress_callback,
-            )
-        except DemuxIntegrityError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            logger.error(f"Streaming demux failed: {exc}")
-            logger.info("Falling back to legacy demux implementation")
-
     try:
-        return _run_legacy_demux(
+        return _run_streaming_demux(
             remd,
             target_temperature,
             actual_temp,
+            target_temp_idx,
             default_stride,
             equilibration_steps,
             progress_callback,
         )
-    except Exception as exc:  # noqa: BLE001
-        logger.error(f"Legacy demux failed: {exc}")
-        return None
+    except DemuxIntegrityError:
+        raise
+    except Exception:
+        logger.exception("Streaming demux failed; aborting demultiplexing")
+        raise
 
 
 def _run_streaming_demux(
@@ -209,74 +187,6 @@ def _run_streaming_demux(
     return str(demux_file)
 
 
-def _run_legacy_demux(
-    remd: Any,
-    target_temperature: float,
-    actual_temp: float,
-    default_stride: int,
-    equilibration_steps: int,
-    progress_callback: ProgressCB | None,
-) -> Optional[str]:
-    temp_schedule = _build_temperature_schedule(remd)
-    effective_equil_steps = int(equilibration_steps) if equilibration_steps else 0
-    backend = _resolve_backend(remd)
-    reader = _configure_reader(backend, remd, warn_label="DEMUX chunk size")
-    replica_paths, replica_frames = _probe_replica_info(remd, reader)
-    replica_strides = _resolve_replica_strides(remd)
-
-    plan = build_demux_plan(
-        exchange_history=remd.exchange_history,
-        temperatures=remd.temperatures,
-        target_temperature=float(target_temperature),
-        exchange_frequency=int(remd.exchange_frequency),
-        equilibration_offset=int(effective_equil_steps),
-        replica_paths=replica_paths,
-        replica_frames=replica_frames,
-        default_stride=int(default_stride),
-        replica_strides=replica_strides,
-    )
-
-    demux_file = remd.output_dir / f"demux_T{actual_temp:.0f}K.dcd"
-    writer = _open_demux_writer(remd, backend, demux_file)
-    fill_policy = _resolve_fill_policy(remd)
-    parallel_workers = _resolve_parallel_workers(remd)
-    flush_between, checkpoint_every = _resolve_flush_settings(remd)
-
-    result = demux_streaming(
-        plan,
-        str(remd.pdb_file),
-        reader,
-        writer,
-        fill_policy=fill_policy,
-        parallel_read_workers=parallel_workers,
-        progress_callback=progress_callback,
-        checkpoint_interval_segments=checkpoint_every,
-        flush_between_segments=flush_between,
-    )
-    writer.close()
-    if int(result.total_frames_written) <= 0:
-        logger.warning("Demux produced 0 frames in legacy path; no output written")
-        return None
-
-    timestep_ps = _integration_timestep_ps(remd)
-    runtime_info, frames_mode = _build_runtime_info(
-        remd,
-        plan,
-        fill_policy,
-        effective_equil_steps,
-        temp_schedule,
-        timestep_ps,
-    )
-    meta_dict: DemuxMetadataDict = serialize_metadata(result, plan, runtime_info)
-    meta_dict = _finalize_metadata_dict(
-        meta_dict, plan, result, fill_policy, frames_mode
-    )
-    _write_metadata_file(demux_file, meta_dict, mode="legacy")
-    if result.repaired_segments:
-        logger.warning(f"Repaired segments: {result.repaired_segments}")
-    return str(demux_file)
-
-
 def _build_temperature_schedule(remd: Any) -> dict[str, dict[str, float]]:
     schedule: dict[str, dict[str, float]] = {
         str(i): {} for i in range(int(remd.n_replicas))
@@ -305,8 +215,15 @@ def _validate_exchange_integrity(
 ) -> None:
     expected_prev_stop = 0
     for segment_index, states in enumerate(remd.exchange_history):
+        normalized_states = normalize_exchange_mapping(
+            states,
+            expected_size=int(remd.n_replicas),
+            context=f"segment {segment_index}",
+            error_cls=DemuxIntegrityError,
+        )
+
         replica_at_target = None
-        for ridx, tidx in enumerate(states):
+        for ridx, tidx in enumerate(normalized_states):
             if int(tidx) == int(target_temp_idx):
                 replica_at_target = int(ridx)
                 break

@@ -320,7 +320,7 @@ def cluster_microstates(
     # Handle edge case of empty dataset
     if Y.shape[0] == 0:
         logger.info("Empty dataset provided, returning empty clustering result")
-        return ClusteringResult(labels=np.zeros((0,), dtype=int), n_states=0)
+        return ClusteringResult(labels=np.empty((0,), dtype=int), n_states=0)
 
     # Validate input dimensions and data
     _validate_clustering_inputs(Y)
@@ -354,6 +354,39 @@ def cluster_microstates(
 
     labels = cast(np.ndarray, estimator.fit_predict(Y).astype(int))
     centers = getattr(estimator, "cluster_centers_", None)
+
+    unique_labels = int(np.unique(labels).size)
+    if unique_labels == 0:
+        message = (
+            "Clustering produced zero unique microstates; verify input coverage "
+            "and CV preprocessing."
+        )
+        logger.error(message)
+        raise ValueError(message)
+    if unique_labels != n_states:
+        message = (
+            "Clustering produced {unique} unique microstates, expected {expected}. "
+            "Proceeding with the observed value; inspect CV spread or adjust "
+            "the requested microstate count."
+        ).format(unique=unique_labels, expected=n_states)
+        logger.warning(message)
+        n_states = unique_labels
+
+    if centers is not None:
+        try:
+            n_centers = int(getattr(centers, "shape", (0,))[0])
+        except Exception:
+            n_centers = n_states
+        if n_centers != n_states:
+            logger.warning(
+                "Clustering returned %s centers, expected %s; trimming metadata.",
+                n_centers,
+                n_states,
+            )
+            try:
+                centers = np.asarray(centers)[:n_states]
+            except Exception:
+                centers = None
 
     # Log completion with rationale if available
     logger.info(

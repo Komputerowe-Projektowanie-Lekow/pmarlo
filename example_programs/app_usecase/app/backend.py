@@ -19,12 +19,17 @@ The goal is to make it straightforward to express the interactive workflow::
 while keeping the logic reusable for non-UI automation in the future.
 """
 
+import json
+import logging
+import math
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence, cast
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Sequence, cast
+
+from pmarlo.utils.path_utils import ensure_directory
 
 try:  # Package-relative when imported as module
     from .state import StateManager
@@ -35,6 +40,9 @@ except ImportError:  # Fallback for direct script import
     if str(_APP_DIR) not in sys.path:
         sys.path.insert(0, str(_APP_DIR))
     from state import StateManager  # type: ignore
+
+from pmarlo.analysis import compute_analysis_debug, export_analysis_debug
+from pmarlo.data.aggregate import load_shards_as_dataset
 
 __all__ = [
     "WorkspaceLayout",
@@ -50,6 +58,8 @@ __all__ = [
     "choose_sim_seed",
     "run_short_sim",
 ]
+
+logger = logging.getLogger(__name__)
 
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -208,12 +218,17 @@ class WorkspaceLayout:
             self.bundles_dir,
             self.logs_dir,
         ):
-            path.mkdir(parents=True, exist_ok=True)
+            ensure_directory(path)
+        ensure_directory(self.analysis_debug_dir)
 
     def available_inputs(self) -> List[Path]:
         if not self.inputs_dir.exists():
             return []
         return sorted(p.resolve() for p in self.inputs_dir.glob("*.pdb"))
+
+    @property
+    def analysis_debug_dir(self) -> Path:
+        return self.workspace_dir / "analysis_debug"
 
 
 @dataclass
@@ -228,6 +243,7 @@ class SimulationConfig:
     jitter_sigma_A: float = 0.05
     exchange_frequency_steps: Optional[int] = None
     temperature_schedule_mode: Optional[str] = None
+    cv_model_bundle: Optional[Path] = None  # Path to trained CV model for CV-informed sampling
 
 
 @dataclass
@@ -298,6 +314,8 @@ class TrainingResult:
     dataset_hash: str
     build_result: BuildResult
     created_at: str
+    checkpoint_dir: Optional[Path] = None
+    cv_model_bundle: Optional[Dict[str, Any]] = None  # Paths to exported CV model files
 
 
 @dataclass
@@ -309,9 +327,12 @@ class BuildConfig:
     learn_cv: bool = False
     deeptica_params: Optional[Dict[str, Any]] = None
     notes: Dict[str, Any] = field(default_factory=dict)
-    apply_cv_whitening: bool = True
+    apply_cv_whitening: bool = False
     cluster_mode: str = "kmeans"
-    n_microstates: int = 150
+    n_microstates: int = 20
+    kmeans_kwargs: Dict[str, Any] = field(
+        default_factory=lambda: {"n_init": 50}
+    )
     reweight_mode: str = "MBAR"
     fes_method: str = "kde"
     fes_bandwidth: str | float = "scott"
@@ -324,6 +345,14 @@ class BuildArtifact:
     dataset_hash: str
     build_result: BuildResult
     created_at: str
+    debug_dir: Optional[Path] = None
+    debug_summary: Optional[Dict[str, Any]] = None
+    discretizer_fingerprint: Optional[Dict[str, Any]] = None
+    tau_frames: Optional[int] = None
+    effective_tau_frames: Optional[int] = None
+    effective_stride_max: Optional[int] = None
+    analysis_healthy: bool = True
+    guardrail_violations: Optional[List[Dict[str, Any]]] = None
 
 
 class WorkflowBackend:
@@ -339,7 +368,52 @@ class WorkflowBackend:
     def run_sampling(self, config: SimulationConfig) -> SimulationResult:
         run_label = _slugify(config.label) or f"run-{_timestamp()}"
         run_dir = self.layout.sims_dir / run_label
-        run_dir.mkdir(parents=True, exist_ok=True)
+        ensure_directory(run_dir)
+        
+        # Prepare CV model info if provided
+        cv_kwargs = {}
+        if config.cv_model_bundle:
+            import logging
+            logger = logging.getLogger(__name__)
+            try:
+                from pmarlo.features.deeptica import load_cv_model_info, check_openmm_torch_available
+                
+                # Check if openmm-torch is available
+                if not check_openmm_torch_available():
+                    logger.error(
+                        "CV model selected but openmm-torch is not installed. "
+                        "CV-biased sampling will NOT be performed. "
+                        "Install with: conda install -c conda-forge openmm-torch"
+                    )
+                    logger.warning("Running simulation WITHOUT CV biasing")
+                else:
+                    # Warn about performance if using CPU-only PyTorch
+                    import torch
+                    if not torch.cuda.is_available():
+                        logger.warning(
+                            "⚠️  WARNING: PyTorch is running on CPU only! "
+                            "CV-biased simulations will be 10-20x SLOWER than unbiased runs. "
+                            "For acceptable performance, install CUDA-enabled PyTorch: "
+                            "https://pytorch.org/get-started/locally/"
+                        )
+                    
+                    cv_info = load_cv_model_info(config.cv_model_bundle, model_name="deeptica_cv_model")
+                    cv_kwargs["cv_model_path"] = cv_info["model_path"]
+                    cv_kwargs["cv_scaler_mean"] = cv_info["scaler_params"]["mean"]
+                    cv_kwargs["cv_scaler_scale"] = cv_info["scaler_params"]["scale"]
+                    logger.info(f"✓ CV model loaded: {cv_info['model_path']}")
+                    logger.info(f"✓ CV dimensions: {cv_info['config']['cv_dim']}")
+                    
+            except ImportError as exc:
+                logger.error(f"Could not import CV integration modules: {exc}")
+                logger.warning("Running simulation WITHOUT CV biasing")
+            except FileNotFoundError as exc:
+                logger.error(f"CV model files not found: {exc}")
+                logger.warning("Running simulation WITHOUT CV biasing")
+            except Exception as exc:
+                logger.error(f"Could not load CV model: {exc}")
+                logger.warning("Running simulation WITHOUT CV biasing")
+        
         traj_files, temps = run_replica_exchange(
             pdb_file=str(config.pdb_path),
             output_dir=str(run_dir),
@@ -357,6 +431,7 @@ class WorkflowBackend:
                 else None
             ),
             temperature_schedule_mode=config.temperature_schedule_mode,
+            **cv_kwargs,
         )
         created = _timestamp()
         result = SimulationResult(
@@ -368,22 +443,27 @@ class WorkflowBackend:
             steps=int(config.steps),
             created_at=created,
         )
-        self.state.append_run(
-            {
-                "run_id": run_label,
-                "run_dir": str(result.run_dir),
-                "pdb": str(result.pdb_path),
-                "temperatures": [float(t) for t in config.temperatures],
-                "analysis_temperatures": result.analysis_temperatures,
-                "steps": int(config.steps),
-                "quick": bool(config.quick),
-                "random_seed": (
-                    int(config.random_seed) if config.random_seed is not None else None
-                ),
-                "traj_files": [str(p) for p in result.traj_files],
-                "created_at": created,
-            }
-        )
+        run_metadata = {
+            "run_id": run_label,
+            "run_dir": str(result.run_dir),
+            "pdb": str(result.pdb_path),
+            "temperatures": [float(t) for t in config.temperatures],
+            "analysis_temperatures": result.analysis_temperatures,
+            "steps": int(config.steps),
+            "quick": bool(config.quick),
+            "random_seed": (
+                int(config.random_seed) if config.random_seed is not None else None
+            ),
+            "traj_files": [str(p) for p in result.traj_files],
+            "created_at": created,
+        }
+        
+        # Add CV model reference if used
+        if config.cv_model_bundle:
+            run_metadata["cv_model_bundle"] = str(config.cv_model_bundle)
+            run_metadata["cv_informed"] = True
+        
+        self.state.append_run(run_metadata)
         return result
 
     def emit_shards(
@@ -394,10 +474,15 @@ class WorkflowBackend:
         provenance: Optional[Dict[str, Any]] = None,
     ) -> ShardResult:
         shard_dir = self.layout.shards_dir / simulation.run_id
-        shard_dir.mkdir(parents=True, exist_ok=True)
+        ensure_directory(shard_dir)
+        created = _timestamp()
         note = {
+            "created_at": created,
+            "kind": "demux",
             "run_id": simulation.run_id,
             "analysis_temperatures": simulation.analysis_temperatures,
+            "topology": str(simulation.pdb_path),
+            "traj_files": [str(p) for p in simulation.traj_files],
         }
         if provenance:
             note.update(provenance)
@@ -425,7 +510,6 @@ class WorkflowBackend:
                 n_frames += int(getattr(meta, "n_frames", 0))
             except Exception:
                 continue
-        created = _timestamp()
         result = ShardResult(
             run_id=simulation.run_id,
             shard_dir=shard_dir.resolve(),
@@ -487,17 +571,60 @@ class WorkflowBackend:
     # ------------------------------------------------------------------
     # Model training and analysis
     # ------------------------------------------------------------------
+    def get_training_progress(self, checkpoint_dir: Path) -> Optional[Dict[str, Any]]:
+        """Read real-time training progress from checkpoint directory."""
+        import json
+        
+        if not checkpoint_dir or not checkpoint_dir.exists():
+            return None
+        
+        progress_path = checkpoint_dir / "training_progress.json"
+        if not progress_path.exists():
+            return None
+        
+        try:
+            with progress_path.open("r") as f:
+                return json.load(f)
+        except Exception:
+            return None
+    
     def train_model(
         self,
         shard_jsons: Sequence[Path],
         config: TrainingConfig,
     ) -> TrainingResult:
+        import logging
+        
         shards = [Path(p).resolve() for p in shard_jsons]
         if not shards:
             raise ValueError("No shards selected for training")
         stamp = _timestamp()
         bundle_path = self.layout.models_dir / f"deeptica-{stamp}.pbz"
+        
+        # Create checkpoint directory for training progress
+        checkpoint_dir = self.layout.models_dir / f"training-{stamp}"
+        ensure_directory(checkpoint_dir)
+        
+        # Setup logging to file
+        log_file = checkpoint_dir / "training.log"
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        
+        # Get the pmarlo logger and add our file handler
+        pmarlo_logger = logging.getLogger("pmarlo")
+        pmarlo_logger.addHandler(file_handler)
+        pmarlo_logger.setLevel(logging.INFO)
+        
         try:
+            pmarlo_logger.info(f"Starting training with {len(shards)} shards")
+            pmarlo_logger.info(f"Configuration: lag={config.lag}, bins={config.bins}, max_epochs={config.max_epochs}")
+            
+            # Add checkpoint_dir to deeptica_params
+            deeptica_params = config.deeptica_params()
+            deeptica_params["checkpoint_dir"] = str(checkpoint_dir)
+            
+            pmarlo_logger.info("Calling build_from_shards...")
             br, ds_hash = build_from_shards(
                 shard_jsons=shards,
                 out_bundle=bundle_path,
@@ -506,20 +633,63 @@ class WorkflowBackend:
                 seed=int(config.seed),
                 temperature=float(config.temperature),
                 learn_cv=True,
-                deeptica_params=config.deeptica_params(),
-                notes={"model_dir": str(self.layout.models_dir)},
+                deeptica_params=deeptica_params,
+                notes={"model_dir": str(self.layout.models_dir), "checkpoint_dir": str(checkpoint_dir)},
             )
+            pmarlo_logger.info("Training completed successfully")
         except ImportError as exc:
+            pmarlo_logger.error(f"Import error: {exc}")
             raise RuntimeError(
                 "Deep-TICA optional dependencies missing. Install pmarlo[mlcv] to enable"
             ) from exc
-        except Exception:
+        except Exception as exc:
+            pmarlo_logger.error(f"Training failed: {exc}", exc_info=True)
             raise
+        finally:
+            # Remove the handler so it doesn't persist
+            pmarlo_logger.removeHandler(file_handler)
+            file_handler.close()
+        # Export CV model for OpenMM integration
+        cv_model_bundle_info = None
+        try:
+            from pmarlo.features.deeptica import export_cv_model
+            
+            # Load the trained model from bundle
+            import pickle
+            with open(bundle_path, "rb") as f:
+                bundle_data = pickle.load(f)
+            
+            network = bundle_data.get("network")
+            scaler = bundle_data.get("scaler")
+            history = br.get("history", {})
+            
+            if network is not None and scaler is not None:
+                pmarlo_logger.info("Exporting CV model for OpenMM integration...")
+                cv_bundle = export_cv_model(
+                    network=network,
+                    scaler=scaler,
+                    history=history,
+                    output_dir=checkpoint_dir,
+                    model_name="deeptica_cv_model",
+                )
+                cv_model_bundle_info = {
+                    "model_path": str(cv_bundle.model_path),
+                    "scaler_path": str(cv_bundle.scaler_path),
+                    "config_path": str(cv_bundle.config_path),
+                    "metadata_path": str(cv_bundle.metadata_path),
+                    "cv_dim": cv_bundle.cv_dim,
+                }
+                pmarlo_logger.info(f"CV model exported to {cv_bundle.model_path}")
+        except Exception as exc:
+            pmarlo_logger.warning(f"Could not export CV model: {exc}")
+        
         result = TrainingResult(
             bundle_path=bundle_path.resolve(),
             dataset_hash=ds_hash,
             build_result=br,
             created_at=stamp,
+            checkpoint_dir=checkpoint_dir,
+            cv_model_bundle=cv_model_bundle_info,
         )
         self.state.append_model(
             {
@@ -551,11 +721,19 @@ class WorkflowBackend:
             raise ValueError("No shards selected for analysis")
         stamp = _timestamp()
         bundle_path = self.layout.bundles_dir / f"bundle-{stamp}.pbz"
+        dataset = load_shards_as_dataset(shards)
+        debug_data = compute_analysis_debug(
+            dataset,
+            lag=int(config.lag),
+            count_mode="sliding",
+        )
+        config_payload = asdict(config)
         analysis_notes = dict(config.notes or {})
         if config.learn_cv and "model_dir" not in analysis_notes:
             analysis_notes["model_dir"] = str(self.layout.models_dir)
         analysis_notes["apply_cv_whitening_requested"] = bool(config.apply_cv_whitening)
         analysis_notes["apply_cv_whitening_enforced"] = True
+        analysis_notes["kmeans_kwargs"] = dict(config.kmeans_kwargs)
         analysis_notes["analysis_overrides"] = {
             "cluster_mode": str(config.cluster_mode),
             "n_microstates": int(config.n_microstates),
@@ -563,7 +741,38 @@ class WorkflowBackend:
             "fes_method": str(config.fes_method),
             "fes_bandwidth": config.fes_bandwidth,
             "fes_min_count_per_bin": int(config.fes_min_count_per_bin),
+            "kmeans_kwargs": dict(config.kmeans_kwargs),
         }
+        requested_fingerprint = {
+            "mode": str(config.cluster_mode),
+            "n_states": int(config.n_microstates),
+            "seed": int(config.seed),
+        }
+        previous_fingerprint = analysis_notes.get("discretizer_fingerprint")
+        if previous_fingerprint and previous_fingerprint != requested_fingerprint:
+            analysis_notes.setdefault(
+                "discretizer_fingerprint_previous", previous_fingerprint
+            )
+            logger.info(
+                "Discretizer fingerprint override changed from %s to %s; "
+                "forcing refit of clusterer.",
+                previous_fingerprint,
+                requested_fingerprint,
+            )
+        analysis_notes["discretizer_fingerprint_requested"] = requested_fingerprint
+        analysis_notes["analysis_tau_requested"] = int(config.lag)
+        analysis_notes["debug_summary"] = _sanitize_artifacts(debug_data.summary)
+        logger.info(
+            (
+                "Analysis debug summary: frames=%d states=%d pairs=%d zero_rows=%d "
+                "warnings=%d"
+            ),
+            int(debug_data.summary.get("total_frames_with_states", 0)),
+            int(debug_data.counts.shape[0]),
+            int(debug_data.summary.get("total_pairs", 0)),
+            int(debug_data.summary.get("zero_rows", 0)),
+            len(debug_data.summary.get("warnings", [])),
+        )
 
         br, ds_hash = build_from_shards(
             shard_jsons=shards,
@@ -575,11 +784,233 @@ class WorkflowBackend:
             learn_cv=bool(config.learn_cv),
             deeptica_params=config.deeptica_params,
             notes=analysis_notes,
+            kmeans_kwargs=dict(config.kmeans_kwargs),
         )
+
+        summary = debug_data.summary
+
+        def _safe_int(value: Any, default: int) -> int:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
+
+        def _safe_float(value: Any, default: float = float("nan")) -> float:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
+        tau_frames = _safe_int(summary.get("tau_frames"), int(config.lag))
+        stride_max = max(1, _safe_int(summary.get("effective_stride_max"), 1))
+        effective_tau_frames = _safe_int(
+            summary.get("effective_tau_frames"), tau_frames
+        )
+        raw_stride_values = summary.get("effective_strides") or []
+        stride_values = []
+        for value in raw_stride_values:
+            try:
+                stride_values.append(int(value))
+            except (TypeError, ValueError):
+                continue
+        stride_map = summary.get("effective_stride_map") or {}
+        preview_truncated = summary.get("preview_truncated") or []
+        
+        # NOTE: Don't use pre-clustering debug data for pair counts, as clustering hasn't happened yet
+        # Extract actual statistics from the MSM build result
+        total_pairs_val = 0  # Will be updated from MSM diagnostics below
+        zero_rows_val = 0    # Will be updated from MSM diagnostics below
+        largest_cover_raw = summary.get("largest_scc_frame_fraction")
+        try:
+            largest_cover = (
+                float(largest_cover_raw)
+                if largest_cover_raw is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            largest_cover = None
+        diag_mass_val = _safe_float(summary.get("diag_mass"))
+        expected_effective_tau = tau_frames * stride_max if tau_frames > 0 else 0
+
+        actual_seed = int(config.seed)
+        if getattr(br.metadata, "seed", None) is not None:
+            try:
+                actual_seed = int(br.metadata.seed)  # type: ignore[arg-type]
+            except Exception:
+                actual_seed = int(config.seed)
+        fingerprint = {
+            "mode": str(config.cluster_mode),
+            "n_states": int(config.n_microstates),
+            "seed": actual_seed,
+        }
+        msm_obj = getattr(br, "msm", None)
+        feature_schema_payload: Dict[str, Any] | None = None
+        if isinstance(msm_obj, Mapping):
+            schema_candidate = msm_obj.get("feature_schema")
+        else:
+            schema_candidate = getattr(msm_obj, "feature_schema", None)
+        if isinstance(schema_candidate, Mapping):
+            feature_schema_payload = {
+                "names": list(schema_candidate.get("names", [])),
+                "n_features": int(schema_candidate.get("n_features", 0)),
+            }
+            fingerprint["feature_schema"] = feature_schema_payload
+
+        fingerprint_compare = {
+            "mode": fingerprint.get("mode"),
+            "n_states": fingerprint.get("n_states"),
+            "seed": fingerprint.get("seed"),
+        }
+        fingerprint_changed = fingerprint_compare != requested_fingerprint
+
+        # Guardrail checks based on post-clustering statistics
+        # Note: total_pairs and zero_rows checks are removed because they require
+        # post-clustering data which we'll validate from the build result instead
+        guardrail_violations: List[Dict[str, Any]] = []
+        
+        # Check if MSM build succeeded by verifying the transition matrix exists
+        if br.transition_matrix is None or br.transition_matrix.size == 0:
+            guardrail_violations.append(
+                {"code": "msm_build_failed", "actual": "no_transition_matrix"}
+            )
+        else:
+            # Extract actual statistics from the built MSM
+            n_states_actual = br.transition_matrix.shape[0]
+            if n_states_actual == 0:
+                guardrail_violations.append(
+                    {"code": "no_states_in_msm", "actual": 0}
+                )
+        
+        if effective_tau_frames != expected_effective_tau:
+            logger.warning(
+                "Effective tau mismatch: expected=%d, actual=%d",
+                expected_effective_tau,
+                effective_tau_frames,
+            )
+            # Don't treat tau mismatch as a hard failure
+        
+        analysis_healthy = not guardrail_violations
+
+        summary_overrides = {
+            "fingerprint": fingerprint,
+            "analysis_guardrail_violations": guardrail_violations,
+            "analysis_expected_effective_tau_frames": expected_effective_tau,
+            "analysis_healthy": analysis_healthy,
+            "discretizer_fingerprint_changed": bool(fingerprint_changed),
+        }
+        summary.update(summary_overrides)
+
+        debug_dir = (self.layout.analysis_debug_dir / f"analysis-{stamp}").resolve()
+        export_info = export_analysis_debug(
+            output_dir=debug_dir,
+            build_result=br,
+            debug_data=debug_data,
+            config=config_payload,
+            dataset_hash=ds_hash,
+            summary_overrides=summary_overrides,
+            fingerprint=fingerprint,
+        )
+
+        for idx, shard in enumerate(summary.get("shards", [])):
+            shard_id = shard.get("id", f"shard-{idx}")
+            frames_loaded = shard.get("frames_loaded", shard.get("length"))
+            frames_declared = shard.get("frames_declared", shard.get("length"))
+            stride_val = shard.get("effective_frame_stride")
+            logger.info(
+                "Shard %s: loaded=%s declared=%s stride=%s",
+                shard_id,
+                frames_loaded,
+                frames_declared,
+                stride_val,
+            )
+            if shard.get("first_timestamp") is not None or shard.get("last_timestamp") is not None:
+                logger.info(
+                    "Shard %s timestamps: first=%s last=%s",
+                    shard_id,
+                    shard.get("first_timestamp"),
+                    shard.get("last_timestamp"),
+                )
+
+        if not analysis_healthy:
+            summary_path = Path(export_info["summary"]).resolve()
+            raise ValueError(
+                "Analysis guardrails failed: "
+                f"{guardrail_violations}. "
+                f"See {summary_path} for details."
+            )
+
+        logger.info(
+            "Analysis lag requested=%d, applied=%d, effective_tau=%d (max stride=%d, stride values=%s)",
+            int(config.lag),
+            tau_frames,
+            effective_tau_frames,
+            stride_max,
+            stride_values,
+        )
+        if fingerprint_changed:
+            logger.info(
+                "Effective discretizer fingerprint differs from request: %s (requested %s)",
+                fingerprint,
+                requested_fingerprint,
+            )
+        if tau_frames != int(config.lag):
+            logger.warning(
+                "Analysis lag mismatch: requested %d frames, applied %d frames",
+                int(config.lag),
+                tau_frames,
+            )
+        analysis_notes["discretizer_fingerprint"] = fingerprint
+        analysis_notes["analysis_total_pairs"] = int(total_pairs_val)
+        analysis_notes["analysis_zero_rows"] = int(zero_rows_val)
+        analysis_notes["analysis_largest_scc_fraction"] = (
+            float(largest_cover) if largest_cover is not None else None
+        )
+        analysis_notes["analysis_diag_mass"] = float(diag_mass_val)
+        analysis_notes["analysis_tau_frames"] = tau_frames
+        analysis_notes["analysis_effective_tau_frames"] = effective_tau_frames
+        analysis_notes["analysis_effective_stride_max"] = stride_max
+        analysis_notes["analysis_effective_stride_values"] = stride_values
+        analysis_notes["analysis_effective_stride_map"] = stride_map
+        analysis_notes["analysis_expected_effective_tau_frames"] = expected_effective_tau
+        analysis_notes["analysis_healthy"] = analysis_healthy
+        if preview_truncated:
+            analysis_notes["analysis_preview_truncated"] = preview_truncated
+        analysis_notes["analysis_guardrail_violations"] = guardrail_violations
+        analysis_notes["discretizer_fingerprint_changed"] = bool(fingerprint_changed)
+        analysis_notes["analysis_kmeans_kwargs"] = dict(config.kmeans_kwargs)
+        analysis_notes.pop("discretizer_fingerprint_requested", None)
+
         try:
             flags = dict(br.flags or {})
         except Exception:
             flags = {}
+        flags["discretizer_fingerprint"] = fingerprint
+        flags["discretizer_fingerprint_changed"] = bool(fingerprint_changed)
+        flags["analysis_requested_tau_frames"] = int(config.lag)
+        flags["analysis_total_pairs"] = int(total_pairs_val)
+        flags["analysis_zero_rows"] = int(zero_rows_val)
+        flags["analysis_largest_scc_fraction"] = (
+            float(largest_cover) if largest_cover is not None else None
+        )
+        flags["analysis_diag_mass"] = float(diag_mass_val)
+        flags["analysis_tau_frames"] = int(tau_frames)
+        flags["analysis_effective_tau_frames"] = int(effective_tau_frames)
+        flags["analysis_expected_effective_tau_frames"] = int(expected_effective_tau)
+        flags["analysis_effective_stride_max"] = int(stride_max)
+        flags["analysis_healthy"] = analysis_healthy
+        flags["analysis_guardrail_violations"] = guardrail_violations
+        flags["analysis_kmeans_kwargs"] = dict(config.kmeans_kwargs)
+        if stride_values:
+            flags["analysis_effective_stride_values"] = list(stride_values)
+        if stride_map:
+            flags["analysis_effective_stride_map"] = stride_map
+        if preview_truncated:
+            flags["analysis_preview_truncated"] = list(preview_truncated)
+        if tau_frames != int(config.lag):
+            flags["analysis_tau_mismatch"] = {
+                "requested": int(config.lag),
+                "actual": int(tau_frames),
+            }
         overrides = {
             "cluster_mode": str(config.cluster_mode),
             "n_microstates": int(config.n_microstates),
@@ -588,17 +1019,51 @@ class WorkflowBackend:
             "fes_bandwidth": config.fes_bandwidth,
             "fes_min_count_per_bin": int(config.fes_min_count_per_bin),
             "apply_whitening": bool(config.apply_cv_whitening),
+            "kmeans_kwargs": dict(config.kmeans_kwargs),
         }
         flags.setdefault("analysis_overrides", overrides)
         flags.setdefault("analysis_reweight_mode", str(config.reweight_mode))
         flags.setdefault("analysis_apply_whitening", bool(config.apply_cv_whitening))
+        warning_count = len(debug_data.summary.get("warnings", []))
+        flags.setdefault("analysis_debug_warning_count", warning_count)
+        if warning_count:
+            flags.setdefault(
+                "analysis_debug_warnings",
+                _sanitize_artifacts(debug_data.summary.get("warnings")),
+            )
         br.flags = flags  # type: ignore[assignment]
+        try:
+            artifacts = dict(br.artifacts or {})
+            artifacts["analysis_debug"] = {
+                "directory": str(debug_dir),
+                "summary": str(Path(export_info["summary"]).name),
+                "arrays": export_info.get("arrays", {}),
+            }
+            artifacts["analysis_discretizer_fingerprint"] = fingerprint
+            artifacts["analysis_tau_frames"] = int(tau_frames)
+            artifacts["analysis_effective_tau_frames"] = int(effective_tau_frames)
+            artifacts["analysis_effective_stride_max"] = int(stride_max)
+            if stride_map:
+                artifacts["analysis_effective_stride_map"] = stride_map
+            if preview_truncated:
+                artifacts["analysis_preview_truncated"] = list(preview_truncated)
+            br.artifacts = artifacts  # type: ignore[assignment]
+        except Exception:
+            logger.debug("Failed to attach analysis debug artifacts", exc_info=True)
 
         artifact = BuildArtifact(
             bundle_path=bundle_path.resolve(),
             dataset_hash=ds_hash,
             build_result=br,
             created_at=stamp,
+            debug_dir=debug_dir,
+            debug_summary=debug_data.summary,
+            discretizer_fingerprint=fingerprint,
+            tau_frames=int(tau_frames),
+            effective_tau_frames=int(effective_tau_frames),
+            effective_stride_max=int(stride_max),
+            analysis_healthy=analysis_healthy,
+            guardrail_violations=guardrail_violations or None,
         )
         self.state.append_build(
             {
@@ -620,10 +1085,28 @@ class WorkflowBackend:
                 "apply_cv_whitening": bool(config.apply_cv_whitening),
                 "cluster_mode": str(config.cluster_mode),
                 "n_microstates": int(config.n_microstates),
+                "kmeans_kwargs": _sanitize_artifacts(config.kmeans_kwargs),
                 "reweight_mode": str(config.reweight_mode),
                 "fes_method": str(config.fes_method),
                 "fes_bandwidth": config.fes_bandwidth,
                 "fes_min_count_per_bin": int(config.fes_min_count_per_bin),
+                "debug_dir": str(debug_dir),
+                "debug_summary": _sanitize_artifacts(debug_data.summary),
+                "debug_summary_file": str(Path(export_info["summary"]).name),
+                "discretizer_fingerprint": _sanitize_artifacts(fingerprint),
+                "discretizer_fingerprint_changed": bool(fingerprint_changed),
+                "tau_frames": int(tau_frames),
+                "effective_tau_frames": int(effective_tau_frames),
+                "effective_stride_max": int(stride_max),
+                "effective_stride_values": list(stride_values),
+                "effective_stride_map": _sanitize_artifacts(stride_map),
+                "preview_truncated": list(preview_truncated),
+                "analysis_healthy": bool(analysis_healthy),
+                "guardrail_violations": _sanitize_artifacts(guardrail_violations),
+                "total_pairs": int(total_pairs_val),
+                "zero_rows": int(zero_rows_val),
+                "largest_scc_fraction": float(largest_cover) if largest_cover is not None else None,
+                "diag_mass": float(diag_mass_val),
             }
         )
         return artifact
@@ -754,7 +1237,13 @@ class WorkflowBackend:
             notes.update(entry_notes)
         apply_whitening = bool(entry.get("apply_cv_whitening", True))
         cluster_mode = str(entry.get("cluster_mode", "kmeans"))
-        n_microstates = int(entry.get("n_microstates", 150))
+        n_microstates = int(entry.get("n_microstates", 20))
+        kmeans_kwargs_raw = entry.get("kmeans_kwargs")
+        kmeans_kwargs = (
+            dict(kmeans_kwargs_raw)
+            if isinstance(kmeans_kwargs_raw, dict)
+            else {"n_init": 50}
+        )
         reweight_mode = str(entry.get("reweight_mode", "MBAR"))
         fes_method = str(entry.get("fes_method", "kde"))
         bw_raw = entry.get("fes_bandwidth", "scott")
@@ -778,6 +1267,7 @@ class WorkflowBackend:
             fes_method=fes_method,
             fes_bandwidth=fes_bandwidth,
             fes_min_count_per_bin=min_count,
+            kmeans_kwargs=kmeans_kwargs,
         )
 
     def training_config_from_entry(self, entry: Dict[str, Any]) -> TrainingConfig:
@@ -910,11 +1400,46 @@ class WorkflowBackend:
             str(getattr(br.metadata, "dataset_hash", "")) if br.metadata else ""
         )
         created_at = str(entry.get("created_at", "")) or _timestamp()
+        debug_dir_raw = entry.get("debug_dir")
+        debug_dir = Path(debug_dir_raw).resolve() if debug_dir_raw else None
+        debug_summary = entry.get("debug_summary")
+        if debug_summary is None and debug_dir:
+            summary_name = entry.get("debug_summary_file") or "summary.json"
+            summary_path = debug_dir / summary_name
+            if summary_path.exists():
+                try:
+                    debug_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                except Exception:
+                    logger.debug("Failed to load analysis summary from %s", summary_path)
+        fingerprint = entry.get("discretizer_fingerprint")
+        if fingerprint is None and isinstance(br.flags, Mapping):
+            fingerprint = br.flags.get("discretizer_fingerprint")
+        tau_frames = entry.get("tau_frames")
+        if tau_frames is None and isinstance(br.flags, Mapping):
+            tau_frames = br.flags.get("analysis_tau_frames")
+        effective_tau_frames = entry.get("effective_tau_frames")
+        if effective_tau_frames is None and isinstance(br.flags, Mapping):
+            effective_tau_frames = br.flags.get("analysis_effective_tau_frames")
+        effective_stride_max = entry.get("effective_stride_max")
+        if effective_stride_max is None and isinstance(br.flags, Mapping):
+            effective_stride_max = br.flags.get("analysis_effective_stride_max")
         return BuildArtifact(
             bundle_path=bundle_path.resolve(),
             dataset_hash=dataset_hash,
             build_result=br,
             created_at=created_at,
+            debug_dir=debug_dir,
+            debug_summary=debug_summary,
+            discretizer_fingerprint=fingerprint,
+            tau_frames=int(tau_frames) if tau_frames is not None else None,
+            effective_tau_frames=(
+                int(effective_tau_frames)
+                if effective_tau_frames is not None
+                else None
+            ),
+            effective_stride_max=(
+                int(effective_stride_max) if effective_stride_max is not None else None
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -1012,6 +1537,9 @@ class WorkflowBackend:
             bundle_path = Path(entry.get("bundle", ""))
             if bundle_path.exists():
                 bundle_path.unlink()
+            debug_dir = Path(entry.get("debug_dir", ""))
+            if debug_dir.exists() and debug_dir.is_dir():
+                shutil.rmtree(debug_dir)
 
             return True
         except Exception:

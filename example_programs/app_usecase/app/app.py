@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence
+import json
 
 import pandas as pd
 import streamlit as st
@@ -63,6 +64,8 @@ _LAST_TRAIN = "__pmarlo_last_training"
 _LAST_TRAIN_CONFIG = "__pmarlo_last_train_cfg"
 _LAST_BUILD = "__pmarlo_last_build"
 _RUN_PENDING = "__pmarlo_run_pending"
+_TRAIN_CONFIG_PENDING = "__pmarlo_pending_train_cfg"
+_TRAIN_FEEDBACK = "__pmarlo_train_feedback"
 
 
 def _parse_temperature_ladder(raw: str) -> List[float]:
@@ -275,35 +278,121 @@ def _show_build_outputs(artifact: BuildArtifact | TrainingResult) -> None:
     with col2:
         fig = plot_fes(br.fes)
         st.pyplot(fig, clear_figure=True, width="stretch")
-    meta_cols = st.columns(3)
+
+    flags: Dict[str, Any] = br.flags or {}
+
+    def _safe_int(value: Any) -> Optional[int]:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    tau_frames = _safe_int(getattr(artifact, "tau_frames", None))
+    if tau_frames is None:
+        tau_frames = _safe_int(flags.get("analysis_tau_frames"))
+    effective_tau = _safe_int(getattr(artifact, "effective_tau_frames", None))
+    if effective_tau is None:
+        effective_tau = _safe_int(flags.get("analysis_effective_tau_frames"))
+    stride_max = _safe_int(getattr(artifact, "effective_stride_max", None))
+    if stride_max is None:
+        stride_max = _safe_int(flags.get("analysis_effective_stride_max"))
+    fingerprint = getattr(artifact, "discretizer_fingerprint", None) or flags.get(
+        "discretizer_fingerprint"
+    )
+    fingerprint_changed = bool(flags.get("discretizer_fingerprint_changed"))
+    tau_mismatch = flags.get("analysis_tau_mismatch")
+    if not isinstance(tau_mismatch, Mapping):
+        tau_mismatch = None
+    preview_truncated = flags.get("analysis_preview_truncated") or []
+    stride_map = flags.get("analysis_effective_stride_map") or {}
+    guardrail_info = (
+        flags.get("analysis_guardrail_violations")
+        or getattr(artifact, "guardrail_violations", None)
+        or []
+    )
+    analysis_healthy_flag = flags.get("analysis_healthy")
+    if analysis_healthy_flag is None:
+        analysis_healthy_flag = getattr(artifact, "analysis_healthy", None)
+
+    meta_cols = st.columns(4)
     meta_cols[0].metric("Shards", int(br.n_shards))
     meta_cols[1].metric("Frames", int(br.n_frames))
     meta_cols[2].metric("Features", len(br.feature_names))
-    if br.flags:
+    if tau_frames is not None:
+        delta_label = None
+        if tau_mismatch is not None:
+            delta_label = f"req {tau_mismatch.get('requested')}"
+        meta_cols[3].metric("tau (frames)", tau_frames, delta=delta_label)
+    else:
+        meta_cols[3].metric("tau (frames)", "n/a")
+
+    if flags:
         st.dataframe(_metrics_table(br.flags), width="stretch")
+
+    if tau_mismatch is not None:
+        st.warning(
+            f"Requested tau={tau_mismatch.get('requested')} frames but build used {tau_mismatch.get('actual')}.",
+        )
+
+    if fingerprint_changed:
+        st.info("Discretizer fingerprint differs from requested configuration; cached mappings were invalidated.")
+
+    if stride_max is not None and stride_max > 1:
+        info_msg = (
+            f"Effective tau={effective_tau}" if effective_tau is not None else f"Max stride={stride_max}"
+        )
+        st.info(f"Detected subsampling in shards (max stride={stride_max}). {info_msg}.")
+
+    if analysis_healthy_flag is not None:
+        status_text = "healthy" if analysis_healthy_flag else "violations detected"
+        st.caption(f"Analysis health: {status_text}")
+    if guardrail_info:
+        st.warning("Guardrail violations detected:")
+        st.json(guardrail_info)
+
+    if preview_truncated:
+        formatted = ", ".join(str(item) for item in preview_truncated)
+        st.warning(
+            "Some shards appear truncated relative to their metadata: "
+            f"{formatted}"
+        )
+
+    debug_summary = getattr(artifact, "debug_summary", None)
+    if debug_summary:
+        with st.expander("Analysis metadata", expanded=False):
+            total_pairs = debug_summary.get("total_pairs", "n/a")
+            zero_rows = debug_summary.get("zero_rows", "n/a")
+            st.write(
+                f"Total (t, t+tau) pairs: {total_pairs} | Zero rows: {zero_rows}"
+            )
+            stride_values = debug_summary.get("effective_strides") or []
+            if stride_values:
+                st.write(f"Effective strides detected: {stride_values}")
+            effective_tau_summary = debug_summary.get("effective_tau_frames")
+            if effective_tau_summary is not None:
+                st.write(f"Effective tau (stride-adjusted): {effective_tau_summary}")
+            if stride_map:
+                st.write("Per-shard stride map:")
+                st.json(stride_map)
+            first_ts = debug_summary.get("first_timestamps") or []
+            last_ts = debug_summary.get("last_timestamps") or []
+            if first_ts or last_ts:
+                first_repr = ", ".join(str(val) for val in first_ts) if first_ts else "n/a"
+                last_repr = ", ".join(str(val) for val in last_ts) if last_ts else "n/a"
+                st.write(f"First timestamps: {first_repr} | Last timestamps: {last_repr}")
+            if fingerprint:
+                st.write("Discretizer fingerprint:")
+                st.json(fingerprint)
+            else:
+                st.write("Discretizer fingerprint: unavailable")
+    elif fingerprint:
+        st.caption("Discretizer fingerprint")
+        st.json(fingerprint)
+
     if br.messages:
         st.write("Messages:")
         for msg in br.messages:
             st.write(f"- {msg}")
-    diagnostics = getattr(br, "diagnostics", None)
-    if isinstance(diagnostics, dict) and diagnostics:
-        st.subheader("Diagnostics")
-        diag_cols = st.columns(2)
-        with diag_cols[0]:
-            fig_diag = plot_canonical_correlations(diagnostics)
-            st.pyplot(fig_diag, clear_figure=True, width="stretch")
-        with diag_cols[1]:
-            fig_auto = plot_autocorrelation_curves(diagnostics)
-            st.pyplot(fig_auto, clear_figure=True, width="stretch")
-        diag_mass = diagnostics.get("diag_mass")
-        if isinstance(diag_mass, (int, float)):
-            st.metric("MSM diagonal mass", f"{float(diag_mass):.3f}")
-        warnings = format_warnings(diagnostics)
-        if warnings:
-            for msg in warnings:
-                st.warning(msg)
-
-
 def _render_deeptica_summary(summary: Dict[str, object]) -> None:
     cleaned = _sanitize_artifacts(summary)
     st.caption("Deep-TICA summary")
@@ -353,21 +442,32 @@ def _ensure_session_defaults() -> None:
     ):
         st.session_state.setdefault(key, None)
     st.session_state.setdefault(_RUN_PENDING, False)
+    st.session_state.setdefault(_TRAIN_CONFIG_PENDING, None)
+    st.session_state.setdefault(_TRAIN_FEEDBACK, None)
     st.session_state.setdefault("train_hidden_layers", "128,128")
     st.session_state.setdefault("train_tau_schedule", "2,5,10,20")
     st.session_state.setdefault("train_val_tau", 20)
     st.session_state.setdefault("train_epochs_per_tau", 15)
     st.session_state.setdefault("analysis_cluster_mode", "kmeans")
-    st.session_state.setdefault("analysis_n_microstates", 150)
+    st.session_state.setdefault("analysis_n_microstates", 20)
     st.session_state.setdefault("analysis_reweight_mode", "MBAR")
     st.session_state.setdefault("analysis_fes_method", "kde")
     st.session_state.setdefault("analysis_fes_bandwidth", "scott")
     st.session_state.setdefault("analysis_min_count_per_bin", 1)
 
 
+def _consume_pending_training_config() -> None:
+    pending = st.session_state.get(_TRAIN_CONFIG_PENDING)
+    if isinstance(pending, TrainingConfig):
+        _apply_training_config_to_state(pending)
+    st.session_state[_TRAIN_CONFIG_PENDING] = None
+
+
+
 def main() -> None:
     st.set_page_config(page_title="PMARLO Joint Learning", layout="wide")
     _ensure_session_defaults()
+    _consume_pending_training_config()
 
     layout = WorkspaceLayout.from_app_package()
     backend = WorkflowBackend(layout)
@@ -391,11 +491,12 @@ def main() -> None:
         else:
             st.info("Drop prepared PDB files into app_intputs/ to get started.")
 
-    tab_sampling, tab_training, tab_analysis, tab_assets = st.tabs(
+    tab_sampling, tab_training, tab_analysis, tab_model_preview, tab_assets = st.tabs(
         [
             "Sampling",
             "Model Training",
             "Analysis",
+            "Model Preview",
             "Assets",
         ]
     )
@@ -442,6 +543,40 @@ def main() -> None:
                 "",
                 key="sim_run_label",
             )
+            
+            # CV Model Selection
+            st.subheader("CV-Informed Sampling (Optional)")
+            models = backend.list_models()
+            cv_model_path = None
+            if models:
+                use_cv_model = st.checkbox(
+                    "Use trained CV model to inform sampling",
+                    value=False,
+                    help="Select a trained Deep-TICA model. Model parameters will be saved with simulation metadata for future CV-guided analysis.",
+                    key="sim_use_cv_model",
+                )
+                if use_cv_model:
+                    model_indices = list(range(len(models)))
+                    
+                    def _cv_model_label(idx: int) -> str:
+                        entry = models[idx]
+                        bundle_raw = entry.get("bundle", "")
+                        bundle_name = Path(bundle_raw).name if bundle_raw else f"model-{idx}"
+                        return bundle_name
+                    
+                    selected_cv_idx = st.selectbox(
+                        "Select CV model",
+                        options=model_indices,
+                        format_func=_cv_model_label,
+                        key="sim_cv_model_select",
+                    )
+                    cv_model_path = Path(models[selected_cv_idx].get("bundle", ""))
+                    if cv_model_path and cv_model_path.exists():
+                        st.info(f"Selected model: {cv_model_path.name}")
+                        st.caption("Note: This model will be referenced in simulation metadata. CV-based biasing can be implemented in future sampling workflows.")
+            else:
+                st.info("No trained CV models available. Train a model in the 'Model Training' tab to enable CV-informed sampling.")
+            
             col_extra = st.expander("Advanced options", expanded=False)
             with col_extra:
                 jitter = st.checkbox(
@@ -498,6 +633,7 @@ def main() -> None:
                             int(exchange_override) if exchange_override > 0 else None
                         ),
                         temperature_schedule_mode=schedule_mode,
+                        cv_model_bundle=cv_model_path if cv_model_path and cv_model_path.exists() else None,
                     )
                     with st.spinner("Running replica exchange..."):
                         sim_result = backend.run_sampling(config)
@@ -631,6 +767,15 @@ def main() -> None:
 
     with tab_training:
         st.header("Train collective-variable model")
+        feedback = st.session_state.get(_TRAIN_FEEDBACK)
+        if feedback:
+            if isinstance(feedback, tuple) and len(feedback) == 2:
+                level, message = feedback
+            else:
+                level, message = ("info", str(feedback))
+            display_fn = getattr(st, str(level), st.info)
+            display_fn(str(message))
+            st.session_state[_TRAIN_FEEDBACK] = None
         shard_groups = backend.shard_summaries()
         if not shard_groups:
             st.info("Emit shards before training a CV model.")
@@ -728,21 +873,36 @@ def main() -> None:
                             val_tau=int(val_tau),
                             epochs_per_tau=int(epochs_per_tau),
                         )
-                        result = backend.train_model(selected_paths, train_cfg)
+                        
+                        # Use st.status to show progress during training
+                        with st.status("Training Deep-TICA model...", expanded=True) as status:
+                            st.write("📊 Loading and preparing shard data...")
+                            st.write(f"- Selected {len(selected_paths)} shard files")
+                            st.write(f"- Lag: {lag}, Bins: Rg={bins_rg}, RMSD={bins_rmsd}")
+                            st.write(f"- Max epochs: {max_epochs}, Patience: {patience}")
+                            st.write("")
+                            st.write("⚙️ Starting training pipeline...")
+                            st.caption("Note: Initial data loading may take several minutes for large datasets.")
+                            
+                            result = backend.train_model(selected_paths, train_cfg)
+                            
+                            status.update(label="Training completed!", state="complete", expanded=False)
+                        
                         st.session_state[_LAST_TRAIN] = result
                         st.session_state[_LAST_TRAIN_CONFIG] = train_cfg
-                        _apply_training_config_to_state(train_cfg)
-                        st.success(
-                            f"Model stored at {result.bundle_path.name} (hash {result.dataset_hash})."
+                        st.session_state[_TRAIN_CONFIG_PENDING] = train_cfg
+                        
+                        # Show training progress if available
+                        if result.checkpoint_dir:
+                            progress = backend.get_training_progress(result.checkpoint_dir)
+                            if progress and progress.get("status") == "completed":
+                                st.success(f"Training completed! Best val score: {progress.get('best_val_score', 0.0):.4f}")
+                        
+                        st.session_state[_TRAIN_FEEDBACK] = (
+                            "success",
+                            f"Model stored at {result.bundle_path.name} (hash {result.dataset_hash}).",
                         )
-                        _show_build_outputs(result)
-                        summary = (
-                            result.build_result.artifacts.get("mlcv_deeptica")
-                            if result.build_result
-                            else None
-                        )
-                        if summary:
-                            _render_deeptica_summary(summary)
+                        st.rerun()
                     except RuntimeError as exc:
                         if "Deep-TICA optional dependencies missing" in str(exc):
                             st.warning(DEEPTICA_SKIP_MESSAGE)
@@ -750,6 +910,107 @@ def main() -> None:
                             st.error(f"Training failed: {exc}")
                     except Exception as exc:
                         st.error(f"Training failed: {exc}")
+
+        # Check for ongoing training and show log viewer
+        models_dir = layout.models_dir
+        training_dirs = [d for d in models_dir.glob("training-*") if d.is_dir()]
+        if training_dirs:
+            latest_training = max(training_dirs, key=lambda d: d.name)
+            log_file = latest_training / "training.log"
+            progress_file = latest_training / "training_progress.json"
+            
+            # Check if this is an ongoing training (progress file doesn't exist or status is "training")
+            is_training_ongoing = False
+            if log_file.exists():
+                if not progress_file.exists():
+                    is_training_ongoing = True
+                else:
+                    try:
+                        with progress_file.open("r") as f:
+                            progress_data = json.load(f)
+                            if progress_data.get("status") == "training":
+                                is_training_ongoing = True
+                    except Exception:
+                        pass
+            
+            if is_training_ongoing and log_file.exists():
+                with st.expander("⚠️ Training in Progress - View Log", expanded=True):
+                    st.warning(f"Training directory: `{latest_training.name}`")
+                    st.caption("Training may take 10-30 minutes depending on data size. Check the log below for progress.")
+                    
+                    if st.button("Refresh Log", key="refresh_train_log_button"):
+                        st.rerun()
+                    
+                    try:
+                        with log_file.open("r") as f:
+                            log_content = f.read()
+                        
+                        # Show last 50 lines of log
+                        log_lines = log_content.strip().split("\n")
+                        if len(log_lines) > 50:
+                            st.text_area(
+                                "Recent Log Entries (last 50 lines)",
+                                "\n".join(log_lines[-50:]),
+                                height=300,
+                                key="train_log_viewer"
+                            )
+                        else:
+                            st.text_area(
+                                "Training Log",
+                                log_content,
+                                height=300,
+                                key="train_log_viewer_full"
+                            )
+                    except Exception as e:
+                        st.error(f"Could not read log file: {e}")
+
+        last_train: TrainingResult | None = st.session_state.get(_LAST_TRAIN)
+        if last_train is not None:
+            # Show real-time training progress if available
+            if last_train.checkpoint_dir:
+                progress = backend.get_training_progress(last_train.checkpoint_dir)
+                if progress:
+                    with st.expander("Training Progress", expanded=True):
+                        status = progress.get("status", "unknown")
+                        st.write(f"**Status**: {status}")
+                        
+                        if status == "training":
+                            current_epoch = progress.get("current_epoch", 0)
+                            total_epochs = progress.get("total_epochs_planned", 0)
+                            if total_epochs > 0:
+                                st.progress(current_epoch / total_epochs)
+                                st.write(f"Epoch {current_epoch} / {total_epochs}")
+                        
+                        epochs_data = progress.get("epochs", [])
+                        if epochs_data:
+                            # Plot training curves
+                            import pandas as pd
+                            df = pd.DataFrame(epochs_data)
+                            
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                if "val_score" in df.columns:
+                                    st.line_chart(df[["epoch", "val_score"]].set_index("epoch"))
+                                    st.caption("Validation Score")
+                            with col2:
+                                if "train_loss" in df.columns:
+                                    st.line_chart(df[["epoch", "train_loss"]].set_index("epoch"))
+                                    st.caption("Training Loss")
+                            
+                            # Show best epoch info
+                            best_epoch = progress.get("best_epoch")
+                            best_score = progress.get("best_val_score", 0.0)
+                            if best_epoch:
+                                st.info(f"Best validation score: {best_score:.4f} at epoch {best_epoch}")
+            
+            _show_build_outputs(last_train)
+            summary = (
+                last_train.build_result.artifacts.get("mlcv_deeptica")
+                if last_train.build_result
+                else None
+            )
+            if summary:
+                _render_deeptica_summary(summary)
 
         models = backend.list_models()
         if models:
@@ -778,23 +1039,21 @@ def main() -> None:
                     loaded = backend.load_model(int(selected_idx))
                     if loaded is not None:
                         st.session_state[_LAST_TRAIN] = loaded
+                        cfg_loaded: TrainingConfig | None = None
                         try:
                             cfg_loaded = backend.training_config_from_entry(
                                 models[int(selected_idx)]
                             )
-                            st.session_state[_LAST_TRAIN_CONFIG] = cfg_loaded
-                            _apply_training_config_to_state(cfg_loaded)
                         except Exception:
-                            pass
-                        st.success(f"Loaded model {loaded.bundle_path.name}.")
-                        _show_build_outputs(loaded)
-                        summary = (
-                            loaded.build_result.artifacts.get("mlcv_deeptica")
-                            if loaded.build_result
-                            else None
+                            cfg_loaded = None
+                        if cfg_loaded is not None:
+                            st.session_state[_LAST_TRAIN_CONFIG] = cfg_loaded
+                            st.session_state[_TRAIN_CONFIG_PENDING] = cfg_loaded
+                        st.session_state[_TRAIN_FEEDBACK] = (
+                            "success",
+                            f"Loaded model {loaded.bundle_path.name}.",
                         )
-                        if summary:
-                            _render_deeptica_summary(summary)
+                        st.rerun()
                     else:
                         st.error("Could not load the selected model from disk.")
 
@@ -913,7 +1172,7 @@ def main() -> None:
             n_microstates = col_micro.number_input(
                 "Number of microstates",
                 min_value=2,
-                value=int(st.session_state.get("analysis_n_microstates", 150)),
+                value=int(st.session_state.get("analysis_n_microstates", 20)),
                 step=1,
                 key="analysis_n_microstates",
             )
@@ -1055,6 +1314,141 @@ def main() -> None:
                 except Exception as exc:
                     st.error(f"Analysis failed: {exc}")
 
+    with tab_model_preview:
+        st.header("Model Preview & Inspection")
+        
+        # Allow user to select a trained model to inspect
+        models = backend.list_models()
+        if not models:
+            st.info("No trained models available. Train a model in the 'Model Training' tab first.")
+        else:
+            indices = list(range(len(models)))
+            
+            def _model_preview_label(idx: int) -> str:
+                entry = models[idx]
+                bundle_raw = entry.get("bundle", "")
+                bundle_name = Path(bundle_raw).name if bundle_raw else f"model-{idx}"
+                created = entry.get("created_at", "unknown")
+                return f"{bundle_name} (created {created})"
+            
+            selected_model_idx = st.selectbox(
+                "Select model to inspect",
+                options=indices,
+                format_func=_model_preview_label,
+                key="model_preview_select",
+            )
+            
+            if st.button("Load Model Details", key="model_preview_load_button"):
+                loaded = backend.load_model(int(selected_model_idx))
+                if loaded is not None:
+                    st.session_state["_model_preview_data"] = loaded
+                    st.rerun()
+            
+            # Display loaded model
+            preview_data = st.session_state.get("_model_preview_data")
+            if preview_data is not None:
+                st.success(f"Model: {preview_data.bundle_path.name}")
+                
+                # Model Configuration
+                with st.expander("Model Configuration", expanded=True):
+                    model_entry = models[selected_model_idx]
+                    config_data = {
+                        "Dataset Hash": model_entry.get("dataset_hash", "N/A"),
+                        "Lag": model_entry.get("lag", "N/A"),
+                        "Temperature (K)": model_entry.get("temperature", "N/A"),
+                        "Seed": model_entry.get("seed", "N/A"),
+                        "Max Epochs": model_entry.get("max_epochs", "N/A"),
+                        "Early Stopping Patience": model_entry.get("early_stopping", "N/A"),
+                        "Created At": model_entry.get("created_at", "N/A"),
+                    }
+                    
+                    bins = model_entry.get("bins", {})
+                    if bins:
+                        config_data["Bins (Rg)"] = bins.get("Rg", "N/A")
+                        config_data["Bins (RMSD)"] = bins.get("RMSD_ref", "N/A")
+                    
+                    hidden = model_entry.get("hidden", [])
+                    if hidden:
+                        config_data["Hidden Layers"] = " → ".join(str(h) for h in hidden)
+                    
+                    tau_schedule = model_entry.get("tau_schedule", [])
+                    if tau_schedule:
+                        config_data["Tau Schedule"] = ", ".join(str(t) for t in tau_schedule)
+                    
+                    config_data["Val Tau"] = model_entry.get("val_tau", "N/A")
+                    config_data["Epochs per Tau"] = model_entry.get("epochs_per_tau", "N/A")
+                    
+                    for key, value in config_data.items():
+                        st.write(f"**{key}**: {value}")
+                
+                # Model Architecture
+                with st.expander("Model Architecture", expanded=True):
+                    st.write("**Network Structure:**")
+                    hidden_layers = model_entry.get("hidden", [])
+                    if hidden_layers:
+                        # Visualize network architecture
+                        layers = ["Input"] + [f"Hidden {i+1} ({h})" for i, h in enumerate(hidden_layers)] + ["Output (2)"]
+                        st.write(" → ".join(layers))
+                        
+                        # Calculate approximate parameter count
+                        # Assuming input dimension from bins
+                        bins_dict = model_entry.get("bins", {})
+                        input_dim = 2  # Default: Rg + RMSD
+                        
+                        total_params = 0
+                        prev_dim = input_dim
+                        for h in hidden_layers:
+                            total_params += prev_dim * h + h  # weights + biases
+                            prev_dim = h
+                        total_params += prev_dim * 2 + 2  # output layer
+                        
+                        st.metric("Approximate Total Parameters", f"{total_params:,}")
+                    else:
+                        st.info("Hidden layer configuration not available")
+                
+                # Training Metrics
+                with st.expander("Training Metrics", expanded=True):
+                    metrics = model_entry.get("metrics", {})
+                    if metrics:
+                        # Display key metrics
+                        key_metrics = {
+                            "Best Val Score": metrics.get("best_val_score", "N/A"),
+                            "Best Epoch": metrics.get("best_epoch", "N/A"),
+                            "Best Tau": metrics.get("best_tau", "N/A"),
+                            "Wall Time (s)": metrics.get("wall_time_s", "N/A"),
+                        }
+                        
+                        cols = st.columns(len(key_metrics))
+                        for col, (key, value) in zip(cols, key_metrics.items()):
+                            col.metric(key, value if value != "N/A" else "N/A")
+                        
+                        # Plot training curves
+                        val_score = metrics.get("val_score_curve", [])
+                        if val_score:
+                            st.write("**Validation Score Curve:**")
+                            import pandas as pd
+                            epochs = list(range(1, len(val_score) + 1))
+                            df = pd.DataFrame({"Epoch": epochs, "Val Score": val_score})
+                            st.line_chart(df.set_index("Epoch"))
+                    else:
+                        st.info("Training metrics not available for this model")
+                
+                # Model Files
+                with st.expander("Model Files & Checkpoints"):
+                    st.write(f"**Bundle Path**: `{preview_data.bundle_path}`")
+                    
+                    if preview_data.checkpoint_dir and preview_data.checkpoint_dir.exists():
+                        st.write(f"**Checkpoint Directory**: `{preview_data.checkpoint_dir}`")
+                        
+                        # List checkpoint files
+                        checkpoint_files = list(preview_data.checkpoint_dir.glob("*"))
+                        if checkpoint_files:
+                            st.write("**Available Files:**")
+                            for f in sorted(checkpoint_files):
+                                st.write(f"- `{f.name}`")
+                    else:
+                        st.info("No checkpoint directory available")
+
     with tab_assets:
         st.header("Recorded assets")
 
@@ -1114,6 +1508,17 @@ def main() -> None:
 
         # Models section
         st.subheader("Models")
+        last_train: TrainingResult | None = st.session_state.get(_LAST_TRAIN)
+        if last_train is not None:
+            _show_build_outputs(last_train)
+            summary = (
+                last_train.build_result.artifacts.get("mlcv_deeptica")
+                if last_train.build_result
+                else None
+            )
+            if summary:
+                _render_deeptica_summary(summary)
+
         models = backend.list_models()
         if models:
             for i, model in enumerate(models):

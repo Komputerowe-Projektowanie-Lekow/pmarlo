@@ -7,6 +7,9 @@ from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
+from pmarlo import constants as const
+from pmarlo.utils.validation import require as _require
+
 __all__ = [
     "FeatureSpec",
     "ShardMeta",
@@ -90,7 +93,10 @@ def validate_invariants(shard: Shard) -> None:
         "t_index must be contiguous starting at 0",
     )
 
-    _require(abs(float(shard.dt_ps) - float(meta.dt_ps)) < 1e-12, "dt_ps mismatch")
+    _require(
+        abs(float(shard.dt_ps) - float(meta.dt_ps)) < const.NUMERIC_MIN_POSITIVE,
+        "dt_ps mismatch",
+    )
 
     n = meta.n_frames
     for name, arr in {
@@ -118,8 +124,3 @@ def validate_invariants(shard: Shard) -> None:
         meta.shard_id == expected_id,
         f"shard_id '{meta.shard_id}' does not match canonical '{expected_id}'",
     )
-
-
-def _require(condition: bool, message: str) -> None:
-    if not condition:
-        raise ValueError(message)

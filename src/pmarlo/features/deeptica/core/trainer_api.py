@@ -14,6 +14,14 @@ import numpy as np
 import torch
 from torch import nn
 
+from pmarlo import constants as const
+from pmarlo.utils.path_utils import ensure_directory
+
+from pmarlo.ml.deeptica.trainer import (
+    CurriculumConfig,
+    DeepTICACurriculumTrainer,
+)
+
 from .dataset import split_sequences
 from .history import vamp2_proxy
 from .inputs import FeaturePrep, prepare_features
@@ -66,9 +74,9 @@ def train_deeptica_pipeline(
     weights_arr = np.asarray(pair_info.weights, dtype=np.float32).reshape(-1)
     pair_diagnostics = dict(pair_info.diagnostics)
 
-    fallback_lag = int(prep.tau_schedule[-1])
+    requested_lag = int(prep.tau_schedule[-1])
     usable_pairs, coverage, short_shards, total_possible, lag_used = (
-        _log_pair_diagnostics(pair_diagnostics, len(arrays), fallback_lag)
+        _log_pair_diagnostics(pair_diagnostics, len(arrays), requested_lag)
     )
 
     net.eval()
@@ -79,44 +87,21 @@ def train_deeptica_pipeline(
     sequences = split_sequences(prep.Z, lengths)
 
     history: dict[str, Any]
-    history_source = "curriculum_trainer"
     summary_dir: Optional[Path] = None
 
-    try:
-        from pmarlo.ml.deeptica.trainer import (
-            CurriculumConfig,
-            DeepTICACurriculumTrainer,
-        )
-
-        curriculum_cfg = _build_curriculum_config(
-            cfg,
-            prep.tau_schedule,
-            run_stamp=f"{int(t0)}-{os.getpid()}",
-            config_cls=CurriculumConfig,
-        )
-        summary_dir = (
-            Path(curriculum_cfg.checkpoint_dir)
-            if curriculum_cfg.checkpoint_dir is not None
-            else None
-        )
-        trainer = DeepTICACurriculumTrainer(net, curriculum_cfg)
-        history = trainer.fit(sequences)
-    except Exception as exc:  # pragma: no cover - depends on optional extras
-        logger.warning(
-            "Curriculum trainer unavailable; falling back to legacy .fit(): %s",
-            exc,
-        )
-        history = {}
-        history_source = "legacy-fit"
-        _legacy_fit_model(
-            net,
-            cfg,
-            prep.Z,
-            prep.tau_schedule,
-            idx_t,
-            idx_tau,
-            weights_arr,
-        )
+    curriculum_cfg = _build_curriculum_config(
+        cfg,
+        prep.tau_schedule,
+        run_stamp=f"{int(t0)}-{os.getpid()}",
+        config_cls=CurriculumConfig,
+    )
+    summary_dir = (
+        Path(curriculum_cfg.checkpoint_dir)
+        if curriculum_cfg.checkpoint_dir is not None
+        else None
+    )
+    trainer = DeepTICACurriculumTrainer(net, curriculum_cfg)
+    history = trainer.fit(sequences)
 
     net, whitening_info = apply_output_whitening(net, prep.Z, idx_tau, apply=False)
     net.eval()
@@ -135,7 +120,7 @@ def train_deeptica_pipeline(
     history.setdefault("val_loss_curve", [])
     history.setdefault("val_score_curve", [])
     history.setdefault("grad_norm_curve", [])
-    history["history_source"] = history_source
+    history["history_source"] = "curriculum_trainer"
     history["wall_time_s"] = float(history.get("wall_time_s", time.time() - t0))
     history["vamp2_before"] = float(obj_before)
     history["vamp2_after"] = float(obj_after)
@@ -143,8 +128,14 @@ def train_deeptica_pipeline(
     if top_eigs is not None:
         history["top_eigenvalues"] = top_eigs
     history["pair_diagnostics_overall"] = pair_diagnostics
-    history["usable_pairs"] = usable_pairs
-    history["pair_coverage"] = coverage
+    n_frames = int(prep.Z.shape[0])
+    usable_pairs_capped = min(usable_pairs, n_frames)
+    if total_possible > 0:
+        coverage_capped = min(coverage, usable_pairs_capped / float(total_possible))
+    else:
+        coverage_capped = 0.0
+    history["usable_pairs"] = usable_pairs_capped
+    history["pair_coverage"] = coverage_capped
     history["pairs_by_shard"] = pair_diagnostics.get("pairs_by_shard", [])
     history["short_shards"] = short_shards
     history["total_possible_pairs"] = total_possible
@@ -206,13 +197,13 @@ def _forward_to_numpy(net: nn.Module, data: np.ndarray) -> np.ndarray:
 def _log_pair_diagnostics(
     diagnostics: dict[str, Any],
     n_shards: int,
-    fallback_lag: int,
+    requested_lag: int,
 ) -> tuple[int, float, list[int], int, int]:
     usable_pairs = int(diagnostics.get("usable_pairs", 0))
     coverage = float(diagnostics.get("pair_coverage", 0.0))
     short_shards = list(diagnostics.get("short_shards", []))
     total_possible = int(diagnostics.get("total_possible_pairs", 0))
-    lag_used = int(diagnostics.get("lag_used", fallback_lag))
+    lag_used = int(diagnostics.get("lag_used", requested_lag))
 
     if short_shards:
         logger.warning(
@@ -270,19 +261,19 @@ def _build_curriculum_config(
         if batches_per_epoch <= 0:
             batches_per_epoch = None
     checkpoint_dir = getattr(cfg, "checkpoint_dir", None)
-    checkpoint_path = (
-        _Path(checkpoint_dir)
-        if checkpoint_dir
-        else Path.cwd() / "checkpoints" / "deeptica" / run_stamp
-    )
+    checkpoint_path = _Path(checkpoint_dir) if checkpoint_dir else None
     cfg_kwargs = dict(
         tau_schedule=schedule,
         val_tau=int(getattr(cfg, "val_tau", 0) or schedule[-1]),
         epochs_per_tau=int(max(1, getattr(cfg, "epochs_per_tau", 15))),
         warmup_epochs=int(max(0, getattr(cfg, "warmup_epochs", 5))),
         batch_size=int(max(1, getattr(cfg, "batch_size", 256))),
-        learning_rate=float(getattr(cfg, "learning_rate", 3e-4)),
-        weight_decay=float(max(0.0, getattr(cfg, "weight_decay", 1e-4))),
+        learning_rate=float(
+            getattr(cfg, "learning_rate", const.DEEPTICA_DEFAULT_LEARNING_RATE)
+        ),
+        weight_decay=float(
+            max(0.0, getattr(cfg, "weight_decay", const.DEEPTICA_DEFAULT_WEIGHT_DECAY))
+        ),
         val_fraction=val_frac,
         shuffle=True,
         num_workers=int(max(0, getattr(cfg, "num_workers", 0))),
@@ -290,56 +281,26 @@ def _build_curriculum_config(
         grad_clip_norm=grad_clip,
         log_every=int(max(1, getattr(cfg, "log_every", 1))),
         checkpoint_dir=checkpoint_path,
-        vamp_eps=float(getattr(cfg, "vamp_eps", 1e-3)),
-        vamp_eps_abs=float(getattr(cfg, "vamp_eps_abs", 1e-6)),
+        vamp_eps=float(getattr(cfg, "vamp_eps", const.DEEPTICA_DEFAULT_VAMP_EPS)),
+        vamp_eps_abs=float(
+            getattr(cfg, "vamp_eps_abs", const.DEEPTICA_DEFAULT_VAMP_EPS_ABS)
+        ),
         vamp_alpha=float(getattr(cfg, "vamp_alpha", 0.15)),
-        vamp_cond_reg=float(max(0.0, getattr(cfg, "vamp_cond_reg", 1e-4))),
+        vamp_cond_reg=float(
+            max(
+                0.0,
+                getattr(
+                    cfg,
+                    "vamp_cond_reg",
+                    const.DEEPTICA_DEFAULT_VAMP_COND_REG,
+                ),
+            )
+        ),
         seed=int(getattr(cfg, "seed", 0)),
         max_batches_per_epoch=batches_per_epoch,
     )
     curriculum_cfg = config_cls(**cfg_kwargs)
-    if curriculum_cfg.checkpoint_dir is not None:
-        _Path(curriculum_cfg.checkpoint_dir).mkdir(parents=True, exist_ok=True)
     return curriculum_cfg
-
-
-def _legacy_fit_model(
-    net: nn.Module,
-    cfg: Any,
-    Z: np.ndarray,
-    tau_schedule: tuple[int, ...],
-    idx_t: np.ndarray,
-    idx_tau: np.ndarray,
-    weights: np.ndarray,
-) -> None:
-    if not hasattr(net, "fit"):
-        return
-    try:
-        net.fit(  # type: ignore[attr-defined]
-            Z,
-            lagtime=int(tau_schedule[-1]),
-            idx_t=np.asarray(idx_t, dtype=int),
-            idx_tlag=np.asarray(idx_tau, dtype=int),
-            weights=np.asarray(weights, dtype=np.float32),
-            batch_size=int(getattr(cfg, "batch_size", 256)),
-            max_epochs=int(getattr(cfg, "max_epochs", 200)),
-            early_stopping_patience=int(getattr(cfg, "early_stopping", 25)),
-            shuffle=False,
-        )
-    except TypeError:
-        try:
-            net.fit(  # type: ignore[attr-defined]
-                Z,
-                lagtime=int(tau_schedule[-1]),
-                batch_size=int(getattr(cfg, "batch_size", 256)),
-                max_epochs=int(getattr(cfg, "max_epochs", 200)),
-            )
-        except Exception as exc:  # pragma: no cover - diagnostic only
-            logger.warning("Legacy DeepTICA fit fallback failed: %s", exc)
-    except Exception as exc:  # pragma: no cover - diagnostic only
-        logger.warning("Legacy DeepTICA fit raised an error: %s", exc)
-
-
 def _compute_output_variance(outputs: np.ndarray) -> Optional[list[float]]:
     try:
         if outputs.size == 0:
@@ -371,7 +332,7 @@ def _estimate_top_eigenvalues(
         C0 = (y_t_c.T @ y_t_c) / float(n)
         Ct = (y_t_c.T @ y_tau_c) / float(n)
         evals, evecs = np.linalg.eigh((C0 + C0.T) * 0.5)
-        evals = np.clip(evals, 1e-12, None)
+        evals = np.clip(evals, const.NUMERIC_MIN_POSITIVE, None)
         inv_sqrt = evecs @ np.diag(1.0 / np.sqrt(evals)) @ evecs.T
         M = inv_sqrt @ Ct @ inv_sqrt.T
         eigs = np.linalg.eigvalsh((M + M.T) * 0.5)
@@ -407,7 +368,7 @@ def _write_training_summary(
     if summary_dir is None:
         return
     try:
-        summary_dir.mkdir(parents=True, exist_ok=True)
+        ensure_directory(summary_dir)
         try:
             cfg_dict = asdict(cfg)
         except TypeError:

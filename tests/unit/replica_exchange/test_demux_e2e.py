@@ -63,10 +63,8 @@ def _build_remd_stub(pdb: str, dcd0: str, dcd1: str, outdir: Path) -> ReplicaExc
 
 def test_demux_e2e_streaming_small(tmp_path: Path):
     # Ensure streaming path
-    prev_flag = demux_config.DEMUX_STREAMING_ENABLED
     prev_backend = demux_config.DEMUX_IO_BACKEND
     prev_policy = demux_config.DEMUX_FILL_POLICY
-    demux_config.DEMUX_STREAMING_ENABLED = True
     demux_config.DEMUX_IO_BACKEND = "mdtraj"
     demux_config.DEMUX_FILL_POLICY = "repeat"
     try:
@@ -99,6 +97,5 @@ def test_demux_e2e_streaming_small(tmp_path: Path):
         assert hints.fill_policy == "repeat"
         assert hints.contiguous_blocks == [(0, 1), (2, 3)]
     finally:
-        demux_config.DEMUX_STREAMING_ENABLED = prev_flag
         demux_config.DEMUX_IO_BACKEND = prev_backend
         demux_config.DEMUX_FILL_POLICY = prev_policy

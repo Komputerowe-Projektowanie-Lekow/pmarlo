@@ -5,6 +5,9 @@ from typing import Any, Callable, List, Optional, Tuple
 import numpy as np
 from scipy.sparse.csgraph import connected_components
 
+from pmarlo import constants as const
+from pmarlo.utils.path_utils import ensure_directory
+
 from ._base import CKTestResult
 
 
@@ -113,8 +116,7 @@ class CKMixin:
         factors = self._normalize_ck_factors(factors)
         gap = self._micro_eigen_gap(k=2)
         if gap is None or gap <= 0.01:
-            # fallback to micro
-            return self.compute_ck_test_micro(factors=factors)
+            raise RuntimeError("Insufficient spectral gap for macrostate CK test")
 
         result = CKTestResult(
             mode="macro", thresholds={"min_transitions_per_state": int(min_transitions)}
@@ -129,10 +131,10 @@ class CKMixin:
         else:
             macro_labels = None
         if macro_labels is None:
-            return self.compute_ck_test_micro(factors=factors)
+            raise RuntimeError("Macrostate labels are required for macrostate CK test")
         n_macros = int(np.max(macro_labels) + 1)
         if n_macros <= 1:
-            return self.compute_ck_test_micro(factors=factors)
+            raise RuntimeError("Macrostate CK test requires at least two macrostates")
 
         macro_trajs = self._build_macro_trajectories(self.dtrajs, macro_labels)
         T1, C1 = self._count_macro_T_and_counts(
@@ -146,7 +148,7 @@ class CKMixin:
             mse, Ck = self._ck_mse_for_factor(
                 T1, macro_trajs, n_macros, int(self.lag_time), int(f)
             )
-            if mse is None or np.any(Ck.sum(axis=1) < min_transitions):
+            if np.any(Ck.sum(axis=1) < min_transitions):
                 result.insufficient_data = True
                 return result
             result.mse[int(f)] = float(mse)
@@ -161,9 +163,7 @@ class CKMixin:
         selected = self._select_tau_from_prefix(
             taus=taus, mses=mses, its_list=its_list, mse_epsilon=float(mse_epsilon)
         )
-        selected = self._apply_global_mse_fallback(
-            taus=taus, mses=mses, selected=selected
-        )
+        selected = self._select_best_mse(taus=taus, mses=mses)
         selected = self._prefer_tau_two_on_tie(taus=taus, mses=mses, selected=selected)
 
         self.lag_time = int(selected)
@@ -203,8 +203,8 @@ class CKMixin:
                 continue
             # Help static type checkers: prev_mse/prev_its are set here
             assert prev_mse is not None and prev_its is not None
-            non_decreasing_its = s >= prev_its - 1e-12
-            rel_improvement = (prev_mse - m) / max(prev_mse, 1e-12)
+            non_decreasing_its = s >= prev_its - const.NUMERIC_MIN_POSITIVE
+            rel_improvement = (prev_mse - m) / max(prev_mse, const.NUMERIC_MIN_POSITIVE)
             if non_decreasing_its and rel_improvement > float(mse_epsilon):
                 selected = int(t)
                 prev_mse = float(m)
@@ -213,14 +213,9 @@ class CKMixin:
                 break
         return int(selected)
 
-    def _apply_global_mse_fallback(
-        self, *, taus: list[int], mses: list[float], selected: int
-    ) -> int:
+    def _select_best_mse(self, *, taus: list[int], mses: list[float]) -> int:
         idx_min = int(np.nanargmin(mses))
-        best_tau = int(taus[idx_min])
-        if best_tau != selected:
-            selected = best_tau
-        return int(selected)
+        return int(taus[idx_min])
 
     def _prefer_tau_two_on_tie(
         self, *, taus: list[int], mses: list[float], selected: int
@@ -228,40 +223,37 @@ class CKMixin:
         if selected == 1 and 2 in taus:
             j = int(taus.index(2))
             idx_min = int(np.nanargmin(mses))
-            if mses[j] <= mses[idx_min] + 1e-12:
+            if mses[j] <= mses[idx_min] + const.NUMERIC_MIN_POSITIVE:
                 selected = 2
         return int(selected)
 
     def _persist_ck_diagnostics(
         self, *, taus: list[int], mses: list[float], selected: int
     ) -> None:
-        try:
-            import csv as _csv
-            from pathlib import Path as _Path
+        import csv as _csv
+        from pathlib import Path as _Path
 
-            import matplotlib.pyplot as _plt
+        import matplotlib.pyplot as _plt
 
-            out_dir = _Path(getattr(self, "output_dir", "."))
-            out_dir.mkdir(parents=True, exist_ok=True)
-            csv_path = out_dir / "ck_mse.csv"
-            with csv_path.open("w", newline="") as fh:
-                writer = _csv.writer(fh)
-                writer.writerow(["tau", "mse"])
-                for t, m in zip(taus, mses):
-                    writer.writerow([int(t), float(m)])
+        out_dir = _Path(getattr(self, "output_dir", "."))
+        ensure_directory(out_dir)
+        csv_path = out_dir / "ck_mse.csv"
+        with csv_path.open("w", newline="") as fh:
+            writer = _csv.writer(fh)
+            writer.writerow(["tau", "mse"])
+            for t, m in zip(taus, mses):
+                writer.writerow([int(t), float(m)])
 
-            png_path = out_dir / "ck.png"
-            _plt.figure()
-            _plt.plot(taus, mses, marker="o")
-            _plt.xlabel("Lag time τ")
-            _plt.ylabel("CK MSE")
-            _plt.title("CK test MSE vs τ")
-            _plt.tight_layout()
-            _plt.savefig(str(png_path))
-            _plt.close()
-            print(f"Selected τ = {int(selected)}")
-        except Exception:
-            pass
+        png_path = out_dir / "ck.png"
+        _plt.figure()
+        _plt.plot(taus, mses, marker="o")
+        _plt.xlabel("Lag time τ")
+        _plt.ylabel("CK MSE")
+        _plt.title("CK test MSE vs τ")
+        _plt.tight_layout()
+        _plt.savefig(str(png_path))
+        _plt.close()
+        print(f"Selected τ = {int(selected)}")
 
     def _normalize_ck_factors(self, factors: Optional[List[int]]) -> List[int]:
         if factors is None:
@@ -269,18 +261,15 @@ class CKMixin:
         return [int(f) for f in factors if int(f) > 1]
 
     def _largest_connected_states(self, C: np.ndarray, max_states: int) -> np.ndarray:
-        try:
-            adj = ((C + C.T) > 0).astype(int)
-            _, labels = connected_components(adj, directed=False, return_labels=True)
-            counts = np.bincount(labels)
-            main = int(np.argmax(counts))
-            idx = np.where(labels == main)[0]
-            if idx.size > max_states:
-                totals = (C + C.T).sum(axis=1)
-                idx = idx[np.argsort(totals[idx])[::-1]][:max_states]
-            return idx
-        except Exception:
-            return np.arange(min(C.shape[0], max_states))
+        adj = ((C + C.T) > 0).astype(int)
+        _, labels = connected_components(adj, directed=False, return_labels=True)
+        counts = np.bincount(labels)
+        main = int(np.argmax(counts))
+        idx = np.where(labels == main)[0]
+        if idx.size > max_states:
+            totals = (C + C.T).sum(axis=1)
+            idx = idx[np.argsort(totals[idx])[::-1]][:max_states]
+        return idx
 
     def _count_micro_T(
         self, dtrajs: List[np.ndarray], nS: int, lag: int
@@ -322,64 +311,48 @@ class CKMixin:
         nM: int,
         base_lag: int,
         factor: int,
-    ) -> Tuple[Optional[float], np.ndarray]:
-        try:
-            T_theory = np.linalg.matrix_power(T1, int(factor))
-            T_emp, C_emp = self._count_macro_T_and_counts(
-                macro_trajs, nM, int(base_lag) * int(factor)
-            )
-            diff = T_theory - T_emp
-            return float(np.mean(diff * diff)), C_emp
-        except Exception:
-            return None, np.zeros((nM, nM), dtype=float)
+    ) -> Tuple[float, np.ndarray]:
+        T_theory = np.linalg.matrix_power(T1, int(factor))
+        T_emp, C_emp = self._count_macro_T_and_counts(
+            macro_trajs, nM, int(base_lag) * int(factor)
+        )
+        diff = T_theory - T_emp
+        return float(np.mean(diff * diff)), C_emp
 
     def _micro_eigen_gap(self, k: int = 2) -> Optional[float]:
-        try:
-            if getattr(self, "transition_matrix", None) is not None:
-                T = np.asarray(self.transition_matrix, dtype=float)
-            else:
-                T, _ = self._count_micro_T(
-                    self.dtrajs, self.n_states, int(self.lag_time)
-                )
-            evals = np.sort(np.real(np.linalg.eigvals(T)))[::-1]
-            if len(evals) <= k:
-                return None
-            return float(evals[k - 1] - evals[k])
-        except Exception:
+        if getattr(self, "transition_matrix", None) is not None:
+            T = np.asarray(self.transition_matrix, dtype=float)
+        else:
+            T, _ = self._count_micro_T(self.dtrajs, self.n_states, int(self.lag_time))
+        evals = np.sort(np.real(np.linalg.eigvals(T)))[::-1]
+        if len(evals) <= k:
             return None
+        return float(evals[k - 1] - evals[k])
 
     def _slowest_its_from_T(self, T: np.ndarray, tau: int) -> float:
         """Compute the slowest implied timescale from a transition matrix.
 
         Uses the second-largest eigenvalue magnitude.
         """
-        try:
-            evals = np.sort(np.real(np.linalg.eigvals(np.asarray(T, dtype=float))))[
-                ::-1
-            ]
-            if evals.size < 2:
-                return 0.0
-            lam = float(evals[1])
-            if lam <= 0 or lam >= 0.999999:
-                lam = min(max(lam, 1e-12), 0.999999)
-            its = -float(tau) / np.log(lam)
-            if not np.isfinite(its):
-                return 0.0
-            return float(its)
-        except Exception:
-            return 0.0
+        evals = np.sort(np.real(np.linalg.eigvals(np.asarray(T, dtype=float))))[::-1]
+        if evals.size < 2:
+            raise ValueError("Transition matrix must provide at least two eigenvalues")
+        lam = float(evals[1])
+        if lam <= 0 or lam >= const.NUMERIC_MAX_RATE:
+            lam = min(max(lam, const.NUMERIC_MIN_POSITIVE), const.NUMERIC_MAX_RATE)
+        its = -float(tau) / np.log(lam)
+        if not np.isfinite(its):
+            raise ValueError("Failed to compute finite implied timescale")
+        return float(its)
 
     def _ck_mse_from_T(self, T1: np.ndarray, tau: int, factor: int) -> float:
         """Mean squared error between theoretical and empirical CK predictions.
 
         T_theory = T1^factor, T_emp estimated from data at lag tau*factor.
         """
-        try:
-            T_theory = np.linalg.matrix_power(np.asarray(T1, dtype=float), int(factor))
-            T_emp, _ = self._count_micro_T(
-                self.dtrajs, int(self.n_states), int(tau) * int(factor)
-            )
-            diff = T_theory - T_emp
-            return float(np.mean(diff * diff))
-        except Exception:
-            return float("inf")
+        T_theory = np.linalg.matrix_power(np.asarray(T1, dtype=float), int(factor))
+        T_emp, _ = self._count_micro_T(
+            self.dtrajs, int(self.n_states), int(tau) * int(factor)
+        )
+        diff = T_theory - T_emp
+        return float(np.mean(diff * diff))

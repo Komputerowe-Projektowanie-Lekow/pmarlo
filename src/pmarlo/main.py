@@ -8,6 +8,7 @@ Main entry point for the PMARLO package. This module provides the core API
 imports and essential functionality for protein simulation and MSM analysis.
 """
 
+from ._version import __version__ as _PACKAGE_VERSION
 from .markov_state_model import MarkovStateModel
 from .markov_state_model.free_energy import FESResult, PMFResult
 
@@ -89,12 +90,7 @@ __all__ = [
 
 def get_version() -> str:
     """Get the PMARLO version string."""
-    try:
-        from ._version import __version__
-
-        return __version__
-    except ImportError:
-        return "unknown"
+    return _PACKAGE_VERSION
 
 
 def get_info() -> dict:

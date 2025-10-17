@@ -5,6 +5,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.mark.skipif(
     __import__("importlib.util").util.find_spec("openmm") is None,
@@ -67,7 +69,7 @@ def test_diversified_starts_increase_bin_coverage(
             if X.shape[1] >= 2:
                 arrs.append(X[:, :2])
         if not arrs:
-            return np.zeros((0, 2))
+            return np.empty((0, 2))
         return np.vstack(arrs)
 
     X1 = load_X(shards1)

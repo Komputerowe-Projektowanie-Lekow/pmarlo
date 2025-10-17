@@ -1,14 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
-import sys
-import types
 from pathlib import Path
 
 import numpy as np
-
-if "mdtraj" not in sys.modules:
-    sys.modules["mdtraj"] = types.ModuleType("mdtraj")
 
 ROOT = Path(__file__).resolve().parents[5]
 SAMPLER_MODULE = (

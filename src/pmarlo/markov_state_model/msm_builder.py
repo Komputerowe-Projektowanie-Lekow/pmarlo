@@ -48,10 +48,12 @@ class MSMBuilder:
             features, weights_coll
         )
 
+        kmeans_kwargs = {"n_init": 50}
         clustering = cluster_microstates(
             concatenated,
             n_states=self.n_clusters,
             random_state=self.random_state,
+            **kmeans_kwargs,
         )
 
         labels = clustering.labels

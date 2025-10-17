@@ -10,13 +10,17 @@ from pmarlo.workflow.joint import JointWorkflow, WorkflowConfig
 def _make_demo_shard(shard_id: str, temperature: float, n_frames: int) -> Shard:
     spec = FeatureSpec(name="demo", scaler="identity", columns=("x", "y"))
     beta = 1.0 / (0.00831446261815324 * temperature)
+    seg_token = shard_id.split("_")[1]
+    rep_token = shard_id.split("_")[2]
+    segment_id = int(seg_token.replace("seg", ""))
+    replica_id = int(rep_token.replace("rep", ""))
     meta = ShardMeta(
         schema_version="1.0",
         shard_id=shard_id,
         temperature_K=temperature,
         beta=beta,
-        replica_id=0,
-        segment_id=1,
+        replica_id=replica_id,
+        segment_id=segment_id,
         exchange_window_id=0,
         n_frames=n_frames,
         dt_ps=0.5,
@@ -67,6 +71,11 @@ def test_iteration_invokes_remd_callback(tmp_path):
         path = write_shard(new_shard, t_dir)
         return [path]
 
+    class IdentityCV:
+        def transform(self, X):
+            return np.asarray(X, dtype=np.float64)
+
+    workflow.cv_model = IdentityCV()
     workflow.set_remd_callback(fake_remd)
     metrics = workflow.iteration(0)
 

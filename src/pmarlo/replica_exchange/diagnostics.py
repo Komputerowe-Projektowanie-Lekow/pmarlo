@@ -5,7 +5,11 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import numpy as np
-from scipy.special import erfcinv
+from scipy import optimize
+from scipy.special import erfc, erfcinv, softmax
+
+from pmarlo import constants as const
+from pmarlo.utils.path_utils import ensure_directory
 
 
 def compute_exchange_statistics(
@@ -133,12 +137,37 @@ def retune_temperature_ladder(
     if len(temperatures) < 2:
         raise ValueError("At least two temperatures are required")
 
-    betas = 1.0 / np.asarray(temperatures, dtype=float)
+    temps = np.asarray(temperatures, dtype=float)
+    if temps.ndim != 1:
+        temps = temps.ravel()
+
+    temp_diffs = np.diff(temps)
+    if temp_diffs.size and np.any(temp_diffs == 0.0):
+        raise ValueError("Input temperatures must be strictly monotonic")
+    if temp_diffs.size and not (
+        np.all(temp_diffs > 0.0) or np.all(temp_diffs < 0.0)
+    ):
+        raise ValueError("Input temperatures must be strictly monotonic")
+
+    betas = 1.0 / temps
     pair_stats: List[Dict[str, Any]] = []
     total_attempts = 0
     total_accepts = 0
 
-    print("Pair  Acc%  Suggested Δβ")
+    print("Pair  Acc%  Initial dBeta  Optimized dBeta  Pred Acc%")
+    target_acceptance_clamped = float(
+        np.clip(target_acceptance, const.NUMERIC_MIN_RATE, const.NUMERIC_MAX_RATE)
+    )
+    erfc_target = erfcinv(target_acceptance_clamped)
+    delta_betas = np.diff(betas)
+    if np.any(delta_betas == 0.0):
+        raise ValueError("Input temperatures must be strictly monotonic")
+    delta_beta_magnitudes = np.abs(delta_betas)
+    span_sign = 1.0 if betas[-1] >= betas[0] else -1.0
+
+    pair_data: List[Dict[str, Any]] = []
+    sensitivities: List[float] = []
+    initial_deltas: List[float] = []
     for i in range(len(temperatures) - 1):
         pair = (i, i + 1)
         att = pair_attempt_counts.get(pair, 0)
@@ -147,35 +176,112 @@ def retune_temperature_ladder(
         total_attempts += att
         total_accepts += acc
 
-        delta_beta = betas[i + 1] - betas[i]
+        delta_beta = delta_beta_magnitudes[i]
         # Clamp rate to avoid division by zero when acceptance is perfect
-        rate_clamped = float(np.clip(rate, 1e-6, 1 - 1e-6))
-        ratio = erfcinv(target_acceptance) / erfcinv(rate_clamped)
-        suggested_dbeta = float(delta_beta * ratio)
-        pair_stats.append(
+        rate_clamped = float(
+            np.clip(rate, const.NUMERIC_MIN_RATE, const.NUMERIC_MAX_RATE)
+        )
+        erfc_observed = erfcinv(rate_clamped)
+        sensitivity = erfc_observed / max(delta_beta, const.NUMERIC_MIN_POSITIVE)
+        sensitivities.append(sensitivity)
+        initial_delta = float(
+            delta_beta * erfc_target / max(erfc_observed, const.NUMERIC_MIN_POSITIVE)
+        )
+        initial_deltas.append(initial_delta)
+        pair_data.append(
             {
                 "pair": pair,
                 "acceptance": rate,
-                "suggested_delta_beta": suggested_dbeta,
+                "rate_clamped": rate_clamped,
             }
         )
-        print(f"{pair}  {rate*100:5.1f}%  {suggested_dbeta:10.6f}")
 
     global_acceptance = total_accepts / max(1, total_attempts)
 
-    avg_dbeta = float(np.mean([p["suggested_delta_beta"] for p in pair_stats]))
-    beta_min = float(betas[0])
-    beta_max = float(betas[-1])
-    n_new = int(round((beta_max - beta_min) / avg_dbeta)) + 1
-    n_new = max(2, n_new)
-    new_betas = np.linspace(beta_min, beta_max, n_new)
+    beta_start = float(betas[0])
+    beta_end = float(betas[-1])
+    total_span = float(np.sum(delta_beta_magnitudes))
+
+    sensitivities_arr = np.asarray(sensitivities, dtype=float)
+    initial_deltas_arr = np.asarray(initial_deltas, dtype=float)
+    if not len(initial_deltas_arr):
+        raise ValueError("Unable to derive ladder suggestion from inputs")
+
+    initial_sum = float(initial_deltas_arr.sum())
+    if initial_sum <= 0.0:
+        scaled_initial = np.full_like(
+            initial_deltas_arr, total_span / max(1, len(initial_deltas_arr))
+        )
+    else:
+        scaled_initial = initial_deltas_arr * (total_span / initial_sum)
+
+    # Parameterise Δβ with a softmax so that the linear constraint
+    # ``sum(Δβ) = total_span`` is always satisfied while each component
+    # remains strictly positive. The initial guess is converted into the
+    # softmax parameter space to seed the non-linear solver.
+    initial_weights = scaled_initial / max(
+        const.NUMERIC_MIN_POSITIVE, float(np.sum(scaled_initial))
+    )
+    initial_weights = np.clip(initial_weights, const.NUMERIC_MIN_POSITIVE, None)
+    initial_weights /= float(np.sum(initial_weights))
+    params0 = np.log(initial_weights)
+
+    target_vec = np.full_like(sensitivities_arr, target_acceptance_clamped)
+
+    def _params_to_deltas(params: np.ndarray) -> np.ndarray:
+        weights = softmax(params)
+        return total_span * weights
+
+    def residuals(params: np.ndarray) -> np.ndarray:
+        deltas = _params_to_deltas(params)
+        predicted = erfc(sensitivities_arr * deltas)
+        return predicted - target_vec
+
+    lsq = optimize.least_squares(
+        residuals,
+        params0,
+        method="trf",
+    )
+
+    optimized_params = params0
+    if lsq.success and np.all(np.isfinite(lsq.x)):
+        optimized_params = np.asarray(lsq.x, dtype=float)
+
+    optimized_deltas = _params_to_deltas(optimized_params)
+    predicted_acceptance = erfc(sensitivities_arr * optimized_deltas)
+
+    median_delta = float(np.median(initial_deltas_arr))
+    if not np.isfinite(median_delta) or median_delta <= 0.0:
+        median_delta = float(total_span / max(1, len(initial_deltas_arr)))
+    n_intervals = max(1, int(round(total_span / median_delta)))
+    n_points = max(2, n_intervals + 1)
+    new_betas = np.linspace(beta_start, beta_end, n_points, dtype=float)
     suggested_temps = (1.0 / new_betas).tolist()
+
+    pair_stats = []
+    for data, init_delta, opt_delta, pred_rate in zip(
+        pair_data, initial_deltas_arr, optimized_deltas, predicted_acceptance
+    ):
+        pair_stats.append(
+            {
+                "pair": data["pair"],
+                "acceptance": data["acceptance"],
+                "initial_delta_beta_estimate": float(init_delta),
+                "suggested_delta_beta": float(opt_delta),
+                "predicted_acceptance": float(pred_rate),
+                "residual": float(pred_rate - target_acceptance_clamped),
+            }
+        )
+        print(
+            f"{data['pair']}  {data['acceptance']*100:5.1f}%"
+            f"  {init_delta:11.6f}  {opt_delta:12.6f}  {pred_rate*100:7.3f}%"
+        )
 
     # Ensure parent directory exists, even if caller passed a custom path
     try:
         out_path = Path(output_json)
-        if out_path.parent and not out_path.parent.exists():
-            out_path.parent.mkdir(parents=True, exist_ok=True)
+        if out_path.parent:
+            ensure_directory(out_path.parent)
     except Exception:
         pass
 
@@ -184,10 +290,15 @@ def retune_temperature_ladder(
 
     if dry_run:
         speedup = len(temperatures) / len(suggested_temps)
-        print(f"Dry-run: predicted speedup ≈ {speedup:.2f}x")
+        print(f"Dry-run: predicted speedup ~ {speedup:.2f}x")
 
     return {
         "global_acceptance": global_acceptance,
         "suggested_temperatures": suggested_temps,
         "pair_statistics": pair_stats,
+        "fit_residual_norm": (
+            float(np.linalg.norm(lsq.fun))
+            if lsq.success and lsq.fun is not None
+            else float(np.linalg.norm(residuals(params0)))
+        ),
     }

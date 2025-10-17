@@ -1,5 +1,8 @@
 import numpy as np
+import pytest
 from sklearn.datasets import make_blobs
+
+pytest.importorskip("torch")
 
 from pmarlo.markov_state_model.clustering import cluster_microstates
 from pmarlo.markov_state_model.enhanced_msm import EnhancedMSM

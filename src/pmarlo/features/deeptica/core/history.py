@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING, Any, Dict, Iterable
 
 import numpy as np
 
+from pmarlo import constants as const
+
 try:  # pragma: no cover - optional ML stack
     import torch  # type: ignore
 except Exception:  # pragma: no cover - torch optional dependency
@@ -61,8 +63,8 @@ def vamp2_proxy(Y: np.ndarray, idx_t: Iterable[int], idx_tau: Iterable[int]) -> 
     B = np.asarray(Y[idx_tau_arr], dtype=np.float64)
     A -= np.mean(A, axis=0, keepdims=True)
     B -= np.mean(B, axis=0, keepdims=True)
-    A_std = np.std(A, axis=0, ddof=1) + 1e-12
-    B_std = np.std(B, axis=0, ddof=1) + 1e-12
+    A_std = np.std(A, axis=0, ddof=1) + const.NUMERIC_MIN_POSITIVE
+    B_std = np.std(B, axis=0, ddof=1) + const.NUMERIC_MIN_POSITIVE
     A /= A_std
     B /= B_std
     if A.shape[0] <= 1:

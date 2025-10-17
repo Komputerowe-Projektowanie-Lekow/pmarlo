@@ -29,31 +29,29 @@ def apply_whitening_from_metadata(
     -------
     tuple
         A pair ``(whitened, applied)`` where ``whitened`` is the transformed
-        array (or the original values when metadata is missing) and ``applied``
-        indicates whether whitening metadata was available.
+        array and ``applied`` is always ``True`` when metadata validation
+        succeeds.
     """
 
     arr = np.asarray(values, dtype=np.float64)
     if metadata is None:
-        return arr, False
+        raise ValueError("Whitening metadata is required to transform outputs")
+    if not isinstance(metadata, Mapping):
+        raise TypeError(
+            "Whitening metadata must be a mapping with DeepTICA output fields"
+        )
 
-    getter = getattr(metadata, "get", None)
-    if getter is None:
-        return arr, False
+    mean = metadata.get("output_mean")
+    transform = metadata.get("output_transform")
+    already_flag = metadata.get("output_transform_applied")
+    if mean is None or transform is None:
+        raise ValueError(
+            "Whitening metadata must include 'output_mean' and 'output_transform'"
+        )
 
-    mean = getter("output_mean")
-    transform = getter("output_transform")
-    already_flag = getter("output_transform_applied")
+    whitened = apply_output_transform(arr, mean, transform, already_flag)
 
-    applied = bool(mean is not None and transform is not None)
-    try:
-        whitened = apply_output_transform(arr, mean, transform, already_flag)
-    except Exception:
-        return arr, False
+    if isinstance(metadata, MutableMapping):
+        metadata["output_transform_applied"] = True  # type: ignore[index]
 
-    if applied:
-        try:
-            metadata["output_transform_applied"] = True  # type: ignore[index]
-        except Exception:
-            pass
-    return np.asarray(whitened, dtype=np.float64), applied
+    return np.asarray(whitened, dtype=np.float64), True

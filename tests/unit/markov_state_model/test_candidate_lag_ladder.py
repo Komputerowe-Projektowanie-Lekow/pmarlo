@@ -36,6 +36,6 @@ def test_invalid_n_candidates():
         candidate_lag_ladder(1, 10, n_candidates=0)
 
 
-def test_outside_predefined_range_returns_bounds():
-    lags = candidate_lag_ladder(5000, 6000)
-    assert lags == [5000, 6000]
+def test_outside_predefined_range_raises():
+    with pytest.raises(ValueError):
+        candidate_lag_ladder(5000, 6000)

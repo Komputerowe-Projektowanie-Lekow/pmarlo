@@ -48,6 +48,14 @@ build/
 dist/
 *.egg-info/
 
+## cache directories
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+.benchmarks/
+
+/example_programs/app_usecase/app_output/analysis_debug/
+
 # Environment files
 .env
 .venv/
@@ -86,6 +94,7 @@ typelog.txt
 
 /checkpoints/
 /runs/
+/tmp_models/
 /tests/checkpoints/
 
 changes.patch

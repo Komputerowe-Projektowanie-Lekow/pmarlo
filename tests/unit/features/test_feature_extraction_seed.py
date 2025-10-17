@@ -1,6 +1,10 @@
 from unittest.mock import patch
 
 import numpy as np
+import pytest
+
+pytest.importorskip("openmm")
+pytest.importorskip("mdtraj")
 
 from pmarlo.replica_exchange.simulation import feature_extraction
 

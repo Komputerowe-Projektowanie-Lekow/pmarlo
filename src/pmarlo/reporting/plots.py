@@ -3,7 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Tuple
 
+import matplotlib.pyplot as plt
 import numpy as np
+
+from pmarlo import constants as const
+from pmarlo.utils.path_utils import ensure_directory
+from pmarlo.utils.thermodynamics import kT_kJ_per_mol
 
 
 def save_transition_matrix_heatmap(
@@ -14,13 +19,8 @@ def save_transition_matrix_heatmap(
     Returns the path to the written file if successful, otherwise ``None``.
     """
 
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError as exc:  # pragma: no cover
-        raise RuntimeError("matplotlib is required for plotting") from exc
-
     out_dir = Path(output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out_dir)
     plt.figure(figsize=(6, 5))
     plt.imshow(T, cmap="viridis", origin="lower")
     plt.colorbar(label="Transition Probability")
@@ -44,46 +44,27 @@ def save_fes_contour(
     filename: str,
     mask: Optional[np.ndarray] = None,
 ) -> Optional[str]:
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError as exc:  # pragma: no cover
-        raise RuntimeError("matplotlib is required for plotting") from exc
-
     out_dir = Path(output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out_dir)
     x_centers = 0.5 * (xedges[:-1] + xedges[1:])
     y_centers = 0.5 * (yedges[:-1] + yedges[1:])
     plt.figure(figsize=(7, 6))
-    # If F is extremely sparse (lots of NaN/inf), fallback to hexbin density plot
     finite_mask = np.isfinite(F)
-    empty_frac = 1.0 - float(np.count_nonzero(finite_mask)) / float(
-        F.size if F.size else 1
-    )
-    if empty_frac > 0.60:
-        # Build centers mesh and map F to densities by exp(-F/kT) relative scale if possible
-        # For fallback, just plot a hexbin over grid centers using finite F values
-        try:
-            import matplotlib.pyplot as plt
+    if F.size == 0:
+        raise ValueError("F must contain at least one element")
+    if not finite_mask.any():
+        raise ValueError("FES contains no finite values; cannot render contour plot")
 
-            Xc, Yc = np.meshgrid(x_centers, y_centers, indexing="ij")
-            xv = Xc[finite_mask]
-            yv = Yc[finite_mask]
-            fv = (
-                F.T[finite_mask.T]
-                if F.shape == (len(x_centers), len(y_centers))
-                else F.T[finite_mask.T]
-            )
-            hb = plt.hexbin(xv, yv, C=fv, gridsize=40, cmap="viridis")
-            plt.colorbar(hb, label="Free Energy (kJ/mol)")
-            title_warn = f" (Sparse FES: {empty_frac*100.0:.1f}% empty)"
-        except Exception:
-            c = plt.contourf(x_centers, y_centers, F.T, levels=20, cmap="viridis")
-            plt.colorbar(c, label="Free Energy (kJ/mol)")
-            title_warn = f" (Sparse FES: {empty_frac*100.0:.1f}% empty)"
-    else:
-        c = plt.contourf(x_centers, y_centers, F.T, levels=20, cmap="viridis")
-        plt.colorbar(c, label="Free Energy (kJ/mol)")
-        title_warn = ""
+    empty_frac = 1.0 - float(np.count_nonzero(finite_mask)) / float(F.size)
+    if empty_frac > 0.60:
+        raise ValueError(
+            f"FES is too sparse to plot reliably ({empty_frac*100.0:.1f}% empty bins)"
+        )
+
+    F_for_plot = np.where(finite_mask, F, np.nan)
+    c = plt.contourf(x_centers, y_centers, F_for_plot.T, levels=20, cmap="viridis")
+    plt.colorbar(c, label="Free Energy (kJ/mol)")
+    title_warn = ""
     if mask is not None:
         m = np.ma.masked_where(~mask.T, mask.T)
         plt.contourf(
@@ -126,13 +107,8 @@ def save_pmf_line(
     filename:
         Output filename (e.g., "pmf_universal_metric.png").
     """
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError as exc:  # pragma: no cover
-        raise RuntimeError("matplotlib is required for plotting") from exc
-
     out_dir = Path(output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out_dir)
     x_centers = 0.5 * (edges[:-1] + edges[1:])
     plt.figure(figsize=(7, 4))
     plt.plot(x_centers, F, color="steelblue", lw=2)
@@ -144,18 +120,6 @@ def save_pmf_line(
     plt.savefig(filepath, dpi=200)
     plt.close()
     return str(filepath) if filepath.exists() else None
-
-
-def _kT_kJ_per_mol(temperature_kelvin: float) -> float:
-    try:
-        from scipy import constants
-
-        return float(constants.k * temperature_kelvin * constants.Avogadro / 1000.0)
-    except Exception:
-        # Fallback constant if SciPy is unavailable
-        k_B = 1.380649e-23  # J/K
-        N_A = 6.02214076e23  # 1/mol
-        return float(k_B * temperature_kelvin * N_A / 1000.0)
 
 
 def fes2d(
@@ -208,8 +172,16 @@ def fes2d(
                 or y_lo >= y_hi
             ):
                 # Degenerate, return a trivial surface
-                xe = np.linspace(float(np.min(x)), float(np.max(x)) + 1e-8, 41)
-                ye = np.linspace(float(np.min(y)), float(np.max(y)) + 1e-8, 41)
+                xe = np.linspace(
+                    float(np.min(x)),
+                    float(np.max(x)) + const.NUMERIC_RELATIVE_TOLERANCE,
+                    41,
+                )
+                ye = np.linspace(
+                    float(np.min(y)),
+                    float(np.max(y)) + const.NUMERIC_RELATIVE_TOLERANCE,
+                    41,
+                )
                 H = np.zeros((len(xe) - 1, len(ye) - 1), dtype=float)
                 return np.full_like(H, np.nan), xe, ye, "Invalid FES ranges"
         nb = max(40, int(np.sqrt(len(x)) / 4))
@@ -228,8 +200,8 @@ def fes2d(
     else:
         warn = None
 
-    kT = _kT_kJ_per_mol(float(temperature))
-    F = -kT * np.log(H + 1e-12)
+    kT = kT_kJ_per_mol(float(temperature))
+    F = -kT * np.log(H + const.NUMERIC_MIN_POSITIVE)
     # Assign +inf to truly empty (below min_count) bins to avoid misleading minima
     F = np.where(H >= max(1, int(min_count)), F, np.inf)
     if np.any(np.isfinite(F)):

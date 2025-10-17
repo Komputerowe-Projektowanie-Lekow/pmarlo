@@ -16,12 +16,13 @@ def mlcolvar_stub(monkeypatch):
     torch_nn = torch.nn
 
     class DummyDeepTICA(torch_nn.Module):
-        def __init__(self, layers, n_cvs, activation, options):  # type: ignore[override]
+        def __init__(self, layers, n_cvs=None, options=None, **kwargs):  # type: ignore[override]
             super().__init__()
             self.layers = list(layers)
-            self.n_cvs = int(n_cvs)
-            self.activation = activation
-            self.options = options
+            self.n_cvs = int(n_cvs) if n_cvs is not None else layers[-1]
+            self.options = options or {}
+            # Extract activation from options['nn'] if present
+            self.activation = self.options.get("nn", {}).get("activation", "relu") if isinstance(self.options.get("nn"), dict) else "relu"
             self.nn = torch_nn.Sequential(torch_nn.Linear(layers[0], layers[-1]))
 
         def named_children(self):  # type: ignore[override]

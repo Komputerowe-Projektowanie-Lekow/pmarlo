@@ -10,22 +10,14 @@ This script demonstrates the main PMARLO API usage patterns including:
 For production use, see the other example programs.
 """
 
-import sys
-from pathlib import Path
+from _example_support import assets_path, ensure_src_on_path, project_root
 
-# Add the src directory to Python path for development
-BASE_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(BASE_DIR / "src"))
+ensure_src_on_path()
 
-try:
-    from pmarlo import Pipeline, Protein, run_pmarlo
-except ImportError as e:
-    print(f"Import error: {e}")
-    print("Make sure PMARLO is installed or run from the project root.")
-    sys.exit(1)
+from pmarlo import Pipeline, Protein, run_pmarlo
 
-# Test data paths
-TESTS_DIR = BASE_DIR / "tests" / "data"
+BASE_DIR = project_root()
+TESTS_DIR = assets_path()
 
 
 def test_protein():
