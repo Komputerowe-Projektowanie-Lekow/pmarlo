@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Iterable, Sequence
 
-import tomli
+if sys.version_info >= (3, 11):
+    import tomllib as tomli
+    TOMLDecodeError = tomli.TOMLDecodeError
+else:
+    import tomli
+    TOMLDecodeError = tomli.TOMLDecodeError
 
 
 class ExtrasParityError(RuntimeError):
@@ -15,12 +21,16 @@ class ExtrasParityError(RuntimeError):
 
 def _load_pyproject(path: Path) -> dict:
     try:
-        data = tomli.loads(path.read_text(encoding="utf-8"))
+        if sys.version_info >= (3, 11):
+            with open(path, "rb") as f:
+                data = tomli.load(f)
+        else:
+            data = tomli.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:  # pragma: no cover - handled by caller
         raise ExtrasParityError(f"Could not find pyproject file at {path!s}.") from exc
     except OSError as exc:  # pragma: no cover - filesystem issues are rare
         raise ExtrasParityError(f"Could not read {path!s}: {exc}.") from exc
-    except tomli.TOMLDecodeError as exc:
+    except TOMLDecodeError as exc:
         raise ExtrasParityError(f"Failed to parse {path!s}: {exc}.") from exc
     if not isinstance(data, dict):
         raise ExtrasParityError(

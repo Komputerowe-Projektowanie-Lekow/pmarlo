@@ -384,7 +384,18 @@ class ReplicaExchange:
                     "Failed to load resume PDB %s: %s", str(self.resume_pdb), exc
                 )
                 resume_positions = None
-        system = create_system(pdb, forcefield)
+        # Pass CV model info if available
+        cv_model_path = getattr(self, "cv_model_path", None)
+        cv_scaler_mean = getattr(self, "cv_scaler_mean", None)
+        cv_scaler_scale = getattr(self, "cv_scaler_scale", None)
+        
+        system = create_system(
+            pdb,
+            forcefield,
+            cv_model_path=cv_model_path,
+            cv_scaler_mean=cv_scaler_mean,
+            cv_scaler_scale=cv_scaler_scale,
+        )
         log_system_info(system, logger)
         self.metadynamics = setup_metadynamics(
             system, bias_variables, self.temperatures[0], self.output_dir

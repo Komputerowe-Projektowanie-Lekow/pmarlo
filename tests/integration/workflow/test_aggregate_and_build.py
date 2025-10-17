@@ -3,11 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from pmarlo import aggregate_and_build, write_shard
 from pmarlo.transform import AppliedOpts, BuildOpts
 from pmarlo.transform.build import BuildResult
 from pmarlo.transform.plan import TransformPlan, TransformStep
+
+pytestmark = pytest.mark.integration
 
 
 def _mk_shard(

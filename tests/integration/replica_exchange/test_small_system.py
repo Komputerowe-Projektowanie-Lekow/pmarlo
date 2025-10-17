@@ -1,8 +1,11 @@
 from pathlib import Path
 
 import mdtraj as md
+import pytest
 
 from pmarlo.replica_exchange.replica_exchange import ReplicaExchange
+
+pytestmark = pytest.mark.integration
 
 
 def _write_water_pdb(tmpdir: Path) -> Path:

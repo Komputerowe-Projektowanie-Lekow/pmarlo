@@ -1,8 +1,11 @@
 ﻿from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from pmarlo.analysis.debug_export import compute_analysis_debug
+
+pytestmark = pytest.mark.integration
 
 
 def simulate_two_well(

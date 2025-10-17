@@ -221,7 +221,7 @@ ignore_errors = true
 
 # ────────────────────────── Pytest defaults ───────────────────────────
 [tool.pytest.ini_options]
-testpaths = ["tests/unit", "tests/devtools"]
+testpaths = ["tests/unit", "tests/devtools", "tests/integration"]
 addopts = "-q -ra --strict-markers --maxfail=1"
 norecursedirs = ["_assets", "_output", "_checkpoints", ".benchmarks", ".pytest_cache"]
 markers = [
