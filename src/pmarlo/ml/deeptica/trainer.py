@@ -233,6 +233,7 @@ class _BatchOutcome:
     score: float
     batch_size: int
     grad_norm: float
+    grad_norm_preclip: float  # Add pre-clip gradient norm
     metrics: Dict[str, object]
 
 
@@ -244,6 +245,7 @@ class _EpochAccumulator:
     total_score: float = 0.0
     total_weight: int = 0
     grad_norms: List[float] = field(default_factory=list)
+    grad_norms_preclip: List[float] = field(default_factory=list)  # Add pre-clip norms
     cond_c00_sum: float = 0.0
     cond_ctt_sum: float = 0.0
     cond_weight: float = 0.0
@@ -261,6 +263,7 @@ class _EpochAccumulator:
         self.total_score += outcome.score * outcome.batch_size
         self.total_weight += outcome.batch_size
         self.grad_norms.append(outcome.grad_norm)
+        self.grad_norms_preclip.append(outcome.grad_norm_preclip)  # Track pre-clip
         self._update_condition_metrics(outcome)
 
     def finalize(self) -> Dict[str, float | List[float]]:
@@ -279,19 +282,26 @@ class _EpochAccumulator:
             "grad_norm_max": 0.0,
         }
 
-    def _grad_norm_stats(self) -> tuple[float, float]:
+    def _grad_norm_stats(self) -> tuple[float, float, float, float]:
+        """Return (postclip_mean, postclip_max, preclip_mean, preclip_max)."""
         if not self.grad_norms:
-            return 0.0, 0.0
-        return float(np.mean(self.grad_norms)), float(np.max(self.grad_norms))
+            return 0.0, 0.0, 0.0, 0.0
+        postclip_mean = float(np.mean(self.grad_norms))
+        postclip_max = float(np.max(self.grad_norms))
+        preclip_mean = float(np.mean(self.grad_norms_preclip)) if self.grad_norms_preclip else 0.0
+        preclip_max = float(np.max(self.grad_norms_preclip)) if self.grad_norms_preclip else 0.0
+        return postclip_mean, postclip_max, preclip_mean, preclip_max
 
     def _base_epoch_metrics(self) -> Dict[str, float | List[float]]:
-        grad_mean, grad_max = self._grad_norm_stats()
+        grad_mean, grad_max, grad_preclip_mean, grad_preclip_max = self._grad_norm_stats()
         total_weight = float(self.total_weight)
         return {
             "loss": self.total_loss / total_weight,
             "score": self.total_score / total_weight,
             "grad_norm_mean": grad_mean,
             "grad_norm_max": grad_max,
+            "grad_norm_preclip_mean": grad_preclip_mean,  # Add pre-clip stats
+            "grad_norm_preclip_max": grad_preclip_max,
         }
 
     def _append_condition_metrics_summary(
@@ -647,6 +657,9 @@ class DeepTICACurriculumTrainer:
         if self._best_checkpoint_path is not None:
             history["best_checkpoint"] = str(self._best_checkpoint_path)
 
+        # Mark training as complete in the progress file
+        self._finalize_realtime_metrics(history)
+
         self.history = history
         self._attach_history_to_model(history)
         return history
@@ -739,6 +752,10 @@ class DeepTICACurriculumTrainer:
             self._maybe_log_tau_progress(
                 tau, epoch_idx, current_lr, train_metrics, val_metrics
             )
+            # Write real-time progress metrics after each epoch
+            self._write_realtime_metrics(
+                overall_epoch, tau, train_metrics, val_metrics, current_lr
+            )
 
     def _record_condition_metrics(self, train_metrics: MetricMapping) -> None:
         cond_c00 = _metric_scalar(train_metrics, "cond_c00")
@@ -783,11 +800,16 @@ class DeepTICACurriculumTrainer:
         epoch_num = epoch_idx + 1
         if epoch_num % log_every != 0 and epoch_num != epochs_per_tau:
             return
+        # Enhanced logging with pre-clip gradient norms
+        grad_preclip_mean = _metric_scalar(train_metrics, "grad_norm_preclip_mean", 0.0)
+        grad_preclip_max = _metric_scalar(train_metrics, "grad_norm_preclip_max", 0.0)
+        clip_threshold = self.cfg.grad_clip_norm if self.cfg.grad_clip_norm is not None else float("inf")
+        
         logger.info(
             (
                 "tau=%d val_tau=%d epoch=%d/%d lr=%.6e "
                 "train_loss=%.6f val_score=%.6f "
-                "grad_norm_mean=%.6f grad_norm_max=%.6f"
+                "grad_preclip=(%.3f/%.3f) grad_postclip=(%.3f/%.3f) clip_at=%.1f"
             ),
             tau,
             self.cfg.val_tau,
@@ -796,8 +818,11 @@ class DeepTICACurriculumTrainer:
             current_lr,
             _metric_scalar(train_metrics, "loss"),
             _metric_scalar(val_metrics, "score"),
+            grad_preclip_mean,
+            grad_preclip_max,
             _metric_scalar(train_metrics, "grad_norm_mean"),
             _metric_scalar(train_metrics, "grad_norm_max"),
+            clip_threshold,
         )
 
     def _build_history(
@@ -954,11 +979,19 @@ class DeepTICACurriculumTrainer:
             out_tau = self.module(x_tau)
             loss, score = self.loss_fn(out_t, out_tau, weights)
             loss.backward()
+            
+            # Compute gradient norm BEFORE clipping to get true gradient magnitude
+            grad_norm_preclip = self._grad_norm(self._trainable_parameters)
+            
+            # Apply gradient clipping if configured
             if self.cfg.grad_clip_norm is not None and self._trainable_parameters:
                 torch.nn.utils.clip_grad_norm_(
                     self._trainable_parameters, float(self.cfg.grad_clip_norm)
                 )
+            
+            # Compute gradient norm AFTER clipping (for diagnostics)
             grad_norm = self._grad_norm(self._trainable_parameters)
+            
             self.optimizer.step()
             metrics_obj = getattr(self.loss_fn, "latest_metrics", {})
             metrics = metrics_obj if isinstance(metrics_obj, dict) else {}
@@ -967,6 +1000,7 @@ class DeepTICACurriculumTrainer:
                 score=float(score.item()),
                 batch_size=batch_size,
                 grad_norm=grad_norm,
+                grad_norm_preclip=grad_norm_preclip,
                 metrics=cast(Dict[str, object], metrics),
             )
 
@@ -1055,6 +1089,96 @@ class DeepTICACurriculumTrainer:
                 path,
             )
             self._best_checkpoint_path = path
+
+    def _write_realtime_metrics(
+        self,
+        epoch: int,
+        tau: int,
+        train_metrics: MetricMapping,
+        val_metrics: MetricMapping,
+        lr: float,
+    ) -> None:
+        """Write real-time training progress to JSON file for live monitoring."""
+        if self.cfg.checkpoint_dir is None:
+            return
+        
+        import json
+        
+        ckpt_dir = Path(self.cfg.checkpoint_dir)
+        ensure_directory(ckpt_dir)
+        progress_path = ckpt_dir / "training_progress.json"
+        
+        # Build current epoch data
+        epoch_data = {
+            "epoch": int(epoch),
+            "tau": int(tau),
+            "val_tau": int(self.cfg.val_tau),
+            "train_loss": float(_metric_scalar(train_metrics, "loss")),
+            "train_score": float(_metric_scalar(train_metrics, "score")),
+            "val_loss": float(_metric_scalar(val_metrics, "loss")),
+            "val_score": float(_metric_scalar(val_metrics, "score")),
+            "learning_rate": float(lr),
+            "grad_norm_mean": float(_metric_scalar(train_metrics, "grad_norm_mean")),
+            "grad_norm_max": float(_metric_scalar(train_metrics, "grad_norm_max")),
+            "best_val_score": float(self._best_score) if self._best_score > float("-inf") else 0.0,
+            "best_epoch": int(self._best_epoch) if self._best_epoch >= 0 else None,
+        }
+        
+        # Read existing data if available
+        history_data = []
+        if progress_path.exists():
+            try:
+                with progress_path.open("r") as f:
+                    content = json.load(f)
+                    if isinstance(content, dict) and "epochs" in content:
+                        history_data = content["epochs"]
+                    elif isinstance(content, list):
+                        history_data = content
+            except Exception:
+                history_data = []
+        
+        # Append current epoch
+        history_data.append(epoch_data)
+        
+        # Write updated progress
+        progress = {
+            "status": "training",
+            "current_epoch": int(epoch),
+            "total_epochs_planned": int(self._scheduler_total_epochs),
+            "epochs": history_data,
+        }
+        
+        with progress_path.open("w") as f:
+            json.dump(progress, f, indent=2)
+
+    def _finalize_realtime_metrics(self, history: Dict[str, object]) -> None:
+        """Mark training as complete with final summary in progress file."""
+        if self.cfg.checkpoint_dir is None:
+            return
+        
+        import json
+        
+        ckpt_dir = Path(self.cfg.checkpoint_dir)
+        progress_path = ckpt_dir / "training_progress.json"
+        
+        if not progress_path.exists():
+            return
+        
+        try:
+            with progress_path.open("r") as f:
+                progress = json.load(f)
+        except Exception:
+            return
+        
+        # Update status to complete
+        progress["status"] = "completed"
+        progress["wall_time_s"] = float(history.get("wall_time_s", 0.0))
+        progress["best_val_score"] = float(history.get("best_val_score", 0.0))
+        progress["best_epoch"] = history.get("best_epoch")
+        progress["best_tau"] = history.get("best_tau")
+        
+        with progress_path.open("w") as f:
+            json.dump(progress, f, indent=2)
 
     def _write_metrics_csv(self, history: Dict[str, object]) -> Optional[Path]:
         if self.cfg.checkpoint_dir is None:

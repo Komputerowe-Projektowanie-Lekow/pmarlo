@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import argparse
-import tomllib
 from pathlib import Path
 from typing import Iterable, Sequence
+
+import tomli
 
 
 class ExtrasParityError(RuntimeError):
@@ -14,12 +15,12 @@ class ExtrasParityError(RuntimeError):
 
 def _load_pyproject(path: Path) -> dict:
     try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        data = tomli.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:  # pragma: no cover - handled by caller
         raise ExtrasParityError(f"Could not find pyproject file at {path!s}.") from exc
     except OSError as exc:  # pragma: no cover - filesystem issues are rare
         raise ExtrasParityError(f"Could not read {path!s}: {exc}.") from exc
-    except tomllib.TOMLDecodeError as exc:
+    except tomli.TOMLDecodeError as exc:
         raise ExtrasParityError(f"Failed to parse {path!s}: {exc}.") from exc
     if not isinstance(data, dict):
         raise ExtrasParityError(

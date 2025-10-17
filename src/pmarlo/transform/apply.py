@@ -434,6 +434,35 @@ def _make_training_failure_outcome(
     )
 
 
+def _build_missing_dependency_outcome(
+    *,
+    lag: int,
+    per_shard_info: List[Dict[str, Any]],
+    warnings: List[str],
+    pairs_estimate: int,
+    exc: BaseException,
+) -> _LearnCVOutcome:
+    missing = _extract_missing_modules(exc)
+    reason = _format_missing_reason(missing)
+    summary = {
+        "applied": False,
+        "skipped": True,
+        "reason": reason,
+        "lag": int(lag),
+        "lag_used": None,
+        "n_out": 0,
+        "pairs_total": max(0, int(pairs_estimate)),
+        "lag_candidates": [int(lag)],
+        "attempts": [],
+        "error": str(exc),
+    }
+    if missing:
+        summary["missing"] = missing
+    warning_list = list(warnings)
+    warning_list.append(reason)
+    return _LearnCVOutcome(summary, per_shard_info, warning_list, pairs_estimate)
+
+
 def _convert_history_array(value: Any) -> Any:
     if value is None:
         return None
@@ -591,6 +620,20 @@ def _ensure_deeptica_module(
     missing_exc = getattr(deeptica_mod, "_IMPORT_ERROR", None)
     if missing_exc is not None:
         raise ImportError("DeepTICA extras unavailable") from missing_exc
+    import importlib
+
+    missing: list[tuple[str, BaseException]] = []
+    for name in ("mlcolvar", "lightning", "pytorch_lightning"):
+        try:
+            importlib.import_module(name)
+        except Exception as exc:
+            missing.append((name, exc))
+    if missing:
+        primary = missing[0][1]
+        missing_names = ", ".join(sorted({entry[0] for entry in missing}))
+        raise ImportError(
+            f"DeepTICA extras unavailable: missing {missing_names}"
+        ) from primary
 
     return deeptica_mod
 
@@ -624,6 +667,15 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
             warnings=warnings,
             pairs_estimate=pairs_estimate,
         )
+    except ImportError as exc:
+        outcome = _build_missing_dependency_outcome(
+            lag=tau_requested,
+            per_shard_info=per_shard_info,
+            warnings=warnings,
+            pairs_estimate=pairs_estimate,
+            exc=exc,
+        )
+        return finalize(outcome)
     except _LearnCVAbort as abort:
         return finalize(abort.outcome)
 

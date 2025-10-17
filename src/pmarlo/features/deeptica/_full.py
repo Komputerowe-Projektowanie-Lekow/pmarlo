@@ -365,6 +365,14 @@ class DeepTICAModel:
             torch.jit.save(ts, str(out))
         return out
 
+    def plumed_snippet(self, model_path: Path) -> str:
+        """Return a PLUMED snippet that references the exported TorchScript model."""
+        ts = Path(model_path).with_suffix(".ts").name
+        lines = [f"PYTORCH_MODEL FILE={ts} LABEL=mlcv"]
+        for i in range(int(self.cfg.n_out)):
+            lines.append(f"CV VALUE=mlcv.node-{i}")
+        return "\n".join(lines) + "\n"
+
 
 def _load_deeptica_config(path: Path) -> DeepTICAConfig:
     data = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
@@ -416,7 +424,13 @@ def _load_training_history(path: Path) -> Optional[dict[str, Any]]:
     return None
 
 
-def _mark_module_scripting_safe(module: Any) -> None:
+def _mark_module_scripting_safe(module: Any, *, _seen: set[int] | None = None) -> None:
+    if _seen is None:
+        _seen = set()
+    marker = id(module)
+    if marker in _seen:
+        return
+    _seen.add(marker)
     try:
         if hasattr(module, "_jit_is_scripting"):
             setattr(module, "_jit_is_scripting", True)
@@ -429,15 +443,7 @@ def _mark_module_scripting_safe(module: Any) -> None:
     except Exception:
         return
     for _name, child in iterator:
-        _mark_module_scripting_safe(child)
-
-    def plumed_snippet(self, model_path: Path) -> str:
-        ts = Path(model_path).with_suffix(".ts").name
-        # Emit one CV line per output for convenience; users can rename labels in PLUMED input.
-        lines = [f"PYTORCH_MODEL FILE={ts} LABEL=mlcv"]
-        for i in range(int(self.cfg.n_out)):
-            lines.append(f"CV VALUE=mlcv.node-{i}")
-        return "\n".join(lines) + "\n"
+        _mark_module_scripting_safe(child, _seen=_seen)
 
 
 def train_deeptica(

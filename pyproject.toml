@@ -47,6 +47,7 @@ dependencies = [
   "mlcolvar>=1.2",
   "scikit-learn>=1.2,<2.0",
   "deeptime>=0.4.5,<0.5",
+  "tomli>=2.0,<3.0",
   "typing-extensions>=4.8",
 ]
 
@@ -112,6 +113,7 @@ pygount = ">=2.6,<3.2"
 mlcolvar = ">=1.2"
 scikit-learn = ">=1.2,<2.0"
 deeptime = ">=0.4.5,<0.5"
+tomli = ">=2.0,<3.0"
 typing-extensions = ">=4.8"
 # Optional dependencies (enabled via extras)
 matplotlib = {version = ">=3.8", optional = true}

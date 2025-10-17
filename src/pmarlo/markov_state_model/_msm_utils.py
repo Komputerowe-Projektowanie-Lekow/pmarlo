@@ -262,9 +262,11 @@ def pcca_like_macrostates(
     if T.size == 0 or T.shape[0] <= n_macrostates:
         return None
     _ = random_state  # Preserved for API stability; no stochastic fall-back is used.
-    model = _deeptime_pcca(
-        np.asarray(T, dtype=float), m=int(n_macrostates)
-    )
+    try:
+        model = _deeptime_pcca(np.asarray(T, dtype=float), m=int(n_macrostates))
+    except ValueError as exc:
+        logger.debug("PCCA+ failed to converge for provided transition matrix: %s", exc)
+        return None
     chi = np.asarray(model.memberships, dtype=float)
     labels = np.argmax(chi, axis=1)
     labels = _canonicalize_macro_labels(labels.astype(int), T)
