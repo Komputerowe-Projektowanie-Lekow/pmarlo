@@ -43,7 +43,6 @@ def _make_dataset(z: np.ndarray) -> dict[str, object]:
     length = int(z.shape[0])
     shard = {
         "id": "synthetic",
-        "legacy_id": "synthetic",
         "start": 0,
         "stop": length,
         "length": length,

@@ -16,14 +16,12 @@ def _fake_dataset() -> dict[str, object]:
         "__shards__": [
             {
                 "id": "s0",
-                "legacy_id": "s0",
                 "start": 0,
                 "stop": 5,
                 "temperature": 300.0,
             },
             {
                 "id": "s1",
-                "legacy_id": "s1",
                 "start": 5,
                 "stop": 10,
                 "temperature": 300.0,
@@ -116,3 +114,18 @@ def test_export_analysis_debug_writes_expected_files(tmp_path: Path) -> None:
     mask_path = summary_path.parent / summary["arrays"]["valid_mask[train]"]
     assert np.array_equal(np.load(state_ids_path), br.msm.assignments["train"])
     assert np.array_equal(np.load(mask_path), br.msm.assignment_masks["train"])
+
+
+def test_compute_analysis_debug_requires_shard_ids() -> None:
+    dataset = {
+        "__shards__": [
+            {
+                "start": 0,
+                "stop": 5,
+            }
+        ],
+        "dtrajs": [np.array([0, 1, 0], dtype=int)],
+    }
+
+    with pytest.raises(ValueError, match="missing required 'id'"):
+        compute_analysis_debug(dataset, lag=1)

@@ -100,7 +100,6 @@ def test_simulation_experiment_benchmark(tmp_path: Path):
 def test_replica_exchange_experiment_benchmark(tmp_path: Path):
     """Test replica exchange experiment benchmark output structure."""
     pytest.importorskip("openmm")
-    pytest.importorskip("statsmodels")
 
     out_dir = tmp_path / "experiments_output" / "replica_exchange"
 

@@ -10,8 +10,6 @@ from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter
 from scipy.stats import iqr
 from scipy.stats.mstats import mquantiles
-from statsmodels.nonparametric.kernel_density import KDEMultivariate
-
 from pmarlo import constants as const
 from pmarlo.utils.thermodynamics import kT_kJ_per_mol
 
@@ -305,23 +303,19 @@ def free_energy_from_density(
 logger = logging.getLogger(__name__)
 
 
+def _wrap_periodic(angle: np.ndarray) -> np.ndarray:
+    """Wrap angular differences into ``[-pi, pi)`` for toroidal kernels."""
+
+    return ((angle + np.pi) % (2.0 * np.pi)) - np.pi
+
+
 def periodic_kde_2d(
     theta_x: np.ndarray,
     theta_y: np.ndarray,
     bw: Tuple[float, float] = (0.35, 0.35),
     gridsize: Tuple[int, int] = (42, 42),
 ) -> NDArray[np.float64]:
-    """Kernel density estimate on a 2D torus.
-
-    Parameters
-    ----------
-    theta_x, theta_y
-        Angles in radians of equal shape.
-    bw
-        Bandwidth (standard deviations) along x and y in radians.
-    gridsize
-        Number of grid points along x and y.
-    """
+    """Kernel density estimate on a 2D torus using a wrapped Gaussian mixture."""
 
     x: NDArray[np.float64] = np.asarray(theta_x, dtype=np.float64).reshape(-1)
     y: NDArray[np.float64] = np.asarray(theta_y, dtype=np.float64).reshape(-1)
@@ -344,23 +338,17 @@ def periodic_kde_2d(
         np.float64, copy=False
     )
     X, Y = np.meshgrid(x_grid, y_grid, indexing="ij")
-    evaluation_grid = np.column_stack((X.ravel(), Y.ravel()))
 
-    base_data = np.column_stack((x, y))
-    # Replicate the dataset across torus tiles so that samples near the
-    # boundaries contribute smoothly in periodic coordinates.
-    shift_values = np.array([-2.0 * np.pi, 0.0, 2.0 * np.pi], dtype=np.float64)
-    tiled_data = np.vstack(
-        [
-            base_data + np.array([dx, dy], dtype=np.float64)
-            for dx in shift_values
-            for dy in shift_values
-        ]
-    )
-
-    kde = KDEMultivariate(tiled_data, var_type="cc", bw=[sx, sy])
-    density = kde.pdf(evaluation_grid)
-    return density.reshape(X.shape).astype(np.float64, copy=False)
+    # Broadcast over samples (last axis) for vectorised Gaussian evaluation.
+    dx = _wrap_periodic(X[..., np.newaxis] - x[np.newaxis, np.newaxis, :])
+    dy = _wrap_periodic(Y[..., np.newaxis] - y[np.newaxis, np.newaxis, :])
+    inv_cov = (dx / sx) ** 2 + (dy / sy) ** 2
+    kernel = np.exp(-0.5 * inv_cov)
+    norm = float(x.size) * (2.0 * np.pi * sx * sy)
+    if norm <= 0.0:
+        raise ValueError("normalisation constant must be positive")
+    density = kernel.sum(axis=-1) / norm
+    return density.astype(np.float64, copy=False)
 
 
 def generate_1d_pmf(

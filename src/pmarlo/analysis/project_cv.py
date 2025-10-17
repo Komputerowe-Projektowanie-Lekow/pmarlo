@@ -36,24 +36,19 @@ def apply_whitening_from_metadata(
     arr = np.asarray(values, dtype=np.float64)
     if metadata is None:
         return arr, False
+    if not isinstance(metadata, Mapping):
+        raise TypeError(
+            "Whitening metadata must be a mapping with DeepTICA output fields"
+        )
 
-    getter = getattr(metadata, "get", None)
-    if getter is None:
-        return arr, False
-
-    mean = getter("output_mean")
-    transform = getter("output_transform")
-    already_flag = getter("output_transform_applied")
+    mean = metadata.get("output_mean")
+    transform = metadata.get("output_transform")
+    already_flag = metadata.get("output_transform_applied")
 
     applied = bool(mean is not None and transform is not None)
-    try:
-        whitened = apply_output_transform(arr, mean, transform, already_flag)
-    except Exception:
-        return arr, False
+    whitened = apply_output_transform(arr, mean, transform, already_flag)
 
-    if applied:
-        try:
-            metadata["output_transform_applied"] = True  # type: ignore[index]
-        except Exception:
-            pass
+    if applied and isinstance(metadata, MutableMapping):
+        metadata["output_transform_applied"] = True  # type: ignore[index]
+
     return np.asarray(whitened, dtype=np.float64), applied

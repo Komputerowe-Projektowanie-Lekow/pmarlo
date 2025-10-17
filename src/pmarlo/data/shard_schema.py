@@ -1,20 +1,6 @@
 from __future__ import annotations
 
-"""
-Versioned, strict shard JSON schema for PMARLO datasets.
-
-This module defines minimal dataclasses for shard metadata that are
-temperature-aware and explicitly distinguish DEMUX vs REPLICA provenance.
-
-Key rules:
-- schema_version "2.0" is the current version.
-- kind: "demux" requires temperature_K (float) and forbids replica_index.
-- kind: "replica" requires replica_index (int >= 0) and forbids temperature_K.
-
-These models intentionally do not depend on filename patterns for critical
-fields. When migrating from legacy shards (v1), use shard_io to perform a
-compatibility parse from stored metadata with strict checks.
-"""
+"""Versioned, strict shard JSON schema for PMARLO datasets."""
 
 from dataclasses import dataclass
 from typing import Any, Dict, Literal, Optional
@@ -37,13 +23,14 @@ class BaseShard:
     schema_version: str
 
     # Identity & provenance
-    id: str  # normalized ID (e.g., canonical or legacy-fallback)
+    id: str  # normalized ID derived from canonical rules
     kind: Literal["demux", "replica"]
     run_id: str
+    json_path: str
 
     # Data description
     n_frames: int
-    dt_ps: Optional[float]
+    dt_ps: float | None
     cv_names: tuple[str, ...]
     periodic: tuple[bool, ...]
 
@@ -56,8 +43,8 @@ class BaseShard:
     bias_info: Dict[str, Any] | None
     created_at: str
 
-    # Extra for legacy carry-over
-    legacy: Dict[str, Any] | None
+    # Raw provenance payload for downstream consumers
+    raw: Dict[str, Any] | None
 
 
 @dataclass(frozen=True)

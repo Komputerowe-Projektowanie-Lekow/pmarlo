@@ -46,7 +46,7 @@ def normalize_exchange_mapping(
 
     try:
         values = [int(val) for val in mapping]
-    except Exception as exc:  # pragma: no cover - defensive fallback
+    except Exception as exc:  # pragma: no cover - defensive guard
         msg = f"Exchange mapping contains non-integer entries{_format_context(context)}: {list(mapping)}"
         raise error_cls(msg) from exc
 

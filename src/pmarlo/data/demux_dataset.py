@@ -34,38 +34,23 @@ class DemuxDataset:
 
 
 def _is_demux(shard: Any) -> bool:
-    kind = getattr(shard, "kind", None)
-    if kind is None and hasattr(shard, "source"):
-        try:
-            src = dict(getattr(shard, "source"))
-            kind = src.get("kind")
-        except Exception:
-            kind = None
-    return str(kind) == "demux"
+    return str(getattr(shard, "kind", "")) == "demux"
 
 
 def _temperature_of(shard: Any) -> Optional[float]:
-    # Prefer explicit temperature_K attribute (strict schema)
-    t = getattr(shard, "temperature_K", None)
-    if t is not None:
-        try:
-            return float(t)
-        except Exception:
-            return None
-    # Fallback to legacy top-level temperature
-    t2 = getattr(shard, "temperature", None)
-    try:
-        return None if t2 is None else float(t2)
-    except Exception:
+    if not _is_demux(shard):
         return None
+    temperature = getattr(shard, "temperature_K", None)
+    if temperature is None:
+        raise TemperatureConsistencyError("DEMUX shard missing temperature_K")
+    return float(temperature)
 
 
 def _dt_ps_of(shard: Any) -> Optional[float]:
     v = getattr(shard, "dt_ps", None)
-    try:
-        return None if v is None else float(v)
-    except Exception:
+    if v is None:
         return None
+    return float(v)
 
 
 def build_demux_dataset(
@@ -80,7 +65,7 @@ def build_demux_dataset(
     Parameters
     ----------
     shards
-        Collection of shard metadata objects (strict schema or legacy).
+        Collection of shard metadata objects parsed via :func:`load_shard_meta`.
     target_temperature_K
         Temperature to select. Only shards with exactly this temperature are used.
     lag_steps
