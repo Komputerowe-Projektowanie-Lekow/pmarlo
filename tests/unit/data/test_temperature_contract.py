@@ -43,7 +43,12 @@ def _mk_shard(
         "psi": np.linspace(-np.pi, np.pi, 10),
     }
     periodic = {"phi": True, "psi": True}
-    shard_id = f"T{int(round(temperature))}K_seg{segment_id:04d}_rep{replica_id:03d}"
+    # Include kind in shard_id to prevent collisions
+    t_kelvin = int(round(temperature))
+    if kind == "replica":
+        shard_id = f"replica_T{t_kelvin}K_seg{segment_id:04d}_rep{replica_id:03d}"
+    else:
+        shard_id = f"T{t_kelvin}K_seg{segment_id:04d}_rep{replica_id:03d}"
     source = _mk_src(
         traj_path,
         run_id=traj_path.parent.name,
