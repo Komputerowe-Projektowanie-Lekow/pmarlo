@@ -13,7 +13,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional, Protocol, Self
+from typing import Any, Optional, Protocol
+
+from typing_extensions import Self
 
 import numpy as np
 

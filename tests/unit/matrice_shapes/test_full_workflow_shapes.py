@@ -74,7 +74,7 @@ def deeptica_pairs(
     }
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def deeptica_workflow(
     shard_arrays: list[np.ndarray],
     deeptica_schedule: Tuple[int, ...],
@@ -185,7 +185,7 @@ def simple_msm():
     }
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def build_result_payload(deeptica_workflow: Dict[str, Any], simple_msm: Dict[str, Any]):
     history = deeptica_workflow["history"]
     fes = FESResult(

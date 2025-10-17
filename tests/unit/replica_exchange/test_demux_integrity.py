@@ -25,6 +25,9 @@ def _create_traj(tmp_path, n_frames):
 
 
 def test_demux_repair_missing_segment(tmp_path):
+    """Test that duplicate mappings in exchange history raise an error."""
+    from pmarlo.utils.errors import DemuxIntegrityError
+    
     pdb_path, dcd_path, traj = _create_traj(tmp_path, 3)
     dcd_path2 = tmp_path / "traj2.dcd"
     traj.save_dcd(dcd_path2)
@@ -33,18 +36,17 @@ def test_demux_repair_missing_segment(tmp_path):
     remd.trajectory_files = [Path(dcd_path), Path(dcd_path2)]
     remd.temperatures = [300.0, 310.0]
     remd.n_replicas = 2
-    remd.exchange_history = [[0, 1], [1, 1], [0, 1]]
+    remd.exchange_history = [[0, 1], [1, 1], [0, 1]]  # [1, 1] is duplicate - invalid
     remd.reporter_stride = None
     remd.dcd_stride = 1
     remd.exchange_frequency = 1
     remd.output_dir = tmp_path
     remd.integrators = []
     remd._replica_reporter_stride = []
-    path = remd.demux_trajectories(target_temperature=300.0, equilibration_steps=0)
-    assert path is not None
-    demux = md.load(path, top=str(pdb_path))
-    assert demux.n_frames == 3
-    assert np.allclose(demux.xyz[1], demux.xyz[0])
+    
+    # Should raise error instead of silently repairing (no fallbacks)
+    with pytest.raises(DemuxIntegrityError, match="not a permutation"):
+        remd.demux_trajectories(target_temperature=300.0, equilibration_steps=0)
 
 
 def test_demux_broken_metadata_raises(tmp_path):

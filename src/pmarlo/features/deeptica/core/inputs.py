@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Protocol, Self, Sequence, cast
+from typing import Iterable, Protocol, Sequence, cast
+
+from typing_extensions import Self
 
 import numpy as np
 from sklearn.preprocessing import StandardScaler as SkStandardScaler

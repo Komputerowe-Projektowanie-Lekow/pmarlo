@@ -263,7 +263,7 @@ def pcca_like_macrostates(
         return None
     _ = random_state  # Preserved for API stability; no stochastic fall-back is used.
     model = _deeptime_pcca(
-        np.asarray(T, dtype=float), n_metastable_sets=int(n_macrostates)
+        np.asarray(T, dtype=float), m=int(n_macrostates)
     )
     chi = np.asarray(model.memberships, dtype=float)
     labels = np.argmax(chi, axis=1)
