@@ -43,6 +43,7 @@ from .markov_state_model._msm_utils import (
 )
 from .markov_state_model._msm_utils import pcca_like_macrostates as _pcca_like
 from .shards.indexing import initialise_shard_indices
+from .utils.array import concatenate_or_empty
 
 _run_ck: Any = None
 try:  # pragma: no cover - optional plotting dependency
@@ -1755,10 +1756,8 @@ def _collect_rg_rmsd(
             raw_frames,
         )
 
-    rg = np.concatenate(rg_parts) if rg_parts else np.zeros((0,), dtype=np.float64)
-    rmsd = (
-        np.concatenate(rmsd_parts) if rmsd_parts else np.zeros((0,), dtype=np.float64)
-    )
+    rg = concatenate_or_empty(rg_parts, dtype=np.float64, copy=False)
+    rmsd = concatenate_or_empty(rmsd_parts, dtype=np.float64, copy=False)
     return rg, rmsd, total_frames
 
 

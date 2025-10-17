@@ -29,6 +29,7 @@ from ..markov_state_model.results import REMDResult
 from ..utils.integrator import create_langevin_integrator
 from ..utils.naming import base_shape_str, permutation_name
 from ..utils.replica_utils import exponential_temperature_ladder
+from ..utils.validation import all_finite
 from .config import RemdConfig
 from .diagnostics import (
     compute_diffusion_metrics,
@@ -593,8 +594,8 @@ class ReplicaExchange:
         )
 
     def _validate_energy(self, energy, replica_index: int) -> None:
-        energy_str = str(energy).lower()
-        if "nan" in energy_str or "inf" in energy_str:
+        energy_val = float(energy.value_in_unit(unit.kilojoules_per_mole))
+        if not all_finite(energy_val):
             raise ValueError(
                 (
                     "Invalid energy ("
@@ -602,7 +603,6 @@ class ReplicaExchange:
                     f"{replica_index}"
                 )
             )
-        energy_val = energy.value_in_unit(unit.kilojoules_per_mole)
         if abs(energy_val) > const.NUMERIC_SOFT_ENERGY_LIMIT:
             logger.warning(
                 (
@@ -613,7 +613,7 @@ class ReplicaExchange:
 
     def _validate_positions(self, positions, replica_index: int) -> None:
         pos_array = positions.value_in_unit(unit.nanometer)
-        if np.any(np.isnan(pos_array)) or np.any(np.isinf(pos_array)):
+        if not all_finite(pos_array):
             raise ValueError(
                 (
                     "Invalid positions detected after minimization for "
