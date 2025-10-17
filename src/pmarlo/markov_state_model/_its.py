@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Protocol, Tuple
 import numpy as np
 
 from pmarlo import constants as const
+from pmarlo.utils.validation import all_finite, any_finite
 
 from .utils import safe_timescales
 
@@ -464,10 +465,10 @@ class ITSMixin:
     ) -> None:
         if not lag_times:
             return
-        if not np.isnan(result.timescales).any():
+        if all_finite(result.timescales):
             return
         for i, lag in enumerate(lag_times):
-            if not np.isnan(result.timescales[i]).all():
+            if any_finite(result.timescales[i]):
                 continue
             res = self._counts_for_lag(int(lag), dirichlet_alpha)
             if res is None:
@@ -497,12 +498,12 @@ class ITSMixin:
 
             empty = ITSResult(
                 lag_times=np.array([], dtype=int),
-                eigenvalues=np.empty((0, n_timescales)),
-                eigenvalues_ci=np.empty((0, n_timescales, 2)),
-                timescales=np.empty((0, n_timescales)),
-                timescales_ci=np.empty((0, n_timescales, 2)),
-                rates=np.empty((0, n_timescales)),
-                rates_ci=np.empty((0, n_timescales, 2)),
+                eigenvalues=np.empty((0, n_timescales), dtype=float),
+                eigenvalues_ci=np.empty((0, n_timescales, 2), dtype=float),
+                timescales=np.empty((0, n_timescales), dtype=float),
+                timescales_ci=np.empty((0, n_timescales, 2), dtype=float),
+                rates=np.empty((0, n_timescales), dtype=float),
+                rates_ci=np.empty((0, n_timescales, 2), dtype=float),
             )
             self.implied_timescales = empty
             return None
@@ -516,12 +517,12 @@ class ITSMixin:
 
             empty = ITSResult(
                 lag_times=np.array([], dtype=int),
-                eigenvalues=np.empty((0, n_timescales)),
-                eigenvalues_ci=np.empty((0, n_timescales, 2)),
-                timescales=np.empty((0, n_timescales)),
-                timescales_ci=np.empty((0, n_timescales, 2)),
-                rates=np.empty((0, n_timescales)),
-                rates_ci=np.empty((0, n_timescales, 2)),
+                eigenvalues=np.empty((0, n_timescales), dtype=float),
+                eigenvalues_ci=np.empty((0, n_timescales, 2), dtype=float),
+                timescales=np.empty((0, n_timescales), dtype=float),
+                timescales_ci=np.empty((0, n_timescales, 2), dtype=float),
+                rates=np.empty((0, n_timescales), dtype=float),
+                rates_ci=np.empty((0, n_timescales, 2), dtype=float),
             )
             self.implied_timescales = empty
             return None
@@ -872,10 +873,10 @@ class ITSMixin:
         for i in range(n):
             for j in range(i + max(1, int(m)) - 1, n):
                 seg = ts[i : j + 1]
-                if not np.all(np.isfinite(seg)):
+                if not all_finite(seg):
                     break
                 mean_val = float(np.nanmean(seg))
-                if mean_val <= 0 or np.isnan(mean_val):
+                if mean_val <= 0 or not all_finite(mean_val):
                     continue
                 if float(np.nanmax(seg) - np.nanmin(seg)) <= float(epsilon) * mean_val:
                     length = j - i + 1

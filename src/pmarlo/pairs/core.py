@@ -7,6 +7,7 @@ from typing import Sequence, Tuple
 
 import numpy as np
 
+from pmarlo.utils.array import concatenate_or_empty
 
 @dataclass(slots=True)
 class PairInfo:
@@ -107,12 +108,9 @@ def _concatenate_pairs(
         if i.size and j.size:
             idx_parts.append(i)
             tau_parts.append(j)
-    if not idx_parts:
-        return np.asarray([], dtype=np.int64), np.asarray([], dtype=np.int64)
-    return (
-        np.concatenate(idx_parts).astype(np.int64, copy=False),
-        np.concatenate(tau_parts).astype(np.int64, copy=False),
-    )
+    idx = concatenate_or_empty(idx_parts, dtype=np.int64, copy=False)
+    tau = concatenate_or_empty(tau_parts, dtype=np.int64, copy=False)
+    return idx, tau
 
 
 def _build_uniform_pairs(
@@ -131,12 +129,9 @@ def _build_uniform_pairs(
             idx_parts.append(offset + i)
             tau_parts.append(offset + j)
         offset += n
-    if not idx_parts:
-        return np.asarray([], dtype=np.int64), np.asarray([], dtype=np.int64)
-    return (
-        np.concatenate(idx_parts).astype(np.int64, copy=False),
-        np.concatenate(tau_parts).astype(np.int64, copy=False),
-    )
+    idx = concatenate_or_empty(idx_parts, dtype=np.int64, copy=False)
+    tau = concatenate_or_empty(tau_parts, dtype=np.int64, copy=False)
+    return idx, tau
 
 
 def _pairs_need_repair(i: np.ndarray, j: np.ndarray) -> bool:
