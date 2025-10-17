@@ -82,4 +82,3 @@ def normalize_exchange_mapping(
 
 
 __all__ = ["normalize_exchange_mapping"]
-

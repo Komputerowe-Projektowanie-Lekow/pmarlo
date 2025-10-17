@@ -4,7 +4,6 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
-
 from deeptime.markov.tools.analysis import expected_counts_stationary
 
 from pmarlo.utils.path_utils import ensure_directory
@@ -98,8 +97,61 @@ def test_simulation_experiment_benchmark(tmp_path: Path):
     assert bench["kpi_metrics"]["transition_matrix_accuracy"] is not None
 
 
-def test_replica_exchange_experiment_benchmark(tmp_path: Path):
+def test_replica_exchange_experiment_benchmark(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     out_dir = tmp_path / "experiments_output" / "replica_exchange"
+
+    # Provide lightweight stubs for optional heavy dependencies imported during
+    # module initialisation.
+    import sys
+    from types import ModuleType
+
+    fake_openmm = ModuleType("openmm")
+
+    class _Dummy:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    fake_openmm.Platform = _Dummy
+    fake_openmm.unit = ModuleType("openmm.unit")
+
+    def _unit_getattr(_name: str):
+        return _Dummy
+
+    fake_openmm.unit.__getattr__ = _unit_getattr  # type: ignore[attr-defined]
+    fake_openmm.app = ModuleType("openmm.app")
+
+    def _app_getattr(_name: str):
+        return _Dummy
+
+    fake_openmm.app.__getattr__ = _app_getattr  # type: ignore[attr-defined]
+    fake_openmm.app.PDBFile = _Dummy
+    fake_openmm.app.Simulation = _Dummy
+    monkeypatch.setitem(sys.modules, "openmm", fake_openmm)
+    monkeypatch.setitem(sys.modules, "openmm.unit", fake_openmm.unit)
+    monkeypatch.setitem(sys.modules, "openmm.app", fake_openmm.app)
+
+    fake_statsmodels = ModuleType("statsmodels")
+    fake_statsmodels.tsa = ModuleType("statsmodels.tsa")
+    fake_statsmodels.tsa.stattools = ModuleType("statsmodels.tsa.stattools")
+    fake_statsmodels.tsa.stattools.acf = lambda *args, **kwargs: np.array([1.0])
+    monkeypatch.setitem(sys.modules, "statsmodels", fake_statsmodels)
+    monkeypatch.setitem(sys.modules, "statsmodels.tsa", fake_statsmodels.tsa)
+    monkeypatch.setitem(
+        sys.modules, "statsmodels.tsa.stattools", fake_statsmodels.tsa.stattools
+    )
+
+    import importlib.util as importlib_util
+
+    original_find_spec = importlib_util.find_spec
+
+    def fake_find_spec(name: str, *args, **kwargs):
+        if name == "sklearn":
+            return None
+        return original_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib_util, "find_spec", fake_find_spec)
 
     from pmarlo.experiments.replica_exchange import (
         ReplicaExchangeConfig,
@@ -142,8 +194,14 @@ def test_replica_exchange_experiment_benchmark(tmp_path: Path):
     assert bench["kpi_metrics"]["replica_exchange_success_rate"] == 0.4
 
 
-def test_msm_experiment_benchmark(tmp_path: Path):
+def test_msm_experiment_benchmark(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     out_dir = tmp_path / "experiments_output" / "msm"
+
+    import sys
+    from types import ModuleType
+
+    monkeypatch.setitem(sys.modules, "mdtraj", ModuleType("mdtraj"))
+    monkeypatch.setitem(sys.modules, "pandas", ModuleType("pandas"))
 
     from pmarlo.experiments.msm import MSMConfig, run_msm_experiment
 
@@ -198,3 +256,40 @@ def test_compute_detailed_balance_mad_uses_deeptime_flows():
     manual = np.mean(np.abs(flows - flows.T)) / np.sum(flows)
 
     assert score == pytest.approx(manual)
+
+
+def test_compute_spectral_gap_delegates_to_deeptime(monkeypatch):
+    from pmarlo.experiments import kpi
+
+    captured = {}
+
+    def fake_eigenvalues(matrix, k=None, **_kwargs):
+        captured["k"] = k
+        # Return eigenvalues already sorted by magnitude.
+        return np.array([1.0, 0.75, 0.1], dtype=float)
+
+    monkeypatch.setattr(kpi.dt_analysis, "eigenvalues", fake_eigenvalues)
+
+    mat = np.array([[0.9, 0.1], [0.2, 0.8]], dtype=float)
+    gap = kpi.compute_spectral_gap(mat)
+
+    assert captured["k"] == 2
+    assert gap == pytest.approx(0.25)
+
+
+def test_compute_stationary_entropy_uses_scipy_entropy(monkeypatch):
+    from pmarlo.experiments import kpi
+
+    calls: dict[str, np.ndarray] = {}
+
+    def fake_entropy(values):
+        calls["values"] = np.asarray(values, dtype=float)
+        return 1.234
+
+    monkeypatch.setattr(kpi.scipy_stats, "entropy", fake_entropy)
+
+    pi = np.array([0.2, 0.3, 0.5], dtype=float)
+    result = kpi.compute_stationary_entropy(pi)
+
+    assert np.allclose(calls["values"], pi)
+    assert result == pytest.approx(1.234)

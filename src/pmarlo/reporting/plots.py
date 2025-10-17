@@ -148,6 +148,8 @@ def save_pmf_line(
     plt.savefig(filepath, dpi=200)
     plt.close()
     return str(filepath) if filepath.exists() else None
+
+
 def fes2d(
     x,
     y,

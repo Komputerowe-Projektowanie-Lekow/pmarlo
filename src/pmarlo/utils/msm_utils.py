@@ -160,32 +160,14 @@ def check_transition_matrix(
     row_tol: float = const.NUMERIC_MIN_POSITIVE,
     stat_tol: float = const.NUMERIC_RELATIVE_TOLERANCE,
 ) -> None:
-    """Validate a transition matrix and stationary distribution.
+    """Validate a transition matrix and stationary distribution."""
 
-    The following conditions are enforced:
-
-    * Each row of ``T`` sums to 1 within ``row_tol``.
-    * All elements of ``T`` are non-negative.
-    * The provided ``pi`` is a left eigenvector of ``T`` with unit eigenvalue
-      up to ``stat_tol`` in the infinity norm.
-
-    Parameters
-    ----------
-    T:
-        Transition matrix.
-    pi:
-        Stationary distribution corresponding to ``T``.
-    row_tol:
-        Permitted deviation from exact row stochasticity.
-    stat_tol:
-        Permitted deviation of ``pi`` from the left eigenvector equation.
-
-    Raises
-    ------
-    ValueError
-        If any of the checks fail. The error message includes the offending
-        state indices to ease debugging.
-    """
+    from deeptime.markov.tools.analysis import (
+        is_transition_matrix,
+    )
+    from deeptime.markov.tools.analysis import (
+        stationary_distribution as _dt_stationary_distribution,
+    )
 
     if T.ndim != 2 or T.shape[0] != T.shape[1]:
         raise ValueError("transition matrix must be square")
@@ -194,29 +176,38 @@ def check_transition_matrix(
     if T.size == 0:
         return
 
-    rowsum = T.sum(axis=1)
-    row_err = np.abs(rowsum - 1.0)
-    neg_idx = np.where(T < 0)
-    if neg_idx[0].size:
-        pairs = list(zip(neg_idx[0].tolist(), neg_idx[1].tolist()))
-        vals = T[neg_idx].tolist()
-        raise ValueError(f"Negative probabilities at {pairs}: {vals}")
+    T = np.asarray(T, dtype=float)
+    pi = np.asarray(pi, dtype=float)
 
-    bad_rows = np.where(row_err > row_tol)[0]
-    if bad_rows.size:
-        devs = row_err[bad_rows].tolist()
-        raise ValueError(f"Non-stochastic rows at indices {bad_rows.tolist()}: {devs}")
+    if not is_transition_matrix(T, tol=row_tol):
+        raise ValueError("transition matrix fails stochasticity checks")
 
-    pi_res = np.abs(pi @ T - pi)
-    max_err = float(np.max(pi_res)) if pi_res.size else 0.0
+    pi_sum = float(np.sum(pi))
+    if not np.isfinite(pi_sum) or pi_sum <= 0:
+        raise ValueError("stationary distribution must be normalisable")
+    pi_norm = pi / pi_sum
+
+    try:
+        pi_ref = np.asarray(
+            _dt_stationary_distribution(T, check_inputs=False), dtype=float
+        )
+    except Exception as exc:  # pragma: no cover - should rarely trigger
+        raise ValueError("failed to compute stationary distribution") from exc
+
+    if pi_ref.shape != pi_norm.shape:
+        raise ValueError("stationary distribution size mismatch")
+
+    diff = np.abs(pi_norm - pi_ref)
+    max_err = float(np.max(diff)) if diff.size else 0.0
     if max_err > stat_tol:
-        idx = int(np.argmax(pi_res))
+        idx = int(np.argmax(diff))
         raise ValueError(
             f"Stationary distribution mismatch at state {idx} with error {max_err}"
         )
 
+    row_err = np.abs(T.sum(axis=1) - 1.0)
     min_entry = T.min(axis=1)
-    lines = ["state row_err min_T pi_res"]
+    lines = ["state row_err min_T pi_diff"]
     for i in range(T.shape[0]):
-        lines.append(f"{i:5d} {row_err[i]:.2e} {min_entry[i]:.2e} {pi_res[i]:.2e}")
+        lines.append(f"{i:5d} {row_err[i]:.2e} {min_entry[i]:.2e} {diff[i]:.2e}")
     logger.debug("MSM diagnostics:\n%s", "\n".join(lines))

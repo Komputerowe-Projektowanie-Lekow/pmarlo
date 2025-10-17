@@ -191,9 +191,13 @@ def _smooth_sparse_bins(hist: np.ndarray, min_count: int) -> tuple[np.ndarray, i
     if not np.any(mask):
         return hist, 0
 
-    kernel = np.array([[1.0, 1.0, 1.0], [1.0, 0.0, 1.0], [1.0, 1.0, 1.0]], dtype=np.float64)
+    kernel = np.array(
+        [[1.0, 1.0, 1.0], [1.0, 0.0, 1.0], [1.0, 1.0, 1.0]], dtype=np.float64
+    )
     neighbor_sum = ndimage.convolve(hist, kernel, mode="nearest")
-    neighbor_count = ndimage.convolve(np.ones_like(hist, dtype=np.float64), kernel, mode="nearest")
+    neighbor_count = ndimage.convolve(
+        np.ones_like(hist, dtype=np.float64), kernel, mode="nearest"
+    )
     neighbor_mean = np.divide(
         neighbor_sum,
         neighbor_count,

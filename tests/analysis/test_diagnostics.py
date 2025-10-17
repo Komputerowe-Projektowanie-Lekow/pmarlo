@@ -147,7 +147,9 @@ def test_canonical_correlation_uses_sklearn(monkeypatch):
             }
             self._called = False
 
-        def fit_transform(self, X: np.ndarray, Y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        def fit_transform(
+            self, X: np.ndarray, Y: np.ndarray
+        ) -> tuple[np.ndarray, np.ndarray]:
             self._called = True
             return X, Y
 

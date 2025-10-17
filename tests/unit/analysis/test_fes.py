@@ -7,7 +7,9 @@ import numpy as np
 from pmarlo.analysis.fes import _smooth_sparse_bins
 
 
-def _manual_smooth_sparse_bins(hist: np.ndarray, min_count: int) -> tuple[np.ndarray, int]:
+def _manual_smooth_sparse_bins(
+    hist: np.ndarray, min_count: int
+) -> tuple[np.ndarray, int]:
     mask = hist < float(min_count)
     if not np.any(mask):
         return hist.copy(), 0

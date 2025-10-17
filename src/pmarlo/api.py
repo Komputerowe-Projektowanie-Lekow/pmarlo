@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
 from .config import JOINT_USE_REWEIGHT
 from .data.aggregate import aggregate_and_build as _aggregate_and_build
+from .demultiplexing.exchange_validation import normalize_exchange_mapping
 from .features import get_feature
 from .features.base import parse_feature_spec
 from .markov_state_model._msm_utils import build_simple_msm as _build_simple_msm
@@ -45,7 +46,6 @@ from .markov_state_model._msm_utils import (
 from .markov_state_model._msm_utils import pcca_like_macrostates as _pcca_like
 from .shards.indexing import initialise_shard_indices
 from .utils.array import concatenate_or_empty
-from .demultiplexing.exchange_validation import normalize_exchange_mapping
 from .utils.mdtraj import load_mdtraj_topology, resolve_atom_selection
 
 _run_ck: Any = None

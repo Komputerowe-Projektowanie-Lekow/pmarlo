@@ -23,7 +23,8 @@ from numpy.typing import NDArray
 
 from pmarlo.utils.path_utils import ensure_directory
 
-from ._msm_utils import _row_normalize, pcca_like_macrostates as _pcca_like
+from ._msm_utils import _row_normalize
+from ._msm_utils import pcca_like_macrostates as _pcca_like
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,8 @@ class CKRunResult:
     mse: Dict[int, float] = field(default_factory=dict)
     mode: str = "micro"
     insufficient_k: List[int] = field(default_factory=list)
+
+
 def _count_transitions(
     dtrajs: Sequence[np.ndarray], n_states: int, lag: int
 ) -> NDArray[np.float64]:

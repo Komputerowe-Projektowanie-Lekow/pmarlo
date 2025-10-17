@@ -11,8 +11,6 @@ from ._msm_utils import (
     _stationary_from_T,
     check_transition_matrix,
     ensure_connected_counts,
-    _row_normalize,
-    _stationary_from_T,
 )
 
 logger = logging.getLogger("pmarlo")

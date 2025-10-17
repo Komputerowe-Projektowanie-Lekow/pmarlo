@@ -25,7 +25,6 @@ def candidate_lag_ladder(
     )
 
 
-
 def ensure_connected_counts(
     C: np.ndarray,
     alpha: float = const.NUMERIC_DIRICHLET_ALPHA,
@@ -45,70 +44,67 @@ def check_transition_matrix(
 ) -> None:
     """Delegate to :func:`pmarlo.utils.msm_utils.check_transition_matrix`."""
 
-    _shared_msm_utils.check_transition_matrix(
-        T, pi, row_tol=row_tol, stat_tol=stat_tol
-    )
+    _shared_msm_utils.check_transition_matrix(T, pi, row_tol=row_tol, stat_tol=stat_tol)
 
 
 def _row_normalize(C: np.ndarray) -> np.ndarray[Any, Any]:
-    """Row-normalize a matrix."""
+    """Row-normalize a matrix using :mod:`deeptime` utilities."""
     from typing import cast
 
-    rows = C.sum(axis=1)
-    rows[rows == 0] = 1.0
-    return cast(np.ndarray[Any, Any], C / rows[:, None])
+    arr = np.asarray(C, dtype=float)
+    if arr.size == 0:
+        return cast(np.ndarray[Any, Any], arr.copy())
+
+    try:
+        from deeptime.markov.tools.estimation.dense.transition_matrix import (
+            transition_matrix_non_reversible as _dt_row_normalize,
+        )
+
+        return cast(np.ndarray[Any, Any], _dt_row_normalize(arr))
+    except Exception:  # pragma: no cover - gracefully fallback to NumPy
+        rows = arr.sum(axis=1)
+        rows[rows == 0] = 1.0
+        return cast(np.ndarray[Any, Any], arr / rows[:, None])
 
 
 def _stationary_from_T(T: np.ndarray) -> np.ndarray:
-    """Compute stationary distribution from transition matrix.
+    """Compute a stationary distribution using :mod:`deeptime`.
 
-    This routine prefers the high-quality solvers from :mod:`scipy` and only
-    falls back to :func:`numpy.linalg.eig` if SciPy cannot produce a result.
-    Sparse transition matrices leverage :func:`scipy.sparse.linalg.eigs` so we
-    only materialize dense representations as a last resort.
+    Falls back to the previous NumPy-based implementation when
+    :mod:`deeptime` is unavailable or the calculation fails.
     """
 
     from typing import cast
 
     import scipy.linalg as _la
-    import scipy.sparse as _sp
-    import scipy.sparse.linalg as _spla
 
-    if T.shape[0] == 0 or T.shape[1] == 0:
+    arr = np.asarray(T, dtype=float)
+    if arr.size == 0:
         return cast(np.ndarray, np.asarray([], dtype=float))
 
-    evals: np.ndarray | None = None
-    evecs: np.ndarray | None = None
+    try:
+        from deeptime.markov.tools.analysis import (
+            stationary_distribution as _dt_stationary_distribution,
+        )
 
-    # Attempt sparse eigen decomposition first when applicable.
-    if _sp.issparse(T):
+        pi_dt = _dt_stationary_distribution(arr, check_inputs=False)
+        return cast(np.ndarray, np.asarray(pi_dt, dtype=float))
+    except Exception:  # pragma: no cover - retain robust fallback
+        evals: np.ndarray | None = None
+        evecs: np.ndarray | None = None
+
         try:
-            sparse_evals, sparse_evecs = _spla.eigs(T.T, k=1, which="LM")
-            evals = np.asarray(sparse_evals)
-            evecs = np.asarray(sparse_evecs)
-        except Exception as exc:  # pragma: no cover - diagnostic logging only
-            logger.debug(
-                "Sparse eigen decomposition failed; retrying with dense solver.",
-                exc_info=exc,
-            )
+            evals, evecs = _la.eig(arr.T, left=False, right=True)
+        except Exception:
+            evals, evecs = np.linalg.eig(arr.T)
 
-    if evals is None or evecs is None:
-        try:
-            evals, evecs = _la.eig(np.asarray(T.T, dtype=float), left=False, right=True)
-        except Exception as exc:  # pragma: no cover - diagnostic logging only
-            logger.debug(
-                "Dense SciPy eigen decomposition failed; falling back to NumPy.",
-                exc_info=exc,
-            )
-            evals, evecs = np.linalg.eig(np.asarray(T.T, dtype=float))
-
-    idx = int(np.argmax(np.real(evals)))
-    pi = np.real(evecs[:, idx])
-    pi = np.abs(pi)
-    s = float(np.sum(pi))
-    if s > 0:
-        pi /= s
-    return cast(np.ndarray, pi)
+        idx = int(np.argmax(np.real(evals)))
+        pi = np.real(evecs[:, idx])
+        pi = np.abs(pi)
+        s = float(np.sum(pi))
+        if s > 0:
+            pi /= s
+        return cast(np.ndarray, pi)
 
 
 def pcca_like_macrostates(
@@ -132,18 +128,19 @@ def pcca_like_macrostates(
     """
     if T.size == 0 or T.shape[0] <= n_macrostates:
         return None
-    # Try deeptime PCCA+ on transition matrix
+    # Prefer deeptime's canonical PCCA+ implementation
     try:
-        from deeptime.markov import pcca as _pcca  # type: ignore
+        from deeptime.markov.tools.analysis import (
+            pcca_assignments as _dt_pcca_assignments,
+        )
 
-        model = _pcca(np.asarray(T, dtype=float), n_metastable_sets=int(n_macrostates))
-        # Hard assignments from membership matrix
-        chi = np.asarray(model.memberships, dtype=float)
-        labels = np.argmax(chi, axis=1)
-        labels = _canonicalize_macro_labels(labels.astype(int), T)
+        labels = np.asarray(
+            _dt_pcca_assignments(np.asarray(T, dtype=float), int(n_macrostates)),
+            dtype=int,
+        )
+        labels = _canonicalize_macro_labels(labels, T)
         return labels
-    except Exception:
-        # Fallback: spectral embedding + k-means
+    except Exception:  # pragma: no cover - keep legacy fallback for resilience
         eigvals, eigvecs = np.linalg.eig(T.T)
         order = np.argsort(-np.real(eigvals))
         k = max(2, min(n_macrostates, T.shape[0] - 1))

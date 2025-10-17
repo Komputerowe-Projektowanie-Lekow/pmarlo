@@ -24,10 +24,7 @@ def kT_kJ_per_mol(temperature_kelvin: float) -> float:
             _scipy_constants.k * temperature * _scipy_constants.Avogadro / 1000.0
         )
     return float(
-        const.BOLTZMANN_CONSTANT_J_PER_K
-        * temperature
-        * const.AVOGADRO_NUMBER
-        / 1000.0
+        const.BOLTZMANN_CONSTANT_J_PER_K * temperature * const.AVOGADRO_NUMBER / 1000.0
     )
 
 

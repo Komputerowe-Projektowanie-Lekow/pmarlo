@@ -22,10 +22,10 @@ from pmarlo.io.trajectory_writer import get_writer
 from pmarlo.transform.progress import ProgressCB
 
 from ..replica_exchange import config as _cfg
-from .exchange_validation import normalize_exchange_mapping
 from .demux_engine import demux_streaming
 from .demux_metadata import DemuxIntegrityError, DemuxMetadataDict, serialize_metadata
 from .demux_plan import build_demux_plan
+from .exchange_validation import normalize_exchange_mapping
 
 logger = logging.getLogger("pmarlo")
 
