@@ -18,7 +18,7 @@ def normalize_exchange_mapping(
     expected_size: int | None = None,
     context: str | None = None,
     error_cls: type[ErrorType] = ValueError,
-    repair_on_duplicates: bool = True,
+    repair_on_duplicates: bool = False,
 ) -> list[int]:
     """Validate and normalise a single exchange mapping.
 

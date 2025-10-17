@@ -234,7 +234,12 @@ def emit_shards_from_trajectories(
         ordered_periodic = [bool(periodic_flags.get(name, False)) for name in column_order]
         source["periodic"] = ordered_periodic
         t_kelvin = int(round(float(temperature)))
-        shard_id = f"T{t_kelvin}K_seg{segment_id:04d}_rep{replica_id:03d}"
+        # Include kind in shard_id to prevent collisions
+        kind = str(source.get("kind", "demux")).lower()
+        if kind == "replica":
+            shard_id = f"replica_T{t_kelvin}K_seg{segment_id:04d}_rep{replica_id:03d}"
+        else:
+            shard_id = f"T{t_kelvin}K_seg{segment_id:04d}_rep{replica_id:03d}"
         json_path = write_shard(
             out_dir=out_dir,
             shard_id=shard_id,
