@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from pathlib import Path
 from typing import Dict, Tuple
 
 import numpy as np
@@ -10,6 +11,7 @@ from pmarlo.data.aggregate import aggregate_and_build
 from pmarlo.data.emit import emit_shards_from_trajectories
 from pmarlo.transform.build import AppliedOpts, BuildOpts
 from pmarlo.transform.plan import TransformPlan, TransformStep
+from pmarlo.utils.path_utils import ensure_directory
 
 
 def _extractor_with_traj_ref(n_frames: int = 20):
@@ -24,7 +26,7 @@ def _extractor_with_traj_ref(n_frames: int = 20):
 
 
 def _make_file(p: Path) -> Path:
-    p.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(p.parent)
     p.write_bytes(b"")
     return p
 

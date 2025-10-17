@@ -18,6 +18,7 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 import numpy as np
 
 from pmarlo.shards.indexing import initialise_shard_indices
+from pmarlo.utils.path_utils import ensure_directory
 
 from .shard import write_shard
 
@@ -93,7 +94,7 @@ def emit_shards_from_trajectories(
     """
 
     out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out_dir)
     paths = [Path(p) for p in traj_files]
     paths.sort()
 

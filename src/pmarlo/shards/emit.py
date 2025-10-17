@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Callable, Iterable, List, Optional
 
 from pmarlo.transform.progress import ProgressCB, ProgressReporter
+from pmarlo.utils.path_utils import ensure_directory
 
 from .format import write_shard
 from .schema import Shard, validate_invariants
@@ -26,7 +27,7 @@ def emit_shards_from_trajectories(
 
     paths = sorted(Path(p) for p in traj_files)
     out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out_dir)
 
     reporter = ProgressReporter(progress_callback)
     total = len(paths)

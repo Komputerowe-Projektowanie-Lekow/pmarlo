@@ -19,6 +19,8 @@ from typing import Any, Dict, Iterable, Mapping, MutableMapping, Sequence, Tuple
 
 import numpy as np
 
+from pmarlo.utils.path_utils import ensure_directory
+
 from ..backend import BuildConfig, WorkflowBackend
 from ..headless import _make_layout
 from .common import ExperimentBundle, load_bundle
@@ -59,7 +61,7 @@ def _sanitize(obj: Any) -> Any:
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(path.parent)
     with path.open("w", encoding="utf-8") as handle:
         json.dump(_sanitize(payload), handle, indent=2, sort_keys=True)
     return path
@@ -331,7 +333,7 @@ def _build_config(bundle: ExperimentBundle, shards: Sequence[Any]) -> BuildConfi
 
 def _collect_debug_outputs(artifact: Any, output_dir: Path) -> Dict[str, Any]:
     analysis_debug_dir = output_dir / "analysis_debug"
-    analysis_debug_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(analysis_debug_dir)
 
     summary_payload = dict(artifact.debug_summary or {})
     summary_path = analysis_debug_dir / "summary.json"
@@ -342,7 +344,7 @@ def _collect_debug_outputs(artifact: Any, output_dir: Path) -> Dict[str, Any]:
         src_summary = Path(artifact.debug_dir) / "summary.json"
         if src_summary.exists():
             target_dir = analysis_debug_dir / Path(artifact.debug_dir).name
-            target_dir.mkdir(parents=True, exist_ok=True)
+            ensure_directory(target_dir)
             dest = target_dir / "summary.json"
             try:
                 shutil.copy2(src_summary, dest)

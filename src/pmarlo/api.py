@@ -22,6 +22,7 @@ import mdtraj as md  # type: ignore
 import numpy as np
 
 from pmarlo import constants as const
+from pmarlo.utils.path_utils import ensure_directory
 
 if TYPE_CHECKING:
     from .io.trajectory_writer import MDTrajDCDWriter
@@ -44,6 +45,8 @@ from .markov_state_model._msm_utils import (
 from .markov_state_model._msm_utils import pcca_like_macrostates as _pcca_like
 from .shards.indexing import initialise_shard_indices
 from .utils.array import concatenate_or_empty
+from .demultiplexing.exchange_validation import normalize_exchange_mapping
+from .utils.mdtraj import load_mdtraj_topology, resolve_atom_selection
 
 _run_ck: Any = None
 try:  # pragma: no cover - optional plotting dependency
@@ -484,7 +487,7 @@ def _stack_and_build_periodic(
 
 
 def _empty_feature_matrix(traj: md.Trajectory) -> tuple[np.ndarray, np.ndarray]:
-    return np.zeros((traj.n_frames, 0), dtype=float), np.zeros((0,), dtype=bool)
+    return np.empty((traj.n_frames, 0), dtype=float), np.empty((0,), dtype=bool)
 
 
 def _resolve_cache_file(
@@ -498,7 +501,7 @@ def _resolve_cache_file(
         from pathlib import Path as _Path
 
         p = _Path(cache_path)
-        p.mkdir(parents=True, exist_ok=True)
+        ensure_directory(p)
         meta: Dict[str, Any] = {
             "n_frames": int(getattr(traj, "n_frames", 0) or 0),
             "n_atoms": int(getattr(traj, "n_atoms", 0) or 0),
@@ -1260,7 +1263,7 @@ def analyze_msm(  # noqa: C901
                 cache_dir = (
                     _Path(str(getattr(msm, "output_dir", output_dir))) / "feature_cache"
                 )
-                cache_dir.mkdir(parents=True, exist_ok=True)
+                ensure_directory(cache_dir)
                 Y2, _ = compute_universal_embedding(
                     traj_all,
                     feature_specs=None,
@@ -1363,11 +1366,8 @@ def find_conformations(  # noqa: C901
 
     atom_indices: Sequence[int] | None = None
     if atom_selection is not None:
-        topo = md.load_topology(str(topology_pdb))
-        if isinstance(atom_selection, str):
-            atom_indices = topo.select(atom_selection)
-        else:
-            atom_indices = list(atom_selection)
+        topo = load_mdtraj_topology(topology_pdb)
+        atom_indices = resolve_atom_selection(topo, atom_selection)
 
     logger.info(
         "Streaming trajectory %s with stride=%d, chunk=%d%s",
@@ -1399,7 +1399,7 @@ def find_conformations(  # noqa: C901
     from pathlib import Path as _Path
 
     cache_dir = _Path(str(out)) / "feature_cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(cache_dir)
     X, cols, periodic = compute_features(
         traj, feature_specs=specs, cache_path=str(cache_dir)
     )
@@ -1564,7 +1564,7 @@ def emit_shards_rg_rmsd_windowed(
 
     pdb_file = Path(pdb_file)
     out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out_dir)
 
     ref, ca_sel = _load_reference_and_selection(md, pdb_file, reference)
     shard_state = initialise_shard_indices(out_dir, seed_start)
@@ -1840,7 +1840,7 @@ def emit_shards_rg_rmsd(
 
     pdb_file = Path(pdb_file)
     out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out_dir)
     top0 = md.load(str(pdb_file))
     ref = (
         md.load(str(reference), top=str(pdb_file))[0]
@@ -1871,12 +1871,12 @@ def emit_shards_rg_rmsd(
         rg = (
             _np.concatenate(rg_parts)
             if rg_parts
-            else _np.zeros((0,), dtype=_np.float64)
+            else _np.empty((0,), dtype=_np.float64)
         )
         rmsd = (
             _np.concatenate(rmsd_parts)
             if rmsd_parts
-            else _np.zeros((0,), dtype=_np.float64)
+            else _np.empty((0,), dtype=_np.float64)
         )
         base_src = {"traj": str(traj_path), "n_frames": int(n)}
         if provenance:
@@ -2171,7 +2171,7 @@ def _prepare_demux_paths(
     """Create output directory and normalise key input paths."""
 
     out_dir_path = Path(out_dir)
-    out_dir_path.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out_dir_path)
     topo_path = Path(topology_path)
     replica_paths = [Path(p) for p in replica_traj_paths]
     return out_dir_path, topo_path, replica_paths
@@ -2274,8 +2274,11 @@ def _demux_exchange_segments(
     segments_consumed = [0] * len(replica_frames)
 
     for seg_index, record in enumerate(exchange_records):
-        mapping = list(record.temp_to_replica)
-        _validate_exchange_mapping(mapping, len(replica_frames), seg_index)
+        mapping = normalize_exchange_mapping(
+            record.temp_to_replica,
+            expected_size=len(replica_frames),
+            context=f"segment {seg_index}",
+        )
         frame_index = seg_index // max(1, len(replica_frames))
 
         for temp_index, rep_idx in enumerate(mapping):
@@ -2309,22 +2312,6 @@ def _demux_exchange_segments(
             dst_positions[temp_index] += 1
 
     return segments_per_temp, dst_positions
-
-
-def _validate_exchange_mapping(
-    mapping: Sequence[int],
-    n_replicas: int,
-    seg_index: int,
-) -> None:
-    """Ensure each exchange row is a permutation of replica indices."""
-
-    if sorted(mapping) != list(range(n_replicas)):
-        raise ValueError("Exchange log rows must be permutations")
-    for rep_idx in mapping:
-        if rep_idx < 0 or rep_idx >= n_replicas:
-            raise ValueError(
-                f"Replica index {rep_idx} out of range for segment {seg_index}"
-            )
 
 
 def _close_demux_writers(writers: Sequence[MDTrajDCDWriter]) -> None:
@@ -2429,7 +2416,7 @@ def extract_last_frame_to_pdb(
         # MDTraj units are nm; 1 Å = 0.1 nm
         last.xyz = last.xyz + (noise * 0.1)
     out_p = Path(out_pdb)
-    out_p.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out_p.parent)
     last.save_pdb(str(out_p))
     return out_p
 
@@ -2488,7 +2475,7 @@ def extract_random_highT_frame_to_pdb(
         noise = _np.random.normal(0.0, float(jitter_sigma_A), size=frame.xyz.shape)
         frame.xyz = frame.xyz + (noise * 0.1)
     out_p = Path(out_pdb)
-    out_p.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out_p.parent)
     frame.save_pdb(str(out_p))
     return out_p
 

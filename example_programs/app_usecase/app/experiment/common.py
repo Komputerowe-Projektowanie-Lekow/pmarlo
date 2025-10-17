@@ -17,6 +17,7 @@ import yaml
 from pmarlo.data.aggregate import load_shards_as_dataset
 from pmarlo.shards.format import read_shard
 from pmarlo.shards.schema import Shard
+from pmarlo.utils.path_utils import ensure_directory
 
 __all__ = [
     "ExperimentBundle",
@@ -208,7 +209,7 @@ class ExperimentBundle:
     output_dir: Path
 
     def ensure_output_dir(self) -> None:
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        ensure_directory(self.output_dir)
 
     def load_shards(self) -> tuple[Shard, ...]:
         return tuple(read_shard(path) for path in self.shard_jsons)

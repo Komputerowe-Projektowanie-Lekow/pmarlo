@@ -6,6 +6,7 @@ import numpy as np
 from scipy.sparse.csgraph import connected_components
 
 from pmarlo import constants as const
+from pmarlo.utils.path_utils import ensure_directory
 
 from ._base import CKTestResult
 
@@ -244,7 +245,7 @@ class CKMixin:
             import matplotlib.pyplot as _plt
 
             out_dir = _Path(getattr(self, "output_dir", "."))
-            out_dir.mkdir(parents=True, exist_ok=True)
+            ensure_directory(out_dir)
             csv_path = out_dir / "ck_mse.csv"
             with csv_path.open("w", newline="") as fh:
                 writer = _csv.writer(fh)

@@ -8,6 +8,8 @@ from typing import Union
 
 import numpy as np
 
+from pmarlo.utils.path_utils import ensure_directory
+
 
 def timestamp_dir(base_dir: Union[str, Path]) -> Path:
     """Create and return a unique timestamped directory under base_dir.
@@ -17,7 +19,7 @@ def timestamp_dir(base_dir: Union[str, Path]) -> Path:
     """
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = Path(base_dir) / ts
-    run_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(run_dir)
     return run_dir
 
 

@@ -8,6 +8,7 @@ import numpy as np
 from scipy.special import erfcinv
 
 from pmarlo import constants as const
+from pmarlo.utils.path_utils import ensure_directory
 
 
 def compute_exchange_statistics(
@@ -178,8 +179,8 @@ def retune_temperature_ladder(
     # Ensure parent directory exists, even if caller passed a custom path
     try:
         out_path = Path(output_json)
-        if out_path.parent and not out_path.parent.exists():
-            out_path.parent.mkdir(parents=True, exist_ok=True)
+        if out_path.parent:
+            ensure_directory(out_path.parent)
     except Exception:
         pass
 

@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
+from pmarlo.utils.path_utils import ensure_directory
+
 
 def _normalize_for_json_row(row: Dict[str, Any]) -> Dict[str, Any]:
     """Ensure JSON rows carry the same fields and JSON-serializable types as CSV rows.
@@ -35,7 +37,7 @@ def write_conformations_csv_json(
     json_name: str = "states.json",
 ) -> None:
     out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out)
 
     # CSV
     normalized_items = [_normalize_for_json_row(it) for it in items]

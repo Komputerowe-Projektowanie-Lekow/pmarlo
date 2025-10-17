@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any, Dict
 
 import numpy as np
 
+from pmarlo.utils.path_utils import ensure_directory
+
 if TYPE_CHECKING:
     try:
         from .bias_hook import BiasHook
@@ -76,7 +78,7 @@ if not _HAS_FULL_IMPL:  # noqa: C901
         random_seed: int | None = None
 
         def __post_init__(self) -> None:
-            Path(self.output_dir).mkdir(parents=True, exist_ok=True)
+            ensure_directory(Path(self.output_dir))
             logger.warning(
                 "OpenMM stack not available; Simulation acts as a lightweight stub."
             )

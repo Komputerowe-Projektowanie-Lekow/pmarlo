@@ -10,6 +10,7 @@ from typing import Tuple
 import numpy as np
 
 from pmarlo.utils.json_io import load_json_file
+from pmarlo.utils.path_utils import ensure_directory
 
 from .schema import FeatureSpec, Shard, ShardMeta, validate_invariants
 
@@ -29,8 +30,8 @@ def write_shard_npz_json(
 
     npz_path = Path(npz_path)
     json_path = Path(json_path)
-    npz_path.parent.mkdir(parents=True, exist_ok=True)
-    json_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(npz_path.parent)
+    ensure_directory(json_path.parent)
 
     validate_invariants(shard)
 

@@ -301,7 +301,7 @@ def split_sequences(Z: np.ndarray, lengths: Sequence[int]) -> list[np.ndarray]:
     for length in lengths:
         n = int(max(0, length))
         if n == 0:
-            sequences.append(np.zeros((0, n_features), dtype=np.float32))
+            sequences.append(np.empty((0, n_features), dtype=np.float32))
             continue
         end = min(offset + n, total)
         sequences.append(Z[offset:end])

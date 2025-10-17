@@ -23,6 +23,7 @@ from pmarlo.data.shard import read_shard
 from pmarlo.io.shard_id import parse_shard_id
 from pmarlo.transform.plan import TransformPlan
 from pmarlo.utils.errors import TemperatureConsistencyError
+from pmarlo.utils.path_utils import ensure_directory
 
 from .shard_io import load_shard_meta
 
@@ -522,6 +523,6 @@ def aggregate_and_build(
             pass
 
     out_bundle = Path(out_bundle)
-    out_bundle.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out_bundle.parent)
     out_bundle.write_text(res.to_json())
     return res, ds_hash

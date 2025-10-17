@@ -27,6 +27,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from pmarlo import constants as const
 from pmarlo.features.deeptica.losses import VAMP2Loss
+from pmarlo.utils.path_utils import ensure_directory
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +179,7 @@ def checkpoint_if_better(
     if score <= best_score:
         return best_score
     path = Path(checkpoint_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(path.parent)
     torch_mod.save(model_net.state_dict(), path)
     return score
 
@@ -1053,7 +1054,7 @@ class DeepTICACurriculumTrainer:
         self._best_state = _clone_state_dict(self.module)
         if self.cfg.checkpoint_dir is not None:
             ckpt_dir = Path(self.cfg.checkpoint_dir)
-            ckpt_dir.mkdir(parents=True, exist_ok=True)
+            ensure_directory(ckpt_dir)
             path = ckpt_dir / "best_val_tau.pt"
             torch.save(
                 {
@@ -1070,7 +1071,7 @@ class DeepTICACurriculumTrainer:
         if self.cfg.checkpoint_dir is None:
             return None
         ckpt_dir = Path(self.cfg.checkpoint_dir)
-        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        ensure_directory(ckpt_dir)
         csv_path = ckpt_dir / "curriculum_metrics.csv"
         with csv_path.open("w", newline="") as handle:
             writer = csv.writer(handle)

@@ -10,10 +10,11 @@ import pytest
 from pmarlo.api import demultiplex_run
 from pmarlo.io.trajectory_reader import MDTrajReader
 from pmarlo.utils.json_io import load_json_file
+from pmarlo.utils.path_utils import ensure_directory
 
 
 def _write_minimal_pdb(path: Path, n_atoms: int = 1) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(path.parent)
     lines: List[str] = []
     for i in range(n_atoms):
         # Simple CA-only atoms; PDB requires fixed-width fields
@@ -49,7 +50,7 @@ def _read_x_coords(path: Path, topology: Path) -> List[float]:
 
 
 def _write_exchange_csv(path: Path, rows: List[List[int]]) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(path.parent)
     with path.open("w", newline="") as f:
         writer = csv.writer(f)
         header = ["slice"] + [f"replica_for_T{i}" for i in range(len(rows[0]))]

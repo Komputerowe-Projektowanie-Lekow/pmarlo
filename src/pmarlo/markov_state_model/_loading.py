@@ -5,6 +5,7 @@ from typing import Callable, Sequence
 
 import mdtraj as md
 
+from pmarlo.utils.mdtraj import load_mdtraj_topology, resolve_atom_selection
 from pmarlo.utils.path_utils import resolve_project_path
 
 
@@ -70,29 +71,17 @@ class LoadingMixin:
         if atom_selection is None:
             return None
         topo_path = self._resolve_topology_path()
-        topo = md.load_topology(topo_path)
-        return self._parse_atom_selection(topo, atom_selection)
+        topo = load_mdtraj_topology(topo_path)
+        logger = getattr(self, "logger", None)
+        return resolve_atom_selection(
+            topo,
+            atom_selection,
+            logger=logger,
+            on_error="warn",
+        )
 
     def _resolve_topology_path(self):
         return resolve_project_path(self.topology_file)
-
-    def _parse_atom_selection(
-        self, topo: md.Topology, atom_selection: str | Sequence[int]
-    ) -> Sequence[int] | None:
-        if isinstance(atom_selection, str):
-            try:
-                sel = topo.select(atom_selection)
-                return [int(i) for i in sel]
-            except Exception as exc:  # pragma: no cover - defensive
-                import logging as _logging
-
-                _logging.getLogger("pmarlo").warning(
-                    "Failed atom selection '%s': %s; using all atoms",
-                    atom_selection,
-                    exc,
-                )
-                return None
-        return list(atom_selection)
 
     def _stream_single_trajectory(
         self,

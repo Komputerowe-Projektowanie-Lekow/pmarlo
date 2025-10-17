@@ -10,6 +10,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, cast
 
+from pmarlo.utils.path_utils import ensure_directory
+
 from .benchmark_utils import (
     build_remd_baseline_object,
     compute_threshold_comparison,
@@ -174,7 +176,7 @@ def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
 
     stats = remd.get_exchange_statistics()
 
-    run_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(run_dir)
     (run_dir / "remd").mkdir(exist_ok=True)
 
     with open(run_dir / "config.json", "w", encoding="utf-8") as f:

@@ -11,6 +11,7 @@ from pmarlo import constants as const
 from pmarlo.shards.discover import discover_shard_jsons
 from pmarlo.shards.id import canonical_shard_id
 from pmarlo.shards.meta import load_shard_meta
+from pmarlo.utils.path_utils import ensure_directory
 
 from .shard_id import ShardId
 
@@ -96,7 +97,7 @@ def rescan_shards(
     }
 
     out_path = Path(out_index_json)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out_path.parent)
     out_path.write_text(json.dumps(index_data, indent=2, sort_keys=True))
     return out_path
 
@@ -139,7 +140,7 @@ class ShardRegistry:
             return {"version": INDEX_VERSION, "roots": [], "entries": [], "count": 0}
 
     def save(self, data: Dict[str, object]) -> None:
-        self.index_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_directory(self.index_path.parent)
         self.index_path.write_text(json.dumps(data, indent=2, sort_keys=True))
 
     def rescan(self, roots: Sequence[Path]) -> Path:

@@ -14,6 +14,7 @@ from pmarlo.reporting.export import write_conformations_csv_json
 from pmarlo.reporting.plots import save_fes_contour, save_transition_matrix_heatmap
 from pmarlo.transform.build import AppliedOpts, BuildOpts, build_result
 from pmarlo.transform.plan import TransformPlan, TransformStep
+from pmarlo.utils.path_utils import ensure_directory
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 TESTS_DIR = BASE_DIR / "tests" / "data"
@@ -23,7 +24,7 @@ DCD_PATH = TESTS_DIR / "traj.dcd"
 OUT_DIR = (
     Path(__file__).resolve().parent / "programs_outputs" / "find_conformations_with_msm"
 )
-OUT_DIR.mkdir(parents=True, exist_ok=True)
+ensure_directory(OUT_DIR)
 
 
 def run_conformation_finder(

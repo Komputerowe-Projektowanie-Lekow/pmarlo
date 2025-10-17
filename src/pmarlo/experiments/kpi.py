@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from pmarlo import constants as const
+from pmarlo.utils.path_utils import ensure_directory
 
 
 def _ordered(obj: Dict[str, Any]) -> "OrderedDict[str, Any]":
@@ -77,7 +78,7 @@ def write_benchmark_json(
     Persist a benchmark record to benchmark.json under the run directory.
     """
     out_dir = Path(output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out_dir)
     out_path = out_dir / "benchmark.json"
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(record, f, indent=2)

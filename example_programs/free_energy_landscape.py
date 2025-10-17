@@ -16,13 +16,14 @@ from pathlib import Path
 from pmarlo import Protein, power_of_two_temperature_ladder
 from pmarlo.api import analyze_msm, run_replica_exchange
 from pmarlo.replica_exchange import config as demux_config
+from pmarlo.utils.path_utils import ensure_directory
 
 
 def main() -> None:
     base = Path(__file__).resolve().parents[1]
     pdb = base / "tests" / "data" / "3gd8-fixed.pdb"
     out = Path(__file__).parent / "programs_outputs" / "free_energy_landscape"
-    out.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out)
 
     # Prefer the streaming demux with stable defaults; examples remain fast
     demux_config.DEMUX_STREAMING_ENABLED = True

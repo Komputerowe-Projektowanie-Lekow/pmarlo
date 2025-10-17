@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, List, Optional, Tuple, cast
+from typing import List, Optional, Tuple, cast
 
 import numpy as np
 
 from ._msm_utils import (
+    _row_normalize,
+    _stationary_from_T,
     check_transition_matrix,
     ensure_connected_counts,
+    _row_normalize,
+    _stationary_from_T,
 )
 
 logger = logging.getLogger("pmarlo")
@@ -26,7 +30,7 @@ def build_simple_msm(
     """
     if not dtrajs:
         logger.error("build_simple_msm: No dtrajs provided")
-        return np.zeros((0, 0), dtype=float), np.zeros((0,), dtype=float)
+        return np.empty((0, 0), dtype=float), np.empty((0,), dtype=float)
 
     n_states = _infer_n_states(dtrajs, n_states)
     logger.info(f"build_simple_msm: Using {n_states} states")
@@ -85,7 +89,12 @@ def _fit_msm_deeptime(
     C_raw = np.asarray(count_model.count_matrix, dtype=float)
     res = ensure_connected_counts(C_raw)
     if res.counts.size == 0:
-        return _expand_results(n_states, res.active, np.zeros((0, 0)), np.zeros((0,)))
+        return _expand_results(
+            n_states,
+            res.active,
+            np.empty((0, 0), dtype=float),
+            np.empty((0,), dtype=float),
+        )
     T_active = _row_normalize(res.counts)
     pi_active = _stationary_from_T(T_active)
     return _expand_results(n_states, res.active, T_active, pi_active)
@@ -112,7 +121,12 @@ def _fit_msm_fallback(
             counts[a, b] += 1.0
     res = ensure_connected_counts(counts)
     if res.counts.size == 0:
-        return _expand_results(n_states, res.active, np.zeros((0, 0)), np.zeros((0,)))
+        return _expand_results(
+            n_states,
+            res.active,
+            np.empty((0, 0), dtype=float),
+            np.empty((0,), dtype=float),
+        )
     T_active = _row_normalize(res.counts)
     pi_active = _stationary_from_T(T_active)
     return _expand_results(n_states, res.active, T_active, pi_active)
@@ -128,23 +142,6 @@ def _expand_results(
         T_full[np.ix_(active, active)] = T_active
         pi_full[active] = pi_active
     return T_full, pi_full
-
-
-def _row_normalize(C: np.ndarray) -> np.ndarray[Any, Any]:
-    rows = C.sum(axis=1)
-    rows[rows == 0] = 1.0
-    return cast(np.ndarray[Any, Any], C / rows[:, None])
-
-
-def _stationary_from_T(T: np.ndarray) -> np.ndarray:
-    evals, evecs = np.linalg.eig(T.T)
-    idx = int(np.argmax(np.real(evals)))
-    pi = np.real(evecs[:, idx])
-    pi = np.abs(pi)
-    s = float(np.sum(pi))
-    if s > 0:
-        pi /= s
-    return cast(np.ndarray, pi)
 
 
 def pcca_like_macrostates(

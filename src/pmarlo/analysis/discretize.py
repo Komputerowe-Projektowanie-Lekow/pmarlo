@@ -660,7 +660,7 @@ def _compute_state_counts(
     weights: np.ndarray | None = None,
 ) -> np.ndarray:
     if n_states <= 0:
-        return np.zeros((0,), dtype=np.float64)
+        return np.empty((0,), dtype=np.float64)
     valid = (labels >= 0) & (labels < n_states)
     if not np.any(valid):
         return np.zeros((n_states,), dtype=np.float64)

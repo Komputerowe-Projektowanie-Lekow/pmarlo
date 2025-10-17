@@ -12,6 +12,7 @@ import numpy as np
 
 from pmarlo.transform.build import AppliedOpts, BuildOpts, build_result
 from pmarlo.transform.plan import TransformPlan, TransformStep
+from pmarlo.utils.path_utils import ensure_directory
 
 
 def main() -> None:
@@ -47,7 +48,7 @@ def main() -> None:
 
     # Persist and reload
     outdir = Path(__file__).parent / "programs_outputs" / "reproducible_build"
-    outdir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(outdir)
     outpath = outdir / "reproducible_build.json"
     outpath.write_text(result.to_json())
     print("Saved:", outpath)

@@ -17,6 +17,8 @@ from typing import Any, Optional, Protocol, Self
 
 import numpy as np
 
+from pmarlo.utils.mdtraj import load_mdtraj_topology
+
 from .trajectory_reader import MDTrajReader
 
 
@@ -315,7 +317,8 @@ class MDTrajDCDWriter:
     ):
         import mdtraj as md  # type: ignore
 
-        topo = md.load_topology(self.topology_path)
+        assert self.topology_path is not None
+        topo = load_mdtraj_topology(self.topology_path)
         joined: Optional[md.Trajectory] = None
         if old_len > 0:
             joined = self._join_existing_frames(reader, old_len, topo)
@@ -343,7 +346,8 @@ class MDTrajDCDWriter:
         try:
             import mdtraj as md  # type: ignore
 
-            topo = md.load_topology(self.topology_path)
+            assert self.topology_path is not None
+            topo = load_mdtraj_topology(self.topology_path)
             traj = md.Trajectory(coords, topo)
             traj.save_dcd(self._path)
         except Exception as exc:  # pragma: no cover - defensive
