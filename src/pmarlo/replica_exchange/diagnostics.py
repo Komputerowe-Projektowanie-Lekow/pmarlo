@@ -6,7 +6,7 @@ from typing import Any, Dict, List
 
 import numpy as np
 from scipy import optimize
-from scipy.special import erfc, erfcinv
+from scipy.special import erfc, erfcinv, softmax
 
 from pmarlo import constants as const
 from pmarlo.utils.path_utils import ensure_directory
@@ -201,29 +201,39 @@ def retune_temperature_ladder(
     else:
         scaled_initial = initial_deltas_arr * (total_span / initial_sum)
 
-    def objective(deltas: np.ndarray) -> float:
+    # Parameterise Δβ with a softmax so that the linear constraint
+    # ``sum(Δβ) = total_span`` is always satisfied while each component
+    # remains strictly positive. The initial guess is converted into the
+    # softmax parameter space to seed the non-linear solver.
+    initial_weights = scaled_initial / max(
+        const.NUMERIC_MIN_POSITIVE, float(np.sum(scaled_initial))
+    )
+    initial_weights = np.clip(initial_weights, const.NUMERIC_MIN_POSITIVE, None)
+    initial_weights /= float(np.sum(initial_weights))
+    params0 = np.log(initial_weights)
+
+    target_vec = np.full_like(sensitivities_arr, target_acceptance_clamped)
+
+    def _params_to_deltas(params: np.ndarray) -> np.ndarray:
+        weights = softmax(params)
+        return total_span * weights
+
+    def residuals(params: np.ndarray) -> np.ndarray:
+        deltas = _params_to_deltas(params)
         predicted = erfc(sensitivities_arr * deltas)
-        return float(np.sum((predicted - target_acceptance_clamped) ** 2))
+        return predicted - target_vec
 
-    lower = np.full_like(scaled_initial, const.NUMERIC_MIN_POSITIVE)
-    upper = np.full_like(scaled_initial, np.inf)
-    bounds = optimize.Bounds(lower, upper)
-    constraint = optimize.LinearConstraint(
-        np.ones((1, scaled_initial.size)), total_span, total_span
+    lsq = optimize.least_squares(
+        residuals,
+        params0,
+        method="trf",
     )
 
-    result = optimize.minimize(
-        objective,
-        scaled_initial,
-        method="SLSQP",
-        bounds=bounds,
-        constraints=[constraint],
-    )
+    optimized_params = params0
+    if lsq.success and np.all(np.isfinite(lsq.x)):
+        optimized_params = np.asarray(lsq.x, dtype=float)
 
-    optimized_deltas = np.asarray(scaled_initial, dtype=float)
-    if result.success and np.all(np.isfinite(result.x)):
-        optimized_deltas = np.asarray(result.x, dtype=float)
-
+    optimized_deltas = _params_to_deltas(optimized_params)
     predicted_acceptance = erfc(sensitivities_arr * optimized_deltas)
 
     new_betas = np.concatenate(
@@ -246,6 +256,7 @@ def retune_temperature_ladder(
                 "initial_delta_beta_estimate": float(init_delta),
                 "suggested_delta_beta": float(opt_delta),
                 "predicted_acceptance": float(pred_rate),
+                "residual": float(pred_rate - target_acceptance_clamped),
             }
         )
         print(
@@ -272,4 +283,9 @@ def retune_temperature_ladder(
         "global_acceptance": global_acceptance,
         "suggested_temperatures": suggested_temps,
         "pair_statistics": pair_stats,
+        "fit_residual_norm": (
+            float(np.linalg.norm(lsq.fun))
+            if lsq.success and lsq.fun is not None
+            else float(np.linalg.norm(residuals(params0)))
+        ),
     }

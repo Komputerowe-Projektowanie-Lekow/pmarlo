@@ -4,6 +4,7 @@ import logging
 from typing import Any, Dict, Mapping, MutableMapping, Sequence
 
 import numpy as np
+from scipy.linalg import fractional_matrix_power
 from sklearn.cross_decomposition import CCA
 from statsmodels.tsa.stattools import acf
 
@@ -81,25 +82,6 @@ def _validate_canonical_inputs(X: np.ndarray, Y: np.ndarray) -> int:
         raise InsufficientSamplesError(f"Need at least 2 paired samples, got {n}")
     return n
 
-
-def _center(X: np.ndarray) -> np.ndarray:
-    return X - np.mean(X, axis=0, keepdims=True)
-
-
-def _covariance(Xc: np.ndarray, n: int) -> np.ndarray:
-    """Delegate covariance estimation to :func:`numpy.cov` for robustness."""
-
-    if Xc.size == 0:
-        return np.zeros((Xc.shape[1], Xc.shape[1]), dtype=Xc.dtype)
-    if n <= 1:
-        return np.zeros((Xc.shape[1], Xc.shape[1]), dtype=Xc.dtype)
-    return np.cov(Xc, rowvar=False, ddof=1)
-
-
-def _inv_symmetric_sqrt(mat: np.ndarray, regularisation: float) -> np.ndarray:
-    eigvals, eigvecs = np.linalg.eigh(mat + regularisation * np.eye(mat.shape[0]))
-    eigvals = np.clip(eigvals, a_min=regularisation, a_max=None)
-    return eigvecs @ np.diag(1.0 / np.sqrt(eigvals)) @ eigvecs.T
 
 def _canonical_correlations(
     X: np.ndarray,
@@ -208,7 +190,10 @@ def _autocorrelation_curve(X: np.ndarray, taus: Sequence[int]) -> list[float]:
             continue
         try:
             acf_values = acf(series, nlags=max_tau, fft=True, missing="drop")
-        except (ValueError, np.linalg.LinAlgError) as exc:  # pragma: no cover - defensive
+        except (
+            ValueError,
+            np.linalg.LinAlgError,
+        ) as exc:  # pragma: no cover - defensive
             logger.warning(
                 "Autocorrelation: statsmodels acf failed for column %d (max_tau=%d): %s",
                 col,

@@ -164,15 +164,31 @@ class VAMP2Loss(nn.Module):
     def _stable_cholesky(self, mat: Tensor, eye: Tensor) -> Tuple[Tensor, Tensor]:
         """Compute a Cholesky factor with adaptive jitter for stability."""
 
-        updated = mat
+        base = mat
+        total_jitter = 0.0
         jitter = self.jitter
+
         for attempt in range(self.max_cholesky_retries):
-            try:
-                return torch.linalg.cholesky(updated, upper=False), updated
-            except RuntimeError:
-                if attempt + 1 >= self.max_cholesky_retries:
-                    raise
-                jitter = jitter if jitter > 0.0 else const.NUMERIC_MIN_POSITIVE
-                updated = updated + eye * jitter
-                jitter *= self.jitter_growth
+            if total_jitter > 0.0:
+                updated = base + eye * total_jitter
+            else:
+                updated = base
+
+            chol, info = torch.linalg.cholesky_ex(updated, upper=False)
+
+            if info.ndim == 0:
+                success = int(info.item()) == 0
+            else:
+                success = not torch.any(info > 0)
+
+            if success:
+                return chol, updated
+
+            if attempt + 1 >= self.max_cholesky_retries:
+                break
+
+            step = jitter if jitter > 0.0 else const.NUMERIC_MIN_POSITIVE
+            total_jitter += step
+            jitter = max(jitter, const.NUMERIC_MIN_POSITIVE) * self.jitter_growth
+
         raise RuntimeError("Cholesky decomposition failed after retries")

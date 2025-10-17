@@ -134,9 +134,7 @@ def apply_output_whitening(
     centered = outputs - mean
 
     covariance = _estimate_covariance(centered)
-    inv_sqrt, cond_c00 = _derive_whitening_transform(
-        covariance, eig_floor=eig_floor
-    )
+    inv_sqrt, cond_c00 = _derive_whitening_transform(covariance, eig_floor=eig_floor)
     output_var = centered.var(axis=0, ddof=1).astype(float).tolist()
 
     var_zt = output_var

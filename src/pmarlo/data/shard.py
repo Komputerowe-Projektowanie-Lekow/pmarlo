@@ -163,7 +163,9 @@ def read_shard(json_path: Path) -> tuple[ShardMeta, np.ndarray, np.ndarray | Non
             "periodic", [False for _ in range(len(columns))]
         )
     )
-    periodic = periodic if len(periodic) == len(columns) else tuple(False for _ in columns)
+    periodic = (
+        periodic if len(periodic) == len(columns) else tuple(False for _ in columns)
+    )
 
     created_at = str(shard.meta.provenance.get("created_at", "1970-01-01T00:00:00Z"))
     source = dict(shard.meta.provenance.get("source", {}))

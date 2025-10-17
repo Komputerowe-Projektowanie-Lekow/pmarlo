@@ -8,7 +8,9 @@ from typing import Any, ClassVar, Optional, Tuple
 import numpy as np
 from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter
-from scipy.stats import gaussian_kde
+from scipy.stats import iqr
+from scipy.stats.mstats import mquantiles
+from statsmodels.nonparametric.kernel_density import KDEMultivariate
 
 from pmarlo import constants as const
 from pmarlo.utils.thermodynamics import kT_kJ_per_mol
@@ -303,30 +305,6 @@ def free_energy_from_density(
 logger = logging.getLogger(__name__)
 
 
-class _FixedBandwidthKDE(gaussian_kde):
-    """A :class:`gaussian_kde` with an explicit diagonal covariance matrix."""
-
-    def __init__(self, dataset: np.ndarray, bandwidth: Tuple[float, float]) -> None:
-        self._bandwidth = np.asarray(bandwidth, dtype=np.float64)
-        super().__init__(dataset, bw_method=lambda: 1.0)
-        if self._bandwidth.shape != (self.d,):
-            raise ValueError(
-                "bandwidth must define one standard deviation per dimension"
-            )
-        self._apply_fixed_bandwidth()
-
-    def _apply_fixed_bandwidth(self) -> None:
-        covariance = np.diag(self._bandwidth ** 2)
-        inv_covariance = np.diag(1.0 / (self._bandwidth ** 2))
-        self.factor = 1.0
-        self.covariance = covariance
-        self.inv_cov = inv_covariance
-        self._covariance = covariance
-        self._inv_cov = inv_covariance
-        self._data_covariance = covariance
-        self._norm_factor = float(np.sqrt(np.linalg.det(2.0 * np.pi * covariance)))
-
-
 def periodic_kde_2d(
     theta_x: np.ndarray,
     theta_y: np.ndarray,
@@ -366,19 +344,23 @@ def periodic_kde_2d(
         np.float64, copy=False
     )
     X, Y = np.meshgrid(x_grid, y_grid, indexing="ij")
-    grid_points = np.vstack((X.ravel(), Y.ravel()))
+    evaluation_grid = np.column_stack((X.ravel(), Y.ravel()))
 
-    kde = _FixedBandwidthKDE(np.vstack((x, y)), bandwidth=(sx, sy))
+    base_data = np.column_stack((x, y))
+    # Replicate the dataset across torus tiles so that samples near the
+    # boundaries contribute smoothly in periodic coordinates.
+    shift_values = np.array([-2.0 * np.pi, 0.0, 2.0 * np.pi], dtype=np.float64)
+    tiled_data = np.vstack(
+        [
+            base_data + np.array([dx, dy], dtype=np.float64)
+            for dx in shift_values
+            for dy in shift_values
+        ]
+    )
 
-    shifts = (-2.0 * np.pi, 0.0, 2.0 * np.pi)
-    density_flat = np.zeros(grid_points.shape[1], dtype=np.float64)
-    for dx in shifts:
-        for dy in shifts:
-            shift_vec = np.array([[dx], [dy]], dtype=np.float64)
-            density_flat += kde.evaluate(grid_points - shift_vec)
-
-    density = density_flat.reshape(X.shape)
-    return density.astype(np.float64, copy=False)
+    kde = KDEMultivariate(tiled_data, var_type="cc", bw=[sx, sy])
+    density = kde.pdf(evaluation_grid)
+    return density.reshape(X.shape).astype(np.float64, copy=False)
 
 
 def generate_1d_pmf(
@@ -473,14 +455,16 @@ def generate_2d_fes(  # noqa: C901
         # Adaptive percentile clipping to reduce outlier-driven empty bins
         try:
             if not any(periodic):
-                x_p1, x_p99 = np.percentile(x, [1.0, 99.0])
-                y_p1, y_p99 = np.percentile(y, [1.0, 99.0])
-                if np.isfinite([x_p1, x_p99]).all() and x_p99 > x_p1:
-                    xr = (float(x_p1), float(x_p99))
+                x_quantiles = mquantiles(x, prob=[0.01, 0.99]).filled(np.nan)
+                y_quantiles = mquantiles(y, prob=[0.01, 0.99]).filled(np.nan)
+                x_q = np.asarray(x_quantiles, dtype=np.float64)
+                y_q = np.asarray(y_quantiles, dtype=np.float64)
+                if np.isfinite(x_q).all() and x_q[1] > x_q[0]:
+                    xr = (float(x_q[0]), float(x_q[1]))
                 else:
                     xr = (float(np.min(x)), float(np.max(x)))
-                if np.isfinite([y_p1, y_p99]).all() and y_p99 > y_p1:
-                    yr = (float(y_p1), float(y_p99))
+                if np.isfinite(y_q).all() and y_q[1] > y_q[0]:
+                    yr = (float(y_q[0]), float(y_q[1]))
                 else:
                     yr = (float(np.min(y)), float(np.max(y)))
                 # Clip samples into the selected range to keep edge bins populated
@@ -512,19 +496,23 @@ def generate_2d_fes(  # noqa: C901
     n_pts = int(x.shape[0])
     min_bins = 40
     max_bins = 512
+    eps = float(epsilon)
     # sqrt rule baseline
     sqrt_bins = max(min_bins, int(np.sqrt(max(1, n_pts))))
 
-    # Freedman–Diaconis per axis via NumPy helper to avoid custom logic
+    # Freedman–Diaconis per axis computed via SciPy helper to avoid custom logic
     def _fd_bins(arr: NDArray[np.float64], value_range: Tuple[float, float]) -> int:
-        try:
-            edges = np.histogram_bin_edges(arr, bins="fd", range=value_range)
-        except (ValueError, TypeError):
+        arr = np.asarray(arr, dtype=np.float64)
+        span = float(value_range[1] - value_range[0])
+        if arr.size <= 1 or not np.isfinite(span) or span <= 0:
             return 0
-        if edges.size <= 1 or not np.all(np.isfinite(edges)):
+        bandwidth = 2.0 * iqr(arr, rng=(25, 75), scale="raw", nan_policy="omit")
+        bandwidth /= np.cbrt(max(1, arr.size))
+        if not np.isfinite(bandwidth) or bandwidth <= eps:
             return 0
-        # Clip to sensible bounds to avoid overly coarse/fine binning
-        nb = int(edges.size - 1)
+        nb = int(np.ceil(span / bandwidth))
+        if nb <= 0:
+            return 0
         return int(np.clip(nb, min_bins, max_bins))
 
     bx_fd = _fd_bins(x, xr)

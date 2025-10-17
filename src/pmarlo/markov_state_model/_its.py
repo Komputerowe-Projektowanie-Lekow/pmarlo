@@ -620,35 +620,61 @@ class ITSMixin:
     def _bayesian_transition_samples(
         self, counts: np.ndarray, n_samples: int
     ) -> np.ndarray:
-        C_rev = 0.5 * (counts + counts.T)
-        row_sums = C_rev.sum(axis=1, keepdims=True)
+        from typing import cast
 
-        rng_seed = getattr(self, "random_state", None)
-        rng: np.random.Generator | None
-        if rng_seed is None:
-            rng = None
-        else:
-            rng = np.random.default_rng(int(rng_seed))
+        counts = np.asarray(counts, dtype=float)
+        if counts.size == 0 or n_samples <= 0:
+            return np.empty((0, counts.shape[0], counts.shape[1]), dtype=float)
 
-        dirichlet_samples = [
-            _scipy_dirichlet.rvs(alpha=row, size=n_samples, random_state=rng)
-            for row in C_rev
-        ]
-        matrices_arr = np.stack(dirichlet_samples, axis=1)
-
-        counts_samples = matrices_arr * row_sums[np.newaxis, :, :]
-        sym_counts = 0.5 * (counts_samples + np.transpose(counts_samples, (0, 2, 1)))
-        row_totals = sym_counts.sum(axis=2, keepdims=True)
-
-        with np.errstate(divide="ignore", invalid="ignore"):
-            matrices = np.divide(
-                sym_counts,
-                row_totals,
-                out=np.zeros_like(sym_counts),
-                where=row_totals > 0,
+        try:
+            from deeptime.markov.tools.estimation import (
+                transition_matrix_sampler as _dt_transition_matrix_sampler,
             )
 
-        return matrices.astype(float)
+            sampler = _dt_transition_matrix_sampler(
+                counts,
+                reversible=True,
+                nsteps=None,
+            )
+            matrices = sampler.sample(nsamples=int(max(1, n_samples)))
+            matrices = np.asarray(matrices, dtype=float)
+            if matrices.ndim == 2:
+                matrices = matrices[np.newaxis, :, :]
+            return cast(np.ndarray, matrices)
+        except Exception:
+            # Fall back to the previous symmetric Dirichlet construction if
+            # deeptime is unavailable or sampling fails.
+            C_rev = 0.5 * (counts + counts.T)
+            row_sums = C_rev.sum(axis=1, keepdims=True)
+
+            rng_seed = getattr(self, "random_state", None)
+            rng: np.random.Generator | None
+            if rng_seed is None:
+                rng = None
+            else:
+                rng = np.random.default_rng(int(rng_seed))
+
+            dirichlet_samples = [
+                _scipy_dirichlet.rvs(alpha=row, size=n_samples, random_state=rng)
+                for row in C_rev
+            ]
+            matrices_arr = np.stack(dirichlet_samples, axis=1)
+
+            counts_samples = matrices_arr * row_sums[np.newaxis, :, :]
+            sym_counts = 0.5 * (
+                counts_samples + np.transpose(counts_samples, (0, 2, 1))
+            )
+            row_totals = sym_counts.sum(axis=2, keepdims=True)
+
+            with np.errstate(divide="ignore", invalid="ignore"):
+                matrices = np.divide(
+                    sym_counts,
+                    row_totals,
+                    out=np.zeros_like(sym_counts),
+                    where=row_totals > 0,
+                )
+
+            return matrices.astype(float)
 
     def _summarize_its_stats(
         self,
@@ -668,32 +694,87 @@ class ITSMixin:
         np.ndarray,
         np.ndarray,
     ]:
+        try:
+            from deeptime.markov.tools.analysis import eigenvalues as _dt_eigenvalues
+            from deeptime.markov.tools.analysis import (
+                stationary_distribution as _dt_stationary_distribution,
+            )
+            from deeptime.markov.tools.analysis import timescales as _dt_timescales
+        except Exception:  # pragma: no cover - optional dependency fallback
+            _dt_eigenvalues = _dt_stationary_distribution = _dt_timescales = None
+
         eig_samples: list[np.ndarray] = []
+        ts_samples: list[np.ndarray] = []
         for T in matrices_arr:
-            # Compute stationary distribution robustly as the leading left eigenvector
-            try:
-                evals, evecs = np.linalg.eig(T.T)
-                idx1 = int(np.argmax(np.real(evals)))
-                v = np.real(evecs[:, idx1]).astype(float)
-                v = np.where(v < 0, -v, v)
-                if np.allclose(v, 0):
-                    raise ValueError
-                pi = v / np.sum(v)
-            except Exception:
-                pi = np.full((T.shape[0],), 1.0 / max(1, T.shape[0]))
-            sym = np.diag(np.sqrt(pi)) @ T @ np.diag(1.0 / np.sqrt(pi))
-            sym = 0.5 * (sym + sym.T)
-            eigenvals = np.linalg.eigvalsh(sym)
-            eigenvals = np.sort(eigenvals)[::-1]
-            eig = eigenvals[1 : n_timescales + 1]
-            # Robustify against tiny negative rounding; keep within (0,1)
+            arr = np.asarray(T, dtype=float)
+            if arr.size == 0:
+                eig_samples.append(np.empty((0,), dtype=float))
+                ts_samples.append(np.empty((0,), dtype=float))
+                continue
+
+            n_eval = int(max(0, n_timescales))
+
+            if _dt_stationary_distribution is not None:
+                try:
+                    pi = np.asarray(
+                        _dt_stationary_distribution(arr, check_inputs=False),
+                        dtype=float,
+                    )
+                    if pi.size == 0 or not np.all(np.isfinite(pi)):
+                        raise ValueError
+                except Exception:
+                    pi = np.full((arr.shape[0],), 1.0 / max(1, arr.shape[0]))
+            else:
+                pi = np.full((arr.shape[0],), 1.0 / max(1, arr.shape[0]))
+
+            evals: np.ndarray
+            if _dt_eigenvalues is not None:
+                try:
+                    k_request = n_eval + 1 if n_eval > 0 else 1
+                    if k_request >= arr.shape[0]:
+                        evals = np.asarray(_dt_eigenvalues(arr, k=None), dtype=complex)
+                    else:
+                        evals = np.asarray(
+                            _dt_eigenvalues(arr, k=k_request), dtype=complex
+                        )
+                except Exception:
+                    evals = np.linalg.eigvals(arr.T)
+            else:
+                evals = np.linalg.eigvals(arr.T)
+
+            order = np.argsort(-np.real(evals))
+            evals = np.asarray(evals[order], dtype=complex)
+            eig = np.real(evals[1 : 1 + n_eval]) if n_eval > 0 else np.empty((0,))
             eig = np.clip(
                 np.abs(eig),
                 const.NUMERIC_MIN_POSITIVE,
                 1.0 - const.NUMERIC_MIN_POSITIVE,
             )
-            eig_samples.append(eig)
+            eig_samples.append(eig.astype(float))
+
+            if n_eval > 0:
+                if _dt_timescales is not None:
+                    try:
+                        ts = np.asarray(
+                            _dt_timescales(
+                                arr,
+                                tau=int(max(1, lag)),
+                                k=n_eval,
+                                mu=pi,
+                                reversible=True,
+                            ),
+                            dtype=float,
+                        )
+                    except Exception:
+                        ts = safe_timescales(lag, eig)
+                else:
+                    ts = safe_timescales(lag, eig)
+            else:
+                ts = np.empty((0,), dtype=float)
+            ts_samples.append(np.asarray(ts, dtype=float))
+
         eig_arr = np.asarray(eig_samples, dtype=float)
+        ts_arr = np.asarray(ts_samples, dtype=float)
 
         import warnings as _warnings
 
@@ -703,8 +784,6 @@ class ITSMixin:
             eval_med = np.nanmedian(eig_arr, axis=0)
             eval_lo = np.nanpercentile(eig_arr, q_low, axis=0)
             eval_hi = np.nanpercentile(eig_arr, q_high, axis=0)
-
-            ts_arr = safe_timescales(lag, eig_arr)
             rate_arr = np.reciprocal(
                 ts_arr, where=np.isfinite(ts_arr), out=np.full_like(ts_arr, np.nan)
             )

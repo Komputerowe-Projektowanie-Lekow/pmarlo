@@ -8,7 +8,11 @@ from pmarlo.demultiplexing.exchange_validation import normalize_exchange_mapping
 def test_normalize_exchange_mapping_accepts_valid_values() -> None:
     mapping = ["0", 1, 2]
 
-    assert normalize_exchange_mapping(mapping, expected_size=3, context="slice=5") == [0, 1, 2]
+    assert normalize_exchange_mapping(mapping, expected_size=3, context="slice=5") == [
+        0,
+        1,
+        2,
+    ]
 
 
 def test_normalize_exchange_mapping_rejects_non_integer_entries() -> None:

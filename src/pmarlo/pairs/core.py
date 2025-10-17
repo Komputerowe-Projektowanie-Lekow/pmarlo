@@ -9,6 +9,7 @@ import numpy as np
 
 from pmarlo.utils.array import concatenate_or_empty
 
+
 @dataclass(slots=True)
 class PairInfo:
     idx_t: np.ndarray
