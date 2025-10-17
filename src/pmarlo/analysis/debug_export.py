@@ -350,9 +350,10 @@ def _normalise_shard_info(shards: Iterable[Mapping[str, Any]]) -> List[Dict[str,
         start = int(raw.get("start", 0))
         stop = int(raw.get("stop", start))
         length = max(0, stop - start)
+        if "id" not in raw:
+            raise ValueError("Shard metadata is missing required 'id' field")
         entry = {
-            "id": str(raw.get("id", raw.get("legacy_id", ""))),
-            "legacy_id": str(raw.get("legacy_id", "")),
+            "id": str(raw["id"]),
             "start": start,
             "stop": stop,
             "length": length,

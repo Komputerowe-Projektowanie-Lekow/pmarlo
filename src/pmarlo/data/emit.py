@@ -144,16 +144,22 @@ def emit_shards_from_trajectories(
         }
         seed = shard_state.seed_for(shard_index)
         source = dict(source_info)
-        replica_id = int(source.get("replica_id", 0))
-        segment_id = int(source.get("segment_id", shard_index))
+        required_keys = {"kind", "run_id", "segment_id", "replica_id"}
+        missing_keys = required_keys - set(source)
+        if missing_keys:
+            raise ValueError(
+                f"extract_cvs must provide source metadata keys: {sorted(missing_keys)}"
+            )
+        replica_id = int(source["replica_id"])
+        segment_id = int(source["segment_id"])
         exchange_window_id = int(source.get("exchange_window_id", 0))
-        source.setdefault("replica_id", replica_id)
-        source.setdefault("segment_id", segment_id)
-        source.setdefault("exchange_window_id", exchange_window_id)
-        source.setdefault("seed", seed)
-        source.setdefault("n_frames", n_frames)
+        source["replica_id"] = replica_id
+        source["segment_id"] = segment_id
+        source["exchange_window_id"] = exchange_window_id
+        source["seed"] = int(seed)
+        source["n_frames"] = n_frames
         ordered_periodic = [bool(periodic_flags.get(name, False)) for name in column_order]
-        source.setdefault("periodic", ordered_periodic)
+        source["periodic"] = ordered_periodic
         t_kelvin = int(round(float(temperature)))
         shard_id = f"T{t_kelvin}K_seg{segment_id:04d}_rep{replica_id:03d}"
         json_path = write_shard(

@@ -10,7 +10,6 @@ from pmarlo import emit_shards_from_trajectories, read_shard
 
 def _deterministic_extractor_factory():
     def _extract(p: Path) -> Tuple[Dict[str, np.ndarray], np.ndarray | None, Dict]:
-        # Derive a small integer from filename to perturb arrays deterministically
         stem = p.stem
         try:
             idx = int("".join([c for c in stem if c.isdigit()]) or 0)
@@ -20,7 +19,16 @@ def _deterministic_extractor_factory():
         phi = np.linspace(-np.pi, np.pi, n) + 0.01 * idx
         psi = np.sin(np.linspace(0, 2 * np.pi, n)) + 0.02 * idx
         cvs = {"phi": phi, "psi": psi}
-        return cvs, None, {"note": f"traj:{stem}", "created_at": "1970-01-01T00:00:00Z"}
+        source = {
+            "note": f"traj:{stem}",
+            "created_at": "1970-01-01T00:00:00Z",
+            "kind": "demux",
+            "run_id": "emit-test",
+            "segment_id": idx,
+            "replica_id": 0,
+            "exchange_window_id": 0,
+        }
+        return cvs, None, source
 
     return _extract
 
@@ -44,15 +52,15 @@ def test_emit_three_shards(tmp_path: Path):
     assert len(json_paths) == 3
     hashes = []
     for j, jp in enumerate(json_paths):
-        meta, X, dtraj = read_shard(jp)
+        details, X, dtraj = read_shard(jp)
         assert dtraj is None
         assert X.shape[1] == 2
-        assert tuple(meta.cv_names) == ("phi", "psi")
-        assert tuple(meta.periodic) == (True, False)
-        assert meta.seed == 10 + j
-        hashes.append(meta.arrays_hash)
+        assert details.cv_names == ("phi", "psi")
+        assert details.periodic == (True, False)
+        assert details.source["seed"] == 10 + j
+        hashes.append((X.copy(), dtraj))
     # arrays differ due to the idx perturbation
-    assert len(set(hashes)) == 3
+    assert len({tuple(arr[0].ravel()) for arr in hashes}) == 3
 
 
 def test_faulty_extractor_raises(tmp_path: Path):

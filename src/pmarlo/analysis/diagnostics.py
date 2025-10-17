@@ -6,8 +6,6 @@ from typing import Any, Dict, Mapping, MutableMapping, Sequence
 import numpy as np
 from scipy.linalg import fractional_matrix_power
 from sklearn.cross_decomposition import CCA
-from statsmodels.tsa.stattools import acf
-
 from pmarlo import constants as const
 
 from .discretize import _coerce_array, _normalise_splits
@@ -22,7 +20,7 @@ _TAU_SEQUENCE: tuple[int, ...] = (
     10,
     20,
     40,
-)  # legacy base candidate lags (kept for backwards compatibility only)
+)  # historical base candidate lags retained for compatibility
 
 
 class CanonicalCorrelationError(ValueError):
@@ -156,12 +154,35 @@ def _validate_autocorr_input(X: np.ndarray) -> np.ndarray | None:
     return X - np.mean(X, axis=0, keepdims=True)
 
 
+def _autocorrelation_1d(series: np.ndarray, max_lag: int) -> np.ndarray:
+    """Compute unbiased autocorrelation for lags up to ``max_lag``."""
+
+    if max_lag < 0:
+        raise ValueError("max_lag must be non-negative")
+    x = np.asarray(series, dtype=np.float64).reshape(-1)
+    n = int(x.size)
+    if n <= 1:
+        raise ValueError("need at least two samples to compute autocorrelation")
+    if max_lag >= n:
+        max_lag = n - 1
+    centered = x - np.mean(x, dtype=np.float64)
+    variance = float(np.dot(centered, centered) / n)
+    if variance <= 0.0:
+        return np.ones(max_lag + 1, dtype=np.float64)
+
+    result = np.empty(max_lag + 1, dtype=np.float64)
+    for lag in range(max_lag + 1):
+        length = n - lag
+        cov = np.dot(centered[:length], centered[lag:]) / length
+        result[lag] = cov / variance
+    return result
+
+
 def _autocorrelation_curve(X: np.ndarray, taus: Sequence[int]) -> list[float]:
     """Compute autocorrelation curve across provided lags.
 
-    Applies input validation then delegates lag calculations to
-    :func:`statsmodels.tsa.stattools.acf` for each feature, averaging the
-    resulting autocorrelation estimates across dimensions.
+    Applies input validation then estimates lag correlations for each feature,
+    averaging the resulting autocorrelation estimates across dimensions.
     """
     Xc = _validate_autocorr_input(X)
     if Xc is None:
@@ -179,6 +200,14 @@ def _autocorrelation_curve(X: np.ndarray, taus: Sequence[int]) -> list[float]:
         return [float("nan") for _ in taus]
 
     feature_curves: list[np.ndarray] = []
+    effective_max = min(max_tau, Xc.shape[0] - 1)
+    if effective_max < max_tau:
+        logger.warning(
+            "Autocorrelation: clipping max tau from %d to %d due to sample length %d",
+            max_tau,
+            effective_max,
+            Xc.shape[0],
+        )
     for col in range(n_features):
         series = np.asarray(Xc[:, col], dtype=np.float64)
         if not np.isfinite(series).all():
@@ -189,21 +218,21 @@ def _autocorrelation_curve(X: np.ndarray, taus: Sequence[int]) -> list[float]:
             feature_curves.append(np.full(len(taus), np.nan, dtype=np.float64))
             continue
         try:
-            acf_values = acf(series, nlags=max_tau, fft=True, missing="drop")
-        except (
-            ValueError,
-            np.linalg.LinAlgError,
-        ) as exc:  # pragma: no cover - defensive
+            acf_values = _autocorrelation_1d(series, effective_max)
+        except ValueError as exc:  # pragma: no cover - defensive safeguard
             logger.warning(
-                "Autocorrelation: statsmodels acf failed for column %d (max_tau=%d): %s",
+                "Autocorrelation: failed for column %d (max_tau=%d): %s",
                 col,
-                max_tau,
+                effective_max,
                 exc,
             )
             feature_curves.append(np.full(len(taus), np.nan, dtype=np.float64))
             continue
         column_curve = np.array(
-            [acf_values[tau] if tau < len(acf_values) else np.nan for tau in taus],
+            [
+                acf_values[tau] if tau <= effective_max else float("nan")
+                for tau in taus
+            ],
             dtype=np.float64,
         )
         feature_curves.append(column_curve)

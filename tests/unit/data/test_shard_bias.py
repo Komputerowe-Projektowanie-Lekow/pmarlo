@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from pmarlo import read_shard, write_shard
 from pmarlo.utils.path_utils import ensure_directory
@@ -29,20 +30,29 @@ def test_write_with_bias_and_read_sets_flags(tmp_path: Path):
     psi = np.sin(np.linspace(0, 2 * np.pi, n))
     bias = np.linspace(0.0, 1.0, n)
 
+    shard_id = "T300K_seg0000_rep000"
+    source = {
+        "created_at": "1970-01-01T00:00:00Z",
+        "kind": "demux",
+        "run_id": "test-run",
+        "segment_id": 0,
+        "replica_id": 0,
+        "exchange_window_id": 0,
+    }
     jp = write_shard(
         out_dir=out,
-        shard_id="shard_0000",
+        shard_id=shard_id,
         cvs={"phi": phi, "psi": psi},
         dtraj=None,
         periodic={"phi": True, "psi": False},
         seed=123,
         temperature=300.0,
-        source={"created_at": "1970-01-01T00:00:00Z"},
+        source=source,
         bias_potential=bias,
     )
 
     # NPZ contains bias_potential array with matching length
-    npz_path = jp.with_name("shard_0000.npz")
+    npz_path = jp.with_suffix(".npz")
     with np.load(npz_path) as z:
         assert "bias_potential" in z.files
         assert z["bias_potential"].shape == (n,)
@@ -52,7 +62,7 @@ def test_write_with_bias_and_read_sets_flags(tmp_path: Path):
     assert X.shape == (n, 2)
     # Source carries explicit flags
     assert bool(meta.source.get("has_bias")) is True
-    assert float(meta.source.get("temperature_K", 0.0)) == 300.0
+    assert meta.temperature_K == pytest.approx(300.0)
 
 
 def test_read_shard_compatibility_missing_bias_key(tmp_path: Path):
@@ -84,9 +94,5 @@ def test_read_shard_compatibility_missing_bias_key(tmp_path: Path):
         json.dumps(meta, sort_keys=True, separators=(",", ":"))
     )
 
-    meta_read, X_read, dtraj_read = read_shard(out / f"{shard_id}.json")
-    assert dtraj_read is None
-    np.testing.assert_allclose(X_read, X)
-    # Reader derives has_bias=False and populates temperature_K
-    assert bool(meta_read.source.get("has_bias")) is False
-    assert float(meta_read.source.get("temperature_K", 0.0)) == 310.0
+    with pytest.raises(KeyError):
+        read_shard(out / f"{shard_id}.json")

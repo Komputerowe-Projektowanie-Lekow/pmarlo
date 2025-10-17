@@ -4,8 +4,8 @@ Architecture notes for REMD demultiplexing (demux) and trajectory handling.
 This module intentionally contains only comments. It serves as lightweight
 documentation for the current demultiplexing implementation and its
 collaborators to guide future refactors toward a streaming, memory‑efficient,
-and resilient design, while preserving backwards compatibility of the public
-API.
+and resilient design centred on a single streaming implementation that fails
+fast when prerequisites are missing.
 
 Current data flow
 -----------------
@@ -94,10 +94,10 @@ Global assumptions
 
 Notes for future refactor
 -------------------------
-- Introduce streaming demux: iterate over segments and write frames in chunks
-  to an output writer that supports appends or a rolling buffer to cap memory.
+- Continue refining the streaming demux: iterate over segments and write frames
+  in chunks via writers that support append-like behaviour to cap memory.
 - Detect and adapt to the capabilities of the chosen trajectory writer (e.g.,
-  lack of append support) at runtime; document fallbacks and limitations in
+  lack of append support) at runtime; document limitations and failure modes in
   metadata and logs.
 - Tighten invariants and metadata validation (e.g., cross‑checking strides and
   frame counts) and centralize error types.

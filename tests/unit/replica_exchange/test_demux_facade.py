@@ -9,8 +9,8 @@ import pytest
 
 pytest.importorskip("sklearn")
 
-from pmarlo.replica_exchange import config as demux_config
 from pmarlo.replica_exchange.replica_exchange import ReplicaExchange
+from pmarlo.replica_exchange import config as demux_config
 
 
 def _make_minimal_traj(tmp_path: Path, n_frames: int = 2):
@@ -54,13 +54,7 @@ def test_demux_facade_streaming_enabled(tmp_path: Path):
     pdb, dcd0, dcd1 = _make_minimal_traj(tmp_path)
     remd = _build_minimal_remd(pdb, dcd0, dcd1, tmp_path)
 
-    # Toggle feature flag ON
-    prev = demux_config.DEMUX_STREAMING_ENABLED
-    demux_config.DEMUX_STREAMING_ENABLED = True
-    try:
-        path = remd.demux_trajectories(target_temperature=300.0, equilibration_steps=0)
-    finally:
-        demux_config.DEMUX_STREAMING_ENABLED = prev
+    path = remd.demux_trajectories(target_temperature=300.0, equilibration_steps=0)
 
     assert path is not None
     meta_path = Path(path).with_suffix(".meta.json")
@@ -71,8 +65,7 @@ def test_demux_facade_streaming_enabled(tmp_path: Path):
     traj = md.load(str(path), top=pdb)
     assert traj.n_frames == 2
 
-
-def test_demux_facade_streaming_disabled(tmp_path: Path):
+def test_demux_facade_config_flag_is_ignored(tmp_path: Path):
     pdb, dcd0, dcd1 = _make_minimal_traj(tmp_path)
     remd = _build_minimal_remd(pdb, dcd0, dcd1, tmp_path)
 
@@ -87,7 +80,6 @@ def test_demux_facade_streaming_disabled(tmp_path: Path):
     meta_path = Path(path).with_suffix(".meta.json")
     assert meta_path.exists()
     data = json.loads(meta_path.read_text())
-    # Even legacy path uses v2 serializer type by class default
     assert data.get("schema_version") == 2
     traj = md.load(str(path), top=pdb)
     assert traj.n_frames == 2
