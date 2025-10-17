@@ -133,7 +133,12 @@ def pcca_like_macrostates(
     _ = random_state  # Preserved for API compatibility; no stochastic alternative path.
     from deeptime.markov import pcca as _pcca  # type: ignore
 
-    model = _pcca(np.asarray(T, dtype=float), n_metastable_sets=int(n_macrostates))
+    P = np.asarray(T, dtype=float)
+    n_sets = int(n_macrostates)
+    try:
+        model = _pcca(P, n_metastable_sets=n_sets)
+    except TypeError:
+        model = _pcca(P, n_sets)
     chi = np.asarray(model.memberships, dtype=float)
     labels = np.argmax(chi, axis=1)
     labels = _canonicalize_macro_labels(labels.astype(int), T)

@@ -65,7 +65,7 @@ def _extract_missing_modules(exc: BaseException) -> List[str]:
         if key in seen:
             return
         seen.add(key)
-        if isinstance(err, ModuleNotFoundError):
+        if isinstance(err, (ModuleNotFoundError, ImportError)):
             name = getattr(err, "name", None)
             if name:
                 names.add(str(name).split(".")[0])
@@ -396,6 +396,11 @@ def _classify_training_failure(exc: BaseException) -> Tuple[str, Dict[str, Any]]
         payload["missing"] = missing
         return _format_missing_reason(missing), payload
     name = exc.__class__.__name__
+    message = str(exc)
+    if "DeviceDtypeModuleMixin" in message or "DeviceDtypeModuleMixin" in name:
+        mods = missing or ["lightning"]
+        payload["missing"] = mods
+        return _format_missing_reason(mods), payload
     if "PmarloApiIncompatibilityError" in name:
         return "api_incompatibility", payload
     return "exception", payload

@@ -13,6 +13,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from _example_support import assets_path, ensure_src_on_path
+
+ensure_src_on_path()
+
 from pmarlo import Protein, power_of_two_temperature_ladder
 from pmarlo.api import analyze_msm, run_replica_exchange
 from pmarlo.replica_exchange import config as demux_config
@@ -20,8 +24,7 @@ from pmarlo.utils.path_utils import ensure_directory
 
 
 def main() -> None:
-    base = Path(__file__).resolve().parents[1]
-    pdb = base / "tests" / "data" / "3gd8-fixed.pdb"
+    pdb = assets_path("3gd8-fixed.pdb")
     out = Path(__file__).parent / "programs_outputs" / "free_energy_landscape"
     ensure_directory(out)
 

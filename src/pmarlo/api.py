@@ -1618,7 +1618,8 @@ def emit_shards_rg_rmsd_windowed(
             traj_path,
             write_shard,
             temperature,
-            provenance,
+            replica_id=index,
+            provenance=provenance,
         )
         shard_paths.extend(window_paths)
 
@@ -1772,6 +1773,7 @@ def _emit_windows(
     traj_path: Path,
     write_shard: Callable[..., Path],
     temperature: float,
+    replica_id: int,
     provenance: dict | None,
 ) -> tuple[list[Path], int]:
     """Write overlapping shards for the provided CV time-series."""
@@ -1781,24 +1783,38 @@ def _emit_windows(
     if n_frames <= 0:
         return shard_paths, next_idx
 
+    if provenance is None:
+        raise ValueError("provenance metadata is required for shard emission")
+
+    base_provenance = dict(provenance)
+    required_keys = ("created_at", "kind", "run_id")
+    missing = [key for key in required_keys if key not in base_provenance]
+    if missing:
+        keys = ", ".join(sorted(missing))
+        raise ValueError(f"provenance missing required keys: {keys}")
+
     eff_window = min(window, n_frames)
     eff_hop = min(hop, eff_window)
     for start in range(0, n_frames - eff_window + 1, eff_hop):
         stop = start + eff_window
-        shard_id = f"shard_{next_idx:04d}"
+        segment_id = int(next_idx)
+        shard_id = "T{temp}K_seg{segment:04d}_rep{replica:03d}".format(
+            temp=int(round(float(temperature))),
+            segment=segment_id,
+            replica=int(replica_id),
+        )
         cvs = {"Rg": rg[start:stop], "RMSD_ref": rmsd[start:stop]}
         source: dict[str, object] = {
             "traj": str(traj_path),
             "range": [int(start), int(stop)],
             "n_frames": int(stop - start),
+            "segment_id": segment_id,
+            "replica_id": int(replica_id),
+            "exchange_window_id": int(base_provenance.get("exchange_window_id", 0)),
         }
-        if provenance:
-            try:
-                merged = dict(provenance)
-                merged.update(source)
-                source = merged
-            except Exception:
-                pass
+        merged = dict(base_provenance)
+        merged.update(source)
+        source = merged
         shard_path = write_shard(
             out_dir=out_dir,
             shard_id=shard_id,

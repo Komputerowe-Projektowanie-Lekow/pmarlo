@@ -36,11 +36,35 @@ def resolve_atom_selection(
     if atom_selection is None:
         return None
 
-    if on_error != "raise":
-        raise ValueError("on_error must be 'raise'")
+    if on_error not in {"raise", "warn", "ignore"}:
+        raise ValueError("on_error must be 'raise', 'warn', or 'ignore'")
+
+    def _handle_failure(exc: Exception | None) -> None:
+        if on_error == "raise":
+            if exc is None:
+                raise ValueError("atom selection produced no atoms")
+            raise exc
+        if on_error == "warn" and logger is not None:
+            msg = "atom selection failed"
+            logger.warning(msg if exc is None else f"{msg}: {exc}")
 
     if isinstance(atom_selection, str):
-        selection = topo.select(atom_selection)
+        try:
+            selection = topo.select(atom_selection)
+        except Exception as exc:  # pragma: no cover - delegated to mdtraj
+            _handle_failure(exc)
+            return None
+        if selection.size == 0:
+            _handle_failure(None)
+            return None
         return [int(i) for i in selection]
 
-    return [int(i) for i in atom_selection]
+    try:
+        selection = [int(i) for i in atom_selection]
+    except Exception as exc:
+        _handle_failure(exc)
+        return None
+    if not selection:
+        _handle_failure(None)
+        return None
+    return selection

@@ -11,7 +11,6 @@
 ## Added
 - Documented the new fail-fast policy for MSM utilities.
 
-
 ## Testing
 - Updated analysis and DeepTICA tests to rely on real modules and strict metadata validation.
 

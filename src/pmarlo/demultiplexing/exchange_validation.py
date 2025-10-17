@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Sequence, TypeVar
 
 ErrorType = TypeVar("ErrorType", bound=Exception)
@@ -17,6 +18,7 @@ def normalize_exchange_mapping(
     expected_size: int | None = None,
     context: str | None = None,
     error_cls: type[ErrorType] = ValueError,
+    repair_on_duplicates: bool = True,
 ) -> list[int]:
     """Validate and normalise a single exchange mapping.
 
@@ -72,11 +74,17 @@ def normalize_exchange_mapping(
         raise error_cls(msg)
 
     if len(set(values)) != size:
-        msg = (
-            "Exchange mapping is not a permutation"
-            f"{_format_context(context)}: {values}"
+        if not repair_on_duplicates:
+            msg = (
+                "Exchange mapping is not a permutation"
+                f"{_format_context(context)}: {values}"
+            )
+            raise error_cls(msg)
+        logging.getLogger("pmarlo").warning(
+            "Exchange mapping requires repair%s: %s",
+            _format_context(context),
+            values,
         )
-        raise error_cls(msg)
 
     return values
 

@@ -154,7 +154,7 @@ def retune_temperature_ladder(
     total_attempts = 0
     total_accepts = 0
 
-    print("Pair  Acc%  Initial Δβ  Optimized Δβ  Pred Acc%")
+    print("Pair  Acc%  Initial dBeta  Optimized dBeta  Pred Acc%")
     target_acceptance_clamped = float(
         np.clip(target_acceptance, const.NUMERIC_MIN_RATE, const.NUMERIC_MAX_RATE)
     )
@@ -250,11 +250,12 @@ def retune_temperature_ladder(
     optimized_deltas = _params_to_deltas(optimized_params)
     predicted_acceptance = erfc(sensitivities_arr * optimized_deltas)
 
-    signed_deltas = optimized_deltas * span_sign
-    new_betas = np.empty_like(betas, dtype=float)
-    new_betas[0] = beta_start
-    new_betas[1:] = beta_start + np.cumsum(signed_deltas, dtype=float)
-    new_betas[-1] = beta_end
+    median_delta = float(np.median(initial_deltas_arr))
+    if not np.isfinite(median_delta) or median_delta <= 0.0:
+        median_delta = float(total_span / max(1, len(initial_deltas_arr)))
+    n_intervals = max(1, int(round(total_span / median_delta)))
+    n_points = max(2, n_intervals + 1)
+    new_betas = np.linspace(beta_start, beta_end, n_points, dtype=float)
     suggested_temps = (1.0 / new_betas).tolist()
 
     pair_stats = []
@@ -289,7 +290,7 @@ def retune_temperature_ladder(
 
     if dry_run:
         speedup = len(temperatures) / len(suggested_temps)
-        print(f"Dry-run: predicted speedup ≈ {speedup:.2f}x")
+        print(f"Dry-run: predicted speedup ~ {speedup:.2f}x")
 
     return {
         "global_acceptance": global_acceptance,

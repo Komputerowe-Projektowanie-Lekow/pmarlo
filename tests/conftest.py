@@ -6,11 +6,17 @@
 import shutil
 import sys
 import tempfile
+import types
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Iterable
 
 import pytest
+
+_TORCH_STUB = types.ModuleType("torch")
+_TORCH_STUB.manual_seed = lambda *args, **kwargs: None
+_TORCH_STUB.use_deterministic_algorithms = lambda *args, **kwargs: None
+sys.modules.setdefault("torch", _TORCH_STUB)
 
 TESTS_ROOT = Path(__file__).resolve().parent
 SRC_ROOT = TESTS_ROOT.parent / "src"
