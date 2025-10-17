@@ -250,12 +250,14 @@ def compute_spectral_gap(transition_matrix: Any) -> Optional[float]:
         mat = np.asarray(transition_matrix, dtype=float)
         if mat.ndim != 2 or mat.shape[0] == 0:
             return None
-        eigenvals = np.linalg.eigvals(mat)
-        eigenvals = np.real(eigenvals)
-        eigenvals.sort()
-        # For stochastic matrices, the largest eigenvalue is ~1.0
-        # lambda_2 is the second largest eigenvalue
-        lam2 = eigenvals[-2] if len(eigenvals) >= 2 else np.nan
+        eigenvals = np.real(np.linalg.eigvals(mat))
+        if eigenvals.size < 2:
+            return None
+        # ``np.partition`` avoids a full sort when only the top eigenvalues are needed.
+        top_two = np.partition(eigenvals, eigenvals.size - 2)[-2:]
+        # ``top_two`` contains the largest two eigenvalues in arbitrary order, so the
+        # smaller of the pair is the second largest eigenvalue.
+        lam2 = float(np.min(top_two))
         if np.isnan(lam2):
             return None
         return float(max(0.0, 1.0 - lam2))
@@ -267,15 +269,20 @@ def compute_stationary_entropy(stationary_distribution: Any) -> Optional[float]:
     """Shannon entropy of stationary distribution in nats (higher → more spread)."""
     try:
         import numpy as np
+        from scipy.stats import entropy
 
         if stationary_distribution is None:
             return None
         pi = np.asarray(stationary_distribution, dtype=float)
         if pi.ndim != 1 or pi.size == 0:
             return None
-        pi_safe = pi / max(np.sum(pi), const.NUMERIC_MIN_POSITIVE)
-        pi_safe = np.clip(pi_safe, const.NUMERIC_MIN_POSITIVE, 1.0)
-        return float(-np.sum(pi_safe * np.log(pi_safe)))
+        if not np.all(np.isfinite(pi)):
+            return None
+        if np.any(pi < 0):
+            return None
+        if float(np.sum(pi)) <= 0.0:
+            return None
+        return float(entropy(pi))
     except Exception:
         return None
 
@@ -314,6 +321,8 @@ def compute_detailed_balance_mad(
     """
     try:
         import numpy as np
+        from deeptime.markov.tools.analysis import expected_counts_stationary
+        from sklearn.metrics import mean_absolute_error
 
         if transition_matrix is None or stationary_distribution is None:
             return None
@@ -328,14 +337,19 @@ def compute_detailed_balance_mad(
         if pi_sum <= 0:
             return None
         pi = pi / pi_sum
-        # Flow matrices
-        F = pi[:, None] * T
-        diff = np.abs(F - F.T)
-        # Normalize by total flow to make scale-independent
-        denom = float(np.sum(F))
+
+        # Use deeptime to obtain the stationary flow matrix instead of manual
+        flows = expected_counts_stationary(T, 1, mu=pi)
+        if flows is None:
+            return None
+        flows = np.asarray(flows, dtype=float)
+
+        denom = float(np.sum(flows))
         if denom <= 0:
             return None
-        return float(np.mean(diff) / denom)
+
+        mad = mean_absolute_error(flows.ravel(), flows.T.ravel())
+        return float(mad / denom)
     except Exception:
         return None
 
@@ -350,6 +364,7 @@ def compute_its_convergence_score(
     """
     try:
         import numpy as np
+        from scipy import stats
 
         if not isinstance(implied_timescales, dict):
             return None
@@ -366,11 +381,19 @@ def compute_its_convergence_score(
                 continue
             x = lag_times[mask].astype(float)
             y = y[mask].astype(float)
-            # Fit simple line y = a x + b
-            A = np.vstack([x, np.ones_like(x)]).T
-            a, b = np.linalg.lstsq(A, y, rcond=None)[0]
+            # Use scipy's linear regression for richer diagnostics and numerical stability.
+            try:
+                regression = stats.linregress(x, y)
+            except ValueError:
+                # Raised when the inputs are constant or otherwise ill-conditioned.
+                continue
+
+            slope = float(regression.slope)
+            if not np.isfinite(slope):
+                continue
+
             mean_y = float(np.mean(np.abs(y))) or 1.0
-            rel_slope = float(abs(a)) / mean_y
+            rel_slope = float(abs(slope)) / mean_y
             scores.append(rel_slope)
         if not scores:
             return None

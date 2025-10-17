@@ -60,10 +60,48 @@ def _row_normalize(C: np.ndarray) -> np.ndarray[Any, Any]:
 
 
 def _stationary_from_T(T: np.ndarray) -> np.ndarray:
-    """Compute stationary distribution from transition matrix."""
+    """Compute stationary distribution from transition matrix.
+
+    This routine prefers the high-quality solvers from :mod:`scipy` and only
+    falls back to :func:`numpy.linalg.eig` if SciPy cannot produce a result.
+    Sparse transition matrices leverage :func:`scipy.sparse.linalg.eigs` so we
+    only materialize dense representations as a last resort.
+    """
+
     from typing import cast
 
-    evals, evecs = np.linalg.eig(T.T)
+    import scipy.linalg as _la
+    import scipy.sparse as _sp
+    import scipy.sparse.linalg as _spla
+
+    if T.shape[0] == 0 or T.shape[1] == 0:
+        return cast(np.ndarray, np.asarray([], dtype=float))
+
+    evals: np.ndarray | None = None
+    evecs: np.ndarray | None = None
+
+    # Attempt sparse eigen decomposition first when applicable.
+    if _sp.issparse(T):
+        try:
+            sparse_evals, sparse_evecs = _spla.eigs(T.T, k=1, which="LM")
+            evals = np.asarray(sparse_evals)
+            evecs = np.asarray(sparse_evecs)
+        except Exception as exc:  # pragma: no cover - diagnostic logging only
+            logger.debug(
+                "Sparse eigen decomposition failed; retrying with dense solver.",
+                exc_info=exc,
+            )
+
+    if evals is None or evecs is None:
+        try:
+            evals, evecs = _la.eig(np.asarray(T.T, dtype=float), left=False, right=True)
+        except Exception as exc:  # pragma: no cover - diagnostic logging only
+            logger.debug(
+                "Dense SciPy eigen decomposition failed; falling back to NumPy.",
+                exc_info=exc,
+            )
+            evals, evecs = np.linalg.eig(np.asarray(T.T, dtype=float))
+
     idx = int(np.argmax(np.real(evals)))
     pi = np.real(evecs[:, idx])
     pi = np.abs(pi)

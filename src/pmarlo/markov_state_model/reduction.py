@@ -8,9 +8,10 @@ import numpy as np
 from pmarlo import constants as const
 
 try:  # pragma: no cover - optional SciPy dependency
-    from scipy.linalg import eigh as scipy_eigh
+    from scipy.linalg import eigh as scipy_eigh, solve_triangular
 except Exception:  # pragma: no cover - SciPy optional
     scipy_eigh = None
+    solve_triangular = None
 
 try:  # pragma: no cover - scikit-learn is an optional heavy dependency at runtime
     from sklearn.impute import SimpleImputer
@@ -241,8 +242,48 @@ def _lagged_covariances(
     return C_00, C_11, C_01
 
 
+def _generalized_eigh(
+    A: np.ndarray,
+    B: np.ndarray,
+    *,
+    epsilon: float = const.NUMERIC_ABSOLUTE_TOLERANCE,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Solve the symmetric generalised eigenproblem ``A v = \lambda B v``.
+
+    ``B`` is regularised to remain positive definite which improves numerical
+    stability for the manual TICA fallback when covariance blocks are close to
+    singular.
+    """
+
+    # Ensure symmetry because numerical noise from ``np.cov`` may introduce
+    # slight asymmetries that trip the Hermitian solvers used below.
+    A = 0.5 * (A + A.T)
+    B = 0.5 * (B + B.T)
+
+    if epsilon:
+        B = B + epsilon * np.eye(B.shape[0], dtype=B.dtype)
+
+    if scipy_eigh is not None:
+        return scipy_eigh(A, B, check_finite=False)
+
+    # ``B`` is symmetric positive-definite after the regularisation above, so we
+    # can whiten the problem and fall back to :func:`numpy.linalg.eigh`.
+    evals_B, evecs_B = np.linalg.eigh(B)
+    positive = evals_B > epsilon
+    if not np.any(positive):
+        raise np.linalg.LinAlgError("Covariance matrix is singular")
+
+    whitening = evecs_B[:, positive] * (evals_B[positive] ** -0.5)
+    A_tilde = whitening.T @ (A @ whitening)
+    A_tilde = 0.5 * (A_tilde + A_tilde.T)
+
+    evals, evecs = np.linalg.eigh(A_tilde)
+    return evals, whitening @ evecs
+
+
 def _manual_tica(X: np.ndarray, lag: int = 1, n_components: int = 2) -> np.ndarray:
     """Manual TICA implementation using generalized eigenvalue problem."""
+
     n_frames = X.shape[0]
     if lag >= n_frames:
         raise ValueError(
@@ -251,23 +292,24 @@ def _manual_tica(X: np.ndarray, lag: int = 1, n_components: int = 2) -> np.ndarr
 
     C_00, _, C_0t = _lagged_covariances(X, lag, ddof=None)
 
-    # Solve generalized eigenvalue problem
     try:
-        if scipy_eigh is not None:
-            eigenvals, eigenvecs = scipy_eigh(C_0t @ C_0t.T, C_00)
-        else:
-            inv_c00 = np.linalg.pinv(C_00)
-            mat = inv_c00 @ (C_0t @ C_0t.T)
-            eigenvals, eigenvecs = np.linalg.eigh(mat)
-        # Sort by eigenvalues (descending)
-        idx = np.argsort(eigenvals)[::-1]
-        eigenvecs = eigenvecs[:, idx]
-
-        # Transform data
-        return X @ eigenvecs[:, :n_components]
+        eigenvals, eigenvecs = _generalized_eigh(C_0t, C_00)
     except np.linalg.LinAlgError:
         # Fallback to PCA if TICA fails
         return pca_reduce(X, n_components=n_components, scale=False)
+
+    # Sort components by the absolute eigenvalue magnitude (closer to 1 is better)
+    idx = np.argsort(np.abs(eigenvals))[::-1]
+    eigenvecs = np.asarray(np.real(eigenvecs[:, idx]), dtype=float)
+
+    # ``n_components`` may be larger than the available eigenvectors when the
+    # covariance matrix is rank-deficient.
+    n_available = eigenvecs.shape[1]
+    n_keep = min(n_components, n_available)
+    if n_keep == 0:
+        return pca_reduce(X, n_components=n_components, scale=False)
+
+    return X @ eigenvecs[:, :n_keep]
 
 
 def vamp_reduce(
@@ -343,13 +385,31 @@ def _manual_vamp(
         L_00 = np.linalg.cholesky(C_00)
         L_11 = np.linalg.cholesky(C_11)
 
-        K = np.linalg.solve(L_00, C_01)
-        K = np.linalg.solve(L_11.T, K.T).T
+        if solve_triangular is not None:
+            K = solve_triangular(L_00, C_01, lower=True, check_finite=False)
+            K = solve_triangular(
+                L_11,
+                K.T,
+                lower=True,
+                trans="T",
+                check_finite=False,
+            ).T
+        else:
+            K = np.linalg.solve(L_00, C_01)
+            K = np.linalg.solve(L_11.T, K.T).T
 
         U, s, Vt = np.linalg.svd(K, full_matrices=False)
 
         # Transform functions
-        psi = np.linalg.solve(L_00, U[:, :n_components])
+        if solve_triangular is not None:
+            psi = solve_triangular(
+                L_00,
+                U[:, :n_components],
+                lower=True,
+                check_finite=False,
+            )
+        else:
+            psi = np.linalg.solve(L_00, U[:, :n_components])
 
         # Apply transformation
         return X @ psi

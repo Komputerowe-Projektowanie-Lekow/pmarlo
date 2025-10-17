@@ -5,6 +5,7 @@ from typing import Any, Dict, Mapping, MutableMapping, Sequence
 
 import numpy as np
 from sklearn.cross_decomposition import CCA
+from statsmodels.tsa.stattools import acf
 
 from pmarlo import constants as const
 
@@ -106,7 +107,12 @@ def _canonical_correlations(
     *,
     regularisation: float = const.NUMERIC_RELATIVE_TOLERANCE,
 ) -> list[float]:
-    """Compute canonical correlations between two 2D arrays.
+    """Compute canonical correlations using scikit-learn's :class:`CCA`.
+
+    Delegating to the library avoids maintaining a bespoke eigendecomposition
+    routine and ensures we benefit from upstream numerical safeguards.  The
+    returned canonical components are post-processed with ``numpy.corrcoef`` to
+    obtain per-dimension Pearson correlation coefficients.
 
     Raises
     ------
@@ -129,15 +135,20 @@ def _canonical_correlations(
         raise CanonicalCorrelationError(f"CCA fitting failed: {exc}") from exc
     correlations: list[float] = []
     for idx in range(n_components):
-        x_comp = X_c[:, idx]
-        y_comp = Y_c[:, idx]
-        numerator = float(np.dot(x_comp, y_comp))
-        denominator = float(np.linalg.norm(x_comp) * np.linalg.norm(y_comp))
-        if denominator <= regularisation:
-            corr = 0.0
-        else:
-            corr = numerator / denominator
-        correlations.append(float(np.clip(abs(corr), 0.0, 1.0)))
+        x_comp = np.asarray(X_c[:, idx], dtype=np.float64)
+        y_comp = np.asarray(Y_c[:, idx], dtype=np.float64)
+        if x_comp.size == 0 or y_comp.size == 0:
+            continue
+        var_x = float(np.var(x_comp))
+        var_y = float(np.var(y_comp))
+        if var_x <= regularisation or var_y <= regularisation:
+            correlations.append(0.0)
+            continue
+        corr_matrix = np.corrcoef(x_comp, y_comp)
+        corr_value = float(corr_matrix[0, 1]) if corr_matrix.shape == (2, 2) else 0.0
+        if not np.isfinite(corr_value):
+            corr_value = 0.0
+        correlations.append(float(np.clip(abs(corr_value), 0.0, 1.0)))
     return correlations
 
 
@@ -163,41 +174,12 @@ def _validate_autocorr_input(X: np.ndarray) -> np.ndarray | None:
     return X - np.mean(X, axis=0, keepdims=True)
 
 
-def _autocorr_at_lag(Xc: np.ndarray, tau: int) -> float:
-    """Compute (mean across features) autocorrelation at a specific lag.
-
-    Returns NaN if tau invalid or denominator zero.
-    """
-    n = Xc.shape[0]
-    if tau <= 0 or tau >= n:
-        logger.debug("Autocorrelation: invalid tau=%d for n=%d", tau, n)
-        return float("nan")
-    a = Xc[:-tau]
-    b = Xc[tau:]
-    numerator = np.sum(a * b, axis=0)
-    denominator = np.sum(a * a, axis=0)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        rho = np.divide(
-            numerator,
-            denominator,
-            out=np.zeros_like(numerator),
-            where=denominator > 0,
-        )
-    if rho.size == 0:
-        logger.debug("Autocorrelation: zero-size rho at tau=%d", tau)
-        return float("nan")
-    finite = rho[np.isfinite(rho)]
-    if finite.size == 0:
-        logger.debug("Autocorrelation: no finite rho values at tau=%d", tau)
-        return float("nan")
-    return float(np.mean(finite))
-
-
 def _autocorrelation_curve(X: np.ndarray, taus: Sequence[int]) -> list[float]:
     """Compute autocorrelation curve across provided lags.
 
-    Applies input validation, logs any anomalies, and delegates per-lag work to
-    a focused helper for clearer Single Responsibility and easier testing.
+    Applies input validation then delegates lag calculations to
+    :func:`statsmodels.tsa.stattools.acf` for each feature, averaging the
+    resulting autocorrelation estimates across dimensions.
     """
     Xc = _validate_autocorr_input(X)
     if Xc is None:
@@ -206,9 +188,46 @@ def _autocorrelation_curve(X: np.ndarray, taus: Sequence[int]) -> list[float]:
             len(taus),
         )
         return [float("nan") for _ in taus]
-    curve: list[float] = []
-    for tau in taus:
-        curve.append(_autocorr_at_lag(Xc, tau))
+    if not taus:
+        return []
+
+    max_tau = max(taus)
+    n_features = Xc.shape[1]
+    if n_features == 0:
+        return [float("nan") for _ in taus]
+
+    feature_curves: list[np.ndarray] = []
+    for col in range(n_features):
+        series = np.asarray(Xc[:, col], dtype=np.float64)
+        if not np.isfinite(series).all():
+            logger.debug(
+                "Autocorrelation: non-finite values detected in column %d; filling NaNs",
+                col,
+            )
+            feature_curves.append(np.full(len(taus), np.nan, dtype=np.float64))
+            continue
+        try:
+            acf_values = acf(series, nlags=max_tau, fft=True, missing="drop")
+        except (ValueError, np.linalg.LinAlgError) as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "Autocorrelation: statsmodels acf failed for column %d (max_tau=%d): %s",
+                col,
+                max_tau,
+                exc,
+            )
+            feature_curves.append(np.full(len(taus), np.nan, dtype=np.float64))
+            continue
+        column_curve = np.array(
+            [acf_values[tau] if tau < len(acf_values) else np.nan for tau in taus],
+            dtype=np.float64,
+        )
+        feature_curves.append(column_curve)
+
+    stacked = np.vstack(feature_curves)
+    with np.errstate(invalid="ignore"):
+        averaged = np.nanmean(stacked, axis=0)
+    curve = [float(value) if np.isfinite(value) else float("nan") for value in averaged]
+
     # Log if any NaNs present (surface potential silent degradation)
     nan_indices = [i for i, v in enumerate(curve) if not np.isfinite(v)]
     if nan_indices:

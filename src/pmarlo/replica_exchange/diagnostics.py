@@ -5,7 +5,8 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import numpy as np
-from scipy.special import erfcinv
+from scipy import optimize
+from scipy.special import erfc, erfcinv
 
 from pmarlo import constants as const
 from pmarlo.utils.path_utils import ensure_directory
@@ -141,7 +142,18 @@ def retune_temperature_ladder(
     total_attempts = 0
     total_accepts = 0
 
-    print("Pair  Acc%  Suggested Δβ")
+    print("Pair  Acc%  Initial Δβ  Optimized Δβ  Pred Acc%")
+    target_acceptance_clamped = float(
+        np.clip(target_acceptance, const.NUMERIC_MIN_RATE, const.NUMERIC_MAX_RATE)
+    )
+    erfc_target = erfcinv(target_acceptance_clamped)
+    delta_betas = np.diff(betas)
+    if np.any(delta_betas <= 0.0):
+        raise ValueError("Input temperatures must be strictly monotonic")
+
+    pair_data: List[Dict[str, Any]] = []
+    sensitivities: List[float] = []
+    initial_deltas: List[float] = []
     for i in range(len(temperatures) - 1):
         pair = (i, i + 1)
         att = pair_attempt_counts.get(pair, 0)
@@ -150,31 +162,96 @@ def retune_temperature_ladder(
         total_attempts += att
         total_accepts += acc
 
-        delta_beta = betas[i + 1] - betas[i]
+        delta_beta = delta_betas[i]
         # Clamp rate to avoid division by zero when acceptance is perfect
         rate_clamped = float(
             np.clip(rate, const.NUMERIC_MIN_RATE, const.NUMERIC_MAX_RATE)
         )
-        ratio = erfcinv(target_acceptance) / erfcinv(rate_clamped)
-        suggested_dbeta = float(delta_beta * ratio)
-        pair_stats.append(
+        erfc_observed = erfcinv(rate_clamped)
+        sensitivity = erfc_observed / max(delta_beta, const.NUMERIC_MIN_POSITIVE)
+        sensitivities.append(sensitivity)
+        initial_delta = float(
+            delta_beta * erfc_target / max(erfc_observed, const.NUMERIC_MIN_POSITIVE)
+        )
+        initial_deltas.append(initial_delta)
+        pair_data.append(
             {
                 "pair": pair,
                 "acceptance": rate,
-                "suggested_delta_beta": suggested_dbeta,
+                "rate_clamped": rate_clamped,
             }
         )
-        print(f"{pair}  {rate*100:5.1f}%  {suggested_dbeta:10.6f}")
 
     global_acceptance = total_accepts / max(1, total_attempts)
 
-    avg_dbeta = float(np.mean([p["suggested_delta_beta"] for p in pair_stats]))
     beta_min = float(betas[0])
     beta_max = float(betas[-1])
-    n_new = int(round((beta_max - beta_min) / avg_dbeta)) + 1
-    n_new = max(2, n_new)
-    new_betas = np.linspace(beta_min, beta_max, n_new)
+    total_span = beta_max - beta_min
+
+    sensitivities_arr = np.asarray(sensitivities, dtype=float)
+    initial_deltas_arr = np.asarray(initial_deltas, dtype=float)
+    if not len(initial_deltas_arr):
+        raise ValueError("Unable to derive ladder suggestion from inputs")
+
+    initial_sum = float(initial_deltas_arr.sum())
+    if initial_sum <= 0.0:
+        scaled_initial = np.full_like(
+            initial_deltas_arr, total_span / max(1, len(initial_deltas_arr))
+        )
+    else:
+        scaled_initial = initial_deltas_arr * (total_span / initial_sum)
+
+    def objective(deltas: np.ndarray) -> float:
+        predicted = erfc(sensitivities_arr * deltas)
+        return float(np.sum((predicted - target_acceptance_clamped) ** 2))
+
+    lower = np.full_like(scaled_initial, const.NUMERIC_MIN_POSITIVE)
+    upper = np.full_like(scaled_initial, np.inf)
+    bounds = optimize.Bounds(lower, upper)
+    constraint = optimize.LinearConstraint(
+        np.ones((1, scaled_initial.size)), total_span, total_span
+    )
+
+    result = optimize.minimize(
+        objective,
+        scaled_initial,
+        method="SLSQP",
+        bounds=bounds,
+        constraints=[constraint],
+    )
+
+    optimized_deltas = np.asarray(scaled_initial, dtype=float)
+    if result.success and np.all(np.isfinite(result.x)):
+        optimized_deltas = np.asarray(result.x, dtype=float)
+
+    predicted_acceptance = erfc(sensitivities_arr * optimized_deltas)
+
+    new_betas = np.concatenate(
+        (
+            np.asarray([beta_min]),
+            beta_min + np.cumsum(optimized_deltas, dtype=float),
+        )
+    )
+    new_betas[-1] = beta_max
     suggested_temps = (1.0 / new_betas).tolist()
+
+    pair_stats = []
+    for data, init_delta, opt_delta, pred_rate in zip(
+        pair_data, initial_deltas_arr, optimized_deltas, predicted_acceptance
+    ):
+        pair_stats.append(
+            {
+                "pair": data["pair"],
+                "acceptance": data["acceptance"],
+                "initial_delta_beta_estimate": float(init_delta),
+                "suggested_delta_beta": float(opt_delta),
+                "predicted_acceptance": float(pred_rate),
+            }
+        )
+        print(
+            f"{data['pair']}  {data['acceptance']*100:5.1f}%"
+            f"  {init_delta:11.6f}  {opt_delta:12.6f}  {pred_rate*100:7.3f}%"
+        )
 
     # Ensure parent directory exists, even if caller passed a custom path
     try:
