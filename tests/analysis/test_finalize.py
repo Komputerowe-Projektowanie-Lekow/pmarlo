@@ -5,6 +5,7 @@ import sys
 import types
 
 import numpy as np
+import pytest
 
 _KB_KJ_PER_MOL = 0.00831446261815324
 
@@ -68,7 +69,17 @@ def _biased_dataset(seed: int = 0) -> dict:
                 "energy": energy,
                 "bias": bias,
                 "beta": beta,
-                "meta": {"shard_id": "demo-train"},
+                "feature_schema": {
+                    "n_features": X.shape[1],
+                    "names": ["feature_0", "feature_1"],
+                },
+                "meta": {
+                    "shard_id": "demo-train",
+                    "feature_schema": {
+                        "n_features": X.shape[1],
+                        "names": ["feature_0", "feature_1"],
+                    },
+                },
             }
         }
     }
@@ -119,7 +130,7 @@ def test_finalize_reweight_changes_stationary_and_fes():
     assert "diagnostics" in result_weighted
 
 
-def test_finalize_falls_back_without_thermo_information():
+def test_finalize_requires_thermo_information():
     AnalysisConfig, finalize_dataset, AnalysisReweightMode = _prepare_modules()
     dataset = {
         "splits": {
@@ -130,7 +141,5 @@ def test_finalize_falls_back_without_thermo_information():
         }
     }
     cfg = AnalysisConfig(reweight=AnalysisReweightMode.MBAR, n_microstates=3)
-    result = finalize_dataset(dataset, cfg)
-
-    assert result["reweight_mode"] == AnalysisReweightMode.NONE
-    assert "frame_weights" not in result
+    with pytest.raises(ValueError):
+        finalize_dataset(dataset, cfg)

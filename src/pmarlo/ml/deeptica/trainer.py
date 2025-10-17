@@ -10,7 +10,6 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
-    Any,
     Dict,
     Iterator,
     List,
@@ -37,20 +36,15 @@ MetricMapping = Mapping[str, object]
 def prepare_batch(
     batch: Sequence[tuple[np.ndarray, np.ndarray, np.ndarray | None]],
     *,
-    torch_mod=torch,
     device: torch.device | str = "cpu",
     use_weights: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
     """Convert a batch of NumPy arrays into tensors on the requested device."""
 
-    if torch_mod is None:
-        raise NotImplementedError(
-            "DeepTICA training helpers require the optional 'pmarlo[mlcv]' extras"
-        )
     if not batch:
         raise ValueError("empty batch provided to prepare_batch")
 
-    dev = torch_mod.device(device) if not isinstance(device, torch.device) else device
+    dev = torch.device(device) if not isinstance(device, torch.device) else device
     x_t_list: list[torch.Tensor] = []
     x_tau_list: list[torch.Tensor] = []
     weight_list: list[torch.Tensor] = []
@@ -59,36 +53,32 @@ def prepare_batch(
         if len(item) != 3:
             raise ValueError("batch elements must be 3-tuples (x_t, x_tau, weights)")
         xt_arr, xtau_arr, weights = item
-        xt_tensor = torch_mod.as_tensor(
+        xt_tensor = torch.as_tensor(
             np.asarray(xt_arr, dtype=np.float32), device=dev
         )
-        xtau_tensor = torch_mod.as_tensor(
+        xtau_tensor = torch.as_tensor(
             np.asarray(xtau_arr, dtype=np.float32), device=dev
         )
         x_t_list.append(xt_tensor)
         x_tau_list.append(xtau_tensor)
         if use_weights and weights is not None:
-            weight_tensor = torch_mod.as_tensor(
+            weight_tensor = torch.as_tensor(
                 np.asarray(weights, dtype=np.float32), device=dev
             ).reshape(-1)
             weight_list.append(weight_tensor)
 
-    x_t = torch_mod.cat(x_t_list, dim=0) if len(x_t_list) > 1 else x_t_list[0]
-    x_tau = torch_mod.cat(x_tau_list, dim=0) if len(x_tau_list) > 1 else x_tau_list[0]
+    x_t = torch.cat(x_t_list, dim=0) if len(x_t_list) > 1 else x_t_list[0]
+    x_tau = torch.cat(x_tau_list, dim=0) if len(x_tau_list) > 1 else x_tau_list[0]
 
     total_frames = x_t.shape[0]
     if not use_weights:
         weights_tensor: torch.Tensor | None = None
     elif weight_list:
-        weights_tensor = (
-            torch_mod.cat(weight_list, dim=0)
-            if len(weight_list) > 1
-            else weight_list[0]
-        )
+        weights_tensor = torch.cat(weight_list, dim=0) if len(weight_list) > 1 else weight_list[0]
         if weights_tensor.numel() != total_frames:
             raise ValueError("weights length does not match batch size")
     else:
-        weights_tensor = torch_mod.full(
+        weights_tensor = torch.full(
             (total_frames,), 1.0 / float(max(1, total_frames)), device=dev
         )
 
@@ -166,7 +156,6 @@ def record_metrics(
 
 def checkpoint_if_better(
     *,
-    torch_mod: Any,
     model_net: torch.nn.Module,
     checkpoint_path: Path | str,
     metrics: Mapping[str, float],
@@ -180,7 +169,7 @@ def checkpoint_if_better(
         return best_score
     path = Path(checkpoint_path)
     ensure_directory(path.parent)
-    torch_mod.save(model_net.state_dict(), path)
+    torch.save(model_net.state_dict(), path)
     return score
 
 

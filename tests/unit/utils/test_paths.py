@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 from pmarlo.utils.path_utils import repository_root, resolve_project_path
 
 
@@ -12,7 +14,7 @@ def test_resolve_project_path_preserves_absolute_inputs(tmp_path):
 
     resolved = resolve_project_path(sample)
 
-    assert resolved == os.fspath(sample)
+    assert resolved == os.fspath(sample.resolve())
 
 
 def test_resolve_project_path_prefers_current_working_directory(tmp_path):
@@ -30,17 +32,17 @@ def test_resolve_project_path_prefers_current_working_directory(tmp_path):
         os.chdir(original_cwd)
 
 
-def test_resolve_project_path_falls_back_to_repository_root(tmp_path):
-    """Test fallback to repository root for project files."""
+def test_resolve_project_path_requires_explicit_search_roots(tmp_path):
     original_cwd = Path.cwd()
     try:
         os.chdir(tmp_path)
 
-        resolved = resolve_project_path("pyproject.toml")
+        root = repository_root()
+        resolved = resolve_project_path(
+            "pyproject.toml", search_roots=[root]
+        )
 
-        assert resolved.endswith("pyproject.toml")
-        assert Path(resolved).exists()
-        assert Path(resolved).parent == repository_root()
+        assert resolved == os.fspath((root / "pyproject.toml").resolve())
     finally:
         os.chdir(original_cwd)
 
@@ -63,15 +65,15 @@ def test_resolve_project_path_uses_additional_search_roots(tmp_path):
         os.chdir(original_cwd)
 
 
-def test_resolve_project_path_returns_original_for_missing_files(tmp_path):
-    """Test that missing files return the original path string."""
+def test_resolve_project_path_raises_for_missing_files(tmp_path):
+    """Missing files trigger a FileNotFoundError."""
+
     original_cwd = Path.cwd()
     try:
         os.chdir(tmp_path)
         missing = "does/not/exist.ext"
 
-        resolved = resolve_project_path(missing)
-
-        assert resolved == missing
+        with pytest.raises(FileNotFoundError):
+            resolve_project_path(missing)
     finally:
         os.chdir(original_cwd)

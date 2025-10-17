@@ -4,7 +4,7 @@ import os
 import random
 from datetime import datetime
 from pathlib import Path
-from typing import Union
+from typing import Iterable, Union
 
 import numpy as np
 
@@ -23,35 +23,38 @@ def timestamp_dir(base_dir: Union[str, Path]) -> Path:
     return run_dir
 
 
-def tests_data_dir() -> Path:
-    """Return the repository's ``tests/_assets`` directory robustly.
+def _validate_assets_dir(path: Path, required_files: Iterable[str]) -> Path:
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Expected tests asset directory at {path} but it does not exist."
+        )
+    missing = [name for name in required_files if not (path / name).exists()]
+    if missing:
+        raise FileNotFoundError(
+            "Missing required test assets: " + ", ".join(missing)
+        )
+    return path
 
-    - Honors environment override via ``PMARLO_TESTS_DIR`` when set.
-    - Searches upward from this file for a parent that contains ``tests/_assets``.
-    - Falls back to current working directory's ``tests/_assets`` if found.
-    """
-    # 1) Explicit override for CI or bespoke layouts
+
+def tests_data_dir() -> Path:
+    """Locate the canonical ``tests/_assets`` directory or raise immediately."""
+
+    required = ("3gd8-fixed.pdb", "traj.dcd")
+
     env = os.getenv("PMARLO_TESTS_DIR")
     if env:
-        p = Path(env)
-        if (p / "3gd8-fixed.pdb").exists() or p.exists():
-            return p
+        return _validate_assets_dir(Path(env), required)
 
-    # 2) Walk up parents to locate a repo root that has tests/_assets
     here = Path(__file__).resolve()
     for ancestor in [here.parent, *here.parents]:
         candidate = ancestor / "tests" / "_assets"
         if candidate.exists():
-            return candidate
+            return _validate_assets_dir(candidate, required)
 
-    # 3) As a last resort, try CWD/tests/_assets
-    cwd_candidate = Path.cwd() / "tests" / "_assets"
-    if cwd_candidate.exists():
-        return cwd_candidate
-
-    # 4) If not found, construct a best-effort path relative to package root
-    # (does not assert existence to avoid import-time failures)
-    return here.parent.parent.parent / "tests" / "_assets"
+    raise FileNotFoundError(
+        "Unable to locate tests/_assets directory. Set PMARLO_TESTS_DIR to the "
+        "correct path before importing pmarlo.experiments utilities."
+    )
 
 
 def default_output_root() -> str:

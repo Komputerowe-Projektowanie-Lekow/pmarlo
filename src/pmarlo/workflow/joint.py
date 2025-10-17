@@ -109,11 +109,7 @@ class JointWorkflow:
 
         if self.remd_callback is not None:
             bias_hook = self._build_bias_hook(shards, frame_weights)
-            try:
-                new_paths = self.remd_callback(bias_hook, i) or []
-            except Exception as exc:
-                logger.warning("Guided REMD callback failed: %s", exc)
-                new_paths = []
+            new_paths = self.remd_callback(bias_hook, i) or []
             self.last_new_shards = [Path(p) for p in new_paths]
             if self.last_new_shards:
                 logger.info(
@@ -249,11 +245,15 @@ class JointWorkflow:
                 self.last_weights.get(shard.meta.shard_id), dtype=np.float64
             )
             if arr.ndim != 1 or arr.shape[0] != shard.meta.n_frames:
-                arr = np.ones(shard.meta.n_frames, dtype=np.float64)
+                raise ValueError(
+                    "Frame weight array shape mismatch for shard "
+                    f"{shard.meta.shard_id}"
+                )
             total = arr.sum()
             if not np.isfinite(total) or total <= 0:
-                arr = np.ones(shard.meta.n_frames, dtype=np.float64)
-                total = float(shard.meta.n_frames)
+                raise ValueError(
+                    "Frame weights must be finite and sum to a positive value"
+                )
             weights.append((arr / total).astype(np.float64))
         return weights
 
@@ -263,81 +263,64 @@ class JointWorkflow:
         weights_per_shard: Sequence[np.ndarray],
     ) -> BiasHook:
         if not self._has_cv_transform():
-            return self._zero_bias_hook()
+            raise RuntimeError(
+                "A CV model implementing 'transform' must be configured "
+                "before guided REMD callbacks can be used."
+            )
 
         gathered = self._gather_cv_data(shards, weights_per_shard)
-        if gathered is None:
-            return self._zero_bias_hook()
-
         centers_fes = self._compute_bias_profile(*gathered)
-        if centers_fes is None:
-            return self._zero_bias_hook()
-
         centers, fes = centers_fes
         return self._make_bias_hook(centers, fes)
 
     def _has_cv_transform(self) -> bool:
         return self.cv_model is not None and hasattr(self.cv_model, "transform")
 
-    def _zero_bias_hook(self) -> BiasHook:
-        def _hook(cv_values: np.ndarray) -> np.ndarray:
-            return np.zeros((np.asarray(cv_values).shape[0]), dtype=np.float64)
-
-        return _hook
-
     def _gather_cv_data(
         self,
         shards: Sequence[Shard],
         weights_per_shard: Sequence[np.ndarray],
-    ) -> Optional[Tuple[List[np.ndarray], List[np.ndarray]]]:
+    ) -> Tuple[List[np.ndarray], List[np.ndarray]]:
         cv_values: List[np.ndarray] = []
         cv_weights: List[np.ndarray] = []
         for shard, weights in zip(shards, weights_per_shard):
             vals = self._transform_shard_cv(shard)
-            if vals is None:
-                return None
             cv_values.append(vals)
             cv_weights.append(np.asarray(weights, dtype=np.float64))
         if not cv_values:
-            return None
+            raise ValueError("No CV data available for bias construction")
         return cv_values, cv_weights
 
-    def _transform_shard_cv(self, shard: Shard) -> Optional[np.ndarray]:
+    def _transform_shard_cv(self, shard: Shard) -> np.ndarray:
         assert self.cv_model is not None  # guarded by _has_cv_transform
-        try:
-            vals = np.asarray(self.cv_model.transform(shard.X), dtype=np.float64)
-        except Exception as exc:  # pragma: no cover - defensive guard
-            logger.debug(
-                "CV transform failed for shard %s: %s", shard.meta.shard_id, exc
-            )
-            return None
+        vals = np.asarray(self.cv_model.transform(shard.X), dtype=np.float64)
         if vals.shape[0] != shard.meta.n_frames:
-            logger.debug(
-                "CV transform produced mismatched shape for shard %s",
-                shard.meta.shard_id,
+            raise ValueError(
+                "CV transform produced mismatched frame count for shard "
+                f"{shard.meta.shard_id}"
             )
-            return None
         return vals
 
     def _compute_bias_profile(
         self, cv_values: List[np.ndarray], cv_weights: List[np.ndarray]
-    ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    ) -> Tuple[np.ndarray, np.ndarray]:
         concat_cv = np.concatenate(cv_values, axis=0)
         concat_w = np.concatenate(cv_weights)
         weight_total = float(concat_w.sum())
         if weight_total <= 0 or concat_cv.size == 0:
-            return None
+            raise ValueError("Cannot build bias profile without positive weight")
         concat_w = concat_w / weight_total
 
         coord = concat_cv[:, 0]
         lo, hi = float(np.min(coord)), float(np.max(coord))
-        if not np.isfinite([lo, hi]).all() or hi <= lo:
-            return None
+        bounds = np.array([lo, hi], dtype=np.float64)
+        if not np.all(np.isfinite(bounds)) or hi <= lo:
+            raise ValueError("Invalid CV coordinate range for bias profile")
 
         bins = np.linspace(lo, hi, 128)
         hist, edges = np.histogram(coord, bins=bins, weights=concat_w)
         if hist.sum() <= 0:
-            return None
+            raise ValueError("Unable to compute CV histogram for bias profile")
 
         prob = hist / hist.sum()
         fes = -(

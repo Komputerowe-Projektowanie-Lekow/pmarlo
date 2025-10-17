@@ -184,45 +184,41 @@ def main() -> None:
     print(json.dumps(out, indent=2))
 
     # Write a small registry entry to help discover artifacts post-run
-    try:
-        algo = out.get("algorithm") if isinstance(out, dict) else None
-        case_id = out.get("case_id") if isinstance(out, dict) else None
-        result = out.get("result") if isinstance(out, dict) else {}
-        run_dir = None
-        if isinstance(result, dict):
-            # Different experiments return run_dir or similar
-            run_dir = result.get("run_dir") or result.get("trajectories_dir")
-        idx_env = os.getenv("JOB_INDEX") or os.getenv("JOB_COMPLETION_INDEX")
-        pod_name = os.getenv("HOSTNAME")
-        registry_root = Path(default_output_root()) / "_registry"
-        ensure_directory(registry_root)
-        fname_parts = [str(idx_env or args.index)]
-        if case_id:
-            fname_parts.append(str(case_id))
-        if algo:
-            fname_parts.append(str(algo))
-        registry_path = registry_root / ("-".join(fname_parts) + ".json")
-        payload = {
-            "job_index": idx_env if idx_env is not None else args.index,
-            "algorithm": algo,
-            "case_id": case_id,
-            "run_dir": run_dir,
-            "pod_name": pod_name,
-        }
-        with open(registry_path, "w", encoding="utf-8") as rf:
-            json.dump(payload, rf, indent=2)
-        # Also print a single-line locator for easy grep in logs
-        locator = {
-            "ARTIFACT_DIR": run_dir,
-            "ALGO": algo,
-            "CASE": case_id,
-            "JOB_INDEX": idx_env if idx_env is not None else args.index,
-            "POD": pod_name,
-        }
-        print("PMARLO_ARTIFACT_LOCATOR " + json.dumps(locator, separators=(",", ":")))
-    except Exception:
-        # Non-fatal convenience feature
-        pass
+    algo = out.get("algorithm") if isinstance(out, dict) else None
+    case_id = out.get("case_id") if isinstance(out, dict) else None
+    result = out.get("result") if isinstance(out, dict) else {}
+    run_dir = None
+    if isinstance(result, dict):
+        # Different experiments return run_dir or similar
+        run_dir = result.get("run_dir") or result.get("trajectories_dir")
+    idx_env = os.getenv("JOB_INDEX") or os.getenv("JOB_COMPLETION_INDEX")
+    pod_name = os.getenv("HOSTNAME")
+    registry_root = Path(default_output_root()) / "_registry"
+    ensure_directory(registry_root)
+    fname_parts = [str(idx_env or args.index)]
+    if case_id:
+        fname_parts.append(str(case_id))
+    if algo:
+        fname_parts.append(str(algo))
+    registry_path = registry_root / ("-".join(fname_parts) + ".json")
+    payload = {
+        "job_index": idx_env if idx_env is not None else args.index,
+        "algorithm": algo,
+        "case_id": case_id,
+        "run_dir": run_dir,
+        "pod_name": pod_name,
+    }
+    with open(registry_path, "w", encoding="utf-8") as rf:
+        json.dump(payload, rf, indent=2)
+    # Also print a single-line locator for easy grep in logs
+    locator = {
+        "ARTIFACT_DIR": run_dir,
+        "ALGO": algo,
+        "CASE": case_id,
+        "JOB_INDEX": idx_env if idx_env is not None else args.index,
+        "POD": pod_name,
+    }
+    print("PMARLO_ARTIFACT_LOCATOR " + json.dumps(locator, separators=(",", ":")))
 
 
 if __name__ == "__main__":

@@ -22,8 +22,8 @@ def concatenate_or_empty(
     dtype:
         Desired dtype of the resulting array.
     shape:
-        Shape of the empty fallback array. Defaults to ``(0,)`` when not
-        provided.
+        Required when ``parts`` is empty to explicitly define the shape of the
+        returned array.
     copy:
         Passed to :meth:`numpy.ndarray.astype` when coercing the dtype.
 
@@ -39,5 +39,8 @@ def concatenate_or_empty(
         concatenated = np.concatenate(chunks)
         return concatenated.astype(dtype, copy=copy)
 
-    fallback_shape = (0,) if shape is None else tuple(int(dim) for dim in shape)
-    return np.zeros(fallback_shape, dtype=dtype)
+    if shape is None:
+        raise ValueError("No arrays to concatenate and no shape provided")
+
+    empty_shape = tuple(int(dim) for dim in shape)
+    return np.zeros(empty_shape, dtype=dtype)

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Tuple
 
+import matplotlib.pyplot as plt
 import numpy as np
 
 from pmarlo import constants as const
@@ -17,11 +18,6 @@ def save_transition_matrix_heatmap(
 
     Returns the path to the written file if successful, otherwise ``None``.
     """
-
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError as exc:  # pragma: no cover
-        raise RuntimeError("matplotlib is required for plotting") from exc
 
     out_dir = Path(output_dir)
     ensure_directory(out_dir)
@@ -48,46 +44,27 @@ def save_fes_contour(
     filename: str,
     mask: Optional[np.ndarray] = None,
 ) -> Optional[str]:
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError as exc:  # pragma: no cover
-        raise RuntimeError("matplotlib is required for plotting") from exc
-
     out_dir = Path(output_dir)
     ensure_directory(out_dir)
     x_centers = 0.5 * (xedges[:-1] + xedges[1:])
     y_centers = 0.5 * (yedges[:-1] + yedges[1:])
     plt.figure(figsize=(7, 6))
-    # If F is extremely sparse (lots of NaN/inf), fallback to hexbin density plot
     finite_mask = np.isfinite(F)
-    empty_frac = 1.0 - float(np.count_nonzero(finite_mask)) / float(
-        F.size if F.size else 1
-    )
-    if empty_frac > 0.60:
-        # Build centers mesh and map F to densities by exp(-F/kT) relative scale if possible
-        # For fallback, just plot a hexbin over grid centers using finite F values
-        try:
-            import matplotlib.pyplot as plt
+    if F.size == 0:
+        raise ValueError("F must contain at least one element")
+    if not finite_mask.any():
+        raise ValueError("FES contains no finite values; cannot render contour plot")
 
-            Xc, Yc = np.meshgrid(x_centers, y_centers, indexing="ij")
-            xv = Xc[finite_mask]
-            yv = Yc[finite_mask]
-            fv = (
-                F.T[finite_mask.T]
-                if F.shape == (len(x_centers), len(y_centers))
-                else F.T[finite_mask.T]
-            )
-            hb = plt.hexbin(xv, yv, C=fv, gridsize=40, cmap="viridis")
-            plt.colorbar(hb, label="Free Energy (kJ/mol)")
-            title_warn = f" (Sparse FES: {empty_frac*100.0:.1f}% empty)"
-        except Exception:
-            c = plt.contourf(x_centers, y_centers, F.T, levels=20, cmap="viridis")
-            plt.colorbar(c, label="Free Energy (kJ/mol)")
-            title_warn = f" (Sparse FES: {empty_frac*100.0:.1f}% empty)"
-    else:
-        c = plt.contourf(x_centers, y_centers, F.T, levels=20, cmap="viridis")
-        plt.colorbar(c, label="Free Energy (kJ/mol)")
-        title_warn = ""
+    empty_frac = 1.0 - float(np.count_nonzero(finite_mask)) / float(F.size)
+    if empty_frac > 0.60:
+        raise ValueError(
+            f"FES is too sparse to plot reliably ({empty_frac*100.0:.1f}% empty bins)"
+        )
+
+    F_for_plot = np.where(finite_mask, F, np.nan)
+    c = plt.contourf(x_centers, y_centers, F_for_plot.T, levels=20, cmap="viridis")
+    plt.colorbar(c, label="Free Energy (kJ/mol)")
+    title_warn = ""
     if mask is not None:
         m = np.ma.masked_where(~mask.T, mask.T)
         plt.contourf(
@@ -130,11 +107,6 @@ def save_pmf_line(
     filename:
         Output filename (e.g., "pmf_universal_metric.png").
     """
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError as exc:  # pragma: no cover
-        raise RuntimeError("matplotlib is required for plotting") from exc
-
     out_dir = Path(output_dir)
     ensure_directory(out_dir)
     x_centers = 0.5 * (edges[:-1] + edges[1:])

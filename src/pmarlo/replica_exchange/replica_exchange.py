@@ -2025,7 +2025,7 @@ def run_remd_simulation(
                 remd.tune_temperature_ladder()
                 remd.setup_replicas(bias_variables=bias_variables)
     else:
-        # Non-checkpoint mode (legacy)
+        # Non-checkpoint mode
         bias_variables = setup_bias_variables(pdb_file) if use_metadynamics else None
         remd = ReplicaExchange(
             pdb_file=pdb_file,

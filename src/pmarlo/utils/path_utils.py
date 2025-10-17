@@ -18,11 +18,7 @@ def repository_root() -> Path:
     for ancestor in here.parents:
         if any((ancestor / marker).exists() for marker in markers):
             return ancestor
-    # Fallback to the known layout: utils -> pmarlo -> src -> repo
-    try:
-        return here.parents[3]
-    except IndexError:  # pragma: no cover - defensive fallback for unusual layouts
-        return here.parent
+    raise RuntimeError("Unable to locate repository root from path utils")
 
 
 def resolve_project_path(
@@ -32,16 +28,15 @@ def resolve_project_path(
 ) -> str | None:
     """Resolve a possibly-relative path against common project roots.
 
-    The resolution strategy mirrors historical behaviour used in trajectory
-    streaming and MSM utilities:
+    The resolution strategy enforces deterministic lookups:
 
-    1. Absolute paths are returned unchanged.
-    2. Relative paths are first checked against the current working directory.
+    1. Absolute paths are normalised and must exist on disk.
+    2. Relative paths are checked against the current working directory.
     3. Additional ``search_roots`` (if provided) are consulted in order.
-    4. Finally, the detected repository root is treated as a fallback.
 
-    If the path does not exist in any candidate location, the original value is
-    returned so that downstream consumers can surface the missing-file error.
+    If the path does not exist in any candidate location, a
+    :class:`FileNotFoundError` is raised immediately so callers can handle the
+    failure explicitly.
     """
 
     if path is None:
@@ -51,31 +46,25 @@ def resolve_project_path(
     candidate_path = Path(raw)
 
     if candidate_path.is_absolute():
-        return raw
+        if not candidate_path.exists():
+            raise FileNotFoundError(f"Path '{raw}' does not exist")
+        return os.fspath(candidate_path.resolve())
 
     root_candidates: list[Path] = [Path.cwd()]
     if search_roots:
-        root_candidates.extend(Path(os.fspath(root)) for root in search_roots)
-    root_candidates.append(repository_root())
+        root_candidates.extend(Path(os.fspath(root)).resolve() for root in search_roots)
 
-    seen: set[Path] = set()
+    checked: list[Path] = []
     for root in root_candidates:
-        try:
-            resolved_root = root.resolve()
-        except Exception:  # pragma: no cover - defensive against permission errors
-            resolved_root = root
-        if resolved_root in seen:
-            continue
-        seen.add(resolved_root)
-
-        resolved = (resolved_root / candidate_path).expanduser()
+        resolved = (root / candidate_path).expanduser()
         if resolved.exists():
-            try:
-                return str(resolved.resolve())
-            except Exception:  # pragma: no cover - filesystem without resolve support
-                return str(resolved)
+            return os.fspath(resolved.resolve())
+        checked.append(resolved)
 
-    return raw
+    searched = ", ".join(str(path.parent) for path in checked) or str(Path.cwd())
+    raise FileNotFoundError(
+        f"Could not resolve '{raw}' in search roots: {searched}"
+    )
 
 
 def ensure_directory(

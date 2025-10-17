@@ -57,7 +57,7 @@ Combine `--focus` with `--testmon` whenever you want to zero in on a subset of p
 
 ## Dependency policy
 
-All data-processing modules require canonical shard metadata and fail fast when required dependencies are missing. Optional components must be explicitly installed; the package no longer degrades silently or supplies stubbed implementations.
+All data-processing modules require canonical shard metadata and fail fast when required dependencies are missing. Optional components must be explicitly installed; the package no longer degrades silently or supplies stubbed implementations. Fallback helpers have been removed so utilities now raise explicit errors if dependencies or expected workspace layouts are absent.
 
 
 ## Quickstart

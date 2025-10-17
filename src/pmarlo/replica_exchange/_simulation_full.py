@@ -22,13 +22,6 @@ from pmarlo import api
 
 from .bias_hook import BiasHook
 
-# Compatibility shim for OpenMM XML deserialization API changes
-if not hasattr(openmm.XmlSerializer, "load"):
-    # Older OpenMM releases expose ``deserialize`` instead of ``load``.
-    # Provide a small alias so downstream code can rely on ``load``
-    # regardless of the installed OpenMM version.
-    openmm.XmlSerializer.load = openmm.XmlSerializer.deserialize  # type: ignore[attr-defined]
-
 # PDBFixer is optional - users can install with: pip install "pmarlo[fixer]"
 try:
     import pdbfixer
@@ -154,14 +147,9 @@ class Simulation:
 
     def _setup_platform(self):
         """Set up the OpenMM platform."""
-        try:
-            self.platform = openmm.Platform.getPlatformByName(self.platform_name)
-            if self.platform_name == "CUDA":
-                self.platform.setPropertyDefaultValue("Precision", "mixed")
-        except Exception:
-            # Fall back to CPU if requested platform is not available
-            self.platform = openmm.Platform.getPlatformByName("CPU")
-            print(f"Warning: {self.platform_name} platform not available, using CPU")
+        self.platform = openmm.Platform.getPlatformByName(self.platform_name)
+        if self.platform_name == "CUDA":
+            self.platform.setPropertyDefaultValue("Precision", "mixed")
 
     def add_metadynamics(
         self, collective_variables, height=1.0, frequency=500, sigma=None

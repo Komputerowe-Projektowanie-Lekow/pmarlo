@@ -1,16 +1,21 @@
-"""Replica exchange experiment runner with optional lightweight fallback."""
+"""Replica exchange experiment runner that requires the canonical REMD stack."""
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, cast
+from typing import Dict, List, Optional
 
+from pmarlo.replica_exchange.config import RemdConfig
+from pmarlo.replica_exchange.replica_exchange import (
+    ReplicaExchange,
+    setup_bias_variables,
+)
 from pmarlo.utils.path_utils import ensure_directory
+from pmarlo.utils.replica_utils import exponential_temperature_ladder
 
 from .benchmark_utils import (
     build_remd_baseline_object,
@@ -30,65 +35,6 @@ from .kpi import (
 from .utils import default_output_root, set_seed, timestamp_dir
 
 logger = logging.getLogger(__name__)
-
-_HAS_SKLEARN = importlib.util.find_spec("sklearn") is not None
-
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    pass
-
-if _HAS_SKLEARN:  # pragma: no cover - depends on optional ML stack
-    from ..replica_exchange.config import RemdConfig as _RemdConfig
-    from ..replica_exchange.replica_exchange import ReplicaExchange as _ReplicaExchange
-    from ..replica_exchange.replica_exchange import (
-        setup_bias_variables as _setup_bias_variables,
-    )
-else:  # pragma: no cover - executed in minimal environments
-
-    @dataclass
-    class FallbackRemdConfig:  # type: ignore[misc]
-        pdb_file: str
-        temperatures: Optional[List[float]]
-        output_dir: str
-        exchange_frequency: int
-        dcd_stride: int
-        auto_setup: bool
-        random_seed: int | None
-
-    class FallbackReplicaExchange:  # type: ignore[override]
-        def __init__(self, *args: object, **kwargs: object) -> None:  # noqa: D401
-            raise ImportError(
-                "ReplicaExchange requires optional dependencies (install pmarlo[full])"
-            )
-
-        @classmethod
-        def from_config(
-            cls, *_args: object, **_kwargs: object
-        ) -> "FallbackReplicaExchange":
-            return cls()
-
-        def setup_replicas(self, **_: object) -> None:
-            raise ImportError(
-                "ReplicaExchange requires optional dependencies (install pmarlo[full])"
-            )
-
-        def run_simulation(self, **_: object) -> None:
-            raise ImportError(
-                "ReplicaExchange requires optional dependencies (install pmarlo[full])"
-            )
-
-        def get_exchange_statistics(self) -> Dict[str, object]:
-            return {}
-
-    def _setup_bias_variables_fallback(pdf_bile: str) -> List[Any]:
-        return []
-
-
-RemdConfigRT = _RemdConfig if _HAS_SKLEARN else FallbackRemdConfig
-ReplicaExchange = _ReplicaExchange if _HAS_SKLEARN else FallbackReplicaExchange
-setup_bias_variables = (
-    _setup_bias_variables if _HAS_SKLEARN else _setup_bias_variables_fallback
-)
-
 
 @dataclass
 class ReplicaExchangeConfig:
@@ -114,26 +60,13 @@ def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
 
     temps: Optional[List[float]]
     if config.temperatures is None:
-        try:
-            from ..utils.replica_utils import exponential_temperature_ladder
-
-            temps = exponential_temperature_ladder(
-                config.tmin, config.tmax, config.nreplicas
-            )
-        except Exception:
-            import numpy as _np
-
-            temps = list(
-                _np.linspace(
-                    float(config.tmin),
-                    float(config.tmax),
-                    int(max(2, config.nreplicas)),
-                )
-            )
+        temps = exponential_temperature_ladder(
+            config.tmin, config.tmax, config.nreplicas
+        )
     else:
         temps = config.temperatures
 
-    remd_config = RemdConfigRT(
+    remd_config = RemdConfig(
         pdb_file=config.pdb_file,
         temperatures=temps,
         output_dir=str(run_dir / "remd"),
@@ -143,17 +76,7 @@ def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
         random_seed=config.seed,
     )
 
-    if hasattr(ReplicaExchange, "from_config"):
-        remd = ReplicaExchange.from_config(cast(Any, remd_config))
-    else:
-        remd = ReplicaExchange(
-            pdb_file=config.pdb_file,
-            temperatures=temps,
-            output_dir=str(run_dir / "remd"),
-            exchange_frequency=config.exchange_frequency,
-            auto_setup=False,
-            random_seed=config.seed,
-        )
+    remd = ReplicaExchange.from_config(remd_config)
 
     bias_vars = (
         setup_bias_variables(config.pdb_file) if config.use_metadynamics else None
@@ -232,19 +155,16 @@ def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
     initialize_baseline_if_missing(root_dir, baseline_object)
     update_trend(root_dir, baseline_object)
 
-    try:
-        trend_path = root_dir / "trend.json"
-        if trend_path.exists():
-            with open(trend_path, "r", encoding="utf-8") as tf:
-                trend = json.load(tf)
-            if isinstance(trend, list) and len(trend) >= 2:
-                prev = trend[-2]
-                curr = trend[-1]
-                comparison = compute_threshold_comparison(prev, curr)
-                with open(run_dir / "comparison.json", "w", encoding="utf-8") as cf:
-                    json.dump(comparison, cf, indent=2)
-    except Exception:
-        pass
+    trend_path = root_dir / "trend.json"
+    if trend_path.exists():
+        with open(trend_path, "r", encoding="utf-8") as tf:
+            trend = json.load(tf)
+        if isinstance(trend, list) and len(trend) >= 2:
+            prev = trend[-2]
+            curr = trend[-1]
+            comparison = compute_threshold_comparison(prev, curr)
+            with open(run_dir / "comparison.json", "w", encoding="utf-8") as cf:
+                json.dump(comparison, cf, indent=2)
 
     logger.info("Replica exchange experiment complete: %s", run_dir)
     return {

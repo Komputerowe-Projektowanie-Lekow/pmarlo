@@ -46,11 +46,11 @@ def _derive_pairs(
     schedule: tuple[int, ...],
     pairs: Tuple[np.ndarray, np.ndarray] | None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    if pairs is not None and pairs[0].size and pairs[1].size:
-        idx_t = np.asarray(pairs[0], dtype=np.int64)
-        idx_tau = np.asarray(pairs[1], dtype=np.int64)
-        if not _pairs_need_repair(idx_t, idx_tau):
-            return idx_t, idx_tau
+    if pairs is not None:
+        idx_t = np.asarray(pairs[0], dtype=np.int64).reshape(-1)
+        idx_tau = np.asarray(pairs[1], dtype=np.int64).reshape(-1)
+        _validate_pairs(idx_t, idx_tau)
+        return idx_t, idx_tau
 
     if len(schedule) > 1:
         idx_t, idx_tau = _concatenate_pairs(shards, schedule)
@@ -118,7 +118,9 @@ def _build_uniform_pairs(
     shards: Sequence[np.ndarray],
     lag: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    lag = max(1, int(lag))
+    lag = int(lag)
+    if lag < 1:
+        raise ValueError("Lag must be a positive integer")
     idx_parts: list[np.ndarray] = []
     tau_parts: list[np.ndarray] = []
     offset = 0
@@ -135,11 +137,13 @@ def _build_uniform_pairs(
     return idx, tau
 
 
-def _pairs_need_repair(i: np.ndarray, j: np.ndarray) -> bool:
-    if i.size == 0 or j.size == 0:
-        return True
-    try:
-        shift = np.asarray(j, dtype=np.int64) - np.asarray(i, dtype=np.int64)
-        return shift.size == 0 or bool(np.min(shift) <= 0)
-    except Exception:
-        return True
+def _validate_pairs(idx_t: np.ndarray, idx_tau: np.ndarray) -> None:
+    if idx_t.shape != idx_tau.shape:
+        raise ValueError("Pair index arrays must have the same shape")
+    if idx_t.ndim != 1 or idx_tau.ndim != 1:
+        raise ValueError("Pair index arrays must be one-dimensional")
+    if idx_t.size == 0:
+        return
+    shift = idx_tau - idx_t
+    if np.min(shift) <= 0:
+        raise ValueError("Pair indices must represent positive time lags")

@@ -29,15 +29,12 @@ def create_system(pdb: PDBFile, forcefield: ForceField) -> openmm.System:
         hydrogenMass=3.0 * unit.amu,
     )
     # Avoid duplicate CMMotionRemover if ForceField already inserted one
-    try:
-        has_cmm = any(
-            isinstance(system.getForce(i), openmm.CMMotionRemover)
-            for i in range(system.getNumForces())
-        )
-        if not has_cmm:
-            system.addForce(openmm.CMMotionRemover())
-    except Exception:
-        pass
+    has_cmm = any(
+        isinstance(system.getForce(i), openmm.CMMotionRemover)
+        for i in range(system.getNumForces())
+    )
+    if not has_cmm:
+        system.addForce(openmm.CMMotionRemover())
     return system
 
 
