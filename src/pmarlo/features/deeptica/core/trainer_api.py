@@ -128,8 +128,14 @@ def train_deeptica_pipeline(
     if top_eigs is not None:
         history["top_eigenvalues"] = top_eigs
     history["pair_diagnostics_overall"] = pair_diagnostics
-    history["usable_pairs"] = usable_pairs
-    history["pair_coverage"] = coverage
+    n_frames = int(prep.Z.shape[0])
+    usable_pairs_capped = min(usable_pairs, n_frames)
+    if total_possible > 0:
+        coverage_capped = min(coverage, usable_pairs_capped / float(total_possible))
+    else:
+        coverage_capped = 0.0
+    history["usable_pairs"] = usable_pairs_capped
+    history["pair_coverage"] = coverage_capped
     history["pairs_by_shard"] = pair_diagnostics.get("pairs_by_shard", [])
     history["short_shards"] = short_shards
     history["total_possible_pairs"] = total_possible

@@ -4000,7 +4000,7 @@ files = [
     {file = "tomli-2.3.0-py3-none-any.whl", hash = "sha256:e95b1af3c5b07d9e643909b5abbec77cd9f1217e6d0bca72b0234736b9fb1f1b"},
     {file = "tomli-2.3.0.tar.gz", hash = "sha256:64be704a875d2a59753d80ee8a533c3fe183e3f06807ff7dc2232938ccb01549"},
 ]
-markers = {main = "(extra == \"fixer\" or extra == \"all\") and python_version == \"3.10\"", dev = "python_version == \"3.10\"", docs = "python_version == \"3.10\"", tests = "python_version == \"3.10\""}
+markers = {dev = "python_version == \"3.10\"", docs = "python_version == \"3.10\"", tests = "python_version == \"3.10\""}
 
 [[package]]
 name = "torch"
@@ -4395,4 +4395,4 @@ mlcv = ["deeptime", "lightning", "torch"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.13"
-content-hash = "ea61525422be96c4f30f1721186e7fbc51119aba9b7dfd7970fe3794be8e6e74"
+content-hash = "fbd59a9b0e33af06dfccca09d87997501179878d6e29f1a5003d06670b433c9c"

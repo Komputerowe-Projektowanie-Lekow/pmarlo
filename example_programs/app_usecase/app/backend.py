@@ -243,6 +243,7 @@ class SimulationConfig:
     jitter_sigma_A: float = 0.05
     exchange_frequency_steps: Optional[int] = None
     temperature_schedule_mode: Optional[str] = None
+    cv_model_bundle: Optional[Path] = None  # Path to trained CV model for CV-informed sampling
 
 
 @dataclass
@@ -313,6 +314,7 @@ class TrainingResult:
     dataset_hash: str
     build_result: BuildResult
     created_at: str
+    checkpoint_dir: Optional[Path] = None
 
 
 @dataclass
@@ -394,22 +396,27 @@ class WorkflowBackend:
             steps=int(config.steps),
             created_at=created,
         )
-        self.state.append_run(
-            {
-                "run_id": run_label,
-                "run_dir": str(result.run_dir),
-                "pdb": str(result.pdb_path),
-                "temperatures": [float(t) for t in config.temperatures],
-                "analysis_temperatures": result.analysis_temperatures,
-                "steps": int(config.steps),
-                "quick": bool(config.quick),
-                "random_seed": (
-                    int(config.random_seed) if config.random_seed is not None else None
-                ),
-                "traj_files": [str(p) for p in result.traj_files],
-                "created_at": created,
-            }
-        )
+        run_metadata = {
+            "run_id": run_label,
+            "run_dir": str(result.run_dir),
+            "pdb": str(result.pdb_path),
+            "temperatures": [float(t) for t in config.temperatures],
+            "analysis_temperatures": result.analysis_temperatures,
+            "steps": int(config.steps),
+            "quick": bool(config.quick),
+            "random_seed": (
+                int(config.random_seed) if config.random_seed is not None else None
+            ),
+            "traj_files": [str(p) for p in result.traj_files],
+            "created_at": created,
+        }
+        
+        # Add CV model reference if used
+        if config.cv_model_bundle:
+            run_metadata["cv_model_bundle"] = str(config.cv_model_bundle)
+            run_metadata["cv_informed"] = True
+        
+        self.state.append_run(run_metadata)
         return result
 
     def emit_shards(
@@ -517,17 +524,60 @@ class WorkflowBackend:
     # ------------------------------------------------------------------
     # Model training and analysis
     # ------------------------------------------------------------------
+    def get_training_progress(self, checkpoint_dir: Path) -> Optional[Dict[str, Any]]:
+        """Read real-time training progress from checkpoint directory."""
+        import json
+        
+        if not checkpoint_dir or not checkpoint_dir.exists():
+            return None
+        
+        progress_path = checkpoint_dir / "training_progress.json"
+        if not progress_path.exists():
+            return None
+        
+        try:
+            with progress_path.open("r") as f:
+                return json.load(f)
+        except Exception:
+            return None
+    
     def train_model(
         self,
         shard_jsons: Sequence[Path],
         config: TrainingConfig,
     ) -> TrainingResult:
+        import logging
+        
         shards = [Path(p).resolve() for p in shard_jsons]
         if not shards:
             raise ValueError("No shards selected for training")
         stamp = _timestamp()
         bundle_path = self.layout.models_dir / f"deeptica-{stamp}.pbz"
+        
+        # Create checkpoint directory for training progress
+        checkpoint_dir = self.layout.models_dir / f"training-{stamp}"
+        ensure_directory(checkpoint_dir)
+        
+        # Setup logging to file
+        log_file = checkpoint_dir / "training.log"
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        
+        # Get the pmarlo logger and add our file handler
+        pmarlo_logger = logging.getLogger("pmarlo")
+        pmarlo_logger.addHandler(file_handler)
+        pmarlo_logger.setLevel(logging.INFO)
+        
         try:
+            pmarlo_logger.info(f"Starting training with {len(shards)} shards")
+            pmarlo_logger.info(f"Configuration: lag={config.lag}, bins={config.bins}, max_epochs={config.max_epochs}")
+            
+            # Add checkpoint_dir to deeptica_params
+            deeptica_params = config.deeptica_params()
+            deeptica_params["checkpoint_dir"] = str(checkpoint_dir)
+            
+            pmarlo_logger.info("Calling build_from_shards...")
             br, ds_hash = build_from_shards(
                 shard_jsons=shards,
                 out_bundle=bundle_path,
@@ -536,20 +586,28 @@ class WorkflowBackend:
                 seed=int(config.seed),
                 temperature=float(config.temperature),
                 learn_cv=True,
-                deeptica_params=config.deeptica_params(),
-                notes={"model_dir": str(self.layout.models_dir)},
+                deeptica_params=deeptica_params,
+                notes={"model_dir": str(self.layout.models_dir), "checkpoint_dir": str(checkpoint_dir)},
             )
+            pmarlo_logger.info("Training completed successfully")
         except ImportError as exc:
+            pmarlo_logger.error(f"Import error: {exc}")
             raise RuntimeError(
                 "Deep-TICA optional dependencies missing. Install pmarlo[mlcv] to enable"
             ) from exc
-        except Exception:
+        except Exception as exc:
+            pmarlo_logger.error(f"Training failed: {exc}", exc_info=True)
             raise
+        finally:
+            # Remove the handler so it doesn't persist
+            pmarlo_logger.removeHandler(file_handler)
+            file_handler.close()
         result = TrainingResult(
             bundle_path=bundle_path.resolve(),
             dataset_hash=ds_hash,
             build_result=br,
             created_at=stamp,
+            checkpoint_dir=checkpoint_dir,
         )
         self.state.append_model(
             {
