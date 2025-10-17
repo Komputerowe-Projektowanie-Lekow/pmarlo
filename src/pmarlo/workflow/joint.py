@@ -353,7 +353,7 @@ class JointWorkflow:
         def _hook(cv_vals: np.ndarray) -> np.ndarray:
             arr = np.asarray(cv_vals, dtype=np.float64)
             if arr.size == 0:
-                return np.zeros((0,), dtype=np.float64)
+                return np.empty((0,), dtype=np.float64)
             coord_vals = arr if arr.ndim == 1 else arr[:, 0]
             bias = np.interp(coord_vals, centers, fes, left=fes[0], right=fes[-1])
             return bias.astype(np.float64)
@@ -495,7 +495,7 @@ class JointWorkflow:
         self, T: np.ndarray, lag_time_ps: float, n_times: int = 5
     ) -> np.ndarray:
         if T.size == 0 or lag_time_ps <= 0:
-            return np.zeros((0,), dtype=np.float64)
+            return np.empty((0,), dtype=np.float64)
 
         eigvals = np.linalg.eigvals(T.T)
         eigvals = sorted(eigvals, key=lambda x: -abs(x))

@@ -18,6 +18,7 @@ import numpy as np
 from pmarlo import aggregate_and_build, emit_shards_from_trajectories
 from pmarlo.transform import AppliedOpts, BuildOpts
 from pmarlo.transform.plan import TransformPlan, TransformStep
+from pmarlo.utils.path_utils import ensure_directory
 
 BASE = Path(__file__).resolve().parents[1]
 TESTS = BASE / "tests" / "data"
@@ -33,7 +34,7 @@ def _make_slice_descriptors(n_frames: int, n_slices: int) -> list[Path]:
     """Create empty files encoding [start:stop) frame ranges in their names."""
     edges = np.linspace(0, n_frames, n_slices + 1, dtype=int)
     desc = []
-    SHARDS_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_directory(SHARDS_DIR)
     for i in range(n_slices):
         a, b = int(edges[i]), int(edges[i + 1])
         p = SHARDS_DIR / f"slice_{a:06d}_{b:06d}.dcd"
@@ -127,7 +128,7 @@ def main() -> None:
     )
 
     # 2) Aggregate and build a provenance-first envelope
-    OUT_BASE.mkdir(parents=True, exist_ok=True)
+    ensure_directory(OUT_BASE)
     plan = TransformPlan(steps=(TransformStep("SMOOTH_FES", {"sigma": 0.6}),))
     opts = BuildOpts(seed=123, temperature=300.0, lag_candidates=[2, 4, 6])
     applied = AppliedOpts(bins=applied_bins, lag=2, notes={"fes": {"smooth": True}})

@@ -1,3 +1,20 @@
+<a id='changelog-0.100.0'></a>
+# 0.100.0 — 2025-10-16
+
+
+## Fixed
+- Deduplicated repeated array concatenation fallback logic by introducing the shared ``concatenate_or_empty`` utility and reusing it within the API and pair-building helpers.
+- Centralized exchange history validation into ``normalize_exchange_mapping`` and reused it across demux, compatibility helpers, and the legacy API to ensure consistent error handling.
+- Reused the shared `_row_normalize` helper throughout MSM estimators to eliminate divergent implementations across `bridge.py` and `ck_runner.py`.
+- Centralized directory creation logic via the shared `ensure_directory` helper and refactored call sites to rely on it, making future permission or error-handling adjustments consistent.
+- Replaced scattered ``np.zeros((0, ...))`` fallbacks with ``np.empty`` helpers to ensure consistent zero-length array shapes and dtypes across workflow, MSM, feature, and utility modules.
+- Consolidated repeated topology loading and atom selection logic by introducing shared mdtraj utilities and reusing them across trajectory streaming and writing helpers.
+- Removed duplicate MSM helper implementations by delegating candidate lag generation, count regularisation, and transition validation in the markov_state_model package to the shared ``pmarlo.utils.msm_utils`` module.
+- Reused the shared residue-label helper for chi1 feature labels to keep error handling and label formatting consistent with other torsion features.
+- Reused the shared ``_stationary_from_T`` helper from ``_msm_utils`` inside the MSM bridge to eliminate duplicate stationary-distribution logic.
+
+
+
 
 <a id='changelog-0.99.0'></a>
 # 0.99.0 — 2025-10-16

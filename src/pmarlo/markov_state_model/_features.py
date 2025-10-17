@@ -6,6 +6,8 @@ from typing import List, Optional
 import mdtraj as md
 import numpy as np
 
+from pmarlo.utils.path_utils import ensure_directory
+
 
 class FeaturesMixin:
     # Attributes provided by the host class
@@ -90,7 +92,7 @@ class FeaturesMixin:
                 from pathlib import Path as _Path
 
                 cache_dir = _Path(getattr(self, "output_dir", ".")) / "feature_cache"
-                cache_dir.mkdir(parents=True, exist_ok=True)
+                ensure_directory(cache_dir)
                 metric, _meta = _api.compute_universal_metric(
                     traj,
                     feature_specs=None,
@@ -126,7 +128,7 @@ class FeaturesMixin:
             from pmarlo import api  # type: ignore
 
             cache_dir = _Path(getattr(self, "output_dir", ".")) / "feature_cache"
-            cache_dir.mkdir(parents=True, exist_ok=True)
+            ensure_directory(cache_dir)
             X, _cols, _periodic = api.compute_features(
                 traj, feature_specs=["phi_psi"], cache_path=str(cache_dir)
             )

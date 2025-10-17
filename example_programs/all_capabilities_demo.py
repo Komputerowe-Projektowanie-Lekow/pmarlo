@@ -15,6 +15,7 @@ from pathlib import Path
 
 from pmarlo import api, power_of_two_temperature_ladder
 from pmarlo.replica_exchange import config as demux_config
+from pmarlo.utils.path_utils import ensure_directory
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 TESTS_DIR = BASE_DIR / "tests" / "data"
@@ -24,8 +25,7 @@ OUT_DIR = Path(__file__).resolve().parent / "programs_outputs" / "all_capabiliti
 
 
 def ensure_output_dir(path: Path) -> Path:
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    return ensure_directory(path)
 
 
 if __name__ == "__main__":

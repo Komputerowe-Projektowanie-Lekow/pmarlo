@@ -146,7 +146,7 @@ def ensure_connected_counts(
     totals = C.sum(axis=1) + C.sum(axis=0)
     active = np.where(totals > epsilon)[0]
     if active.size == 0:
-        return ConnectedCountResult(np.zeros((0, 0), dtype=float), active)
+        return ConnectedCountResult(np.empty((0, 0), dtype=float), active)
 
     C_active = C[np.ix_(active, active)].astype(float)
     C_active += float(alpha)

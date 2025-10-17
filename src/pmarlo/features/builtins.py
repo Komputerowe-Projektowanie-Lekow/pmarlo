@@ -76,7 +76,7 @@ class PhiPsiFeature:
     def is_periodic(self) -> np.ndarray:
         if self._periodic is None:
             # default unknown -> False length 0; caller should compute first
-            return np.zeros((0,), dtype=bool)
+            return np.empty((0,), dtype=bool)
         return self._periodic
 
 
@@ -159,7 +159,7 @@ class Chi1Feature:
 
     def is_periodic(self) -> np.ndarray:
         if self._periodic is None:
-            return np.zeros((0,), dtype=bool)
+            return np.empty((0,), dtype=bool)
         return self._periodic
 
 

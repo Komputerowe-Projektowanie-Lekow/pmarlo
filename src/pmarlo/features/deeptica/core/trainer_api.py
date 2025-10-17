@@ -17,6 +17,7 @@ import torch
 from torch import nn
 
 from pmarlo import constants as const
+from pmarlo.utils.path_utils import ensure_directory
 
 from .dataset import split_sequences
 from .history import vamp2_proxy
@@ -422,7 +423,7 @@ def _write_training_summary(
     if summary_dir is None:
         return
     try:
-        summary_dir.mkdir(parents=True, exist_ok=True)
+        ensure_directory(summary_dir)
         try:
             cfg_dict = asdict(cfg)
         except TypeError:

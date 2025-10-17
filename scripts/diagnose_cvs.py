@@ -15,6 +15,7 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from pmarlo.io import trajectory as traj_io
+from pmarlo.utils.path_utils import ensure_directory
 
 
 def compute_cvs(
@@ -62,13 +63,17 @@ def compute_cvs(
             rg_parts.append(rg_chunk)
             rmsd_parts.append(rmsd_chunk)
 
-    rg = np.concatenate(rg_parts) if rg_parts else np.zeros((0,), dtype=np.float64)
-    rmsd = np.concatenate(rmsd_parts) if rmsd_parts else np.zeros((0,), dtype=np.float64)
+    rg = np.concatenate(rg_parts) if rg_parts else np.empty((0,), dtype=np.float64)
+    rmsd = (
+        np.concatenate(rmsd_parts)
+        if rmsd_parts
+        else np.empty((0,), dtype=np.float64)
+    )
     return pd.DataFrame({"Rg": rg, "RMSD_ref": rmsd})
 
 
 def analyse_dataframe(df: pd.DataFrame, output_dir: Path) -> dict[str, object]:
-    output_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(output_dir)
     pos_inf = {col: int(np.isposinf(df[col].to_numpy()).sum()) for col in df.columns}
     neg_inf = {col: int(np.isneginf(df[col].to_numpy()).sum()) for col in df.columns}
     stats = {
@@ -158,7 +163,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.summary_json:
         summary_path = Path(args.summary_json)
-        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_directory(summary_path.parent)
         with summary_path.open("w", encoding="utf-8") as handle:
             json.dump(stats, handle, indent=2)
         print(f"Summary written to: {summary_path}", file=sys.stdout)

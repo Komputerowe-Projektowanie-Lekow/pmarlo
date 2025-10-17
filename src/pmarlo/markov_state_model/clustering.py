@@ -320,7 +320,7 @@ def cluster_microstates(
     # Handle edge case of empty dataset
     if Y.shape[0] == 0:
         logger.info("Empty dataset provided, returning empty clustering result")
-        return ClusteringResult(labels=np.zeros((0,), dtype=int), n_states=0)
+        return ClusteringResult(labels=np.empty((0,), dtype=int), n_states=0)
 
     # Validate input dimensions and data
     _validate_clustering_inputs(Y)

@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 
 from pmarlo import read_shard, write_shard
+from pmarlo.utils.path_utils import ensure_directory
 
 
 def _sha256_bytes(*arrays: np.ndarray) -> str:
@@ -57,7 +58,7 @@ def test_write_with_bias_and_read_sets_flags(tmp_path: Path):
 def test_read_shard_compatibility_missing_bias_key(tmp_path: Path):
     # Craft an "old" shard: NPZ has only X/dtraj, JSON matches arrays_hash
     out = tmp_path / "old"
-    out.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out)
     shard_id = "shard_0001"
     X = np.column_stack([np.arange(5.0), np.arange(5.0) + 1.0]).astype(np.float64)
     dtraj = np.array([], dtype=np.int32)

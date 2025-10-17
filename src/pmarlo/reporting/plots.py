@@ -6,6 +6,7 @@ from typing import Optional, Tuple
 import numpy as np
 
 from pmarlo import constants as const
+from pmarlo.utils.path_utils import ensure_directory
 from pmarlo.utils.thermodynamics import kT_kJ_per_mol
 
 
@@ -23,7 +24,7 @@ def save_transition_matrix_heatmap(
         raise RuntimeError("matplotlib is required for plotting") from exc
 
     out_dir = Path(output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out_dir)
     plt.figure(figsize=(6, 5))
     plt.imshow(T, cmap="viridis", origin="lower")
     plt.colorbar(label="Transition Probability")
@@ -53,7 +54,7 @@ def save_fes_contour(
         raise RuntimeError("matplotlib is required for plotting") from exc
 
     out_dir = Path(output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out_dir)
     x_centers = 0.5 * (xedges[:-1] + xedges[1:])
     y_centers = 0.5 * (yedges[:-1] + yedges[1:])
     plt.figure(figsize=(7, 6))
@@ -135,7 +136,7 @@ def save_pmf_line(
         raise RuntimeError("matplotlib is required for plotting") from exc
 
     out_dir = Path(output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out_dir)
     x_centers = 0.5 * (edges[:-1] + edges[1:])
     plt.figure(figsize=(7, 4))
     plt.plot(x_centers, F, color="steelblue", lw=2)

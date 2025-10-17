@@ -12,6 +12,7 @@ from sklearn.preprocessing import StandardScaler  # type: ignore
 
 from pmarlo import constants as const
 from pmarlo.ml.deeptica.whitening import apply_output_transform
+from pmarlo.utils.path_utils import ensure_directory
 
 from .core.model import apply_output_whitening as core_apply_output_whitening
 from .core.model import construct_deeptica_core as core_construct_deeptica_core
@@ -290,7 +291,7 @@ class DeepTICAModel:
 
     def save(self, path: Path) -> None:
         path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_directory(path.parent)
         # Config
         meta = json.dumps(
             asdict(self.cfg), sort_keys=True, separators=(",", ":"), allow_nan=False
@@ -396,7 +397,7 @@ def _load_training_history(path: Path) -> Optional[dict[str, Any]]:
 
     def to_torchscript(self, path: Path) -> Path:
         path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_directory(path.parent)
         self.net.eval()
         # Trace with single precision (typical for inference)
         example = torch.zeros(1, int(self.scaler.mean_.shape[0]), dtype=torch.float32)

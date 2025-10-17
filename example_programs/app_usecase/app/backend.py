@@ -29,6 +29,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Sequence, cast
 
+from pmarlo.utils.path_utils import ensure_directory
+
 try:  # Package-relative when imported as module
     from .state import StateManager
 except ImportError:  # Fallback for direct script import
@@ -216,8 +218,8 @@ class WorkspaceLayout:
             self.bundles_dir,
             self.logs_dir,
         ):
-            path.mkdir(parents=True, exist_ok=True)
-        self.analysis_debug_dir.mkdir(parents=True, exist_ok=True)
+            ensure_directory(path)
+        ensure_directory(self.analysis_debug_dir)
 
     def available_inputs(self) -> List[Path]:
         if not self.inputs_dir.exists():
@@ -363,7 +365,7 @@ class WorkflowBackend:
     def run_sampling(self, config: SimulationConfig) -> SimulationResult:
         run_label = _slugify(config.label) or f"run-{_timestamp()}"
         run_dir = self.layout.sims_dir / run_label
-        run_dir.mkdir(parents=True, exist_ok=True)
+        ensure_directory(run_dir)
         traj_files, temps = run_replica_exchange(
             pdb_file=str(config.pdb_path),
             output_dir=str(run_dir),
@@ -418,7 +420,7 @@ class WorkflowBackend:
         provenance: Optional[Dict[str, Any]] = None,
     ) -> ShardResult:
         shard_dir = self.layout.shards_dir / simulation.run_id
-        shard_dir.mkdir(parents=True, exist_ok=True)
+        ensure_directory(shard_dir)
         note = {
             "run_id": simulation.run_id,
             "analysis_temperatures": simulation.analysis_temperatures,

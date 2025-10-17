@@ -9,6 +9,8 @@ import mdtraj as md
 import numpy as np
 import pandas as pd
 
+from pmarlo.utils.path_utils import ensure_directory
+
 logger = logging.getLogger("pmarlo")
 
 
@@ -51,7 +53,7 @@ class MSMBase:
         self.temperatures: List[float] = temperatures or [300.0]
         self.output_dir: Path = Path(output_dir)
         # Ensure parent directories exist to avoid FileNotFoundError on CI
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        ensure_directory(self.output_dir)
 
         # Trajectory and feature data
         self.trajectories: List[md.Trajectory] = []

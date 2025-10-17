@@ -9,6 +9,8 @@ from typing import Iterator
 import numpy as np
 import pytest
 
+from pmarlo.utils.path_utils import ensure_directory
+
 torch = pytest.importorskip("torch")
 import torch.nn as nn
 
@@ -323,13 +325,13 @@ class ModelCheckpoint(Callback):
 class CSVLogger:
     def __init__(self, save_dir: str, name: str, version: str):
         self.log_dir = Path(save_dir) / name / str(version)
-        self.log_dir.mkdir(parents=True, exist_ok=True)
+        ensure_directory(self.log_dir)
 
 
 class TensorBoardLogger:
     def __init__(self, save_dir: str, name: str):
         self.log_dir = Path(save_dir) / name
-        self.log_dir.mkdir(parents=True, exist_ok=True)
+        ensure_directory(self.log_dir)
 
 
 def _build_lightning_modules() -> dict[str, types.ModuleType]:

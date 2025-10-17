@@ -5,13 +5,14 @@ import sys
 from pathlib import Path
 
 from pmarlo.data.shard import write_shard
+from pmarlo.utils.path_utils import ensure_directory
 
 
 def _prepare_workspace(tmp_path: Path) -> tuple[Path, Path]:
     workspace_dir = tmp_path / "workspace"
     shards_dir = workspace_dir / "shards"
-    (workspace_dir / "sims").mkdir(parents=True, exist_ok=True)
-    shards_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(workspace_dir / "sims")
+    ensure_directory(shards_dir)
     (workspace_dir / "models").mkdir(exist_ok=True)
     (workspace_dir / "bundles").mkdir(exist_ok=True)
     (workspace_dir / "logs").mkdir(exist_ok=True)

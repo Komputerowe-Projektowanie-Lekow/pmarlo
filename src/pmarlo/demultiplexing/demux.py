@@ -22,6 +22,7 @@ from pmarlo.io.trajectory_writer import get_writer
 from pmarlo.transform.progress import ProgressCB
 
 from ..replica_exchange import config as _cfg
+from .exchange_validation import normalize_exchange_mapping
 from .demux_engine import demux_streaming
 from .demux_metadata import DemuxIntegrityError, DemuxMetadataDict, serialize_metadata
 from .demux_plan import build_demux_plan
@@ -305,8 +306,15 @@ def _validate_exchange_integrity(
 ) -> None:
     expected_prev_stop = 0
     for segment_index, states in enumerate(remd.exchange_history):
+        normalized_states = normalize_exchange_mapping(
+            states,
+            expected_size=int(remd.n_replicas),
+            context=f"segment {segment_index}",
+            error_cls=DemuxIntegrityError,
+        )
+
         replica_at_target = None
-        for ridx, tidx in enumerate(states):
+        for ridx, tidx in enumerate(normalized_states):
             if int(tidx) == int(target_temp_idx):
                 replica_at_target = int(ridx)
                 break

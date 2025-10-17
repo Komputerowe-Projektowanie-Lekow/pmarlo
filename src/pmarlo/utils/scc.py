@@ -129,7 +129,7 @@ def analyse_scc(
         state_indices = np.asarray(list(state_indices), dtype=int).reshape(n)
 
     if n == 0:
-        empty = np.zeros((0,), dtype=int)
+        empty = np.empty((0,), dtype=int)
         return SCCSummary(
             n_nodes=0,
             component_labels=empty,
@@ -161,8 +161,8 @@ def analyse_scc(
         largest = components[idx_largest]
         fraction = float(sizes_arr[idx_largest] / n)
     else:
-        sizes_arr = np.zeros((0,), dtype=int)
-        largest = np.zeros((0,), dtype=int)
+        sizes_arr = np.empty((0,), dtype=int)
+        largest = np.empty((0,), dtype=int)
         fraction = None
 
     return SCCSummary(

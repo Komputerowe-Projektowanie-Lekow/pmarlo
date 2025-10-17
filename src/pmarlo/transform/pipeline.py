@@ -12,6 +12,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from pmarlo.utils.path_utils import ensure_directory
+
 from ..markov_state_model.enhanced_msm import EnhancedMSM as MarkovStateModel
 from ..markov_state_model.enhanced_msm import (
     EnhancedMSMProtocol,
@@ -104,7 +106,7 @@ class Pipeline:
         self.auto_continue = auto_continue
 
         # Create output directory
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        ensure_directory(self.output_dir)
 
         logger.info("PMARLO Pipeline initialized")
         logger.info(f"  PDB file: {self.pdb_file}")
@@ -241,7 +243,7 @@ class Pipeline:
         logger.info("Stage 2/4: Single Simulation Setup")
 
         sim_output_dir = self.output_dir / "simulation"
-        sim_output_dir.mkdir(parents=True, exist_ok=True)
+        ensure_directory(sim_output_dir)
 
         self.simulation = Simulation(
             pdb_file=str(self.prepared_pdb),
@@ -262,7 +264,7 @@ class Pipeline:
         logger.info("Stage 4/4: MSM Analysis Setup")
 
         msm_output_dir = self.output_dir / "msm_analysis"
-        msm_output_dir.mkdir(parents=True, exist_ok=True)
+        ensure_directory(msm_output_dir)
 
         self.markov_state_model = MarkovStateModel(output_dir=str(msm_output_dir))
 

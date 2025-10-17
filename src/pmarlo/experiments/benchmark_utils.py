@@ -15,6 +15,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from pmarlo.utils.path_utils import ensure_directory
+
 
 def get_environment_info() -> Dict[str, Any]:
     """Capture environment details for reproducibility.
@@ -178,7 +180,7 @@ def _safe_read_json(path: Path) -> Optional[Any]:
 
 
 def _safe_write_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(path.parent)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 

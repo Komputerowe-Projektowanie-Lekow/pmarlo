@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
 import numpy as np
 
 from pmarlo.markov_state_model.free_energy import FESResult
+from pmarlo.utils.path_utils import ensure_directory
 
 from .counting import expected_pairs
 from .errors import CountingLogicError
@@ -258,7 +259,7 @@ def export_analysis_debug(
     """Persist debug artefacts (counts, MSM arrays, diagnostics) to disk."""
 
     output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(output_dir)
 
     summary_payload = debug_data.to_summary_dict()
     if summary_overrides:
@@ -521,7 +522,7 @@ def _strongly_connected_components(
 ) -> Tuple[List[List[int]], np.ndarray]:
     n = int(counts.shape[0])
     if n == 0:
-        return [], np.zeros((0,), dtype=int)
+        return [], np.empty((0,), dtype=int)
 
     adjacency = [np.where(counts[i] > 0.0)[0].astype(int).tolist() for i in range(n)]
     solver = _TarjanSCC(adjacency)

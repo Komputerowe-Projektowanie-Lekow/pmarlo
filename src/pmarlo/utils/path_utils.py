@@ -7,6 +7,8 @@ from typing import Sequence
 
 StrPath = str | os.PathLike[str]
 
+__all__ = ["repository_root", "resolve_project_path", "ensure_directory"]
+
 
 @lru_cache(maxsize=1)
 def repository_root() -> Path:
@@ -74,3 +76,52 @@ def resolve_project_path(
                 return str(resolved)
 
     return raw
+
+
+def ensure_directory(
+    path: StrPath | Path,
+    *,
+    parents: bool = True,
+    exist_ok: bool = True,
+    mode: int | None = None,
+) -> Path:
+    """Create *path* as a directory if it does not already exist.
+
+    Parameters
+    ----------
+    path:
+        Directory path to create. May be a string or :class:`os.PathLike`.
+    parents:
+        Whether to create parent directories. Defaults to ``True`` to match the
+        historical ``mkdir(parents=True, exist_ok=True)`` idiom used across the
+        codebase.
+    exist_ok:
+        Passed through to :meth:`pathlib.Path.mkdir`. Defaults to ``True`` to
+        maintain backwards compatibility while still allowing callers to opt in
+        to stricter behaviour when desired.
+    mode:
+        Optional POSIX permission bits to apply after creation via
+        :func:`os.chmod`.
+
+    Returns
+    -------
+    :class:`pathlib.Path`
+        The created (or pre-existing) directory path as a :class:`Path`
+        instance.
+    """
+
+    directory = Path(path)
+    try:
+        directory.mkdir(parents=parents, exist_ok=exist_ok)
+    except FileExistsError as exc:
+        if exist_ok and directory.is_dir():
+            # The directory already exists (possibly created concurrently);
+            # treat this as success to mirror the previous idiom.
+            pass
+        else:  # pragma: no cover - rely on callers/tests to cover rare branch
+            raise
+
+    if mode is not None:
+        directory.chmod(mode)
+
+    return directory

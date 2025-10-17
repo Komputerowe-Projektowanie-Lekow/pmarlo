@@ -19,6 +19,7 @@ import numpy as np
 from pmarlo import constants as const
 from pmarlo.shards.format import read_shard_npz_json, write_shard_npz_json
 from pmarlo.shards.schema import FeatureSpec, Shard, ShardMeta
+from pmarlo.utils.path_utils import ensure_directory
 
 __all__ = ["write_shard", "read_shard", "_sha256_bytes"]
 
@@ -86,7 +87,7 @@ def write_shard(
     """
 
     out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out_dir)
 
     X = _stack_columns(cvs)
     n_frames = X.shape[0]

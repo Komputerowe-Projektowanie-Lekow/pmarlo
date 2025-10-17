@@ -4,6 +4,8 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
+from pmarlo.utils.path_utils import ensure_directory
+
 
 def _read_json(path: Path) -> dict:
     with open(path, "r", encoding="utf-8") as f:
@@ -57,9 +59,9 @@ def test_simulation_experiment_benchmark(tmp_path: Path):
             return object(), None
 
         def run_production(self, *_args, **_kwargs):
-            out_dir.mkdir(parents=True, exist_ok=True)
+            ensure_directory(out_dir)
             p = out_dir / "simulation" / "traj.dcd"
-            p.parent.mkdir(parents=True, exist_ok=True)
+            ensure_directory(p.parent)
             p.write_bytes(b"")
             return str(p)
 
@@ -158,7 +160,7 @@ def test_msm_experiment_benchmark(tmp_path: Path):
 
     def dummy_run_complete(*_args, **_kwargs):
         # Create output directory tree
-        (out_dir / "msm").mkdir(parents=True, exist_ok=True)
+        ensure_directory(out_dir / "msm")
         return DummyMSMObj()
 
     with patch("pmarlo.experiments.msm.run_complete_msm_analysis", dummy_run_complete):

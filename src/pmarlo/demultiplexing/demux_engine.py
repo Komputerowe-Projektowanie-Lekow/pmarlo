@@ -76,13 +76,13 @@ class _DemuxState:
 def _repeat_frames(frame: np.ndarray, count: int) -> np.ndarray:
     # frame: (n_atoms, 3) -> (count, n_atoms, 3)
     if count <= 0:
-        return np.zeros((0,) + frame.shape, dtype=frame.dtype)
+        return np.empty((0,) + frame.shape, dtype=frame.dtype)
     return np.broadcast_to(frame, (count,) + frame.shape).copy()
 
 
 def _interpolate_frames(last: np.ndarray, nxt: np.ndarray, count: int) -> np.ndarray:
     if count <= 0:
-        return np.zeros((0,) + last.shape, dtype=last.dtype)
+        return np.empty((0,) + last.shape, dtype=last.dtype)
     # create linear interpolation excluding endpoints
     # t in (1/(count+1), ..., count/(count+1))
     t_vals = (np.arange(1, count + 1, dtype=np.float32) / float(count + 1)).reshape(
@@ -138,7 +138,7 @@ def _read_segment_frames_worker(
         acc.append(_np.asarray(xyz))
     if acc:
         return _np.stack(acc, axis=0)
-    return _np.zeros((0, 0, 3), dtype=_np.float32)
+    return _np.empty((0, 0, 3), dtype=_np.float32)
 
 
 def _canonical_topology_path(requested: str | None, plan: DemuxPlan) -> str | None:

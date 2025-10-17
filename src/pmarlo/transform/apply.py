@@ -8,6 +8,8 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Tupl
 
 import numpy as np
 
+from pmarlo.utils.path_utils import ensure_directory
+
 from ..experiments.benchmark_utils import get_environment_info
 from .plan import TransformPlan
 
@@ -605,7 +607,7 @@ def _save_trained_model(
     if model_dir:
         try:
             base_dir = Path(model_dir)
-            base_dir.mkdir(parents=True, exist_ok=True)
+            ensure_directory(base_dir)
             stem = (
                 params.get("model_prefix")
                 or f"deeptica-{datetime.now().strftime('%Y%m%d-%H%M%S')}"

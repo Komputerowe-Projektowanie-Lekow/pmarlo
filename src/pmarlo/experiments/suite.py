@@ -26,6 +26,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypedDict
 
+from pmarlo.utils.path_utils import ensure_directory
+
 from .utils import default_output_root, tests_data_dir
 
 AlgorithmName = Literal["simulation", "remd", "msm"]
@@ -193,7 +195,7 @@ def main() -> None:
         idx_env = os.getenv("JOB_INDEX") or os.getenv("JOB_COMPLETION_INDEX")
         pod_name = os.getenv("HOSTNAME")
         registry_root = Path(default_output_root()) / "_registry"
-        registry_root.mkdir(parents=True, exist_ok=True)
+        ensure_directory(registry_root)
         fname_parts = [str(idx_env or args.index)]
         if case_id:
             fname_parts.append(str(case_id))

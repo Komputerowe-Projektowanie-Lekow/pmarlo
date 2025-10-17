@@ -26,6 +26,7 @@ import numpy as np
 
 from pmarlo import constants as const
 from pmarlo.utils.json_io import load_json_file
+from pmarlo.utils.path_utils import ensure_directory
 from pmarlo.utils.temperature import collect_temperature_values
 
 from ..analysis import compute_diagnostics
@@ -1076,7 +1077,7 @@ def _resolve_diagnostics_dir(
     candidates.append(Path.cwd() / "pmarlo_diagnostics")
     for candidate in candidates:
         try:
-            candidate.mkdir(parents=True, exist_ok=True)
+            ensure_directory(candidate)
             return candidate
         except Exception:
             continue

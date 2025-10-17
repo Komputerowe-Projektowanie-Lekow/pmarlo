@@ -4,6 +4,8 @@ from pathlib import Path
 
 import numpy as np
 
+from pmarlo.utils.path_utils import ensure_directory
+
 from pmarlo.data.aggregate import aggregate_and_build
 from pmarlo.data.emit import emit_shards_from_trajectories
 from pmarlo.data.shard import read_shard
@@ -63,7 +65,7 @@ def _make_dummy_trajs(tmp: Path, n: int) -> list[Path]:
     paths: list[Path] = []
     for i in range(int(n)):
         p = tmp / f"traj_{i:02d}.dcd"
-        p.parent.mkdir(parents=True, exist_ok=True)
+        ensure_directory(p.parent)
         p.write_bytes(b"")
         paths.append(p)
     return paths
@@ -73,7 +75,7 @@ def test_sharded_app_happy_path_emit_aggregate_build(tmp_path: Path):
     workspace = tmp_path / "app_workspace"
     shards_dir = workspace / "shards"
     bundles_dir = workspace / "bundles"
-    bundles_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(bundles_dir)
 
     trajs = _make_dummy_trajs(workspace / "trajs", 3)
 
@@ -158,7 +160,7 @@ def test_sharded_app_mismatched_shards_raise(tmp_path: Path):
     )
 
     out_bundle = workspace / "bundles" / "build.json"
-    out_bundle.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out_bundle.parent)
     plan = TransformPlan(steps=(TransformStep("SMOOTH_FES", {}),))
     opts = BuildOpts(seed=0, temperature=300.0, lag_candidates=[5])
     applied = AppliedOpts(bins={"rg": 16, "rmsd": 16}, lag=5, macrostates=5)
