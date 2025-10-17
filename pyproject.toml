@@ -87,6 +87,7 @@ where = ["src"]
 
 # ────────────────────────── Dev-tooling groups ────────────────────────
 [tool.poetry]
+# Duplicate metadata for Poetry "package mode" CI; keep in sync with [project] above.
 name = "pmarlo"
 description = "Protein Markov State Model Analysis with Replica Exchange"
 authors = ["PMARLO Development Team <konrad.jan.gorzelanczyk@gmail.com>"]

@@ -373,15 +373,46 @@ class WorkflowBackend:
         # Prepare CV model info if provided
         cv_kwargs = {}
         if config.cv_model_bundle:
+            import logging
+            logger = logging.getLogger(__name__)
             try:
-                from pmarlo.features.deeptica import load_cv_model_info
-                cv_info = load_cv_model_info(config.cv_model_bundle, model_name="deeptica_cv_model")
-                cv_kwargs["cv_model_path"] = cv_info["model_path"]
-                cv_kwargs["cv_scaler_mean"] = cv_info["scaler_params"]["mean"]
-                cv_kwargs["cv_scaler_scale"] = cv_info["scaler_params"]["scale"]
+                from pmarlo.features.deeptica import load_cv_model_info, check_openmm_torch_available
+                
+                # Check if openmm-torch is available
+                if not check_openmm_torch_available():
+                    logger.error(
+                        "CV model selected but openmm-torch is not installed. "
+                        "CV-biased sampling will NOT be performed. "
+                        "Install with: conda install -c conda-forge openmm-torch"
+                    )
+                    logger.warning("Running simulation WITHOUT CV biasing")
+                else:
+                    # Warn about performance if using CPU-only PyTorch
+                    import torch
+                    if not torch.cuda.is_available():
+                        logger.warning(
+                            "⚠️  WARNING: PyTorch is running on CPU only! "
+                            "CV-biased simulations will be 10-20x SLOWER than unbiased runs. "
+                            "For acceptable performance, install CUDA-enabled PyTorch: "
+                            "https://pytorch.org/get-started/locally/"
+                        )
+                    
+                    cv_info = load_cv_model_info(config.cv_model_bundle, model_name="deeptica_cv_model")
+                    cv_kwargs["cv_model_path"] = cv_info["model_path"]
+                    cv_kwargs["cv_scaler_mean"] = cv_info["scaler_params"]["mean"]
+                    cv_kwargs["cv_scaler_scale"] = cv_info["scaler_params"]["scale"]
+                    logger.info(f"✓ CV model loaded: {cv_info['model_path']}")
+                    logger.info(f"✓ CV dimensions: {cv_info['config']['cv_dim']}")
+                    
+            except ImportError as exc:
+                logger.error(f"Could not import CV integration modules: {exc}")
+                logger.warning("Running simulation WITHOUT CV biasing")
+            except FileNotFoundError as exc:
+                logger.error(f"CV model files not found: {exc}")
+                logger.warning("Running simulation WITHOUT CV biasing")
             except Exception as exc:
-                import logging
-                logging.getLogger(__name__).warning(f"Could not load CV model: {exc}")
+                logger.error(f"Could not load CV model: {exc}")
+                logger.warning("Running simulation WITHOUT CV biasing")
         
         traj_files, temps = run_replica_exchange(
             pdb_file=str(config.pdb_path),
