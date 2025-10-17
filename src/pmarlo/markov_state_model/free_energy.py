@@ -121,7 +121,7 @@ class FESResult:
 
     @property
     def free_energy(self) -> NDArray[np.float64]:  # pragma: no cover - alias
-        """Alias for the free-energy surface array for legacy consumers."""
+        """Alias for the free-energy surface array for backward-compatible consumers."""
 
         return self.F
 

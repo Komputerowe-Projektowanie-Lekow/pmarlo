@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 import numpy as np
-from scipy.stats import dirichlet as _scipy_dirichlet
 
 from pmarlo import constants as const
 from pmarlo.utils.validation import all_finite, any_finite
@@ -99,29 +98,9 @@ class _SupportsITS(Protocol):
 
     def _counts_for_lag(self, lag: int, dirichlet_alpha: float) -> Any: ...
 
-    def _its_empty_counts_fallback(self, n_timescales: int) -> Tuple[
-        List[float],
-        List[List[float]],
-        List[float],
-        List[List[float]],
-        List[float],
-        List[List[float]],
-    ]: ...
-
     def _bayesian_transition_samples(
         self, counts: np.ndarray, n_samples: int
     ) -> np.ndarray: ...
-
-    def _its_sampling_failed_fallback(
-        self, lag: int, counts: np.ndarray, n_timescales: int
-    ) -> Tuple[
-        List[float],
-        List[List[float]],
-        List[float],
-        List[List[float]],
-        List[float],
-        List[List[float]],
-    ]: ...
 
     def _summarize_its_stats(
         self,
@@ -142,25 +121,10 @@ class _SupportsITS(Protocol):
         np.ndarray,
     ]: ...
 
-    def _deterministic_its_from_empty(
-        self, n_timescales: int
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]: ...
-
     def _deterministic_its_from_counts(
         self, lag: int, counts: np.ndarray, n_timescales: int
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]: ...
-
-    def _counts_backend_matrix_or_fallback(self, *args: Any, **kwargs: Any) -> Any: ...
-
-    def _counts_from_deeptime_backend(
-        self, count_model: Any
-    ) -> Optional[np.ndarray]: ...
-
-    def _counts_from_dtrajs_fallback(
-        self, *args: Any, **kwargs: Any
-    ) -> Optional[np.ndarray]: ...
-
-    def _infer_number_of_states(self) -> int: ...
+    def _counts_from_deeptime_backend(self, count_model: Any) -> np.ndarray: ...
 
     def _bmsm_build_counts(self, count_mode: str) -> Any: ...
 
@@ -252,12 +216,9 @@ class ITSMixin:
         if getattr(self, "random_state", None) is None:
             return
         np.random.seed(self.random_state)
-        try:
-            import random as _random
+        import random as _random
 
-            _random.seed(self.random_state)
-        except Exception:
-            pass
+        _random.seed(self.random_state)
 
     def _its_alpha_tail_bounds(self, ci: float) -> Tuple[float, float]:
         alpha_tail = 50.0 * (1.0 - ci)
@@ -334,12 +295,11 @@ class ITSMixin:
         List[List[float]],
     ]:
         res = self._counts_for_lag(lag, dirichlet_alpha)
-        if res is None:
-            return self._its_empty_counts_fallback(n_timescales)
-
         matrices_arr = self._bayesian_transition_samples(res.counts, n_samples)
         if matrices_arr.size == 0:
-            return self._its_sampling_failed_fallback(lag, res.counts, n_timescales)
+            raise RuntimeError(
+                f"Bayesian transition sampling produced no samples for lag {lag}"
+            )
 
         (
             eval_med,
@@ -366,48 +326,6 @@ class ITSMixin:
             np.stack([ts_lo, ts_hi], axis=1).tolist(),
             rate_med.tolist(),
             np.stack([rate_lo, rate_hi], axis=1).tolist(),
-        )
-
-    def _its_empty_counts_fallback(self, n_timescales: int) -> Tuple[
-        List[float],
-        List[List[float]],
-        List[float],
-        List[List[float]],
-        List[float],
-        List[List[float]],
-    ]:
-        det_eval, det_ts, det_rate = self._deterministic_its_from_empty(n_timescales)
-        nan_ci = [[np.nan, np.nan]] * n_timescales
-        return (
-            det_eval.tolist(),
-            nan_ci,
-            det_ts.tolist(),
-            nan_ci,
-            det_rate.tolist(),
-            nan_ci,
-        )
-
-    def _its_sampling_failed_fallback(
-        self, lag: int, counts: np.ndarray, n_timescales: int
-    ) -> Tuple[
-        List[float],
-        List[List[float]],
-        List[float],
-        List[List[float]],
-        List[float],
-        List[List[float]],
-    ]:
-        det_eval, det_ts, det_rate = self._deterministic_its_from_counts(
-            lag, counts, n_timescales
-        )
-        nan_ci = [[np.nan, np.nan]] * n_timescales
-        return (
-            det_eval.tolist(),
-            nan_ci,
-            det_ts.tolist(),
-            nan_ci,
-            det_rate.tolist(),
-            nan_ci,
         )
 
     def _its_build_result(
@@ -441,21 +359,18 @@ class ITSMixin:
         plateau_m: Optional[int],
         plateau_epsilon: float,
     ) -> None:
-        try:
-            if plateau_m is not None and plateau_m >= 1 and len(lag_times) > 1:
-                window = self._detect_timescale_plateau(
-                    np.asarray(lag_times, dtype=float),
-                    np.asarray(ts_means, dtype=float),
-                    int(plateau_m),
-                    float(plateau_epsilon),
-                )
-                if window is not None:
-                    dt_ps = float(getattr(self, "time_per_frame_ps", 1.0) or 1.0)
-                    start_ps = float(window[0] * dt_ps)
-                    end_ps = float(window[1] * dt_ps)
-                    result.recommended_lag_window = (start_ps, end_ps)
-        except Exception:
-            pass
+        if plateau_m is not None and plateau_m >= 1 and len(lag_times) > 1:
+            window = self._detect_timescale_plateau(
+                np.asarray(lag_times, dtype=float),
+                np.asarray(ts_means, dtype=float),
+                int(plateau_m),
+                float(plateau_epsilon),
+            )
+            if window is not None:
+                dt_ps = float(getattr(self, "time_per_frame_ps", 1.0) or 1.0)
+                start_ps = float(window[0] * dt_ps)
+                end_ps = float(window[1] * dt_ps)
+                result.recommended_lag_window = (start_ps, end_ps)
 
     def _its_fill_missing_timescales(
         self,
@@ -472,8 +387,6 @@ class ITSMixin:
             if any_finite(result.timescales[i]):
                 continue
             res = self._counts_for_lag(int(lag), dirichlet_alpha)
-            if res is None:
-                continue
             det_eval, det_ts, det_rate = self._deterministic_its_from_counts(
                 int(lag), res.counts, n_timescales
             )
@@ -561,120 +474,42 @@ class ITSMixin:
     def _counts_for_lag(self, lag: int, alpha: float):
         from ._msm_utils import ensure_connected_counts
 
-        C = self._counts_backend_matrix_or_fallback(lag)
-        if C is None:
-            return None
-
+        C = self._counts_from_deeptime_backend(lag)
         res = ensure_connected_counts(C, alpha=alpha)
         if getattr(res, "counts", np.array([])).size == 0:
-            return None
+            raise RuntimeError(f"Transition counts empty for lag {lag}")
         return res
 
-    # ---- helpers for _counts_for_lag ----
-    def _counts_backend_matrix_or_fallback(self, lag: int) -> Optional[np.ndarray]:
-        C = self._counts_from_deeptime_backend(lag)
-        if C is not None:
-            return C
-        return self._counts_from_dtrajs_fallback(lag)
+    def _counts_from_deeptime_backend(self, lag: int) -> np.ndarray:
+        from deeptime.markov import TransitionCountEstimator  # type: ignore
 
-    def _counts_from_deeptime_backend(self, lag: int) -> Optional[np.ndarray]:
-        try:  # pragma: no cover
-            from deeptime.markov import TransitionCountEstimator  # type: ignore
-
-            tce = TransitionCountEstimator(
-                lagtime=int(max(1, lag)), count_mode=self.count_mode, sparse=False
-            )
-            model = tce.fit(self.dtrajs).fetch_model()
-            return np.asarray(model.count_matrix, dtype=float)
-        except Exception:
-            return None
-
-    def _infer_number_of_states(self) -> Optional[int]:
-        n_states = int(getattr(self, "n_states", 0) or 0)
-        if n_states > 0:
-            return n_states
-        try:
-            return int(max(int(np.max(seq)) for seq in self.dtrajs) + 1)
-        except Exception:
-            return None
-
-    def _counts_from_dtrajs_fallback(self, lag: int) -> Optional[np.ndarray]:
-        n_states_opt = self._infer_number_of_states()
-        if n_states_opt is None or n_states_opt <= 0:
-            return None
-        n_states = int(n_states_opt)
-        C = np.zeros((n_states, n_states), dtype=float)
-        step = int(lag) if str(self.count_mode) == "strided" else 1
-        for seq in self.dtrajs:
-            seq = np.asarray(seq, dtype=int)
-            if seq.size <= lag:
-                continue
-            upper = seq.size - int(lag)
-            for i in range(0, upper, step):
-                a = int(seq[i])
-                b = int(seq[i + int(lag)])
-                if 0 <= a < n_states and 0 <= b < n_states:
-                    C[a, b] += 1.0
-        return C
+        tce = TransitionCountEstimator(
+            lagtime=int(max(1, lag)), count_mode=self.count_mode, sparse=False
+        )
+        model = tce.fit(self.dtrajs).fetch_model()
+        return np.asarray(model.count_matrix, dtype=float)
 
     def _bayesian_transition_samples(
         self, counts: np.ndarray, n_samples: int
     ) -> np.ndarray:
-        from typing import cast
-
         counts = np.asarray(counts, dtype=float)
         if counts.size == 0 or n_samples <= 0:
             return np.empty((0, counts.shape[0], counts.shape[1]), dtype=float)
 
-        try:
-            from deeptime.markov.tools.estimation import (
-                transition_matrix_sampler as _dt_transition_matrix_sampler,
-            )
+        from deeptime.markov.tools.estimation import (
+            transition_matrix_sampler as _dt_transition_matrix_sampler,
+        )
 
-            sampler = _dt_transition_matrix_sampler(
-                counts,
-                reversible=True,
-                nsteps=None,
-            )
-            matrices = sampler.sample(nsamples=int(max(1, n_samples)))
-            matrices = np.asarray(matrices, dtype=float)
-            if matrices.ndim == 2:
-                matrices = matrices[np.newaxis, :, :]
-            return cast(np.ndarray, matrices)
-        except Exception:
-            # Fall back to the previous symmetric Dirichlet construction if
-            # deeptime is unavailable or sampling fails.
-            C_rev = 0.5 * (counts + counts.T)
-            row_sums = C_rev.sum(axis=1, keepdims=True)
-
-            rng_seed = getattr(self, "random_state", None)
-            rng: np.random.Generator | None
-            if rng_seed is None:
-                rng = None
-            else:
-                rng = np.random.default_rng(int(rng_seed))
-
-            dirichlet_samples = [
-                _scipy_dirichlet.rvs(alpha=row, size=n_samples, random_state=rng)
-                for row in C_rev
-            ]
-            matrices_arr = np.stack(dirichlet_samples, axis=1)
-
-            counts_samples = matrices_arr * row_sums[np.newaxis, :, :]
-            sym_counts = 0.5 * (
-                counts_samples + np.transpose(counts_samples, (0, 2, 1))
-            )
-            row_totals = sym_counts.sum(axis=2, keepdims=True)
-
-            with np.errstate(divide="ignore", invalid="ignore"):
-                matrices = np.divide(
-                    sym_counts,
-                    row_totals,
-                    out=np.zeros_like(sym_counts),
-                    where=row_totals > 0,
-                )
-
-            return matrices.astype(float)
+        sampler = _dt_transition_matrix_sampler(
+            counts,
+            reversible=True,
+            nsteps=None,
+        )
+        matrices = sampler.sample(nsamples=int(max(1, n_samples)))
+        matrices = np.asarray(matrices, dtype=float)
+        if matrices.ndim == 2:
+            matrices = matrices[np.newaxis, :, :]
+        return np.asarray(matrices, dtype=float)
 
     def _summarize_its_stats(
         self,
@@ -694,14 +529,11 @@ class ITSMixin:
         np.ndarray,
         np.ndarray,
     ]:
-        try:
-            from deeptime.markov.tools.analysis import eigenvalues as _dt_eigenvalues
-            from deeptime.markov.tools.analysis import (
-                stationary_distribution as _dt_stationary_distribution,
-            )
-            from deeptime.markov.tools.analysis import timescales as _dt_timescales
-        except Exception:  # pragma: no cover - optional dependency fallback
-            _dt_eigenvalues = _dt_stationary_distribution = _dt_timescales = None
+        from deeptime.markov.tools.analysis import eigenvalues as _dt_eigenvalues
+        from deeptime.markov.tools.analysis import (
+            stationary_distribution as _dt_stationary_distribution,
+        )
+        from deeptime.markov.tools.analysis import timescales as _dt_timescales
 
         eig_samples: list[np.ndarray] = []
         ts_samples: list[np.ndarray] = []
@@ -714,33 +546,20 @@ class ITSMixin:
 
             n_eval = int(max(0, n_timescales))
 
-            if _dt_stationary_distribution is not None:
-                try:
-                    pi = np.asarray(
-                        _dt_stationary_distribution(arr, check_inputs=False),
-                        dtype=float,
-                    )
-                    if pi.size == 0 or not np.all(np.isfinite(pi)):
-                        raise ValueError
-                except Exception:
-                    pi = np.full((arr.shape[0],), 1.0 / max(1, arr.shape[0]))
-            else:
-                pi = np.full((arr.shape[0],), 1.0 / max(1, arr.shape[0]))
+            pi = np.asarray(
+                _dt_stationary_distribution(arr, check_inputs=False),
+                dtype=float,
+            )
+            if pi.size == 0 or not np.all(np.isfinite(pi)):
+                raise ValueError("Invalid stationary distribution in ITS analysis")
 
-            evals: np.ndarray
-            if _dt_eigenvalues is not None:
-                try:
-                    k_request = n_eval + 1 if n_eval > 0 else 1
-                    if k_request >= arr.shape[0]:
-                        evals = np.asarray(_dt_eigenvalues(arr, k=None), dtype=complex)
-                    else:
-                        evals = np.asarray(
-                            _dt_eigenvalues(arr, k=k_request), dtype=complex
-                        )
-                except Exception:
-                    evals = np.linalg.eigvals(arr.T)
+            k_request = n_eval + 1 if n_eval > 0 else 1
+            if k_request >= arr.shape[0]:
+                evals = np.asarray(_dt_eigenvalues(arr, k=None), dtype=complex)
             else:
-                evals = np.linalg.eigvals(arr.T)
+                evals = np.asarray(
+                    _dt_eigenvalues(arr, k=k_request), dtype=complex
+                )
 
             order = np.argsort(-np.real(evals))
             evals = np.asarray(evals[order], dtype=complex)
@@ -753,22 +572,16 @@ class ITSMixin:
             eig_samples.append(eig.astype(float))
 
             if n_eval > 0:
-                if _dt_timescales is not None:
-                    try:
-                        ts = np.asarray(
-                            _dt_timescales(
-                                arr,
-                                tau=int(max(1, lag)),
-                                k=n_eval,
-                                mu=pi,
-                                reversible=True,
-                            ),
-                            dtype=float,
-                        )
-                    except Exception:
-                        ts = safe_timescales(lag, eig)
-                else:
-                    ts = safe_timescales(lag, eig)
+                ts = np.asarray(
+                    _dt_timescales(
+                        arr,
+                        tau=int(max(1, lag)),
+                        k=n_eval,
+                        mu=pi,
+                        reversible=True,
+                    ),
+                    dtype=float,
+                )
             else:
                 ts = np.empty((0,), dtype=float)
             ts_samples.append(np.asarray(ts, dtype=float))
@@ -840,16 +653,13 @@ class ITSMixin:
     def sample_bayesian_timescales(
         self: "_SupportsITS", n_samples: int = 200, count_mode: str = "effective"
     ) -> Optional[Dict[str, Any]]:
-        try:
-            count_model = self._bmsm_build_counts(count_mode)
-            samples_model = self._bmsm_fit_samples(count_model, n_samples)
-            ts_list = self._bmsm_collect_timescales(samples_model)
-            pi_list = self._bmsm_collect_populations(samples_model)
-            if not ts_list and not pi_list:
-                return None
-            return self._bmsm_finalize_output(ts_list, pi_list)
-        except Exception:
+        count_model = self._bmsm_build_counts(count_mode)
+        samples_model = self._bmsm_fit_samples(count_model, n_samples)
+        ts_list = self._bmsm_collect_timescales(samples_model)
+        pi_list = self._bmsm_collect_populations(samples_model)
+        if not ts_list and not pi_list:
             return None
+        return self._bmsm_finalize_output(ts_list, pi_list)
 
     def _bmsm_build_counts(self: "_SupportsITS", count_mode: str) -> Any:
         from deeptime.markov import TransitionCountEstimator  # type: ignore
@@ -911,14 +721,6 @@ class ITSMixin:
             ]
             out["population_samples"] = np.vstack(pi_pad)
         return out
-
-    def _deterministic_its_from_empty(
-        self, n_timescales: int
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        evals = np.full((n_timescales,), np.nan)
-        ts = np.full((n_timescales,), np.nan)
-        rates = np.full((n_timescales,), np.nan)
-        return evals, ts, rates
 
     def _deterministic_its_from_counts(
         self, lag: int, counts: np.ndarray, n_timescales: int

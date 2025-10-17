@@ -7,12 +7,7 @@ import pytest
 
 mlc = pytest.importorskip("mlcolvar")
 torch = pytest.importorskip("torch")
-
-# Accept either modern lightning or legacy pytorch_lightning
-try:  # pragma: no cover - environment dependent
-    import lightning as _lightning  # type: ignore
-except Exception:  # pragma: no cover - environment dependent
-    _lightning = pytest.importorskip("pytorch_lightning")
+pytest.importorskip("lightning")
 
 
 def test_deeptica_fit_and_artifact_metrics(tmp_path: Path):

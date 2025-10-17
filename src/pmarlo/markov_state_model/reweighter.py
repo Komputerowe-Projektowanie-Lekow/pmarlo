@@ -3,7 +3,7 @@ from __future__ import annotations
 """TRAM/MBAR reweighting facade for shard-based workflows.
 
 Fail-fast policy (aligned with pmarlo.reweight):
-  * Energy array is required for each shard (no silent uniform fallback).
+  * Energy array is required for each shard (no silent uniform defaults).
   * Normalization must yield a finite, strictly positive sum; otherwise raise.
   * Resulting weights sum to 1.0 and are deterministic.
   * Shards are not mutated (weights returned separately).

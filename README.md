@@ -57,7 +57,7 @@ Combine `--focus` with `--testmon` whenever you want to zero in on a subset of p
 
 ## Dependency policy
 
-All data-processing modules require canonical shard metadata and fail fast when required dependencies are missing. Optional components must be explicitly installed; the package no longer degrades silently or supplies stubbed implementations. Fallback helpers have been removed so utilities now raise explicit errors if dependencies or expected workspace layouts are absent.
+PMARLO now enforces a single canonical implementation for every feature. All runtime fallbacks and legacy code paths have been removed, and missing dependencies raise clear ImportError exceptions during import or first use. Install the relevant extras (for example, `pip install 'pmarlo[analysis]'`) to enable advanced analyses.
 
 
 ## Quickstart

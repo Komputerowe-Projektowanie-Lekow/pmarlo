@@ -94,8 +94,8 @@ class TestPipeline:
         pass
 
 
-class TestRemovedLegacyPipeline:
-    def test_legacy_pipeline_removed(self):
+class TestRemovedPipeline:
+    def test_pipeline_compat_shim_removed(self):
         import importlib
 
         with pytest.raises((ImportError, AttributeError)):

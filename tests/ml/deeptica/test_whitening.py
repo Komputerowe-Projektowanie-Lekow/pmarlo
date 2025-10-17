@@ -32,6 +32,16 @@ def test_apply_output_transform_scales_outputs() -> None:
     assert np.allclose(unchanged, whitened)
 
 
+def test_apply_output_transform_requires_metadata() -> None:
+    Y = np.array([[1.0, 2.0]], dtype=np.float64)
+
+    with pytest.raises(ValueError):
+        apply_output_transform(Y, mean=None, W=np.eye(2), already_applied=False)
+
+    with pytest.raises(ValueError):
+        apply_output_transform(Y, mean=np.zeros(2), W=None, already_applied=False)
+
+
 def test_deeptica_model_transform_applies_whitening() -> None:
     cfg = DeepTICAConfig(lag=2, n_out=2)
     scaler = DummyScaler(n_features=2)

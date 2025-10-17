@@ -231,75 +231,33 @@ class PlotsMixin:
         n_macrostates: int = 3,
         factors: Optional[List[int]] = None,
     ) -> Optional[Path]:
-        try:
-            out_path: Path = self.output_dir / (
-                save_file
-                if str(save_file).lower().endswith(".png")
-                else f"{save_file}.png"
+        out_path: Path = self.output_dir / (
+            save_file if str(save_file).lower().endswith(".png") else f"{save_file}.png"
+        )
+
+        from deeptime.markov import TransitionCountEstimator  # type: ignore
+        from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
+        from deeptime.plots import plot_ck_test  # type: ignore
+        from deeptime.util.validation import ck_test  # type: ignore
+        import matplotlib.pyplot as _plt
+
+        base_lag = int(max(1, self.lag_time))
+        facs = (
+            [2, 3, 4]
+            if factors is None
+            else [int(f) for f in factors if int(f) > 1]
+        )
+        lags = [base_lag] + [base_lag * f for f in facs]
+        models = []
+        for L in lags:
+            tce = TransitionCountEstimator(
+                lagtime=int(L), count_mode="sliding", sparse=False
             )
-        except Exception:
-            return None
-
-        try:
-            from deeptime.markov import TransitionCountEstimator  # type: ignore
-            from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
-            from deeptime.plots import plot_ck_test  # type: ignore
-            from deeptime.util.validation import ck_test  # type: ignore
-
-            base_lag = int(max(1, self.lag_time))
-            facs = (
-                [2, 3, 4]
-                if factors is None
-                else [int(f) for f in factors if int(f) > 1]
-            )
-            lags = [base_lag] + [base_lag * f for f in facs]
-            models = []
-            for L in lags:
-                tce = TransitionCountEstimator(
-                    lagtime=int(L), count_mode="sliding", sparse=False
-                )
-                C = tce.fit(self.dtrajs).fetch_model()
-                ml = MaximumLikelihoodMSM(reversible=True)
-                models.append(ml.fit(C).fetch_model())
-            ckobj = ck_test(models=models, n_metastable_sets=int(max(2, n_macrostates)))
-            import matplotlib.pyplot as _plt
-
-            fig = plot_ck_test(ckobj)
-            fig.savefig(out_path, dpi=200)
-            _plt.close(fig)
-            return out_path
-        except Exception:
-            pass
-
-        import matplotlib.pyplot as plt
-
-        try:
-            facs = (
-                [2, 3, 4]
-                if factors is None
-                else [int(f) for f in factors if int(f) > 1]
-            )
-            result = self.compute_ck_test_macrostates(
-                n_macrostates=int(max(2, n_macrostates)), factors=facs
-            )
-            plt.figure(figsize=(7, 5))
-            if result.mse:
-                xs = sorted(result.mse.keys())
-                ys = [result.mse[k] for k in xs]
-                plt.bar(xs, ys, color="tab:orange", alpha=0.8, width=0.6)
-                plt.xticks(xs, [str(x) for x in xs])
-                plt.xlabel("Lag multiple (k)")
-                plt.ylabel("MSE(T^k, T_empirical@k·lag)")
-                plt.title(f"Chapman–Kolmogorov test ({result.mode}state)")
-            else:
-                plt.text(
-                    0.5, 0.5, "insufficient data", ha="center", va="center", fontsize=12
-                )
-                plt.title("Chapman–Kolmogorov test")
-                plt.axis("off")
-            plt.tight_layout()
-            plt.savefig(out_path, dpi=200)
-            plt.close()
-            return out_path
-        except Exception:
-            return None
+            C = tce.fit(self.dtrajs).fetch_model()
+            ml = MaximumLikelihoodMSM(reversible=True)
+            models.append(ml.fit(C).fetch_model())
+        ckobj = ck_test(models=models, n_metastable_sets=int(max(2, n_macrostates)))
+        fig = plot_ck_test(ckobj)
+        fig.savefig(out_path, dpi=200)
+        _plt.close(fig)
+        return out_path

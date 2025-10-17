@@ -37,9 +37,10 @@ def apply_output_transform(
 
     Notes
     -----
-    The function is intentionally tolerant: if ``mean`` or ``W`` are missing the
-    input array is returned unchanged.  Shape mismatches raise a ``ValueError``
-    so callers can surface metadata issues explicitly.
+    All whitening metadata must be present.  Missing ``mean`` or ``W`` values
+    raise a ``ValueError`` so callers surface configuration issues immediately.
+    Shape mismatches likewise raise a ``ValueError`` to avoid silently
+    continuing with inconsistent transforms.
     """
 
     arr = np.asarray(Y, dtype=np.float64)
@@ -47,7 +48,9 @@ def apply_output_transform(
         return arr
 
     if mean is None or W is None:
-        return arr
+        raise ValueError(
+            "Whitening metadata is incomplete: both mean and transform are required"
+        )
 
     mean_arr = np.asarray(mean, dtype=np.float64)
     transform = np.asarray(W, dtype=np.float64)

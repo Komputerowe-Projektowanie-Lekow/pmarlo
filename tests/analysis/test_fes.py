@@ -1,43 +1,6 @@
-import importlib
-import pathlib
-import sys
-import types
-
 import numpy as np
 
-
-def _load_compute_weighted_fes():
-    for name in list(sys.modules):
-        if name == "pmarlo" or name.startswith("pmarlo."):
-            sys.modules.pop(name)
-
-    base = pathlib.Path("src/pmarlo")
-    pmarlo_pkg = types.ModuleType("pmarlo")
-    pmarlo_pkg.__path__ = [str(base)]
-    sys.modules["pmarlo"] = pmarlo_pkg
-
-    ml_pkg = types.ModuleType("pmarlo.ml")
-    ml_pkg.__path__ = []
-    sys.modules["pmarlo.ml"] = ml_pkg
-
-    deeptica_pkg = types.ModuleType("pmarlo.ml.deeptica")
-    deeptica_pkg.__path__ = []
-    sys.modules["pmarlo.ml.deeptica"] = deeptica_pkg
-
-    whitening_mod = types.ModuleType("pmarlo.ml.deeptica.whitening")
-
-    def _identity_transform(Y, mean, W, already_applied):
-        return np.asarray(Y, dtype=np.float64)
-
-    whitening_mod.apply_output_transform = _identity_transform
-    sys.modules["pmarlo.ml.deeptica.whitening"] = whitening_mod
-    deeptica_pkg.apply_output_transform = _identity_transform
-
-    fes_mod = importlib.import_module("pmarlo.analysis.fes")
-    return fes_mod.compute_weighted_fes
-
-
-compute_weighted_fes = _load_compute_weighted_fes()
+from pmarlo.analysis.fes import compute_weighted_fes
 
 
 def _make_dataset(points: np.ndarray) -> dict:

@@ -1299,45 +1299,27 @@ def _observed_state_count(dtrajs: Sequence[np.ndarray]) -> int:
     return len(observed)
 
 
-def _fallback_uniform_msm(
-    opts: BuildOpts, observed: int
-) -> Tuple[np.ndarray, np.ndarray]:
-    n_unique = observed if observed > 0 else int(max(1, opts.n_states or 1))
-    T = np.eye(n_unique, dtype=float)
-    pi = np.full(n_unique, 1.0 / n_unique, dtype=float)
+def _build_msm(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
+    _ensure_msm_whitened(dataset)
+    dtrajs = _prepare_dtrajs(dataset, opts)
+    if not dtrajs:
+        return None
+    clean = _clean_dtrajs(dtrajs)
+    if not clean:
+        return None
+    T, pi = build_simple_msm(
+        clean,
+        n_states=opts.n_states,
+        lag=opts.lag_time,
+        count_mode=str(opts.count_mode),
+    )
+    if pi.size == 0 or not np.isfinite(np.sum(pi)) or np.sum(pi) == 0.0:
+        raise RuntimeError("Failed to compute a valid stationary distribution")
     return T, pi
 
 
-def _build_msm(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
-    try:
-        _ensure_msm_whitened(dataset)
-        dtrajs = _prepare_dtrajs(dataset, opts)
-        if not dtrajs:
-            return None
-        clean = _clean_dtrajs(dtrajs)
-        if not clean:
-            return None
-        T, pi = build_simple_msm(
-            clean,
-            n_states=opts.n_states,
-            lag=opts.lag_time,
-            count_mode=str(opts.count_mode),
-        )
-        if pi.size == 0 or not np.isfinite(np.sum(pi)) or np.sum(pi) == 0.0:
-            observed = _observed_state_count(clean)
-            return _fallback_uniform_msm(opts, observed)
-        return T, pi
-    except Exception as e:
-        logger.warning("MSM build failed: %s", e)
-        return None
-
-
 def _build_fes(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
-    try:
-        return default_fes_builder(dataset, opts, applied)
-    except Exception as e:
-        logger.warning("FES build failed: %s", e)
-        return None
+    return default_fes_builder(dataset, opts, applied)
 
 
 def _build_tram(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
@@ -1367,43 +1349,6 @@ def _coerce_cv_arrays(
     return a, b, None
 
 
-def _histogram_fes_fallback(
-    a: np.ndarray,
-    b: np.ndarray,
-    names: Tuple[str, str],
-    opts: BuildOpts,
-) -> Dict[str, Any]:
-    try:
-        hist, xedges, yedges = np.histogram2d(a, b, bins=32)
-    except Exception as exc2:
-        logger.warning("Histogram fallback failed: %s", exc2)
-        a_min, a_max = float(np.min(a)), float(np.max(a))
-        b_min, b_max = float(np.min(b)), float(np.max(b))
-        if not np.isfinite(a_min) or not np.isfinite(a_max):
-            a_min, a_max = -1.0, 1.0
-        if not np.isfinite(b_min) or not np.isfinite(b_max):
-            b_min, b_max = -1.0, 1.0
-        if a_max <= a_min:
-            a_max = a_min + 1.0
-        if b_max <= b_min:
-            b_max = b_min + 1.0
-        xedges = np.linspace(a_min, a_max, 33)
-        yedges = np.linspace(b_min, b_max, 33)
-        hist = np.ones((32, 32), dtype=np.float64)
-    hist = np.asarray(hist, dtype=np.float64)
-    with np.errstate(divide="ignore"):
-        F = -np.log(hist + const.NUMERIC_MIN_POSITIVE)
-    from pmarlo.markov_state_model.free_energy import FESResult
-
-    fallback = FESResult(
-        F=F,
-        xedges=xedges,
-        yedges=yedges,
-        metadata={"method": "histogram", "temperature": opts.temperature},
-    )
-    return {"result": fallback, "cv1_name": names[0], "cv2_name": names[1]}
-
-
 def _generate_fes(
     a: np.ndarray,
     b: np.ndarray,
@@ -1411,25 +1356,21 @@ def _generate_fes(
     periodic: Tuple[bool, bool],
     opts: BuildOpts,
 ) -> Dict[str, Any]:
-    try:
-        from pmarlo.markov_state_model.free_energy import generate_2d_fes
+    from pmarlo.markov_state_model.free_energy import generate_2d_fes
 
-        fes = generate_2d_fes(
-            a,
-            b,
-            temperature=opts.temperature,
-            periodic=periodic,
-        )
-        return {"result": fes, "cv1_name": names[0], "cv2_name": names[1]}
-    except Exception as exc:
-        logger.warning("FES generation failed: %s; using histogram fallback", exc)
-        return _histogram_fes_fallback(a, b, names, opts)
+    fes = generate_2d_fes(
+        a,
+        b,
+        temperature=opts.temperature,
+        periodic=periodic,
+    )
+    return {"result": fes, "cv1_name": names[0], "cv2_name": names[1]}
 
 
 def default_fes_builder(
     dataset: Any, opts: BuildOpts, applied: AppliedOpts
 ) -> Any | None:
-    """Build a simple free energy surface with histogram fallback."""
+    """Build a simple free energy surface."""
 
     if isinstance(dataset, dict):
         try:

@@ -22,7 +22,7 @@
 - [x] Integrate TRAM/MBAR reweighting logic with guardrails (SCC coverage, ESS thresholds, diagonal mass, empty microstate limits) and clear failure reasons.
   - Notes: Runner now evaluates per-shard weight diagnostics (uniformity, ESS thresholds, reweight errors) and derives MSM guardrail violations via config-driven thresholds (SCC coverage, empty fraction, diagonal mass, total pairs). Acceptance report reflects failures or expected-negative scenarios.
 - [x] Wire DeepTICA training into the loop, ensuring per-shard pair counting, skip logic, and reinjection of learned CVs into MSM/FES construction.
-  - Notes: CLI runner now forwards DeepTICA parameters (incl. lag fallbacks), captures training artifacts, evaluates pair-count thresholds, and reports status/violations in `msm_summary.json` and acceptance reports so failures are surfaced.
+  - Notes: CLI runner now forwards DeepTICA parameters, captures training artifacts, evaluates pair-count thresholds, and reports status/violations in `msm_summary.json` and acceptance reports so failures are surfaced.
 - [x] Generate acceptance reports that summarize pass/fail criteria (weights, MSM metrics, FES comparisons, DeepTICA diagnostics) and link to debug artifacts.
   - Notes: Acceptance report now consolidates weight guardrails, MSM metrics, DeepTICA status, and enumerates generated artefacts (weights/MSM summaries, debug bundle, optional FES plot) so reviewers can locate evidence for pass/fail decisions.
 

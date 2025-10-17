@@ -10,9 +10,8 @@ Artifact Schema (`artifacts["mlcv_deeptica"]`)
 - skipped: bool — True if Deep‑TICA training was skipped.
 - reason: one of "no_records", "no_pairs", "exception", "ok".
 - lag_requested: int — the initially requested lag.
-- lag_used: int — the actual lag used for pair construction (may differ with fallback).
-- lag_fallback: list[int] | null — optional fallback ladder if configured.
-- attempts: list[{lag, pairs_total}] — summary of attempts (requested lag and fallbacks).
+- lag_used: int — the actual lag used for pair construction.
+- attempts: list[{lag, pairs_total}] — summary of evaluated lag configurations.
 - n_shards: int — number of input shards considered.
 - frames_total: int — total frames across shards.
 - pairs_total: int — total time‑lagged pairs across all shards.
@@ -40,10 +39,9 @@ Picking Lag
 - Choose lag relative to the correlation time of your fastest meaningful process.
 - When in doubt, sweep a small set (e.g., 5, 10, 15) and examine training stability and resulting FES/MSM consistency.
 
-Optional Lag Fallback
-- You can enable a fallback ladder via `LEARN_CV(method="deeptica", lag=5, lag_fallback=[5,4,3,2,1], ...)`.
-- If no pairs are found at the requested lag, the transform builder tries smaller lags in order until pairs are available or the list is exhausted.
-- Artifacts record `lag_fallback`, `attempts`, and the `lag_used` that succeeded.
+Fail-Fast Behaviour
+- Deep-TICA now requires all optional dependencies at import time; missing extras raise immediately instead of silently skipping.
+- The learning stage no longer searches alternative lags automatically—`lag` must be explicitly chosen.
 
 Cross‑Shard Pairing (optional)
 - Enable with `LEARN_CV(method="deeptica", lag=…, cross_shard_pairing=True)`.

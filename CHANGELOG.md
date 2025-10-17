@@ -1,3 +1,20 @@
+<a id='changelog-0.107.0'></a>
+# 0.107.0 — 2025-10-16
+
+
+### Removed
+- Remove fallbacks; fail-fast policy.
+- Removed fallback implementations in the Markov state model toolkit and enforce fail-fast behavior when dependencies or data are missing.
+- Remove fallbacks; fail-fast policy for DeepTICA whitening and device selection, enforcing explicit metadata and dependencies.
+
+
+## Added
+- Documented the new fail-fast policy for MSM utilities.
+
+
+## Testing
+- Updated analysis and DeepTICA tests to rely on real modules and strict metadata validation.
+
 <a id='changelog-0.106.0'></a>
 # 0.106.0 — 2025-10-16
 
