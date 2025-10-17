@@ -3,6 +3,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pytest
+
+from deeptime.markov.tools.analysis import expected_counts_stationary
 
 from pmarlo.utils.path_utils import ensure_directory
 
@@ -178,3 +181,20 @@ def test_msm_experiment_benchmark(tmp_path: Path):
     _assert_benchmark_schema(bench)
     assert bench["algorithm"] == "msm"
     assert bench["kpi_metrics"]["transition_matrix_accuracy"] is not None
+
+
+def test_compute_detailed_balance_mad_uses_deeptime_flows():
+    from pmarlo.experiments.kpi import compute_detailed_balance_mad
+
+    transition_matrix = np.array([[0.8, 0.2], [0.3, 0.7]], dtype=float)
+    stationary = np.array([3.0, 2.0], dtype=float)
+
+    score = compute_detailed_balance_mad(transition_matrix, stationary)
+
+    assert score is not None
+
+    normalized = stationary / stationary.sum()
+    flows = expected_counts_stationary(transition_matrix, 1, mu=normalized)
+    manual = np.mean(np.abs(flows - flows.T)) / np.sum(flows)
+
+    assert score == pytest.approx(manual)

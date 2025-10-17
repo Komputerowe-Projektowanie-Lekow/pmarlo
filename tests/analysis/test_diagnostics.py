@@ -133,3 +133,36 @@ def test_covariance_uses_numpy_cov(monkeypatch):
     assert calls, "expected numpy.cov to be used inside _covariance"
     expected = original_cov(centered, rowvar=False, ddof=1)
     assert np.allclose(result, expected)
+
+
+def test_canonical_correlation_uses_sklearn(monkeypatch):
+    import pmarlo.analysis.diagnostics as diagnostics_module
+
+    class DummyCCA:
+        def __init__(self, *, n_components: int, scale: bool, max_iter: int):
+            self.params = {
+                "n_components": n_components,
+                "scale": scale,
+                "max_iter": max_iter,
+            }
+            self._called = False
+
+        def fit_transform(self, X: np.ndarray, Y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+            self._called = True
+            return X, Y
+
+    created: list[DummyCCA] = []
+
+    def factory(*, n_components: int, scale: bool, max_iter: int) -> DummyCCA:
+        inst = DummyCCA(n_components=n_components, scale=scale, max_iter=max_iter)
+        created.append(inst)
+        return inst
+
+    monkeypatch.setattr(diagnostics_module, "CCA", factory)
+    rng = np.random.default_rng(42)
+    X = rng.normal(size=(8, 3))
+    Y = rng.normal(size=(8, 2))
+    correlations = diagnostics_module._canonical_correlations(X, Y)
+    assert correlations, "expected non-empty correlations from patched CCA"
+    assert created, "expected custom CCA factory to be invoked"
+    assert all(inst._called for inst in created), "expected fit_transform to run"

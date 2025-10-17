@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 import numpy as np
+from scipy.stats import dirichlet as _scipy_dirichlet
 
 from pmarlo import constants as const
 from pmarlo.utils.validation import all_finite, any_finite
@@ -621,16 +622,33 @@ class ITSMixin:
     ) -> np.ndarray:
         C_rev = 0.5 * (counts + counts.T)
         row_sums = C_rev.sum(axis=1, keepdims=True)
-        matrices: list[np.ndarray] = []
-        for _ in range(n_samples):
-            T_sample = np.zeros_like(C_rev)
-            for i in range(C_rev.shape[0]):
-                T_sample[i] = np.random.dirichlet(C_rev[i])
-            C_sample = T_sample * row_sums
-            C_sym = 0.5 * (C_sample + C_sample.T)
-            T = C_sym / C_sym.sum(axis=1, keepdims=True)
-            matrices.append(T)
-        return np.asarray(matrices, dtype=float)
+
+        rng_seed = getattr(self, "random_state", None)
+        rng: np.random.Generator | None
+        if rng_seed is None:
+            rng = None
+        else:
+            rng = np.random.default_rng(int(rng_seed))
+
+        dirichlet_samples = [
+            _scipy_dirichlet.rvs(alpha=row, size=n_samples, random_state=rng)
+            for row in C_rev
+        ]
+        matrices_arr = np.stack(dirichlet_samples, axis=1)
+
+        counts_samples = matrices_arr * row_sums[np.newaxis, :, :]
+        sym_counts = 0.5 * (counts_samples + np.transpose(counts_samples, (0, 2, 1)))
+        row_totals = sym_counts.sum(axis=2, keepdims=True)
+
+        with np.errstate(divide="ignore", invalid="ignore"):
+            matrices = np.divide(
+                sym_counts,
+                row_totals,
+                out=np.zeros_like(sym_counts),
+                where=row_totals > 0,
+            )
+
+        return matrices.astype(float)
 
     def _summarize_its_stats(
         self,

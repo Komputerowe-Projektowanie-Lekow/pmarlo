@@ -1,3 +1,16 @@
+<a id='changelog-0.102.0'></a>
+# 0.102.0 — 2025-10-16
+
+### Fixed
+- Switched implied timescale convergence regression to use `scipy.stats.linregress` for improved numerical stability and richer diagnostics.
+- Replaced the bespoke temperature ladder retuning heuristic with a SciPy-based optimisation that fits pairwise acceptance targets while respecting the overall temperature span.
+- Improve spectral gap calculation by relying on ``numpy.partition`` to avoid full sorting when identifying the dominant eigenvalues.
+- Use `scipy.linalg.eigh` to solve the manual TICA generalized eigenproblem, improving numerical stability when deeptime and PyEMMA are unavailable.
+- Replaced the handcrafted autocorrelation routine with `statsmodels`' robust
+  `acf` implementation and documented dependency updates to keep diagnostics aligned with standard statistical tooling.
+- Replaced the custom eigenvector solver in `markov_state_model._msm_utils._stationary_from_T` with SciPy's dense and sparse eigensolvers for a more robust stationary distribution calculation.
+
+
 <a id='changelog-0.101.0'></a>
 # 0.101.0 — 2025-10-16
 

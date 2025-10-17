@@ -8,6 +8,7 @@ from typing import Any, ClassVar, Optional, Tuple
 import numpy as np
 from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter
+from scipy.stats import gaussian_kde
 
 from pmarlo import constants as const
 from pmarlo.utils.thermodynamics import kT_kJ_per_mol
@@ -302,6 +303,30 @@ def free_energy_from_density(
 logger = logging.getLogger(__name__)
 
 
+class _FixedBandwidthKDE(gaussian_kde):
+    """A :class:`gaussian_kde` with an explicit diagonal covariance matrix."""
+
+    def __init__(self, dataset: np.ndarray, bandwidth: Tuple[float, float]) -> None:
+        self._bandwidth = np.asarray(bandwidth, dtype=np.float64)
+        super().__init__(dataset, bw_method=lambda: 1.0)
+        if self._bandwidth.shape != (self.d,):
+            raise ValueError(
+                "bandwidth must define one standard deviation per dimension"
+            )
+        self._apply_fixed_bandwidth()
+
+    def _apply_fixed_bandwidth(self) -> None:
+        covariance = np.diag(self._bandwidth ** 2)
+        inv_covariance = np.diag(1.0 / (self._bandwidth ** 2))
+        self.factor = 1.0
+        self.covariance = covariance
+        self.inv_cov = inv_covariance
+        self._covariance = covariance
+        self._inv_cov = inv_covariance
+        self._data_covariance = covariance
+        self._norm_factor = float(np.sqrt(np.linalg.det(2.0 * np.pi * covariance)))
+
+
 def periodic_kde_2d(
     theta_x: np.ndarray,
     theta_y: np.ndarray,
@@ -341,21 +366,18 @@ def periodic_kde_2d(
         np.float64, copy=False
     )
     X, Y = np.meshgrid(x_grid, y_grid, indexing="ij")
-    X = X.astype(np.float64, copy=False)
-    Y = Y.astype(np.float64, copy=False)
-    density: NDArray[np.float64] = np.zeros_like(X, dtype=np.float64)
+    grid_points = np.vstack((X.ravel(), Y.ravel()))
 
-    shifts = (-2 * np.pi, 0.0, 2 * np.pi)
+    kde = _FixedBandwidthKDE(np.vstack((x, y)), bandwidth=(sx, sy))
+
+    shifts = (-2.0 * np.pi, 0.0, 2.0 * np.pi)
+    density_flat = np.zeros(grid_points.shape[1], dtype=np.float64)
     for dx in shifts:
         for dy in shifts:
-            diff_x = X[..., None] - (x + dx)[None, None, :]
-            diff_y = Y[..., None] - (y + dy)[None, None, :]
-            density += np.exp(-0.5 * ((diff_x / sx) ** 2 + (diff_y / sy) ** 2)).sum(
-                axis=-1
-            )
+            shift_vec = np.array([[dx], [dy]], dtype=np.float64)
+            density_flat += kde.evaluate(grid_points - shift_vec)
 
-    norm = 2 * np.pi * sx * sy * x.size
-    density /= norm
+    density = density_flat.reshape(X.shape)
     return density.astype(np.float64, copy=False)
 
 
@@ -493,23 +515,20 @@ def generate_2d_fes(  # noqa: C901
     # sqrt rule baseline
     sqrt_bins = max(min_bins, int(np.sqrt(max(1, n_pts))))
 
-    # Freedman–Diaconis per axis
-    def _fd_bins(arr: NDArray[np.float64], lo: float, hi: float) -> int:
+    # Freedman–Diaconis per axis via NumPy helper to avoid custom logic
+    def _fd_bins(arr: NDArray[np.float64], value_range: Tuple[float, float]) -> int:
         try:
-            q75, q25 = np.percentile(arr, [75.0, 25.0])
-            iqr = float(q75 - q25)
-            if iqr <= 0:
-                return 0
-            h = 2.0 * iqr / (max(1.0, n_pts) ** (1.0 / 3.0))
-            if h <= 0:
-                return 0
-            nb = int((float(hi) - float(lo)) / float(h))
-            return int(np.clip(nb, min_bins, max_bins))
-        except Exception:
+            edges = np.histogram_bin_edges(arr, bins="fd", range=value_range)
+        except (ValueError, TypeError):
             return 0
+        if edges.size <= 1 or not np.all(np.isfinite(edges)):
+            return 0
+        # Clip to sensible bounds to avoid overly coarse/fine binning
+        nb = int(edges.size - 1)
+        return int(np.clip(nb, min_bins, max_bins))
 
-    bx_fd = _fd_bins(x, xr[0], xr[1])
-    by_fd = _fd_bins(y, yr[0], yr[1])
+    bx_fd = _fd_bins(x, xr)
+    by_fd = _fd_bins(y, yr)
     # Choose the better of requested, FD, and sqrt rule
     bx = max(int(bx_req), int(bx_fd or 0), int(sqrt_bins))
     by = max(int(by_req), int(by_fd or 0), int(sqrt_bins))
