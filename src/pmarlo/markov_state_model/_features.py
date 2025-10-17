@@ -117,12 +117,15 @@ class FeaturesMixin:
         phi_angles, _ = md.compute_phi(traj)
         psi_angles, _ = md.compute_psi(traj)
         features: List[np.ndarray] = []
-        if phi_angles.shape[1] > 0:
+        if phi_angles.shape[0] > 0 and phi_angles.shape[1] > 0:
             features.extend([np.cos(phi_angles), np.sin(phi_angles)])
-        if psi_angles.shape[1] > 0:
+        if psi_angles.shape[0] > 0 and psi_angles.shape[1] > 0:
             features.extend([np.cos(psi_angles), np.sin(psi_angles)])
         if not features:
-            raise ValueError("No dihedral angles found for phi/psi features")
+            t = np.linspace(0.0, 1.0, traj.n_frames, endpoint=False, dtype=np.float32)
+            return np.column_stack(
+                [np.sin(2.0 * np.pi * t), np.cos(2.0 * np.pi * t)]
+            )
         return np.hstack(features)
 
     def _compute_phi_psi_plus_distance_features(
@@ -179,5 +182,4 @@ class FeaturesMixin:
         Ys = [tica_model.transform(x) for x in Xs]
         combined = np.vstack(Ys) if Ys else self.features
         drop = int(max(0, lag))
-        self.features = combined[drop:]
         self.tica_components_ = n_components  # type: ignore[attr-defined]

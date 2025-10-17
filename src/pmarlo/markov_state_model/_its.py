@@ -184,16 +184,16 @@ class ITSMixin:
             lag_times, eval_means, eval_ci, ts_means, ts_ci, rate_means, rate_ci
         )
 
+        self._its_fill_missing_timescales(
+            result, lag_times, n_timescales, dirichlet_alpha
+        )
+
         self._its_optionally_attach_plateau(
             result,
             lag_times,
-            ts_means,
+            result.timescales.tolist(),
             plateau_m=plateau_m,
             plateau_epsilon=plateau_epsilon,
-        )
-
-        self._its_fill_missing_timescales(
-            result, lag_times, n_timescales, dirichlet_alpha
         )
         self.implied_timescales = result
 
@@ -496,20 +496,23 @@ class ITSMixin:
         if counts.size == 0 or n_samples <= 0:
             return np.empty((0, counts.shape[0], counts.shape[1]), dtype=float)
 
-        from deeptime.markov.tools.estimation import (
-            transition_matrix_sampler as _dt_transition_matrix_sampler,
-        )
-
-        sampler = _dt_transition_matrix_sampler(
-            counts,
-            reversible=True,
-            nsteps=None,
-        )
-        matrices = sampler.sample(nsamples=int(max(1, n_samples)))
-        matrices = np.asarray(matrices, dtype=float)
-        if matrices.ndim == 2:
-            matrices = matrices[np.newaxis, :, :]
-        return np.asarray(matrices, dtype=float)
+        rng = np.random.default_rng(self.random_state)
+        counts = np.asarray(counts, dtype=float)
+        n_states = counts.shape[0]
+        n_samples = int(max(1, n_samples))
+        samples = np.zeros((n_samples, n_states, n_states), dtype=float)
+        for sample_idx in range(n_samples):
+            for i in range(n_states):
+                row = np.asarray(counts[i], dtype=float).reshape(-1)
+                total = float(np.sum(row))
+                if total <= 0.0:
+                    samples[sample_idx, i] = np.full(
+                        (n_states,), 1.0 / float(max(1, n_states))
+                    )
+                    continue
+                alpha = np.clip(row + 1.0, 1.0e-6, None)
+                samples[sample_idx, i] = rng.dirichlet(alpha)
+        return samples
 
     def _summarize_its_stats(
         self,

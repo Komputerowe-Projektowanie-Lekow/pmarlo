@@ -76,7 +76,11 @@ def run_replica_exchange_experiment(config: ReplicaExchangeConfig) -> Dict:
         random_seed=config.seed,
     )
 
-    remd = ReplicaExchange.from_config(remd_config)
+    factory = getattr(ReplicaExchange, "from_config", None)
+    if callable(factory):
+        remd = factory(remd_config)
+    else:
+        remd = ReplicaExchange(**asdict(remd_config))
 
     bias_vars = (
         setup_bias_variables(config.pdb_file) if config.use_metadynamics else None

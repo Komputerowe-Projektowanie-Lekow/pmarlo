@@ -13,13 +13,15 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from _example_support import assets_path, ensure_src_on_path
+
+ensure_src_on_path()
+
 from pmarlo import api, power_of_two_temperature_ladder
 from pmarlo.replica_exchange import config as demux_config
 from pmarlo.utils.path_utils import ensure_directory
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-TESTS_DIR = BASE_DIR / "tests" / "data"
-DEFAULT_PDB = TESTS_DIR / "3gd8-fixed.pdb"
+DEFAULT_PDB = assets_path("3gd8-fixed.pdb")
 
 OUT_DIR = Path(__file__).resolve().parent / "programs_outputs" / "all_capabilities"
 

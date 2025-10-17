@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Any, Optional, Sequence
 
 import numpy as np
+from inspect import signature
+
 from mlcolvar.data import DictDataset, DictModule  # type: ignore
 
 __all__ = ["DatasetBundle", "create_dataset", "create_loaders", "split_sequences"]
@@ -37,18 +39,18 @@ def create_dataset(
 
 def create_loaders(dataset: Any, cfg: Any) -> DatasetBundle:
     val_frac = max(0.05, float(getattr(cfg, "val_frac", 0.1)))
-    dict_module = DictModule(
-        dataset,
-        batch_size=int(getattr(cfg, "batch_size", 64)),
-        shuffle=True,
-        split={"train": float(max(0.0, 1.0 - val_frac)), "val": float(val_frac)},
-        num_workers=int(max(0, getattr(cfg, "num_workers", 0))),
-    )
+    batch_size = int(getattr(cfg, "batch_size", 64))
+    num_workers = int(max(0, getattr(cfg, "num_workers", 0)))
+    splits = {"train": float(max(0.0, 1.0 - val_frac)), "val": float(val_frac)}
+
+    dict_module = _instantiate_dict_module(dataset, batch_size, num_workers, splits)
+    train_loader = dict_module.train_dataloader()
+    val_loader = dict_module.val_dataloader()
 
     return DatasetBundle(
         dataset=dataset,
-        train_loader=None,
-        val_loader=None,
+        train_loader=train_loader,
+        val_loader=val_loader,
         dict_module=dict_module,
         lightning_available=True,
     )
@@ -74,3 +76,24 @@ def split_sequences(Z: np.ndarray, lengths: Sequence[int]) -> list[np.ndarray]:
     if not sequences:
         sequences.append(Z)
     return sequences
+
+
+def _instantiate_dict_module(
+    dataset: Any, batch_size: int, num_workers: int, splits: dict[str, float]
+) -> Any:
+    params = signature(DictModule).parameters
+    kwargs = dict(
+        dataset=dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+    )
+    if "split" in params:
+        kwargs["split"] = splits
+    elif "splits" in params:
+        kwargs["splits"] = splits
+    else:  # pragma: no cover - defensive
+        raise TypeError(
+            "DictModule signature missing 'split'/'splits'; update mlcolvar integration"
+        )
+    return DictModule(**kwargs)

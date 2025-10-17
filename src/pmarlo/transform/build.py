@@ -84,13 +84,23 @@ def _get_shard_metadata(path: Path) -> Dict[str, Any]:
 def _is_demux_shard(path: Path, meta: Optional[Dict[str, Any]] = None) -> bool:
     data = meta if meta is not None else _get_shard_metadata(path)
     if isinstance(data, dict):
+        sources: list[Dict[str, Any]] = []
         source = data.get("source")
         if isinstance(source, dict):
-            kind = str(source.get("kind", "")).lower()
+            sources.append(source)
+        provenance = data.get("provenance")
+        if isinstance(provenance, dict):
+            sources.append(provenance)
+            inner_source = provenance.get("source")
+            if isinstance(inner_source, dict):
+                sources.append(inner_source)
+        for candidate in sources:
+            kind = str(candidate.get("kind", "")).lower()
             if kind:
-                return kind == "demux"
+                if kind == "demux":
+                    return True
             for key in ("traj", "path", "file", "source_path"):
-                raw = source.get(key)
+                raw = candidate.get(key)
                 if isinstance(raw, str) and "demux" in raw.lower():
                     return True
     return "demux" in path.stem.lower()
@@ -1237,6 +1247,16 @@ def _cluster_continuous_trajectories(
     logger.info(
         "No discrete trajectories found, clustering continuous CV data for MSM..."
     )
+    n_samples = int(X.shape[0])
+    requested_clusters = int(max(1, opts.n_clusters))
+    if n_samples < requested_clusters:
+        logger.warning(
+            "Insufficient continuous samples (%d) for %d requested clusters; "
+            "skipping MSM clustering",
+            n_samples,
+            requested_clusters,
+        )
+        return None
     _diagnose_cv_matrix(dataset, opts, X)
     from ..markov_state_model.clustering import cluster_microstates
 
@@ -1307,10 +1327,23 @@ def _build_msm(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
     clean = _clean_dtrajs(dtrajs)
     if not clean:
         return None
+    lag_time = int(opts.lag_time)
+    applied_lag = getattr(applied, "lag", None) if applied is not None else None
+    if applied_lag is not None:
+        candidate = int(applied_lag)
+        if candidate <= 0:
+            raise ValueError("Applied MSM lag must be a positive integer")
+        lag_time = candidate
+    if not any(traj.size > lag_time for traj in clean):
+        max_length = max(traj.size for traj in clean)
+        raise ValueError(
+            f"MSM lag {lag_time} exceeds all trajectory lengths; "
+            f"longest trajectory length is {max_length}"
+        )
     T, pi = build_simple_msm(
         clean,
         n_states=opts.n_states,
-        lag=opts.lag_time,
+        lag=lag_time,
         count_mode=str(opts.count_mode),
     )
     if pi.size == 0 or not np.isfinite(np.sum(pi)) or np.sum(pi) == 0.0:
@@ -1388,6 +1421,8 @@ def default_fes_builder(
         return {"skipped": True, "reason": error}
 
     assert a is not None and b is not None
+    if np.ptp(a) == 0.0 or np.ptp(b) == 0.0:
+        return {"skipped": True, "reason": "constant_cvs"}
     return _generate_fes(a, b, names, periodic, opts)
 
 

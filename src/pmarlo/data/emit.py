@@ -12,7 +12,9 @@ The function writes shard_{i:04d}.npz/.json under an output directory with
 canonical JSON and integrity hashes suitable for reproducible map→reduce.
 """
 
+from datetime import datetime, timezone
 from pathlib import Path
+import re
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 import numpy as np
@@ -23,6 +25,77 @@ from pmarlo.utils.path_utils import ensure_directory
 from .shard import write_shard
 
 ProgressCB = Callable[[str, Mapping[str, Any]], None]
+
+
+_RUN_PATTERN = re.compile(r"run[-_]?[\w\d]+", re.IGNORECASE)
+_SEGMENT_PATTERN = re.compile(r"(?:segment|seg|part)[-_]?(\d+)", re.IGNORECASE)
+_REPLICA_PATTERN = re.compile(r"rep(?:lica)?[-_]?(\d+)", re.IGNORECASE)
+
+
+def _infer_run_id(path: Path) -> str:
+    for parent in path.parents:
+        match = _RUN_PATTERN.search(parent.name)
+        if match:
+            return parent.name
+    return path.parent.name or "run"
+
+
+def _infer_segment_id(path: Path) -> int:
+    stem = path.stem
+    match = _SEGMENT_PATTERN.search(stem)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            pass
+    return 0
+
+
+def _infer_replica_id(path: Path, kind: str) -> int:
+    stem = path.stem
+    match = _REPLICA_PATTERN.search(stem)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            pass
+    if kind == "replica":
+        raise ValueError(f"Unable to infer replica id from path '{path}'")
+    return 0
+
+
+def _normalise_source_metadata(path: Path, source: Mapping[str, Any]) -> Dict[str, Any]:
+    data = dict(source) if source is not None else {}
+    data.setdefault("traj", str(path))
+    if "created_at" not in data:
+        data["created_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds").replace(
+            "+00:00", "Z"
+        )
+
+    kind = str(data.get("kind", "")).lower()
+    if not kind:
+        stem = path.stem.lower()
+        if "replica" in stem:
+            kind = "replica"
+        else:
+            kind = "demux"
+    if kind not in {"demux", "replica"}:
+        raise ValueError(f"Unsupported shard kind '{kind}' for path '{path}'")
+    data["kind"] = kind
+
+    if "run_id" not in data or not str(data["run_id"]).strip():
+        data["run_id"] = _infer_run_id(path)
+
+    if "segment_id" not in data:
+        data["segment_id"] = _infer_segment_id(path)
+
+    if "replica_id" not in data:
+        data["replica_id"] = _infer_replica_id(path, kind)
+
+    if "exchange_window_id" not in data:
+        data["exchange_window_id"] = 0
+
+    return data
 
 
 class ProgressReporter:
@@ -143,7 +216,7 @@ def emit_shards_from_trajectories(
             name: bool((periodic_by_cv or {}).get(name, False)) for name in names
         }
         seed = shard_state.seed_for(shard_index)
-        source = dict(source_info)
+        source = _normalise_source_metadata(traj, source_info)
         required_keys = {"kind", "run_id", "segment_id", "replica_id"}
         missing_keys = required_keys - set(source)
         if missing_keys:

@@ -256,8 +256,39 @@ class PlotsMixin:
             C = tce.fit(self.dtrajs).fetch_model()
             ml = MaximumLikelihoodMSM(reversible=True)
             models.append(ml.fit(C).fetch_model())
-        ckobj = ck_test(models=models, n_metastable_sets=int(max(2, n_macrostates)))
-        fig = plot_ck_test(ckobj)
-        fig.savefig(out_path, dpi=200)
+        from inspect import signature
+
+        params = signature(ck_test).parameters
+        ck_params = {"models": models}
+        if "n_metastable_sets" in params:
+            ck_params["n_metastable_sets"] = int(max(2, n_macrostates))
+            ckobj = ck_test(**ck_params)
+            fig = plot_ck_test(ckobj)
+        elif "n_sets" in params:
+            ck_params["n_sets"] = int(max(2, n_macrostates))
+            ckobj = ck_test(**ck_params)
+            fig = plot_ck_test(ckobj)
+        else:
+            fig, ax = _plt.subplots(figsize=(6, 4))
+            base_model = models[0]
+            base_T = np.asarray(base_model.transition_matrix, dtype=float)
+            x_vals: list[int] = []
+            mse_vals: list[float] = []
+            for idx, factor in enumerate(facs, start=1):
+                empirical = np.asarray(
+                    models[idx].transition_matrix, dtype=float
+                )
+                theoretical = np.linalg.matrix_power(base_T, int(factor))
+                diff = empirical - theoretical
+                mse_vals.append(float(np.mean(diff * diff)))
+                x_vals.append(base_lag * int(factor))
+            if x_vals:
+                ax.plot(x_vals, mse_vals, marker="o")
+            ax.set_xlabel("Lag time")
+            ax.set_ylabel("MSE")
+            ax.set_title("CK test (microstates)")
+            ax.grid(True, alpha=0.3)
+            fig.tight_layout()
+        fig.savefig(str(out_path), dpi=200)
         _plt.close(fig)
         return out_path

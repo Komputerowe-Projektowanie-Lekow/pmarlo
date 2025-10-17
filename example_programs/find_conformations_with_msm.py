@@ -6,6 +6,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from _example_support import assets_path, ensure_src_on_path
+
+ensure_src_on_path()
+
 import mdtraj as md
 import numpy as np
 
@@ -16,10 +20,9 @@ from pmarlo.transform.build import AppliedOpts, BuildOpts, build_result
 from pmarlo.transform.plan import TransformPlan, TransformStep
 from pmarlo.utils.path_utils import ensure_directory
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-TESTS_DIR = BASE_DIR / "tests" / "data"
-PDB_PATH = TESTS_DIR / "3gd8-fixed.pdb"
-DCD_PATH = TESTS_DIR / "traj.dcd"
+ASSETS_DIR = assets_path()
+PDB_PATH = ASSETS_DIR / "3gd8-fixed.pdb"
+DCD_PATH = ASSETS_DIR / "traj.dcd"
 
 OUT_DIR = (
     Path(__file__).resolve().parent / "programs_outputs" / "find_conformations_with_msm"

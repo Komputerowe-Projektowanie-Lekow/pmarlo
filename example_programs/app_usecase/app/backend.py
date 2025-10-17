@@ -421,9 +421,14 @@ class WorkflowBackend:
     ) -> ShardResult:
         shard_dir = self.layout.shards_dir / simulation.run_id
         ensure_directory(shard_dir)
+        created = _timestamp()
         note = {
+            "created_at": created,
+            "kind": "demux",
             "run_id": simulation.run_id,
             "analysis_temperatures": simulation.analysis_temperatures,
+            "topology": str(simulation.pdb_path),
+            "traj_files": [str(p) for p in simulation.traj_files],
         }
         if provenance:
             note.update(provenance)
@@ -451,7 +456,6 @@ class WorkflowBackend:
                 n_frames += int(getattr(meta, "n_frames", 0))
             except Exception:
                 continue
-        created = _timestamp()
         result = ShardResult(
             run_id=simulation.run_id,
             shard_dir=shard_dir.resolve(),

@@ -8,6 +8,10 @@ persists to JSON. Demonstrates roundtrip loading and validation.
 
 from pathlib import Path
 
+from _example_support import ensure_src_on_path
+
+ensure_src_on_path()
+
 import numpy as np
 
 from pmarlo.transform.build import AppliedOpts, BuildOpts, build_result

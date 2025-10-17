@@ -13,6 +13,10 @@ transform builder, and saves a portable JSON bundle with a dataset hash and dige
 from pathlib import Path
 from typing import Callable, Dict, Optional, Set, Tuple
 
+from _example_support import assets_path, ensure_src_on_path, project_root
+
+ensure_src_on_path()
+
 import numpy as np
 
 from pmarlo import aggregate_and_build, emit_shards_from_trajectories
@@ -20,8 +24,8 @@ from pmarlo.transform import AppliedOpts, BuildOpts
 from pmarlo.transform.plan import TransformPlan, TransformStep
 from pmarlo.utils.path_utils import ensure_directory
 
-BASE = Path(__file__).resolve().parents[1]
-TESTS = BASE / "tests" / "data"
+BASE = project_root()
+TESTS = assets_path()
 PDB = TESTS / "3gd8-fixed.pdb"
 DCD = TESTS / "traj.dcd"
 
