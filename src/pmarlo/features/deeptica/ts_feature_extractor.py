@@ -21,6 +21,7 @@ TorchScript module for execution at MD step time.
 """
 
 from dataclasses import dataclass
+from numbers import Real
 from typing import Iterable, List, Mapping, MutableMapping, Sequence
 
 import torch
@@ -144,12 +145,21 @@ def canonicalize_feature_spec(
         feature_names.append(feature_name)
 
         weight_val = entry_map.get("weight", 1.0)
-        try:
-            feature_weights.append(float(weight_val))
-        except Exception as exc:
+        weight: float
+        if isinstance(weight_val, Real):
+            weight = float(weight_val)
+        elif isinstance(weight_val, str):
+            try:
+                weight = float(weight_val)
+            except ValueError as exc:
+                raise FeatureSpecError(
+                    f"weight for feature '{feature_name}' must be numeric"
+                ) from exc
+        else:
             raise FeatureSpecError(
                 f"weight for feature '{feature_name}' must be numeric"
-            ) from exc
+            )
+        feature_weights.append(weight)
 
         pbc_flag = bool(entry_map.get("pbc", default_pbc))
         any_pbc = any_pbc or pbc_flag

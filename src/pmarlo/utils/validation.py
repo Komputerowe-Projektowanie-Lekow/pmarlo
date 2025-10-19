@@ -32,7 +32,7 @@ def all_finite(values: Any) -> bool:
     arr = _to_ndarray(values)
     if arr.size == 0:
         return True
-    return np.isfinite(arr).all()
+    return bool(np.isfinite(arr).all())
 
 
 def any_finite(values: Any) -> bool:
@@ -41,4 +41,4 @@ def any_finite(values: Any) -> bool:
     arr = _to_ndarray(values)
     if arr.size == 0:
         return False
-    return np.isfinite(arr).any()
+    return bool(np.isfinite(arr).any())
