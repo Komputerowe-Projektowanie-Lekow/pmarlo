@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import numpy as np
-import torch
-from tempfile import TemporaryDirectory
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
+import numpy as np
 import openmm
-from openmm import unit
 import pytest
+import torch
+from openmm import unit
 
 openmmtorch = pytest.importorskip(
     "openmmtorch", reason="openmm-torch required for force tests"

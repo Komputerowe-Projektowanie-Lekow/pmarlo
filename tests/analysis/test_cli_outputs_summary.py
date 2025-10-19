@@ -8,7 +8,6 @@ from pathlib import Path
 from pmarlo.data.shard import write_shard
 from pmarlo.utils.path_utils import ensure_directory
 
-
 _SEGMENT_COUNTER = count()
 
 

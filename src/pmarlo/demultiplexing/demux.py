@@ -220,10 +220,7 @@ def _run_streaming_demux(
         logger=logger,
         details=[
             f"Total segments to process: {len(plan.segments)}",
-            (
-                "Expected output frames: ~"
-                f"{_expected_frame_total(plan)}"
-            ),
+            ("Expected output frames: ~" f"{_expected_frame_total(plan)}"),
         ],
     )
 

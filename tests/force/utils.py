@@ -8,8 +8,8 @@ from typing import Tuple
 import numpy as np
 import torch
 import yaml
-from openmm.app import PDBFile
 from openmm import unit
+from openmm.app import PDBFile
 
 from pmarlo.features.deeptica.cv_bias_potential import CVBiasPotential
 from pmarlo.features.deeptica.export import export_cv_bias_potential

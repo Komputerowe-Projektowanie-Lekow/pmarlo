@@ -5,7 +5,6 @@ from openmm.app import DCDReporter as _DCDReporter
 # 'Optional' was unused; keep imports minimal to satisfy flake8
 
 
-
 class ClosableDCDReporter(_DCDReporter):
     """DCDReporter with a public close() for safe file finalization.
 
