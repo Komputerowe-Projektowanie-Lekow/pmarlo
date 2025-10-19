@@ -3,9 +3,9 @@ import pytest
 
 from pmarlo.analysis.diagnostics import (
     InsufficientSamplesError,
-    compute_diagnostics,
     _canonical_correlations,
     _covariance,
+    compute_diagnostics,
 )
 
 
@@ -45,10 +45,10 @@ def test_covariance_computes_correctly():
     rng = np.random.default_rng(7)
     X = rng.normal(size=(40, 3))
     centered = X - np.mean(X, axis=0, keepdims=True)
-    
+
     result = _covariance(centered, centered.shape[0])
     expected = np.cov(centered, rowvar=False, ddof=1)
-    
+
     assert result.shape == (3, 3)
     assert np.allclose(result, expected)
     # Verify covariance matrix is symmetric
@@ -60,9 +60,9 @@ def test_canonical_correlations_computes_correctly():
     rng = np.random.default_rng(42)
     X = rng.normal(size=(50, 3))
     Y = rng.normal(size=(50, 2))
-    
+
     correlations = _canonical_correlations(X, Y)
-    
+
     # Should return min(n_features_X, n_features_Y) correlations
     assert len(correlations) == 2
     # All correlations should be between 0 and 1

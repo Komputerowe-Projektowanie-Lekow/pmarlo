@@ -6,6 +6,7 @@ from typing import Any, Dict, Mapping, MutableMapping, Sequence
 import numpy as np
 from scipy.linalg import fractional_matrix_power
 from sklearn.cross_decomposition import CCA
+
 from pmarlo import constants as const
 
 from .discretize import _coerce_array, _normalise_splits
@@ -229,10 +230,7 @@ def _autocorrelation_curve(X: np.ndarray, taus: Sequence[int]) -> list[float]:
             feature_curves.append(np.full(len(taus), np.nan, dtype=np.float64))
             continue
         column_curve = np.array(
-            [
-                acf_values[tau] if tau <= effective_max else float("nan")
-                for tau in taus
-            ],
+            [acf_values[tau] if tau <= effective_max else float("nan") for tau in taus],
             dtype=np.float64,
         )
         feature_curves.append(column_curve)

@@ -9,8 +9,8 @@ import pytest
 
 pytest.importorskip("sklearn")
 
-from pmarlo.replica_exchange.replica_exchange import ReplicaExchange
 from pmarlo.replica_exchange import config as demux_config
+from pmarlo.replica_exchange.replica_exchange import ReplicaExchange
 
 
 def _make_minimal_traj(tmp_path: Path, n_frames: int = 2):
@@ -64,6 +64,7 @@ def test_demux_facade_streaming_enabled(tmp_path: Path):
     # 2 segments, 1 frame each -> 2 frames total
     traj = md.load(str(path), top=pdb)
     assert traj.n_frames == 2
+
 
 def test_demux_facade_config_flag_is_ignored(tmp_path: Path):
     pdb, dcd0, dcd1 = _make_minimal_traj(tmp_path)

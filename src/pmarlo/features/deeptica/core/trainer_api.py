@@ -15,12 +15,11 @@ import torch
 from torch import nn
 
 from pmarlo import constants as const
-from pmarlo.utils.path_utils import ensure_directory
-
 from pmarlo.ml.deeptica.trainer import (
     CurriculumConfig,
     DeepTICACurriculumTrainer,
 )
+from pmarlo.utils.path_utils import ensure_directory
 
 from .dataset import split_sequences
 from .history import vamp2_proxy
@@ -301,6 +300,8 @@ def _build_curriculum_config(
     )
     curriculum_cfg = config_cls(**cfg_kwargs)
     return curriculum_cfg
+
+
 def _compute_output_variance(outputs: np.ndarray) -> Optional[list[float]]:
     try:
         if outputs.size == 0:

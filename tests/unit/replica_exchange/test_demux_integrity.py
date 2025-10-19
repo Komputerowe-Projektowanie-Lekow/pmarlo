@@ -27,7 +27,7 @@ def _create_traj(tmp_path, n_frames):
 def test_demux_repair_missing_segment(tmp_path):
     """Test that duplicate mappings in exchange history raise an error."""
     from pmarlo.utils.errors import DemuxIntegrityError
-    
+
     pdb_path, dcd_path, traj = _create_traj(tmp_path, 3)
     dcd_path2 = tmp_path / "traj2.dcd"
     traj.save_dcd(dcd_path2)
@@ -43,7 +43,7 @@ def test_demux_repair_missing_segment(tmp_path):
     remd.output_dir = tmp_path
     remd.integrators = []
     remd._replica_reporter_stride = []
-    
+
     # Should raise error instead of silently repairing (no fallbacks)
     with pytest.raises(DemuxIntegrityError, match="not a permutation"):
         remd.demux_trajectories(target_temperature=300.0, equilibration_steps=0)

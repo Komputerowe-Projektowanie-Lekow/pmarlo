@@ -6,6 +6,8 @@ from dataclasses import dataclass
 import numpy as np
 from deeptime.markov.tools.analysis import (
     is_transition_matrix,
+)
+from deeptime.markov.tools.analysis import (
     stationary_distribution as _dt_stationary_distribution,
 )
 from scipy.sparse import csr_matrix

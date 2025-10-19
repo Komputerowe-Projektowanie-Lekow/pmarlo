@@ -116,9 +116,7 @@ class VAMP2Loss(nn.Module):
         Lt, Ctt = self._stable_cholesky(Ctt, eye)
 
         left = torch.linalg.solve_triangular(L0, C0t, upper=False)
-        right = torch.linalg.solve_triangular(
-            Lt, left.transpose(-1, -2), upper=False
-        )
+        right = torch.linalg.solve_triangular(Lt, left.transpose(-1, -2), upper=False)
         K = right.transpose(-1, -2)
 
         score = torch.sum(K * K)

@@ -6,13 +6,19 @@ from importlib import import_module
 from types import ModuleType
 from typing import Any
 
+from pmarlo.features.deeptica.cv_bias_potential import (
+    CVBiasPotential,
+    HarmonicExpansionBias,
+    create_cv_bias_potential,
+)
+
 # Export standalone modules that don't require full training stack
 from pmarlo.features.deeptica.export import (
     CVModelBundle,
+    export_cv_bias_potential,
     export_cv_model,
     load_cv_model_info,
 )
-
 from pmarlo.features.deeptica.openmm_integration import (
     CVBiasForce,
     add_cv_bias_to_system,
@@ -43,11 +49,15 @@ def _load_full() -> ModuleType:
         all_exports = list(exported) + [
             "CVModelBundle",
             "export_cv_model",
+            "export_cv_bias_potential",
             "load_cv_model_info",
             "CVBiasForce",
             "add_cv_bias_to_system",
             "check_openmm_torch_available",
             "create_cv_torch_force",
+            "CVBiasPotential",
+            "HarmonicExpansionBias",
+            "create_cv_bias_potential",
         ]
         globals()["__all__"] = all_exports
     return _FULL_MODULE
@@ -56,25 +66,68 @@ def _load_full() -> ModuleType:
 def __getattr__(name: str) -> Any:
     # Check if it's a standalone export first (already imported at module level)
     standalone_exports = {
-        "CVModelBundle", "export_cv_model", "load_cv_model_info",
-        "CVBiasForce", "add_cv_bias_to_system", 
-        "check_openmm_torch_available", "create_cv_torch_force",
+        "CVModelBundle",
+        "export_cv_model",
+        "export_cv_bias_potential",
+        "load_cv_model_info",
+        "CVBiasForce",
+        "add_cv_bias_to_system",
+        "check_openmm_torch_available",
+        "create_cv_torch_force",
+        "CVBiasPotential",
+        "HarmonicExpansionBias",
+        "create_cv_bias_potential",
     }
     if name in standalone_exports:
         # These were imported at the top - they should already be in globals
         if name in globals():
             return globals()[name]
         # If not in globals, something went wrong, but try to import again
-        if name in {"CVModelBundle", "export_cv_model", "load_cv_model_info"}:
+        if name in {
+            "CVModelBundle",
+            "export_cv_model",
+            "export_cv_bias_potential",
+            "load_cv_model_info",
+        }:
+            from pmarlo.features.deeptica.export import CVModelBundle as _CVModelBundle
             from pmarlo.features.deeptica.export import (
-                CVModelBundle as _CVModelBundle,
+                export_cv_bias_potential as _export_cv_bias_potential,
+            )
+            from pmarlo.features.deeptica.export import (
                 export_cv_model as _export_cv_model,
+            )
+            from pmarlo.features.deeptica.export import (
                 load_cv_model_info as _load_cv_model_info,
             )
+
             mapping = {
                 "CVModelBundle": _CVModelBundle,
                 "export_cv_model": _export_cv_model,
+                "export_cv_bias_potential": _export_cv_bias_potential,
                 "load_cv_model_info": _load_cv_model_info,
+            }
+            value = mapping[name]
+            globals()[name] = value
+            return value
+        elif name in {
+            "CVBiasPotential",
+            "HarmonicExpansionBias",
+            "create_cv_bias_potential",
+        }:
+            from pmarlo.features.deeptica.cv_bias_potential import (
+                CVBiasPotential as _CVBiasPotential,
+            )
+            from pmarlo.features.deeptica.cv_bias_potential import (
+                HarmonicExpansionBias as _HarmonicExpansionBias,
+            )
+            from pmarlo.features.deeptica.cv_bias_potential import (
+                create_cv_bias_potential as _create_cv_bias_potential,
+            )
+
+            mapping = {
+                "CVBiasPotential": _CVBiasPotential,
+                "HarmonicExpansionBias": _HarmonicExpansionBias,
+                "create_cv_bias_potential": _create_cv_bias_potential,
             }
             value = mapping[name]
             globals()[name] = value
@@ -82,10 +135,17 @@ def __getattr__(name: str) -> Any:
         else:
             from pmarlo.features.deeptica.openmm_integration import (
                 CVBiasForce as _CVBiasForce,
+            )
+            from pmarlo.features.deeptica.openmm_integration import (
                 add_cv_bias_to_system as _add_cv_bias_to_system,
+            )
+            from pmarlo.features.deeptica.openmm_integration import (
                 check_openmm_torch_available as _check_openmm_torch_available,
+            )
+            from pmarlo.features.deeptica.openmm_integration import (
                 create_cv_torch_force as _create_cv_torch_force,
             )
+
             mapping = {
                 "CVBiasForce": _CVBiasForce,
                 "add_cv_bias_to_system": _add_cv_bias_to_system,
@@ -95,15 +155,13 @@ def __getattr__(name: str) -> Any:
             value = mapping[name]
             globals()[name] = value
             return value
-    
+
     # Not a standalone export, try the _full module
     module = _load_full()
     try:
         value = getattr(module, name)
     except AttributeError as exc:  # pragma: no cover - mirrors Python behaviour
-        raise AttributeError(
-            f"module '{__name__}' has no attribute '{name}'"
-        ) from exc
+        raise AttributeError(f"module '{__name__}' has no attribute '{name}'") from exc
     globals()[name] = value
     return value
 
@@ -113,12 +171,19 @@ def __dir__() -> list[str]:
     standalone_exports = [
         "CVModelBundle",
         "export_cv_model",
+        "export_cv_bias_potential",
         "load_cv_model_info",
         "CVBiasForce",
         "add_cv_bias_to_system",
         "check_openmm_torch_available",
         "create_cv_torch_force",
+        "CVBiasPotential",
+        "HarmonicExpansionBias",
+        "create_cv_bias_potential",
     ]
     return sorted(
-        set(globals()) | set(dir(module)) | set(_EXPORTED_NAMES) | set(standalone_exports)
+        set(globals())
+        | set(dir(module))
+        | set(_EXPORTED_NAMES)
+        | set(standalone_exports)
     )

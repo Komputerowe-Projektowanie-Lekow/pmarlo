@@ -81,19 +81,18 @@ def _compute_diagnostics(
     lengths = [int(np.asarray(block).shape[0]) for block in shards]
     max_tau = int(max(schedule))
     short_shards = [i for i, length in enumerate(lengths) if length <= max_tau]
-    
+
     # Fix: When using multiple taus (curriculum), total_possible should count pairs for ALL taus
     # not just the max tau, otherwise coverage can exceed 100%
     if len(schedule) > 1:
         # Count possible pairs for each tau in the schedule and sum them
         total_possible = sum(
-            sum(max(0, length - tau) for length in lengths)
-            for tau in schedule
+            sum(max(0, length - tau) for length in lengths) for tau in schedule
         )
     else:
         # Single tau: count pairs for that tau only
         total_possible = sum(max(0, length - max_tau) for length in lengths)
-    
+
     usable_pairs = int(min(idx_t.size, idx_tau.size))
     coverage = float(usable_pairs / total_possible) if total_possible else 0.0
     offsets = np.cumsum([0, *lengths])
@@ -108,7 +107,9 @@ def _compute_diagnostics(
         "short_shards": short_shards,
         "pairs_by_shard": pairs_by_shard,
         "lag_used": max_tau,
-        "expected_pairs": int(total_possible),  # Add explicit expected count for logging
+        "expected_pairs": int(
+            total_possible
+        ),  # Add explicit expected count for logging
         "tau_schedule_used": list(schedule),  # Track which taus were used
     }
 

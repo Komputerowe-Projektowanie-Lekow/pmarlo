@@ -15,7 +15,9 @@ with _API_PATH.open("r", encoding="utf-8") as fh:
 
 _module_ast = ast.parse(_API_SOURCE, filename=str(_API_PATH))
 _emit_node = next(
-    node for node in _module_ast.body if isinstance(node, ast.FunctionDef) and node.name == "_emit_windows"
+    node
+    for node in _module_ast.body
+    if isinstance(node, ast.FunctionDef) and node.name == "_emit_windows"
 )
 _emit_module = ast.Module(body=[_emit_node], type_ignores=[])
 _namespace: dict[str, object] = {
@@ -38,7 +40,9 @@ class FakeSeries:
         return self._values[item]
 
 
-def _fake_write_shard(*, out_dir, shard_id, cvs, dtraj, periodic, seed, temperature, source):
+def _fake_write_shard(
+    *, out_dir, shard_id, cvs, dtraj, periodic, seed, temperature, source
+):
     path = Path(out_dir) / f"{shard_id}.json"
     path.write_text("{}")
     return path

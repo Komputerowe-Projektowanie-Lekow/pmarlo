@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -25,28 +26,10 @@ def create_system(
     cv_scaler_mean=None,
     cv_scaler_scale=None,
 ) -> openmm.System:
-    """
-    Create OpenMM system with optional CV-based biasing.
+    """Create an OpenMM system with optional TorchForce-based CV biasing."""
 
-    Parameters
-    ----------
-    pdb : PDBFile
-        Input PDB structure
-    forcefield : ForceField
-        OpenMM force field
-    cv_model_path : str, optional
-        Path to TorchScript CV model for biased sampling
-    cv_scaler_mean : np.ndarray, optional
-        Scaler mean for CV model
-    cv_scaler_scale : np.ndarray, optional
-        Scaler scale for CV model
-
-    Returns
-    -------
-    openmm.System
-        Configured OpenMM system
-    """
     import logging
+
     logger = logging.getLogger(__name__)
 
     system = forcefield.createSystem(
@@ -58,7 +41,6 @@ def create_system(
         ewaldErrorTolerance=const.REPLICA_EXCHANGE_EWALD_TOLERANCE,
         hydrogenMass=3.0 * unit.amu,
     )
-    # Avoid duplicate CMMotionRemover if ForceField already inserted one
     has_cmm = any(
         isinstance(system.getForce(i), openmm.CMMotionRemover)
         for i in range(system.getNumForces())
@@ -66,56 +48,67 @@ def create_system(
     if not has_cmm:
         system.addForce(openmm.CMMotionRemover())
 
-    # Add CV-based biasing if model is provided
     if cv_model_path is not None:
         try:
-            from pmarlo.features.deeptica import (
-                add_cv_bias_to_system,
-                check_openmm_torch_available,
-            )
+            from pmarlo.features.deeptica import check_openmm_torch_available
 
             if not check_openmm_torch_available():
-                logger.warning(
-                    "CV model specified but openmm-torch not available. "
-                    "Install with: conda install -c conda-forge openmm-torch. "
-                    "Continuing without CV biasing."
+                raise RuntimeError(
+                    "openmm-torch is required to use CV biasing "
+                    "(install via `conda install -c conda-forge openmm-torch`)."
                 )
-            elif cv_scaler_mean is not None and cv_scaler_scale is not None:
-                logger.info("Adding CV-based biasing force from model: %s", cv_model_path)
-                add_cv_bias_to_system(
-                    system,
-                    model_path=cv_model_path,
-                    scaler_mean=cv_scaler_mean,
-                    scaler_scale=cv_scaler_scale,
-                    bias_strength=1.0,  # Can be parameterized if needed
-                    force_group=1,  # Separate group for CV force
-                )
-                logger.info("CV biasing force successfully added to system")
-            else:
-                logger.warning("CV model path provided but scaler parameters missing. Skipping CV biasing.")
 
-        except ImportError as exc:
-            logger.warning(
-                "Could not import CV integration modules: %s. "
-                "Continuing without CV biasing.",
-                exc
+            import torch
+            from openmmtorch import TorchForce
+
+            torch_threads = int(os.environ.get("PMARLO_TORCH_THREADS", "4"))
+            torch.set_num_threads(max(1, torch_threads))
+            try:
+                torch.set_num_interop_threads(max(1, torch_threads))
+            except AttributeError:
+                pass
+
+            logger.info("Loading TorchScript CV bias module from %s", cv_model_path)
+            model = torch.jit.load(str(cv_model_path), map_location="cpu")
+            model.eval()
+
+            feature_hash = getattr(model, "feature_spec_sha256", None)
+            if feature_hash is None:
+                raise RuntimeError(
+                    "TorchScript CV module is missing feature_spec hash metadata"
+                )
+
+            uses_pbc = bool(getattr(model, "uses_periodic_boundary_conditions", True))
+
+            cv_force = TorchForce(str(cv_model_path))
+            cv_force.setForceGroup(1)
+            cv_force.setUsesPeriodicBoundaryConditions(uses_pbc)
+            try:
+                cv_force.setProperty("precision", "single")
+            except AttributeError:
+                pass
+
+            system.addForce(cv_force)
+
+            logger.info(
+                "Added CV bias potential (feature hash=%s, torch threads=%d, uses_pbc=%s)",
+                feature_hash,
+                max(1, torch_threads),
+                uses_pbc,
             )
         except Exception as exc:
-            logger.error(
-                "Failed to add CV biasing force: %s. "
-                "Continuing without CV biasing.",
-                exc
-            )
+            logger.error("Failed to attach CV bias potential: %s", exc, exc_info=True)
+            raise
 
     return system
 
 
 def log_system_info(system: openmm.System, logger) -> None:
-    logger.info(f"System created with {system.getNumParticles()} particles")
-    logger.info(f"System has {system.getNumForces()} force terms")
-    for force_idx in range(system.getNumForces()):
-        force = system.getForce(force_idx)
-        logger.info(f"  Force {force_idx}: {force.__class__.__name__}")
+    logger.info("System created with %d particles", system.getNumParticles())
+    logger.info("System has %d force terms", system.getNumForces())
+    for idx in range(system.getNumForces()):
+        force = system.getForce(idx)
+        logger.info("  Force %d: %s", idx, force.__class__.__name__)
 
 
 def setup_metadynamics(

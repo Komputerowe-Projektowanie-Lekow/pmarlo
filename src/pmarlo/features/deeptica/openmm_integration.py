@@ -29,6 +29,7 @@ def check_openmm_torch_available() -> bool:
     """
     try:
         import openmmtorch  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -73,7 +74,7 @@ def create_cv_torch_force(
     Notes
     -----
     Requires openmm-torch to be installed:
-    
+
         conda install -c conda-forge openmm-torch
 
     The TorchForce expects input features to already be scaled using the
@@ -230,7 +231,9 @@ class CVBiasForce:
 
         try:
             # Get state with forces
-            state = simulation.context.getState(getEnergy=True, groups={self.force.getForceGroup()})
+            state = simulation.context.getState(
+                getEnergy=True, groups={self.force.getForceGroup()}
+            )
             # CV values would need to be extracted from the force
             # This is a placeholder - actual implementation depends on openmm-torch API
             logger.debug("CV values extraction not yet implemented")
@@ -307,4 +310,3 @@ def add_cv_bias_to_system(
     )
     cv_bias.add_to_system(system, force_group=force_group)
     return cv_bias
-

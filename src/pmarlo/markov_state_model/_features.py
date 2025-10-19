@@ -98,7 +98,9 @@ class FeaturesMixin:
                 atom_selection="name CA",
                 method=method,
                 lag=int(
-                    max(1, getattr(self, "tica_lag", 0) or getattr(self, "lag_time", 10))
+                    max(
+                        1, getattr(self, "tica_lag", 0) or getattr(self, "lag_time", 10)
+                    )
                 ),
                 cache_path=str(cache_dir),
             )
@@ -123,9 +125,7 @@ class FeaturesMixin:
             features.extend([np.cos(psi_angles), np.sin(psi_angles)])
         if not features:
             t = np.linspace(0.0, 1.0, traj.n_frames, endpoint=False, dtype=np.float32)
-            return np.column_stack(
-                [np.sin(2.0 * np.pi * t), np.cos(2.0 * np.pi * t)]
-            )
+            return np.column_stack([np.sin(2.0 * np.pi * t), np.cos(2.0 * np.pi * t)])
         return np.hstack(features)
 
     def _compute_phi_psi_plus_distance_features(
@@ -180,14 +180,21 @@ class FeaturesMixin:
         tica = _DT_TICA(lagtime=int(max(1, lag or 1)), dim=n_components)
         tica_model = tica.fit(Xs).fetch_model()
         Ys = [tica_model.transform(x) for x in Xs]
-        
+
         # Apply TICA transformation and drop lag frames from each trajectory
         drop = int(max(0, lag))
         if drop > 0:
             # Drop the last 'lag' frames from each trajectory since they don't have t+lag pairs
-            Ys_trimmed = [y[:-drop] if y.shape[0] > drop else np.empty((0, y.shape[1]), dtype=y.dtype) for y in Ys]
+            Ys_trimmed = [
+                (
+                    y[:-drop]
+                    if y.shape[0] > drop
+                    else np.empty((0, y.shape[1]), dtype=y.dtype)
+                )
+                for y in Ys
+            ]
             self.features = np.vstack(Ys_trimmed) if Ys_trimmed else self.features
         else:
             self.features = np.vstack(Ys) if Ys else self.features
-        
+
         self.tica_components_ = n_components  # type: ignore[attr-defined]

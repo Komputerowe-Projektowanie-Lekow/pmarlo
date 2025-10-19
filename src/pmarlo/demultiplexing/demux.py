@@ -12,6 +12,7 @@ import json
 import logging
 from collections import Counter
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Dict, Literal, Mapping, Optional, cast
 
 import numpy as np
@@ -20,6 +21,12 @@ from openmm import unit  # type: ignore
 from pmarlo.io.trajectory_reader import get_reader
 from pmarlo.io.trajectory_writer import get_writer
 from pmarlo.transform.progress import ProgressCB
+from pmarlo.utils.logging_utils import (
+    announce_stage_complete,
+    announce_stage_failed,
+    emit_banner,
+    format_duration,
+)
 
 from ..replica_exchange import config as _cfg
 from .demux_engine import demux_streaming
@@ -31,6 +38,22 @@ logger = logging.getLogger("pmarlo")
 
 
 FillPolicy = Literal["repeat", "skip", "interpolate"]
+
+
+def _expected_frame_total(plan: Any) -> int:
+    try:
+        total = int(getattr(plan, "total_expected_frames", 0) or 0)
+    except Exception:
+        total = 0
+    if total > 0:
+        return total
+    try:
+        segments = getattr(plan, "segments", []) or []
+        return int(
+            sum(int(getattr(seg, "expected_frames", 0) or 0) for seg in segments)
+        )
+    except Exception:
+        return 0
 
 
 def _select_target_temperature(
@@ -81,21 +104,36 @@ def demux_trajectories(
     Raises
     ------
     DemuxIntegrityError
-        If the exchange history maps to non‑monotonic frame indices.
+        If the exchange history maps to non-monotonic frame indices.
     """
 
-    logger.info(f"Demultiplexing trajectories for T = {target_temperature} K")
-
     target_temp_idx, actual_temp = _select_target_temperature(remd, target_temperature)
-    logger.info(f"Using closest temperature: {actual_temp:.1f} K")
+    exchange_segments = len(remd.exchange_history or [])
+
+    emit_banner(
+        "PHASE 2/2: DEMULTIPLEXING STARTED (EXTRACTING FRAMES)",
+        logger=logger,
+        details=[
+            f"Target temperature: {target_temperature:.1f} K",
+            f"Closest available ladder entry: {actual_temp:.1f} K",
+            f"Replica count: {remd.n_replicas}",
+            f"Exchange segments available: {exchange_segments}",
+        ],
+    )
 
     if not remd.exchange_history:
+        announce_stage_failed(
+            "Demultiplexing",
+            logger=logger,
+            details=["No exchange history is available to demultiplex."],
+        )
         logger.warning("No exchange history available for demultiplexing")
         return None
 
     default_stride = _determine_default_stride(remd)
+    phase_start = perf_counter()
     try:
-        return _run_streaming_demux(
+        result = _run_streaming_demux(
             remd,
             target_temperature,
             actual_temp,
@@ -104,11 +142,42 @@ def demux_trajectories(
             equilibration_steps,
             progress_callback,
         )
-    except DemuxIntegrityError:
+    except DemuxIntegrityError as exc:
+        announce_stage_failed(
+            "Demultiplexing",
+            logger=logger,
+            details=[f"Integrity error encountered: {exc}"],
+        )
         raise
-    except Exception:
+    except Exception as exc:
+        announce_stage_failed(
+            "Demultiplexing",
+            logger=logger,
+            details=[f"Unexpected error during demultiplexing: {exc}"],
+        )
         logger.exception("Streaming demux failed; aborting demultiplexing")
-        raise
+        return None
+
+    elapsed = perf_counter() - phase_start
+    if result:
+        announce_stage_complete(
+            "Demultiplexing",
+            logger=logger,
+            details=[
+                f"Demultiplexed trajectory saved to: {result}",
+                f"Duration: {format_duration(elapsed)}",
+            ],
+        )
+    else:
+        announce_stage_complete(
+            "Demultiplexing",
+            logger=logger,
+            details=[
+                "No frames were produced by the demultiplexing engine.",
+                f"Duration: {format_duration(elapsed)}",
+            ],
+        )
+    return result
 
 
 def _run_streaming_demux(
@@ -146,11 +215,41 @@ def _run_streaming_demux(
         replica_strides=replica_strides,
     )
 
+    emit_banner(
+        "PHASE 2/2: DEMULTIPLEXING - STREAMING FRAMES",
+        logger=logger,
+        details=[
+            f"Total segments to process: {len(plan.segments)}",
+            (
+                "Expected output frames: ~"
+                f"{_expected_frame_total(plan)}"
+            ),
+        ],
+    )
+
     demux_file = remd.output_dir / f"demux_T{actual_temp:.0f}K.dcd"
+
+    # Console output
+    print(f"Writing demultiplexed trajectory to: {demux_file.name}", flush=True)
+
+    # Also log
+    logger.info(f"Writing demultiplexed trajectory to: {demux_file.name}")
+
     writer = _open_demux_writer(remd, backend, demux_file)
     fill_policy = _resolve_fill_policy(remd)
     parallel_workers = _resolve_parallel_workers(remd)
     flush_between, checkpoint_every = _resolve_flush_settings(remd)
+
+    stream_start = perf_counter()
+    # Console output
+    print("\n" + "=" * 80, flush=True)
+    print("STREAMING FRAMES FROM REPLICA TRAJECTORIES...", flush=True)
+    print("=" * 80 + "\n", flush=True)
+
+    # Also log
+    logger.info("=" * 80)
+    logger.info("STREAMING FRAMES FROM REPLICA TRAJECTORIES...")
+    logger.info("=" * 80)
 
     result = demux_streaming(
         plan,
@@ -164,6 +263,26 @@ def _run_streaming_demux(
         flush_between_segments=flush_between,
     )
     writer.close()
+    stream_elapsed = perf_counter() - stream_start
+
+    # Console output
+    print("\n" + "=" * 80, flush=True)
+    print("DEMULTIPLEXING COMPLETE", flush=True)
+    print("=" * 80, flush=True)
+    print(f"Total frames written: {result.total_frames_written}", flush=True)
+    print(f"Output file: {demux_file}", flush=True)
+    print(f"Elapsed: {format_duration(stream_elapsed)}", flush=True)
+    print("=" * 80 + "\n", flush=True)
+
+    # Also log
+    logger.info("=" * 80)
+    logger.info("DEMULTIPLEXING COMPLETE")
+    logger.info("=" * 80)
+    logger.info(f"Total frames written: {result.total_frames_written}")
+    logger.info(f"Output file: {demux_file}")
+    logger.info(f"Elapsed: {format_duration(stream_elapsed)}")
+    logger.info("=" * 80)
+
     if int(result.total_frames_written) <= 0:
         logger.warning("Streaming demux produced 0 frames; no output written")
         return None

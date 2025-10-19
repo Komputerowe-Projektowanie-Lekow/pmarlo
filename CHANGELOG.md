@@ -1,3 +1,92 @@
+<a id='changelog-0.113.0'></a>
+# 0.113.0 — 2025-10-16
+
+
+### Changed
+- **OpenMM System Creation**: `create_system()` in `src/pmarlo/replica_exchange/system_builder.py` now accepts optional CV model parameters and integrates `TorchForce` from openmm-torch when provided
+- **API Expansion**: `run_replica_exchange()` in `src/pmarlo/api.py` now accepts `cv_model_path`, `cv_scaler_mean`, and `cv_scaler_scale` parameters for CV-biased sampling
+- **Enhanced Training Diagnostics**: Logs now show both pre-clip and post-clip gradient norms (`grad_preclip` and `grad_postclip`), clipping threshold, expected pairs, and tau schedule for curriculum training
+- Added uniform stage banners and per-step console echoes across the PMARLO pipeline, REMD sub-phases, and demultiplexing, plus milestone progress logging and end-of-phase summaries so logs clearly track execution (`src/pmarlo/transform/pipeline.py`, `src/pmarlo/replica_exchange/replica_exchange.py`, `src/pmarlo/demultiplexing/demux.py`, `src/pmarlo/utils/logging_utils.py`).
+- Added perf-counter driven timing with throughput and peak-memory summaries: pipeline stages now record wall-clock durations (with aggregate timing table and optional tracemalloc peak), REMD equilibration/production phases announce elapsed time, and demultiplexing reports streaming duration alongside frame counts (`src/pmarlo/transform/pipeline.py`, `src/pmarlo/utils/logging_utils.py`, `src/pmarlo/replica_exchange/replica_exchange.py`, `src/pmarlo/demultiplexing/demux.py`).
+- **Implemented CV-to-force transformation via CVBiasPotential wrapper**: Created `src/pmarlo/features/deeptica/cv_bias_potential.py` that wraps Deep-TICA models with harmonic expansion bias (E = k * Σ(cv²)). The wrapper transforms collective variable outputs into energy values, allowing OpenMM to compute biasing forces via automatic differentiation (F = -∇E). This enables proper physics-based conformational exploration
+- **Re-enabled CV-informed sampling in app**: Updated `example_programs/app_usecase/app/backend.py` and `app.py` to use the new CVBiasPotential. Models are now exported with bias potential included, and simulations can run with CV-based biasing forces (when openmm-torch is installed)
+- **Simplified OpenMM integration**: Updated `src/pmarlo/replica_exchange/system_builder.py` to directly add TorchForce without manual scaler handling, since scaling is now embedded in the CVBiasPotential model
+- Export pipeline now composes the TorchScript feature extractor, embeds a feature-spec SHA-256, runs `torch.jit.optimize_for_inference`, and persists metadata for runtime validation (`src/pmarlo/features/deeptica/export.py` with new unit tests under `tests/features/deeptica/`).
+- `create_system()` enforces `PMARLO_TORCH_THREADS`, pins TorchForce precision to single, and validates the scripted model's metadata (feature hash, PBC flag) before attaching the bias (`src/pmarlo/replica_exchange/system_builder.py`).
+- Standardized the example app shard metadata to match the canonical PMARLO shard schema (explicit periodic flags, canonical provenance keys, and float32-aligned `dt_ps`).
+- Added `lightning` (pytorch-lightning) to `mlcv` optional dependencies in `pyproject.toml` as required by `mlcolvar`.
+- DeepTICACurriculumTrainer now writes real-time progress updates after each epoch and tracks pre-clip gradient norms
+- TrainingResult dataclass now includes `checkpoint_dir` and `cv_model_bundle` fields
+- SimulationConfig dataclass now includes `cv_model_bundle` field for CV-informed sampling
+- `AppBackend.train_model()` now automatically exports models to TorchScript with scaler and metadata
+- `AppBackend.run_sampling()` loads CV model info and propagates to replica exchange when selected
+- Training completion is now marked in progress file with final summary statistics
+- Simulation metadata now includes CV model reference when CV-informed sampling is used
+
+### Fixed
+- Ensured DeepTICA models that rely on a backing `.nn`/`.net` module expose a callable `forward()` so the full training workflow and FES shape checks run without raising `NotImplementedError`.
+- **Fixed coverage >100% bug in `src/pmarlo/pairs/core.py`**: When using curriculum training with multiple taus, coverage was calculated incorrectly by counting usable pairs for all taus but expected pairs for only the maximum tau, resulting in coverage values like 101.5%. Now correctly counts expected pairs for all taus in the schedule.
+- **Fixed gradient norm logging in `src/pmarlo/ml/deeptica/trainer.py`**: Gradient norms were logged AFTER clipping, showing constant values (typically 1.0). Now logs both pre-clip and post-clip gradient norms to reveal true optimization dynamics.
+- **Enhanced training diagnostics**: Logs now show `grad_preclip=(mean/max)`, `grad_postclip=(mean/max)`, `clip_at=threshold`, `expected_pairs`, and `tau_schedule` for better debugging.
+- Fixed critical bug in `example_programs/app_usecase/app/backend.py` where analysis guardrails were checked against pre-clustering debug data, causing all analyses to fail with "total_pairs_lt_5000" error before the MSM build could complete.
+- Modified guardrail validation to check post-clustering MSM build results instead of pre-clustering debug data, allowing proper MSM construction with transition matrix and free energy surface generation.
+- Resolved analysis guardrail failures in the example app by ensuring shard manifests declare full provenance required by `load_shard_meta`.
+- Fixed dependency management issue where `mlcolvar` required `lightning` (pytorch-lightning) but it was not specified in optional dependencies, causing "No module named 'mlcolvar'" errors.
+- Training progress is now visible during and after model training instead of silent execution
+- Prevented DeepTICA TorchScript export from recursing indefinitely by tracking visited modules and re-exposing the `plumed_snippet` helper on `DeepTICAModel`.
+- Normalized DeepTICA pair diagnostics to cap usable pair counts by actual frame counts, keeping coverage ≤100% in trainer telemetry.
+- Added explicit `tomli` dependency and switched tooling imports away from `tomllib` so Python 3.10 environments can execute parity checks.
+- Hardened LEARN_CV failure handling to detect missing `lightning`/`pytorch_lightning` installations and emit structured `missing_dependency:*` skip records instead of aborting the build.
+- **CRITICAL: Fixed multiple simultaneous simulation bug in Streamlit app**: The "Run replica exchange" button was triggering multiple parallel simulations due to Streamlit rerun behavior. Moved simulation execution inside the button click handler to ensure only ONE simulation runs per click, not one per rerun. This was causing 5+ hour runtimes as multiple simulations competed for resources.
+- **Fixed lazy loading import error for CV functions**: Updated `__getattr__` in `src/pmarlo/features/deeptica/__init__.py` to check standalone exports (like `load_cv_model_info`) before trying to load from `_full` module, preventing "cannot import name" errors
+- **Enhanced CV integration error handling**: Added comprehensive logging and warnings in `backend.py` for missing openmm-torch, CPU-only PyTorch performance warnings, and graceful degradation when CV models can't be loaded
+- **Fixed GitHub Actions test collection failure**: Added `tests/integration` to `testpaths` in `pyproject.toml` and added `@pytest.mark.integration` markers to all integration test files to enable proper test discovery.
+- **Fixed GitHub Actions pytest exit code 5 issue**: Updated all GitHub Actions workflow test commands to explicitly specify test directories (`tests/unit tests/devtools tests/integration`) instead of relying on marker filters alone, preventing pytest from collecting unmarked tests incorrectly.
+- **Fixed tomli import error in Python 3.11+**: Updated `scripts/check_extras_parity.py` to use `tomllib` from the standard library for Python 3.11+ instead of the external `tomli` package, fixing test collection errors in devtools tests.
+- Restored Poetry package metadata (`name`, `description`, `authors`) in `[tool.poetry]` to satisfy package-mode CI checks while keeping it synchronized with the canonical `[project]` metadata.
+- **CRITICAL PERFORMANCE FIX: Disabled CV-biased sampling** due to catastrophic 10-100x slowdown caused by incomplete implementation. Root causes: (1) TorchForce passes raw atomic positions but CV model expects molecular features (distances/angles/dihedrals) - feature extraction not implemented, (2) PyTorch runs on CPU when random_seed is set (Reference platform for determinism), (3) PyTorch model called at every MD integration step. With 50k steps × 3 replicas = 150k PyTorch CPU calls → hours instead of minutes. Temporarily disabled CV biasing in `app.py` until proper OpenMM feature extraction is implemented. See `mdfiles/cv_biasing_performance_issue.md` for details.
+- Updated integration and analysis test fixtures to emit canonical shard metadata so new schema validations pass and cache invalidation remains covered without depending on legacy shard IDs.
+
+
+### Improved
+- **Comprehensive console output for Streamlit debugging**: Added detailed console output using `print(..., flush=True)` statements throughout the replica exchange simulation pipeline to ensure visibility in Streamlit console
+  - **Why print() instead of logger?** Python's `logger` output may not appear in Streamlit console, so we use direct print statements with flush=True for guaranteed visibility
+  - Added startup banner in `src/pmarlo/api.py` showing simulation configuration (replicas, temperatures, steps, output directory, seed)
+  - Added phase banners showing PHASE 1/2 (MD simulation) and PHASE 2/2 (demultiplexing) with clear stage boundaries
+  - Added cancellation awareness messaging warning users that demultiplexing cannot be cancelled with Ctrl+C
+  - Added detailed stage output in `src/pmarlo/replica_exchange/replica_exchange.py` showing equilibration and production phases with replica counts and exchange frequencies
+  - Added demux stage output in `src/pmarlo/demultiplexing/demux.py` showing exchange history analysis, frame extraction progress, and completion statistics
+  - All console output uses consistent 80-character separator lines for visual clarity
+  - Completion messages show trajectory counts, frame counts, and output file paths for verification
+  - Both `print()` (for console) and `logger` (for file-based logging) are used to ensure traceability
+- **Explained demultiplexing lag after Ctrl+C**: The two progress bars users see are (1) the MD simulation which CAN be cancelled, and (2) the demultiplexing phase which CANNOT be cancelled and runs to completion. This is now clearly documented in the console output with warning symbols (⚠️).
+
+### Testing
+- Loaded every example shard with `pmarlo.data.shard_io.load_shard_meta`.
+- Verified MSM builds successfully with valid transition matrices (50x50, row-stochastic) and stationary distributions from 2000-frame shard datasets.
+- Tested complete workflow including normal analysis, DeepTICA integration, and all additional features.
+- Added TorchScript parity and periodic-invariance regression tests plus TorchForce finite-difference validation under `tests/force/`.
+
+
+### Added
+- **CV-Informed OpenMM Sampling**: Full integration of trained Deep-TICA models into OpenMM simulations for enhanced sampling
+  - `export_cv_model()` in `src/pmarlo/features/deeptica/export.py` exports trained models as TorchScript compatible with openmm-torch
+  - `CVBiasForce` and `add_cv_bias_to_system()` in `src/pmarlo/features/deeptica/openmm_integration.py` integrate CV models as biasing forces
+  - `check_openmm_torch_available()` validates openmm-torch installation for safe integration
+  - Automatic model export after training with scaler parameters, metadata, and usage instructions
+  - CV model selection in Sampling tab with automatic propagation to replica exchange simulations
+  - Iterative training workflow support: unbiased sampling → CV learning → biased sampling → repeat to map FES
+  - Comprehensive documentation in `CV_INTEGRATION_README.md` with workflow examples and troubleshooting
+- Real-time training metrics logging to JSON file during DeepTICA model training
+- Training progress visualization in Model Training tab with live epoch updates and metrics curves
+- Model Preview tab in the app for inspecting trained model architecture, parameters, and training history
+- CV-informed sampling option to associate trained CV models with simulation runs
+- Checkpoint directory tracking for trained models to access training progress and checkpoints
+- `training_progress.json` file written during training with epoch-by-epoch metrics
+- `get_training_progress()` method in backend to read real-time training status
+- `cv_model_bundle` field in `TrainingResult` and `SimulationConfig` for tracking exported models
+- TorchScript feature extractor (`src/pmarlo/features/deeptica/ts_feature_extractor.py`) computes distance, angle, and dihedral features with minimum-image PBC entirely inside TorchScript so OpenMM can evaluate CV inputs on CPU every step.
+
 <a id='changelog-0.107.0'></a>
 # 0.107.0 — 2025-10-16
 
@@ -54,7 +143,7 @@
 - **Return-type fixes**: Fixed missing return values in run_simulation method by returning appropriate `List[str]` values
 - **Transform/apply fixes**: Added missing imports, fixed function signatures, and corrected argument passing for MSM analysis functions
 - **Type annotation improvements**: Added proper type annotations to dictionaries and variables to resolve object type inference issues
-- **Deeptime dependency enforcement**: 
+- **Deeptime dependency enforcement**:
   - Removed `_manual_tica()` and `_manual_vamp()` fallback implementations from reduction.py
   - Removed `_fit_msm_fallback()` custom MSM fitting from bridge.py and _msm_utils.py
   - All TICA, VAMP, and MSM estimation now exclusively use deeptime library implementations
@@ -147,7 +236,7 @@
 - Experiment inputs regenerated in-place to include canonical metadata (feature_spec, dt_ps, temperature) with filenames aligned to canonical shard IDs.
 
 ## Removed
-- Cleared legacy DeepTICA artefacts (checkpoints/, tmp_models/, runs/, and bias/) from the workspace so 
+- Cleared legacy DeepTICA artefacts (checkpoints/, tmp_models/, runs/, and bias/) from the workspace so
 new runs start clean.
 
 ## Fixed

@@ -38,9 +38,7 @@ def test_resolve_project_path_requires_explicit_search_roots(tmp_path):
         os.chdir(tmp_path)
 
         root = repository_root()
-        resolved = resolve_project_path(
-            "pyproject.toml", search_roots=[root]
-        )
+        resolved = resolve_project_path("pyproject.toml", search_roots=[root])
 
         assert resolved == os.fspath((root / "pyproject.toml").resolve())
     finally:

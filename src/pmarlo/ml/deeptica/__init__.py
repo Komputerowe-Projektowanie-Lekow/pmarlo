@@ -26,8 +26,10 @@ def __getattr__(name: str):
     """Lazy-load torch-dependent trainer classes on first access."""
     if name == "CurriculumConfig":
         from .trainer import CurriculumConfig
+
         return CurriculumConfig
     if name == "DeepTICACurriculumTrainer":
         from .trainer import DeepTICACurriculumTrainer
+
         return DeepTICACurriculumTrainer
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

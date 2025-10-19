@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from openmm.app import DCDReporter as _DCDReporter
+
 # 'Optional' was unused; keep imports minimal to satisfy flake8
 
-from openmm.app import DCDReporter as _DCDReporter
 
 
 class ClosableDCDReporter(_DCDReporter):

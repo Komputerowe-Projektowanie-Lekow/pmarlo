@@ -369,51 +369,71 @@ class WorkflowBackend:
         run_label = _slugify(config.label) or f"run-{_timestamp()}"
         run_dir = self.layout.sims_dir / run_label
         ensure_directory(run_dir)
-        
+
         # Prepare CV model info if provided
+        # CV biasing is now properly implemented with harmonic expansion bias
+        # The exported model includes CVBiasPotential wrapper that transforms CVs → Energy
         cv_kwargs = {}
         if config.cv_model_bundle:
             import logging
             logger = logging.getLogger(__name__)
+
+            logger.info("=" * 60)
+            logger.info("CV-INFORMED SAMPLING ENABLED")
+            logger.info("=" * 60)
             try:
                 from pmarlo.features.deeptica import load_cv_model_info, check_openmm_torch_available
-                
-                # Check if openmm-torch is available
+
+                # Check for openmm-torch
                 if not check_openmm_torch_available():
                     logger.error(
-                        "CV model selected but openmm-torch is not installed. "
-                        "CV-biased sampling will NOT be performed. "
-                        "Install with: conda install -c conda-forge openmm-torch"
+                        "CV model selected but openmm-torch is NOT installed!\n"
+                        "Install with: conda install -c conda-forge openmm-torch\n"
+                        "CV-biased sampling will be SKIPPED."
                     )
                     logger.warning("Running simulation WITHOUT CV biasing")
                 else:
-                    # Warn about performance if using CPU-only PyTorch
+                    # Warn about CPU-only PyTorch performance
                     import torch
                     if not torch.cuda.is_available():
                         logger.warning(
-                            "⚠️  WARNING: PyTorch is running on CPU only! "
-                            "CV-biased simulations will be 10-20x SLOWER than unbiased runs. "
-                            "For acceptable performance, install CUDA-enabled PyTorch: "
-                            "https://pytorch.org/get-started/locally/"
+                            "⚠️  PyTorch is running on CPU only!\n"
+                            "CV-biased simulations will be ~10-20x slower than unbiased.\n"
+                            "For production use, install CUDA-enabled PyTorch:\n"
+                            "https://pytorch.org/get-started/locally/\n"
                         )
-                    
+
+                    # Load CV model info
                     cv_info = load_cv_model_info(config.cv_model_bundle, model_name="deeptica_cv_model")
                     cv_kwargs["cv_model_path"] = cv_info["model_path"]
                     cv_kwargs["cv_scaler_mean"] = cv_info["scaler_params"]["mean"]
                     cv_kwargs["cv_scaler_scale"] = cv_info["scaler_params"]["scale"]
-                    logger.info(f"✓ CV model loaded: {cv_info['model_path']}")
-                    logger.info(f"✓ CV dimensions: {cv_info['config']['cv_dim']}")
-                    
+
+                    logger.info("✓ CV bias potential loaded successfully")
+                    logger.info(f"  Model path: {cv_info['model_path']}")
+                    logger.info(f"  CV dimensions: {cv_info['config']['cv_dim']}")
+                    logger.info(f"  Bias type: {cv_info['config'].get('bias_type', 'harmonic_expansion')}")
+                    logger.info(f"  Bias strength: {cv_info['config'].get('bias_strength', 10.0):.1f} kJ/mol")
+                    logger.info("\nBias physics:")
+                    logger.info("  E_bias = k * sum(cv_i^2)")
+                    logger.info("  Forces: F = -∇E_bias (computed by OpenMM)")
+                    logger.info("  Purpose: Repulsive bias → explore diverse conformations")
+                    logger.info("\n⚠️  IMPORTANT: The model expects MOLECULAR FEATURES as input")
+                    logger.info("  (distances, angles, dihedrals), not raw atomic positions.")
+                    logger.info("  Feature extraction must be configured in OpenMM system.")
+
             except ImportError as exc:
-                logger.error(f"Could not import CV integration modules: {exc}")
+                logger.error(f"Could not import CV modules: {exc}")
                 logger.warning("Running simulation WITHOUT CV biasing")
             except FileNotFoundError as exc:
                 logger.error(f"CV model files not found: {exc}")
                 logger.warning("Running simulation WITHOUT CV biasing")
             except Exception as exc:
-                logger.error(f"Could not load CV model: {exc}")
+                logger.error(f"Could not load CV model: {exc}", exc_info=True)
                 logger.warning("Running simulation WITHOUT CV biasing")
-        
+            finally:
+                logger.info("=" * 60)
+
         traj_files, temps = run_replica_exchange(
             pdb_file=str(config.pdb_path),
             output_dir=str(run_dir),
@@ -457,12 +477,12 @@ class WorkflowBackend:
             "traj_files": [str(p) for p in result.traj_files],
             "created_at": created,
         }
-        
+
         # Add CV model reference if used
         if config.cv_model_bundle:
             run_metadata["cv_model_bundle"] = str(config.cv_model_bundle)
             run_metadata["cv_informed"] = True
-        
+
         self.state.append_run(run_metadata)
         return result
 
@@ -574,56 +594,56 @@ class WorkflowBackend:
     def get_training_progress(self, checkpoint_dir: Path) -> Optional[Dict[str, Any]]:
         """Read real-time training progress from checkpoint directory."""
         import json
-        
+
         if not checkpoint_dir or not checkpoint_dir.exists():
             return None
-        
+
         progress_path = checkpoint_dir / "training_progress.json"
         if not progress_path.exists():
             return None
-        
+
         try:
             with progress_path.open("r") as f:
                 return json.load(f)
         except Exception:
             return None
-    
+
     def train_model(
         self,
         shard_jsons: Sequence[Path],
         config: TrainingConfig,
     ) -> TrainingResult:
         import logging
-        
+
         shards = [Path(p).resolve() for p in shard_jsons]
         if not shards:
             raise ValueError("No shards selected for training")
         stamp = _timestamp()
         bundle_path = self.layout.models_dir / f"deeptica-{stamp}.pbz"
-        
+
         # Create checkpoint directory for training progress
         checkpoint_dir = self.layout.models_dir / f"training-{stamp}"
         ensure_directory(checkpoint_dir)
-        
+
         # Setup logging to file
         log_file = checkpoint_dir / "training.log"
         file_handler = logging.FileHandler(log_file)
         file_handler.setLevel(logging.INFO)
         file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-        
+
         # Get the pmarlo logger and add our file handler
         pmarlo_logger = logging.getLogger("pmarlo")
         pmarlo_logger.addHandler(file_handler)
         pmarlo_logger.setLevel(logging.INFO)
-        
+
         try:
             pmarlo_logger.info(f"Starting training with {len(shards)} shards")
             pmarlo_logger.info(f"Configuration: lag={config.lag}, bins={config.bins}, max_epochs={config.max_epochs}")
-            
+
             # Add checkpoint_dir to deeptica_params
             deeptica_params = config.deeptica_params()
             deeptica_params["checkpoint_dir"] = str(checkpoint_dir)
-            
+
             pmarlo_logger.info("Calling build_from_shards...")
             br, ds_hash = build_from_shards(
                 shard_jsons=shards,
@@ -653,24 +673,36 @@ class WorkflowBackend:
         cv_model_bundle_info = None
         try:
             from pmarlo.features.deeptica import export_cv_model
-            
+
             # Load the trained model from bundle
             import pickle
             with open(bundle_path, "rb") as f:
                 bundle_data = pickle.load(f)
-            
+
             network = bundle_data.get("network")
             scaler = bundle_data.get("scaler")
             history = br.get("history", {})
-            
+
             if network is not None and scaler is not None:
-                pmarlo_logger.info("Exporting CV model for OpenMM integration...")
+                try:
+                    import yaml
+                except Exception as exc:
+                    raise RuntimeError("PyYAML is required to load feature specifications") from exc
+                spec_path = self.layout.app_root / "app" / "feature_spec.yaml"
+                if not spec_path.exists():
+                    raise FileNotFoundError(f"Feature specification not found at {spec_path}")
+                with spec_path.open("r", encoding="utf-8") as spec_file:
+                    feature_spec = yaml.safe_load(spec_file)
+                pmarlo_logger.info("Exporting CV model with bias potential for OpenMM integration...")
+                pmarlo_logger.info("Creating CVBiasPotential wrapper (harmonic expansion bias)...")
                 cv_bundle = export_cv_model(
                     network=network,
                     scaler=scaler,
                     history=history,
                     output_dir=checkpoint_dir,
                     model_name="deeptica_cv_model",
+                    bias_strength=10.0,  # Can be made configurable
+                    feature_spec=feature_spec,
                 )
                 cv_model_bundle_info = {
                     "model_path": str(cv_bundle.model_path),
@@ -678,11 +710,15 @@ class WorkflowBackend:
                     "config_path": str(cv_bundle.config_path),
                     "metadata_path": str(cv_bundle.metadata_path),
                     "cv_dim": cv_bundle.cv_dim,
+                    "feature_spec_sha256": cv_bundle.feature_spec_hash,
                 }
-                pmarlo_logger.info(f"CV model exported to {cv_bundle.model_path}")
+                pmarlo_logger.info("✓ CV bias potential exported successfully")
+                pmarlo_logger.info(f"  Model outputs: Energy (kJ/mol) for OpenMM force calculation")
+                pmarlo_logger.info(f"  Bias formula: E = 10.0 * sum(cv_i^2)")
+                pmarlo_logger.info(f"  Purpose: Encourages conformational exploration")
         except Exception as exc:
             pmarlo_logger.warning(f"Could not export CV model: {exc}")
-        
+
         result = TrainingResult(
             bundle_path=bundle_path.resolve(),
             dataset_hash=ds_hash,
@@ -694,6 +730,7 @@ class WorkflowBackend:
         self.state.append_model(
             {
                 "bundle": str(bundle_path.resolve()),
+                "checkpoint_dir": str(checkpoint_dir.resolve()),  # ADD THIS for CV model loading
                 "dataset_hash": ds_hash,
                 "lag": int(config.lag),
                 "bins": dict(config.bins),
@@ -815,7 +852,7 @@ class WorkflowBackend:
                 continue
         stride_map = summary.get("effective_stride_map") or {}
         preview_truncated = summary.get("preview_truncated") or []
-        
+
         # NOTE: Don't use pre-clustering debug data for pair counts, as clustering hasn't happened yet
         # Extract actual statistics from the MSM build result
         total_pairs_val = 0  # Will be updated from MSM diagnostics below
@@ -867,7 +904,7 @@ class WorkflowBackend:
         # Note: total_pairs and zero_rows checks are removed because they require
         # post-clustering data which we'll validate from the build result instead
         guardrail_violations: List[Dict[str, Any]] = []
-        
+
         # Check if MSM build succeeded by verifying the transition matrix exists
         if br.transition_matrix is None or br.transition_matrix.size == 0:
             guardrail_violations.append(
@@ -880,7 +917,7 @@ class WorkflowBackend:
                 guardrail_violations.append(
                     {"code": "no_states_in_msm", "actual": 0}
                 )
-        
+
         if effective_tau_frames != expected_effective_tau:
             logger.warning(
                 "Effective tau mismatch: expected=%d, actual=%d",
@@ -888,7 +925,7 @@ class WorkflowBackend:
                 effective_tau_frames,
             )
             # Don't treat tau mismatch as a hard failure
-        
+
         analysis_healthy = not guardrail_violations
 
         summary_overrides = {

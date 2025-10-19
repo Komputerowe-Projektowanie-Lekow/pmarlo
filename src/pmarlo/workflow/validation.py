@@ -17,6 +17,7 @@ from pmarlo.io.catalog import (
     build_catalog_from_paths,
 )
 
+
 def validate_build_result(
     build_result: Dict[str, Any],
     available_shard_paths: List[Path],

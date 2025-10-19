@@ -144,9 +144,7 @@ def retune_temperature_ladder(
     temp_diffs = np.diff(temps)
     if temp_diffs.size and np.any(temp_diffs == 0.0):
         raise ValueError("Input temperatures must be strictly monotonic")
-    if temp_diffs.size and not (
-        np.all(temp_diffs > 0.0) or np.all(temp_diffs < 0.0)
-    ):
+    if temp_diffs.size and not (np.all(temp_diffs > 0.0) or np.all(temp_diffs < 0.0)):
         raise ValueError("Input temperatures must be strictly monotonic")
 
     betas = 1.0 / temps

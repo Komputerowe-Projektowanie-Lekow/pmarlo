@@ -56,8 +56,7 @@ def write_shard_npz_json(
 
     # Compute hash of the arrays for integrity validation
     data_hash = hash_shard_arrays(
-        X_array, t_index_array, dt_ps_array,
-        energy_array, bias_array, w_frame_array
+        X_array, t_index_array, dt_ps_array, energy_array, bias_array, w_frame_array
     )
 
     meta = shard.meta
@@ -117,17 +116,21 @@ def read_shard_npz_json(npz_path: Path, json_path: Path) -> Shard:
     # Validate data integrity if hash is present
     if "data_hash" in json_payload:
         expected_hash = str(json_payload["data_hash"])
-        
+
         # Convert optional arrays to the same format used during write
         energy_for_hash = _optional_array(energy_loaded, np.float32)
         bias_for_hash = _optional_array(bias_loaded, np.float32)
         w_frame_for_hash = _optional_array(w_frame_loaded, np.float32)
-        
+
         actual_hash = hash_shard_arrays(
-            X_loaded, t_index_loaded, dt_ps_loaded,
-            energy_for_hash, bias_for_hash, w_frame_for_hash
+            X_loaded,
+            t_index_loaded,
+            dt_ps_loaded,
+            energy_for_hash,
+            bias_for_hash,
+            w_frame_for_hash,
         )
-        
+
         if actual_hash != expected_hash:
             raise ValueError(
                 f"Shard data integrity check failed for {npz_path.name}: "

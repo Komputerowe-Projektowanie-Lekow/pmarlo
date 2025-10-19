@@ -21,9 +21,7 @@ def kT_kJ_per_mol(temperature_kelvin: float) -> float:
         Thermal energy in kJ/mol.
     """
     temperature = float(temperature_kelvin)
-    return float(
-        scipy_constants.k * temperature * scipy_constants.Avogadro / 1000.0
-    )
+    return float(scipy_constants.k * temperature * scipy_constants.Avogadro / 1000.0)
 
 
 __all__ = ["kT_kJ_per_mol"]

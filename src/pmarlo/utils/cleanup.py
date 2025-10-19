@@ -57,9 +57,7 @@ def _iter_runs(root: Path) -> Iterable[Path]:
 
     sims = root / "sims"
     if not sims.exists():
-        raise FileNotFoundError(
-            f"Expected workspace layout '{root / 'sims'}' to exist"
-        )
+        raise FileNotFoundError(f"Expected workspace layout '{root / 'sims'}' to exist")
 
     for run_dir in sorted(sims.glob("run-*")):
         replica_exchange_dir = run_dir / "replica_exchange"

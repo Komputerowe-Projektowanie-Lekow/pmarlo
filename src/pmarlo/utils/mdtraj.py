@@ -9,7 +9,6 @@ from typing import Literal, Sequence
 
 import mdtraj as md
 
-
 __all__ = ["load_mdtraj_topology", "resolve_atom_selection"]
 
 

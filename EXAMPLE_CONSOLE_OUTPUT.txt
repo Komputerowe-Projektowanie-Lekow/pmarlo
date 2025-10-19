@@ -1,0 +1,153 @@
+EXAMPLE: What you'll see in your Streamlit console after the changes
+========================================================================
+
+PS C:\Users\konrad_guest\Documents\GitHub\pmarlo> streamlit run .\example_programs\app_usecase\app\app.py
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.1.18:8501
+
+================================================================================
+REPLICA EXCHANGE SIMULATION STARTING
+================================================================================
+Number of replicas: 3
+Temperature ladder: [300.0, 320.0, 340.0]
+Total steps: 50000
+Output directory: C:\Users\konrad_guest\...\app_output\sims\run-...\replica_exchange
+Random seed: None
+================================================================================
+
+================================================================================
+PHASE 1/2: RUNNING MD SIMULATION
+================================================================================
+This will run 3 parallel replicas
+Each replica will run for 50000 MD steps
+Equilibration: 5000 steps
+Press Ctrl+C to cancel the simulation
+================================================================================
+
+================================================================================
+SIMULATION STAGE 1: EQUILIBRATION (5000 steps)
+================================================================================
+Running 3 replicas in parallel
+Temperature range: 300.0K - 340.0K
+================================================================================
+[###---------------------------] 10%/100% ETA 0:38
+[######------------------------] 20%/100% ETA 0:33
+[#########---------------------] 30%/100% ETA 0:29
+  Stopping...  <-- You pressed Ctrl+C here
+[############------------------] 40%/100% ETA 0:25
+[###############---------------] 50%/100% ETA 0:21
+[##################------------] 60%/100% ETA 0:16
+[#####################---------] 70%/100% ETA 0:12
+[########################------] 80%/100% ETA 0:08
+[###########################---] 90%/100% ETA 0:04
+[##############################] 100%/100% ETA 0:00
+
+================================================================================
+EQUILIBRATION COMPLETE
+================================================================================
+
+================================================================================
+SIMULATION STAGE 2: PRODUCTION (45000 steps)
+================================================================================
+Running 3 replicas in parallel
+Exchange attempts every 1000 steps
+================================================================================
+[progress bars for production phase]
+...
+================================================================================
+PRODUCTION COMPLETE
+================================================================================
+Finalizing trajectories and saving statistics...
+================================================================================
+
+================================================================================
+PHASE 1/2: MD SIMULATION COMPLETE
+================================================================================
+Generated 3 replica trajectories
+================================================================================
+
+================================================================================
+PHASE 2/2: DEMULTIPLEXING TRAJECTORIES
+================================================================================
+Extracting frames at target temperature (300K)
+This creates a single trajectory from replica exchanges
+⚠️ This phase cannot be cancelled with Ctrl+C (runs to completion)
+================================================================================
+
+================================================================================
+DEMULTIPLEXING STAGE 1: ANALYZING EXCHANGE HISTORY
+================================================================================
+Target temperature: 300.0 K
+Closest available temperature: 300.0 K
+Total exchange segments: 45
+Number of replicas: 3
+================================================================================
+
+================================================================================
+DEMULTIPLEXING STAGE 2: EXTRACTING FRAMES
+================================================================================
+Total segments to process: 45
+Expected output frames: ~2250
+================================================================================
+Writing demultiplexed trajectory to: demux_T300K.dcd
+
+================================================================================
+STREAMING FRAMES FROM REPLICA TRAJECTORIES...
+================================================================================
+[###---------------------------] 10%/100% ETA 0:40  <-- Second progress bar
+[######------------------------] 20%/100% ETA 0:36
+[#########---------------------] 30%/100% ETA 0:32
+[############------------------] 40%/100% ETA 0:27
+[###############---------------] 50%/100% ETA 0:22
+[##################------------] 60%/100% ETA 0:18
+[#####################---------] 70%/100% ETA 0:13
+[########################------] 80%/100% ETA 0:08
+[###########################---] 90%/100% ETA 0:04
+[##############################] 100%/100% ETA 0:00
+
+================================================================================
+DEMULTIPLEXING COMPLETE
+================================================================================
+Total frames written: 2250
+Output file: C:\Users\...\demux_T300K.dcd
+================================================================================
+
+================================================================================
+REPLICA EXCHANGE COMPLETE - SUCCESS
+================================================================================
+Returning demultiplexed trajectory: C:\Users\...\demux_T300K.dcd
+Total frames in demuxed trajectory: 2250
+================================================================================
+
+Simulation complete: run-20250117-191409
+
+========================================================================
+KEY OBSERVATIONS:
+========================================================================
+
+1. Clear Phase Separation:
+   - PHASE 1/2: MD SIMULATION (can cancel with Ctrl+C)
+   - PHASE 2/2: DEMULTIPLEXING (cannot cancel)
+
+2. Two Progress Bars Explained:
+   - First bar = Simulation (equilibration OR production)
+   - Second bar = Demultiplexing
+
+3. If you pressed Ctrl+C during simulation:
+   - You'd see "SIMULATION CANCELLED DURING [EQUILIBRATION/PRODUCTION]"
+   - Then it would STILL proceed to demultiplexing
+   - This is the "lag" you experienced!
+
+4. Number of Replicas:
+   - "Running 3 replicas in parallel" = ONE simulation with 3 parallel replicas
+   - Not 3 separate simulations!
+
+5. Clear Warnings:
+   - "This phase cannot be cancelled with Ctrl+C (runs to completion)"
+   - You now know when pressing Ctrl+C won't help
+
+========================================================================
+

@@ -16,50 +16,60 @@ def test_diversified_starts_increase_bin_coverage(
     test_fixed_pdb_file: Path, tmp_path: Path
 ):
     from example_programs.app_usecase.app.backend import (
-        emit_from_trajs_simple,
-        run_short_sim,
+        ShardRequest,
+        SimulationConfig,
+        WorkflowBackend,
+        WorkspaceLayout,
     )
     from pmarlo.data.shard import read_shard
 
     ws = tmp_path
+    layout = WorkspaceLayout(
+        app_root=ws,
+        inputs_dir=ws / "inputs",
+        workspace_dir=ws / "output",
+        sims_dir=ws / "output" / "sims",
+        shards_dir=ws / "output" / "shards",
+        models_dir=ws / "output" / "models",
+        bundles_dir=ws / "output" / "bundles",
+        logs_dir=ws / "output" / "logs",
+        state_path=ws / "output" / "state.json",
+    )
+    layout.ensure()
+    backend = WorkflowBackend(layout)
     temps = [290.0, 310.0, 330.0, 350.0]
 
-    # First run from initial PDB
-    sim1 = run_short_sim(Path(test_fixed_pdb_file), ws, temps, steps=1500, quick=True)
-    shards1_dir = ws / "shards" / Path(sim1.run_dir).name
-    shards1 = emit_from_trajs_simple(
-        sim1.traj_files,
-        shards1_dir,
-        pdb=Path(test_fixed_pdb_file),
-        ref_dcd=None,
-        temperature=float(np.median(temps)),
-        seed_start=0,
-        stride=5,
-    )
+    def _emit(sim_config: SimulationConfig, *, seed_start: int) -> list[Path]:
+        sim_result = backend.run_sampling(sim_config)
+        request = ShardRequest()
+        request.temperature = float(np.median(temps))
+        request.stride = 5
+        request.seed_start = seed_start
+        request.frames_per_shard = 600
+        shard_result = backend.emit_shards(sim_result, request)
+        return shard_result.shard_paths
 
-    # Second run seeded from random high-T frame of first run
-    sim2 = run_short_sim(
-        Path(test_fixed_pdb_file),
-        ws,
-        temps,
+    # First run from initial PDB
+    config1 = SimulationConfig(
+        pdb_path=Path(test_fixed_pdb_file),
+        temperatures=temps,
         steps=1500,
         quick=True,
-        start_mode="random_highT",
-        start_run=sim1.run_dir,
+        random_seed=1337,
+    )
+    shards1 = _emit(config1, seed_start=0)
+
+    # Second run with different random seed to diversify initial conditions
+    config2 = SimulationConfig(
+        pdb_path=Path(test_fixed_pdb_file),
+        temperatures=temps,
+        steps=1500,
+        quick=True,
+        random_seed=7331,
         jitter_start=True,
         jitter_sigma_A=0.05,
-        velocity_reseed=True,
     )
-    shards2_dir = ws / "shards" / Path(sim2.run_dir).name
-    shards2 = emit_from_trajs_simple(
-        sim2.traj_files,
-        shards2_dir,
-        pdb=Path(test_fixed_pdb_file),
-        ref_dcd=None,
-        temperature=float(np.median(temps)),
-        seed_start=100,
-        stride=5,
-    )
+    shards2 = _emit(config2, seed_start=100)
 
     # Load shards and compute 2D CV bins occupancy
     def load_X(paths):

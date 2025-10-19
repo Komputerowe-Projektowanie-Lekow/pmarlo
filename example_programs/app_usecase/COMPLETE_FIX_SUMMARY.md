@@ -21,7 +21,7 @@
 
 **Root Cause**: `mlcolvar` requires `lightning` (pytorch-lightning) but it wasn't specified in the optional dependencies.
 
-**Solution**: 
+**Solution**:
 1. Added `lightning>=2.0` to `mlcv` optional dependencies in `pyproject.toml`
 2. Installed `lightning` and `mlcolvar` packages
 3. Updated poetry lock file
@@ -39,7 +39,7 @@
 - **Stationary Distribution**: Sums to 1.0 ✓
 - **Free Energy Surface**: Generated ✓
 
-### ✅ Test 2: DeepTICA Integration  
+### ✅ Test 2: DeepTICA Integration
 - **Status**: PASSED
 - **Dependencies**: mlcolvar 1.2.2, lightning 2.5.5, torch 2.7.0 ✓
 - **Workflow**: Analysis completes without errors ✓
@@ -143,17 +143,17 @@ if br.transition_matrix is None or br.transition_matrix.size == 0:
 ```
 
 ### Dependency Resolution
-**Before**: `mlcv = ["torch", "deeptime"]`  
+**Before**: `mlcv = ["torch", "deeptime"]`
 **After**: `mlcv = ["torch", "lightning", "deeptime"]`
 
 ---
 
 ## No Fallbacks
 
-✓ All errors are properly raised and reported  
-✓ No silent fallbacks introduced  
-✓ Failed analyses provide detailed error messages  
-✓ Debug artifacts saved for post-mortem analysis  
+✓ All errors are properly raised and reported
+✓ No silent fallbacks introduced
+✓ Failed analyses provide detailed error messages
+✓ Debug artifacts saved for post-mortem analysis
 
 ---
 
@@ -180,4 +180,3 @@ if br.transition_matrix is None or br.transition_matrix.size == 0:
 - ✅ Complete end-to-end workflow verified
 
 The pmarlo application is now fully functional and ready for use! 🎉
-

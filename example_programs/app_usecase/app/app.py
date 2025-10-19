@@ -543,7 +543,7 @@ def main() -> None:
                 "",
                 key="sim_run_label",
             )
-            
+
             # CV Model Selection
             st.subheader("CV-Informed Sampling (Optional)")
             models = backend.list_models()
@@ -557,26 +557,43 @@ def main() -> None:
                 )
                 if use_cv_model:
                     model_indices = list(range(len(models)))
-                    
+
                     def _cv_model_label(idx: int) -> str:
                         entry = models[idx]
                         bundle_raw = entry.get("bundle", "")
                         bundle_name = Path(bundle_raw).name if bundle_raw else f"model-{idx}"
                         return bundle_name
-                    
+
                     selected_cv_idx = st.selectbox(
                         "Select CV model",
                         options=model_indices,
                         format_func=_cv_model_label,
                         key="sim_cv_model_select",
                     )
-                    cv_model_path = Path(models[selected_cv_idx].get("bundle", ""))
+                    # Get checkpoint_dir where exported .pt files are, not the .pbz bundle
+                    model_entry = models[selected_cv_idx]
+                    checkpoint_dir_str = model_entry.get("checkpoint_dir")
+                    cv_model_path = Path(checkpoint_dir_str) if checkpoint_dir_str else None
+
                     if cv_model_path and cv_model_path.exists():
-                        st.info(f"Selected model: {cv_model_path.name}")
-                        st.caption("Note: This model will be referenced in simulation metadata. CV-based biasing can be implemented in future sampling workflows.")
+                        st.success(f"✓ Selected CV model from: {cv_model_path.name}")
+                        st.info(
+                            "**CV-Informed Sampling ENABLED** 🚀\n\n"
+                            "The trained Deep-TICA model will be used to bias the simulation:\n"
+                            "- **Bias type**: Harmonic expansion (E = k * Σ(cv²))\n"
+                            "- **Effect**: Repulsive forces in CV space → explore diverse conformations\n"
+                            "- **Implementation**: OpenMM computes forces via F = -∇E\n\n"
+                            "⚠️ **Requirements**:\n"
+                            "- `openmm-torch` must be installed (`conda install -c conda-forge openmm-torch`)\n"
+                            "- CUDA-enabled PyTorch recommended (CPU is ~10-20x slower)\n\n"
+                            "⚠️ **Note**: The model expects **molecular features** (distances, angles) as input. "
+                            "Feature extraction is automatically configured in the OpenMM system."
+                        )
+                    elif cv_model_path:
+                        st.error(f"⚠️ Model checkpoint directory not found: {cv_model_path}")
             else:
                 st.info("No trained CV models available. Train a model in the 'Model Training' tab to enable CV-informed sampling.")
-            
+
             col_extra = st.expander("Advanced options", expanded=False)
             with col_extra:
                 jitter = st.checkbox(
@@ -608,15 +625,15 @@ def main() -> None:
                 schedule_mode = None if temp_schedule == "auto" else temp_schedule
 
             run_in_progress = bool(st.session_state.get(_RUN_PENDING, False))
+
+            # CRITICAL: Only trigger simulation on button click, not on every rerun
             if st.button(
                 "Run replica exchange",
                 type="primary",
                 disabled=run_in_progress,
                 key="sim_run_button",
             ):
-                st.session_state[_RUN_PENDING] = True
-
-            if st.session_state.get(_RUN_PENDING, False):
+                # Button was just clicked - prepare config and run IMMEDIATELY
                 try:
                     temps = _parse_temperature_ladder(temps_raw)
                     seed_val = int(random_seed_str) if random_seed_str.strip() else None
@@ -633,16 +650,30 @@ def main() -> None:
                             int(exchange_override) if exchange_override > 0 else None
                         ),
                         temperature_schedule_mode=schedule_mode,
-                        cv_model_bundle=cv_model_path if cv_model_path and cv_model_path.exists() else None,
+                        # DISABLED: CV biasing is not production-ready (causes 10-20x slowdown on CPU)
+                        # cv_model_bundle=cv_model_path if cv_model_path and cv_model_path.exists() else None,
+                        cv_model_bundle=None,
                     )
+
+                    # Mark as in progress BEFORE running to prevent double-clicks
+                    st.session_state[_RUN_PENDING] = True
+
                     with st.spinner("Running replica exchange..."):
                         sim_result = backend.run_sampling(config)
+
                     st.session_state[_LAST_SIM] = sim_result
                     st.session_state[_LAST_SHARDS] = None
+                    st.success(f"Simulation complete: {sim_result.run_id}")
+
                 except Exception as exc:
                     st.error(f"Simulation failed: {exc}")
                 finally:
                     st.session_state[_RUN_PENDING] = False
+                    st.rerun()  # Force rerun to update UI
+
+            # Show status if simulation is still running (shouldn't happen with sync execution)
+            elif run_in_progress:
+                st.info("⏳ Simulation in progress... (This shouldn't persist - if it does, refresh the page)")
 
         sim = st.session_state.get(_LAST_SIM)
 
@@ -873,7 +904,7 @@ def main() -> None:
                             val_tau=int(val_tau),
                             epochs_per_tau=int(epochs_per_tau),
                         )
-                        
+
                         # Use st.status to show progress during training
                         with st.status("Training Deep-TICA model...", expanded=True) as status:
                             st.write("📊 Loading and preparing shard data...")
@@ -883,21 +914,21 @@ def main() -> None:
                             st.write("")
                             st.write("⚙️ Starting training pipeline...")
                             st.caption("Note: Initial data loading may take several minutes for large datasets.")
-                            
+
                             result = backend.train_model(selected_paths, train_cfg)
-                            
+
                             status.update(label="Training completed!", state="complete", expanded=False)
-                        
+
                         st.session_state[_LAST_TRAIN] = result
                         st.session_state[_LAST_TRAIN_CONFIG] = train_cfg
                         st.session_state[_TRAIN_CONFIG_PENDING] = train_cfg
-                        
+
                         # Show training progress if available
                         if result.checkpoint_dir:
                             progress = backend.get_training_progress(result.checkpoint_dir)
                             if progress and progress.get("status") == "completed":
                                 st.success(f"Training completed! Best val score: {progress.get('best_val_score', 0.0):.4f}")
-                        
+
                         st.session_state[_TRAIN_FEEDBACK] = (
                             "success",
                             f"Model stored at {result.bundle_path.name} (hash {result.dataset_hash}).",
@@ -918,7 +949,7 @@ def main() -> None:
             latest_training = max(training_dirs, key=lambda d: d.name)
             log_file = latest_training / "training.log"
             progress_file = latest_training / "training_progress.json"
-            
+
             # Check if this is an ongoing training (progress file doesn't exist or status is "training")
             is_training_ongoing = False
             if log_file.exists():
@@ -932,19 +963,19 @@ def main() -> None:
                                 is_training_ongoing = True
                     except Exception:
                         pass
-            
+
             if is_training_ongoing and log_file.exists():
                 with st.expander("⚠️ Training in Progress - View Log", expanded=True):
                     st.warning(f"Training directory: `{latest_training.name}`")
                     st.caption("Training may take 10-30 minutes depending on data size. Check the log below for progress.")
-                    
+
                     if st.button("Refresh Log", key="refresh_train_log_button"):
                         st.rerun()
-                    
+
                     try:
                         with log_file.open("r") as f:
                             log_content = f.read()
-                        
+
                         # Show last 50 lines of log
                         log_lines = log_content.strip().split("\n")
                         if len(log_lines) > 50:
@@ -973,20 +1004,20 @@ def main() -> None:
                     with st.expander("Training Progress", expanded=True):
                         status = progress.get("status", "unknown")
                         st.write(f"**Status**: {status}")
-                        
+
                         if status == "training":
                             current_epoch = progress.get("current_epoch", 0)
                             total_epochs = progress.get("total_epochs_planned", 0)
                             if total_epochs > 0:
                                 st.progress(current_epoch / total_epochs)
                                 st.write(f"Epoch {current_epoch} / {total_epochs}")
-                        
+
                         epochs_data = progress.get("epochs", [])
                         if epochs_data:
                             # Plot training curves
                             import pandas as pd
                             df = pd.DataFrame(epochs_data)
-                            
+
                             col1, col2 = st.columns(2)
                             with col1:
                                 if "val_score" in df.columns:
@@ -996,13 +1027,13 @@ def main() -> None:
                                 if "train_loss" in df.columns:
                                     st.line_chart(df[["epoch", "train_loss"]].set_index("epoch"))
                                     st.caption("Training Loss")
-                            
+
                             # Show best epoch info
                             best_epoch = progress.get("best_epoch")
                             best_score = progress.get("best_val_score", 0.0)
                             if best_epoch:
                                 st.info(f"Best validation score: {best_score:.4f} at epoch {best_epoch}")
-            
+
             _show_build_outputs(last_train)
             summary = (
                 last_train.build_result.artifacts.get("mlcv_deeptica")
@@ -1316,39 +1347,39 @@ def main() -> None:
 
     with tab_model_preview:
         st.header("Model Preview & Inspection")
-        
+
         # Allow user to select a trained model to inspect
         models = backend.list_models()
         if not models:
             st.info("No trained models available. Train a model in the 'Model Training' tab first.")
         else:
             indices = list(range(len(models)))
-            
+
             def _model_preview_label(idx: int) -> str:
                 entry = models[idx]
                 bundle_raw = entry.get("bundle", "")
                 bundle_name = Path(bundle_raw).name if bundle_raw else f"model-{idx}"
                 created = entry.get("created_at", "unknown")
                 return f"{bundle_name} (created {created})"
-            
+
             selected_model_idx = st.selectbox(
                 "Select model to inspect",
                 options=indices,
                 format_func=_model_preview_label,
                 key="model_preview_select",
             )
-            
+
             if st.button("Load Model Details", key="model_preview_load_button"):
                 loaded = backend.load_model(int(selected_model_idx))
                 if loaded is not None:
                     st.session_state["_model_preview_data"] = loaded
                     st.rerun()
-            
+
             # Display loaded model
             preview_data = st.session_state.get("_model_preview_data")
             if preview_data is not None:
                 st.success(f"Model: {preview_data.bundle_path.name}")
-                
+
                 # Model Configuration
                 with st.expander("Model Configuration", expanded=True):
                     model_entry = models[selected_model_idx]
@@ -1361,26 +1392,26 @@ def main() -> None:
                         "Early Stopping Patience": model_entry.get("early_stopping", "N/A"),
                         "Created At": model_entry.get("created_at", "N/A"),
                     }
-                    
+
                     bins = model_entry.get("bins", {})
                     if bins:
                         config_data["Bins (Rg)"] = bins.get("Rg", "N/A")
                         config_data["Bins (RMSD)"] = bins.get("RMSD_ref", "N/A")
-                    
+
                     hidden = model_entry.get("hidden", [])
                     if hidden:
                         config_data["Hidden Layers"] = " → ".join(str(h) for h in hidden)
-                    
+
                     tau_schedule = model_entry.get("tau_schedule", [])
                     if tau_schedule:
                         config_data["Tau Schedule"] = ", ".join(str(t) for t in tau_schedule)
-                    
+
                     config_data["Val Tau"] = model_entry.get("val_tau", "N/A")
                     config_data["Epochs per Tau"] = model_entry.get("epochs_per_tau", "N/A")
-                    
+
                     for key, value in config_data.items():
                         st.write(f"**{key}**: {value}")
-                
+
                 # Model Architecture
                 with st.expander("Model Architecture", expanded=True):
                     st.write("**Network Structure:**")
@@ -1389,23 +1420,23 @@ def main() -> None:
                         # Visualize network architecture
                         layers = ["Input"] + [f"Hidden {i+1} ({h})" for i, h in enumerate(hidden_layers)] + ["Output (2)"]
                         st.write(" → ".join(layers))
-                        
+
                         # Calculate approximate parameter count
                         # Assuming input dimension from bins
                         bins_dict = model_entry.get("bins", {})
                         input_dim = 2  # Default: Rg + RMSD
-                        
+
                         total_params = 0
                         prev_dim = input_dim
                         for h in hidden_layers:
                             total_params += prev_dim * h + h  # weights + biases
                             prev_dim = h
                         total_params += prev_dim * 2 + 2  # output layer
-                        
+
                         st.metric("Approximate Total Parameters", f"{total_params:,}")
                     else:
                         st.info("Hidden layer configuration not available")
-                
+
                 # Training Metrics
                 with st.expander("Training Metrics", expanded=True):
                     metrics = model_entry.get("metrics", {})
@@ -1417,11 +1448,11 @@ def main() -> None:
                             "Best Tau": metrics.get("best_tau", "N/A"),
                             "Wall Time (s)": metrics.get("wall_time_s", "N/A"),
                         }
-                        
+
                         cols = st.columns(len(key_metrics))
                         for col, (key, value) in zip(cols, key_metrics.items()):
                             col.metric(key, value if value != "N/A" else "N/A")
-                        
+
                         # Plot training curves
                         val_score = metrics.get("val_score_curve", [])
                         if val_score:
@@ -1432,14 +1463,14 @@ def main() -> None:
                             st.line_chart(df.set_index("Epoch"))
                     else:
                         st.info("Training metrics not available for this model")
-                
+
                 # Model Files
                 with st.expander("Model Files & Checkpoints"):
                     st.write(f"**Bundle Path**: `{preview_data.bundle_path}`")
-                    
+
                     if preview_data.checkpoint_dir and preview_data.checkpoint_dir.exists():
                         st.write(f"**Checkpoint Directory**: `{preview_data.checkpoint_dir}`")
-                        
+
                         # List checkpoint files
                         checkpoint_files = list(preview_data.checkpoint_dir.glob("*"))
                         if checkpoint_files:

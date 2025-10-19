@@ -1009,6 +1009,29 @@ def run_replica_exchange(
         if random_state is not None
         else (int(random_seed) if random_seed is not None else None)
     )
+
+    # Console output for visibility in Streamlit
+    print("\n" + "=" * 80, flush=True)
+    print("REPLICA EXCHANGE SIMULATION STARTING", flush=True)
+    print("=" * 80, flush=True)
+    print(f"Number of replicas: {len(temperatures)}", flush=True)
+    print(f"Temperature ladder: {temperatures}", flush=True)
+    print(f"Total steps: {total_steps}", flush=True)
+    print(f"Output directory: {remd_out}", flush=True)
+    print(f"Random seed: {_seed}", flush=True)
+    print("=" * 80 + "\n", flush=True)
+
+    # Also log for file-based logging
+    logger.info("=" * 80)
+    logger.info("REPLICA EXCHANGE SIMULATION STARTING")
+    logger.info("=" * 80)
+    logger.info(f"Number of replicas: {len(temperatures)}")
+    logger.info(f"Temperature ladder: {temperatures}")
+    logger.info(f"Total steps: {total_steps}")
+    logger.info(f"Output directory: {remd_out}")
+    logger.info(f"Random seed: {_seed}")
+    logger.info("=" * 80)
+
     remd = ReplicaExchange.from_config(
         RemdConfig(
             pdb_file=str(pdb_file),
@@ -1032,11 +1055,13 @@ def run_replica_exchange(
         remd.cv_model_path = str(cv_model_path)
         if cv_scaler_mean is not None:
             import numpy as np
+
             remd.cv_scaler_mean = np.asarray(cv_scaler_mean, dtype=np.float64)
         if cv_scaler_scale is not None:
             import numpy as np
+
             remd.cv_scaler_scale = np.asarray(cv_scaler_scale, dtype=np.float64)
-    
+
     remd.plan_reporter_stride(
         total_steps=int(total_steps), equilibration_steps=int(equil), target_frames=5000
     )
@@ -1059,6 +1084,27 @@ def run_replica_exchange(
             )
     # Optional unified progress callback (many alias names accepted)
     cb = coerce_progress_callback(kwargs)
+
+    # Console output
+    print("\n" + "=" * 80, flush=True)
+    print("PHASE 1/2: RUNNING MD SIMULATION", flush=True)
+    print("=" * 80, flush=True)
+    print(f"This will run {len(temperatures)} parallel replicas", flush=True)
+    print(f"Each replica will run for {total_steps} MD steps", flush=True)
+    print(f"Equilibration: {equil} steps", flush=True)
+    print("Press Ctrl+C to cancel the simulation", flush=True)
+    print("=" * 80 + "\n", flush=True)
+
+    # Also log
+    logger.info("=" * 80)
+    logger.info("PHASE 1/2: RUNNING MD SIMULATION")
+    logger.info("=" * 80)
+    logger.info(f"This will run {len(temperatures)} parallel replicas")
+    logger.info(f"Each replica will run for {total_steps} MD steps")
+    logger.info(f"Equilibration: {equil} steps")
+    logger.info("Press Ctrl+C to cancel the simulation")
+    logger.info("=" * 80)
+
     remd.run_simulation(
         total_steps=int(total_steps),
         equilibration_steps=int(equil),
@@ -1067,10 +1113,54 @@ def run_replica_exchange(
         cancel_token=kwargs.get("cancel_token"),
     )
 
+    # Console output
+    print("\n" + "=" * 80, flush=True)
+    print("PHASE 1/2: MD SIMULATION COMPLETE", flush=True)
+    print("=" * 80, flush=True)
+    print(f"Generated {len(remd.trajectory_files)} replica trajectories", flush=True)
+    print("=" * 80 + "\n", flush=True)
+
+    # Also log
+    logger.info("=" * 80)
+    logger.info("PHASE 1/2: MD SIMULATION COMPLETE")
+    logger.info("=" * 80)
+    logger.info(f"Generated {len(remd.trajectory_files)} replica trajectories")
+    logger.info("=" * 80)
+
     # Demultiplex best-effort
+    # Console output
+    print("\n" + "=" * 80, flush=True)
+    print("PHASE 2/2: DEMULTIPLEXING TRAJECTORIES", flush=True)
+    print("=" * 80, flush=True)
+    print("Extracting frames at target temperature (300K)", flush=True)
+    print("This creates a single trajectory from replica exchanges", flush=True)
+    print(
+        "⚠️  This phase cannot be cancelled with Ctrl+C (runs to completion)", flush=True
+    )
+    print("=" * 80 + "\n", flush=True)
+
+    # Also log
+    logger.info("=" * 80)
+    logger.info("PHASE 2/2: DEMULTIPLEXING TRAJECTORIES")
+    logger.info("=" * 80)
+    logger.info("Extracting frames at target temperature (300K)")
+    logger.info("This creates a single trajectory from replica exchanges")
+    logger.info("This phase cannot be cancelled with Ctrl+C (runs to completion)")
+    logger.info("=" * 80)
+
     demuxed = remd.demux_trajectories(
         target_temperature=300.0, equilibration_steps=int(equil), progress_callback=cb
     )
+
+    # Console output
+    print("\n" + "=" * 80, flush=True)
+    print("PHASE 2/2: DEMULTIPLEXING COMPLETE", flush=True)
+    print("=" * 80 + "\n", flush=True)
+
+    # Also log
+    logger.info("=" * 80)
+    logger.info("PHASE 2/2: DEMULTIPLEXING COMPLETE")
+    logger.info("=" * 80)
     if demuxed:
         try:
             from pmarlo.io.trajectory_reader import MDTrajReader as _MDTReader
@@ -1088,10 +1178,47 @@ def run_replica_exchange(
             # Large runs may have minor segment repairs or stride mismatches.
             threshold = max(1, expected // 5)  # 20% of expected frames
             if int(nframes) >= threshold:
+                # Console output
+                print("\n" + "=" * 80, flush=True)
+                print("REPLICA EXCHANGE COMPLETE - SUCCESS", flush=True)
+                print("=" * 80, flush=True)
+                print(f"Returning demultiplexed trajectory: {demuxed}", flush=True)
+                print(f"Total frames in demuxed trajectory: {nframes}", flush=True)
+                print("=" * 80 + "\n", flush=True)
+
+                # Also log
+                logger.info("=" * 80)
+                logger.info("REPLICA EXCHANGE COMPLETE - SUCCESS")
+                logger.info("=" * 80)
+                logger.info(f"Returning demultiplexed trajectory: {demuxed}")
+                logger.info(f"Total frames in demuxed trajectory: {nframes}")
+                logger.info("=" * 80)
                 return [str(demuxed)], [300.0]
         except Exception:
             pass
 
+    # Console output
+    print("\n" + "=" * 80, flush=True)
+    print(
+        "REPLICA EXCHANGE COMPLETE - FALLBACK TO PER-REPLICA TRAJECTORIES", flush=True
+    )
+    print("=" * 80, flush=True)
+    print("Demultiplexing did not produce enough frames", flush=True)
+    print(
+        f"Returning {len(remd.trajectory_files)} per-replica trajectories instead",
+        flush=True,
+    )
+    print("=" * 80 + "\n", flush=True)
+
+    # Also log
+    logger.info("=" * 80)
+    logger.info("REPLICA EXCHANGE COMPLETE - FALLBACK TO PER-REPLICA TRAJECTORIES")
+    logger.info("=" * 80)
+    logger.info("Demultiplexing did not produce enough frames")
+    logger.info(
+        f"Returning {len(remd.trajectory_files)} per-replica trajectories instead"
+    )
+    logger.info("=" * 80)
     traj_files = [str(f) for f in remd.trajectory_files]
     return traj_files, temperatures
 

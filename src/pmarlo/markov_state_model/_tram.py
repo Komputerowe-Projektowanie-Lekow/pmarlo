@@ -27,8 +27,8 @@ class TRAMMixin:
         if len(self.temperatures) <= 1:
             raise ValueError("TRAM MSM requires at least two ensembles")
 
-        from deeptime.markov.msm import TRAM, TRAMDataset  # type: ignore
         import numpy as _np
+        from deeptime.markov.msm import TRAM, TRAMDataset  # type: ignore
 
         bias = getattr(self, "bias_matrices", None)
         if bias is None:
