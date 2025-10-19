@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from time import perf_counter
-from typing import Optional, Sequence
+from types import TracebackType
+from typing import Literal, Optional, Sequence
 
 BORDER = "=" * 80
 
@@ -134,7 +135,12 @@ class StageTimer:
             self.logger.info(self.start_message)
         return self
 
-    def __exit__(self, exc_type, exc, _tb) -> bool:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        _tb: TracebackType | None,
+    ) -> Literal[False]:
         self.elapsed = perf_counter() - self._start
         status = "completed" if exc is None else "failed"
         message = f"{self.label} {status} in {format_duration(self.elapsed)}."

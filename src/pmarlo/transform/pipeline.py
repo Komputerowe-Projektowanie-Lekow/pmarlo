@@ -12,7 +12,7 @@ import logging
 from collections import defaultdict
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from pmarlo.utils.logging_utils import (
     StageTimer,
@@ -129,7 +129,7 @@ class Pipeline:
         logger.info(f"  Checkpoints enabled: {self.enable_checkpoints}")
 
         if self.use_replica_exchange:
-            stage_sequence = (
+            stage_sequence: tuple[str, ...] = (
                 "Protein Preparation",
                 "System Setup",
                 "Simulation",
@@ -149,7 +149,7 @@ class Pipeline:
 
     def _build_transform_plan(self) -> TransformPlan:
         """Build a transform plan based on pipeline configuration."""
-        steps = []
+        steps: list[TransformStep] = []
 
         # Protein preparation
         steps.append(
@@ -207,7 +207,7 @@ class Pipeline:
     def _stage_header(self, label: str) -> str:
         index = self._stage_index_map.get(label)
         total = self._stage_total if index is not None else None
-        return format_stage_header(label, index=index, total=total)
+        return str(format_stage_header(label, index=index, total=total))
 
     def setup_protein(self, ph: float = 7.0) -> Protein:
         """
@@ -471,7 +471,7 @@ class Pipeline:
                 return label
             return f"Stage {index}/{stage_total}: {label}"
 
-        def _progress(event: str, payload: Dict[str, Any]) -> None:
+        def _progress(event: str, payload: Mapping[str, Any]) -> None:
             nonlocal current_stage
             step_name = payload.get("step_name")
             if not isinstance(step_name, str):
