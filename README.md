@@ -31,8 +31,8 @@ cd pmarlo
 pip install -e .
 ```
 
-- Python: 3.11–3.12
-- Optional: `pip install pmarlo[fixer]` to include `pdbfixer` (only available on Python < 3.12)
+- Python: 3.10–3.13
+- Optional: `pip install pmarlo[fixer]` to include code formatting tools (black, isort, ruff) and `pdbfixer` (pdbfixer only available on Python < 3.12)
 - ML CVs (Deep-TICA): `pip install pmarlo[mlcv]` to enable training with
   `mlcolvar` + `torch`. For deployment in PLUMED, ensure PLUMED ≥ 2.9 is built
   with the `pytorch` module so `PYTORCH_MODEL` can load TorchScript models.

@@ -1247,9 +1247,7 @@ class ReplicaExchange:
         print("Finalizing trajectories and saving statistics...", flush=True)
         print("=" * 80 + "\n", flush=True)
         if production_elapsed > 0.0:
-            prod_summary = (
-                f"Production duration: {format_duration(production_elapsed)}"
-            )
+            prod_summary = f"Production duration: {format_duration(production_elapsed)}"
             print(prod_summary, flush=True)
             logger.info(prod_summary)
 

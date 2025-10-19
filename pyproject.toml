@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 name            = "pmarlo"
 description     = "Protein Markov State Model Analysis with Replica Exchange"
 readme          = "README.md"
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.10,<3.14"
 license = { file = "LICENSE" }
 
 
@@ -101,7 +101,7 @@ url = "https://download.pytorch.org/whl/cpu"
 priority = "explicit"
 
 [tool.poetry.dependencies]
-python = ">=3.10,<3.13"
+python = ">=3.10,<3.14"
 # Core dependencies (keep in sync with [project] section)
 numpy = ">=1.24,<2.4"
 scipy = ">=1.10,<2.0"
@@ -158,7 +158,7 @@ sphinx-rtd-theme = "^2.0"
 # ───────────────────────── Formatting & linting ───────────────────────
 [tool.black]
 line-length    = 88
-target-version = ["py310", "py311", "py312"]
+target-version = ["py310", "py311", "py312", "py313"]
 include        = '\.pyi?$'
 extend-exclude = '''
 /(
@@ -181,7 +181,7 @@ known_first_party  = ["pmarlo"]
 [tool.flake8]
 max-line-length = 120
 max-complexity = 12
-extend-ignore = ["E203", "W503"]
+extend-ignore = ["E501", "E203", "W503"]
 exclude = [".git", ".tox", ".venv", "build", "dist", "__pycache__"]
 per-file-ignores = [
   "tests/**/*.py: E402",

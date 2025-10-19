@@ -11,16 +11,16 @@ simulation, and Markov state model analysis using the transform runner system.
 import logging
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional
 from time import perf_counter
+from typing import Any, Dict, List, Optional
 
 from pmarlo.utils.logging_utils import (
+    StageTimer,
     announce_stage_complete,
     announce_stage_start,
     emit_banner,
-    format_stage_header,
     format_duration,
-    StageTimer,
+    format_stage_header,
 )
 from pmarlo.utils.path_utils import ensure_directory
 
@@ -338,9 +338,7 @@ class Pipeline:
         with StageTimer("MSM analysis setup", logger=logger) as timer:
             self.markov_state_model = MarkovStateModel(output_dir=str(msm_output_dir))
 
-            summary = (
-                f"MSM analysis initialised for {self.n_states} states -> {msm_output_dir}"
-            )
+            summary = f"MSM analysis initialised for {self.n_states} states -> {msm_output_dir}"
             print(summary, flush=True)
             logger.info(summary)
 
@@ -459,9 +457,7 @@ class Pipeline:
             stage_map[step.name] = label
             stage_last_step[label] = step.name
 
-        stage_indices = {
-            label: idx + 1 for idx, label in enumerate(stage_order)
-        }
+        stage_indices = {label: idx + 1 for idx, label in enumerate(stage_order)}
         stage_total = len(stage_order)
         current_stage: str | None = None
         stage_duration_totals: Dict[str, float] = defaultdict(float)
@@ -506,7 +502,11 @@ class Pipeline:
                         total=stage_total,
                     )
                     current_stage = label
-                message = f"{stage_display} - {step_display}" if stage_display else step_display
+                message = (
+                    f"{stage_display} - {step_display}"
+                    if stage_display
+                    else step_display
+                )
                 print(f"{message}...", flush=True)
                 logger.info(f"Entering transform step: {message}")
             elif event == "aggregate_step_end":
@@ -615,9 +615,7 @@ class Pipeline:
             if replica_info:
                 traj_files = replica_info.get("trajectory_files", [])
                 out_dir = replica_info.get("output_dir")
-                summary = (
-                    f"Replica exchange produced {len(traj_files)} trajectories -> {out_dir}"
-                )
+                summary = f"Replica exchange produced {len(traj_files)} trajectories -> {out_dir}"
                 print(summary, flush=True)
                 logger.info(summary)
 
@@ -635,9 +633,7 @@ class Pipeline:
             if msm_info:
                 n_states = msm_info.get("n_states", "unknown")
                 out_dir = msm_info.get("output_dir")
-                summary = (
-                    f"MSM analysis available with {n_states} states -> {out_dir}"
-                )
+                summary = f"MSM analysis available with {n_states} states -> {out_dir}"
                 print(summary, flush=True)
                 logger.info(summary)
 
@@ -645,7 +641,11 @@ class Pipeline:
 
         except Exception as e:
             logger.error(f"Pipeline failed: {e}")
-            if tracemalloc_mod is not None and tracemalloc_started and tracemalloc_mod.is_tracing():
+            if (
+                tracemalloc_mod is not None
+                and tracemalloc_started
+                and tracemalloc_mod.is_tracing()
+            ):
                 tracemalloc_mod.stop()
             emit_banner(
                 format_stage_header("PMARLO PIPELINE FAILED"),

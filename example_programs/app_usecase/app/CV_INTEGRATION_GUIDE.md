@@ -101,17 +101,17 @@ If CV1 represents RMSD from reference structure:
 class CVBiasPotential(nn.Module):
     def __init__(self, cv_model, scaler_mean, scaler_scale, bias_strength=10.0):
         # Wraps Deep-TICA model with bias potential
-        
+
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         # 1. Scale features
         scaled = (features - self.scaler_mean) / self.scaler_scale
-        
+
         # 2. Compute CVs
         cvs = self.cv_model(scaled)
-        
+
         # 3. Apply bias
         energy = self.bias_strength * torch.sum(cvs ** 2)
-        
+
         return energy  # OpenMM computes F = -∇energy
 ```
 
@@ -162,7 +162,7 @@ The CVBiasPotential expects **molecular features** (distances, angles, dihedrals
   ```bash
   # Check current setup
   python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
-  
+
   # Install CUDA version (if needed)
   # See: https://pytorch.org/get-started/locally/
   ```
@@ -171,7 +171,7 @@ The CVBiasPotential expects **molecular features** (distances, angles, dihedrals
 
 | Configuration | Speed vs Unbiased MD |
 |--------------|----------------------|
-| GPU (CUDA) | ~1.2-2x slower | 
+| GPU (CUDA) | ~1.2-2x slower |
 | CPU only | ~10-20x slower |
 
 **Why slower?**: Each MD step requires:
@@ -294,4 +294,3 @@ For questions about CV-informed sampling:
 - Check logs in `app_output/sims/*/replica_exchange/`
 - Review training logs in `app_output/models/training-*/training.log`
 - Consult `CV_REQUIREMENTS.md` for setup issues
-

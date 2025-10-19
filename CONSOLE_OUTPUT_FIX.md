@@ -180,4 +180,3 @@ Now you'll clearly see:
 - You'll get confirmation messages with file paths and statistics
 
 The console output is now **comprehensive, clear, and impossible to miss**!
-

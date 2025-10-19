@@ -147,6 +147,3 @@ Before re-enabling CV biasing:
 - **Current**: CV biasing DISABLED (2025-10-19)
 - **Blocker**: Feature extraction not implemented
 - **Priority**: P1 (blocks production use of CV-informed sampling)
-
-
-

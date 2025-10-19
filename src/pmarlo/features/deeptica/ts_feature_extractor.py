@@ -331,9 +331,7 @@ class TorchscriptFeatureExtractor(nn.Module):
         vec = pos.index_select(0, idx_j) - pos.index_select(0, idx_i)
         wrapped = self._apply_minimum_image(vec, box, inv_box)
         if self.distance_pbc_mask.numel() > 0:
-            disp = torch.where(
-                self.distance_pbc_mask.unsqueeze(-1), wrapped, vec
-            )
+            disp = torch.where(self.distance_pbc_mask.unsqueeze(-1), wrapped, vec)
         else:
             disp = wrapped
         squared = torch.sum(disp * disp, dim=-1)

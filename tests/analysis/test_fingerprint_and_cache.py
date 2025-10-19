@@ -15,7 +15,6 @@ from example_programs.app_usecase.app.backend import (
 )
 from pmarlo.data.shard import write_shard
 
-
 _SEGMENT_COUNTER = count()
 
 

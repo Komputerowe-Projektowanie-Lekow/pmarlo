@@ -35,7 +35,7 @@ The lag isn't the simulation persisting - it's the demultiplexing phase running 
 
 ## Solution Implemented
 
-I've added **comprehensive console output using print statements** throughout the simulation pipeline so you can see exactly what's happening in your Streamlit console at each step. 
+I've added **comprehensive console output using print statements** throughout the simulation pipeline so you can see exactly what's happening in your Streamlit console at each step.
 
 **Why print() instead of logging?**
 - Python's `logger` output may not appear in the Streamlit console
@@ -175,4 +175,3 @@ If you want demultiplexing to be cancellable, you would need to:
 3. Handle partial trajectory files gracefully
 
 This wasn't implemented because demux is typically fast compared to simulation.
-
