@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Sequence, TypeVar
-
-ErrorType = TypeVar("ErrorType", bound=Exception)
+from typing import Any, Sequence
 
 
 def _format_context(context: str | None) -> str:
@@ -17,7 +15,7 @@ def normalize_exchange_mapping(
     *,
     expected_size: int | None = None,
     context: str | None = None,
-    error_cls: type[ErrorType] = ValueError,
+    error_cls: type[Exception] = ValueError,
     repair_on_duplicates: bool = False,
 ) -> list[int]:
     """Validate and normalise a single exchange mapping.
