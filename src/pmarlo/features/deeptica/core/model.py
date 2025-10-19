@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import types
 from typing import Any, Iterable
 
 import numpy as np
@@ -106,6 +107,48 @@ def override_core_mlp(
         core.nn = _nn.Sequential(*modules)  # type: ignore[attr-defined]
 
 
+def _ensure_forward_callable(module: torch.nn.Module) -> torch.nn.Module:
+    """Ensure ``module`` exposes a usable ``forward`` implementation.
+
+    Some DeepTICA implementations rely on a backing ``.nn``/``.net`` attribute
+    without overriding :meth:`torch.nn.Module.forward`. That breaks downstream
+    code that invokes the module directly. We adapt those modules once here so
+    all later invocations behave like a standard ``nn.Module``.
+    """
+
+    base_forward = torch.nn.Module.forward  # type: ignore[attr-defined]
+    module_forward = module.__class__.forward  # type: ignore[attr-defined]
+    if module_forward is not base_forward:
+        return module
+
+    delegate_attr: str | None = None
+    for attr in ("net", "nn"):
+        candidate = getattr(module, attr, None)
+        if isinstance(candidate, torch.nn.Module) or callable(candidate):
+            delegate_attr = attr
+            break
+
+    if delegate_attr is None:
+        raise TypeError(
+            f"{module.__class__.__name__} does not implement forward() "
+            "and exposes no callable 'net'/'nn' attribute."
+        )
+
+    def _forward(self, x, attr=delegate_attr):
+        target = getattr(self, attr, None)
+        if isinstance(target, torch.nn.Module):
+            return target(x)
+        if callable(target):
+            return target(x)
+        raise TypeError(
+            f"{self.__class__.__name__}.{attr} is not callable, "
+            "cannot synthesize forward()."
+        )
+
+    module.forward = types.MethodType(_forward, module)
+    return module
+
+
 def apply_output_whitening(
     net: torch.nn.Module,
     Z: np.ndarray,
@@ -173,11 +216,15 @@ def construct_deeptica_core(cfg: Any, scaler) -> tuple[Any, list[int]]:
     in_dim = int(np.asarray(getattr(scaler, "mean_", []), dtype=np.float64).shape[0])
     layers = [in_dim, *resolve_hidden_layers(cfg), int(getattr(cfg, "n_out", 2))]
     activation_name = str(getattr(cfg, "activation", "gelu")).lower().strip() or "gelu"
-    
+
     # Use a safe activation for mlcolvar (it doesn't support all activations like gelu)
     # We'll override the network immediately after with our custom activation support
-    safe_activation = "relu" if activation_name not in {"relu", "elu", "tanh", "softplus"} else activation_name
-    
+    safe_activation = (
+        "relu"
+        if activation_name not in {"relu", "elu", "tanh", "softplus"}
+        else activation_name
+    )
+
     core = DeepTICA(
         layers=layers,
         n_cvs=int(getattr(cfg, "n_out", 2)),
@@ -192,6 +239,7 @@ def construct_deeptica_core(cfg: Any, scaler) -> tuple[Any, list[int]]:
         layer_norm_hidden=bool(getattr(cfg, "layer_norm_hidden", False)),
     )
     strip_batch_norm(core)
+    core = _ensure_forward_callable(core)
     return core, layers
 
 

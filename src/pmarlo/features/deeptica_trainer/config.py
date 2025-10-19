@@ -6,7 +6,6 @@ from typing import Any, Iterable, List
 
 from pmarlo.ml.deeptica.trainer import CurriculumConfig
 
-
 __all__ = ["TrainerConfig", "resolve_curriculum"]
 
 

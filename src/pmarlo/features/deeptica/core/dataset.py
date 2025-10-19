@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from inspect import signature
 from typing import Any, Optional, Sequence
 
 import numpy as np
-from inspect import signature
-
 from mlcolvar.data import DictDataset, DictModule  # type: ignore
 
 __all__ = ["DatasetBundle", "create_dataset", "create_loaders", "split_sequences"]
@@ -44,11 +43,11 @@ def create_loaders(dataset: Any, cfg: Any) -> DatasetBundle:
     splits = {"train": float(max(0.0, 1.0 - val_frac)), "val": float(val_frac)}
 
     dict_module = _instantiate_dict_module(dataset, batch_size, num_workers, splits)
-    
+
     # Setup the module before accessing dataloaders (required by Lightning)
     if hasattr(dict_module, "setup"):
         dict_module.setup()
-    
+
     train_loader = dict_module.train_dataloader()
     val_loader = dict_module.val_dataloader()
 
@@ -92,11 +91,11 @@ def _instantiate_dict_module(
         batch_size=batch_size,
         shuffle=True,
     )
-    
+
     # Add num_workers only if supported
     if "num_workers" in params:
         kwargs["num_workers"] = num_workers
-    
+
     if "lengths" in params:
         # Convert splits dict to lengths tuple (train_frac, val_frac)
         train_frac = splits.get("train", 0.9)

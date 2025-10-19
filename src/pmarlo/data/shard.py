@@ -95,7 +95,9 @@ def write_shard(
     exchange_window_id = int(source_dict.get("exchange_window_id", 0))
 
     column_order = tuple(cvs.keys())
-    ordered_periodic = [bool((periodic or {}).get(name, False)) for name in column_order]
+    ordered_periodic = [
+        bool((periodic or {}).get(name, False)) for name in column_order
+    ]
 
     t_kelvin = float(temperature)
     X = _stack_columns(cvs)
@@ -207,9 +209,11 @@ def read_shard(json_path: Path) -> tuple[ShardDetails, np.ndarray, np.ndarray | 
                 dtraj = arr
 
     source = dict(shard.meta.provenance)
-    return ShardDetails(meta=shard.meta, source=source), shard.X.astype(
-        np.float64, copy=False
-    ), dtraj
+    return (
+        ShardDetails(meta=shard.meta, source=source),
+        shard.X.astype(np.float64, copy=False),
+        dtraj,
+    )
 
 
 def _sha256_bytes(*arrays: np.ndarray) -> str:

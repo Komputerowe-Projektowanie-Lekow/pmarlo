@@ -10,7 +10,7 @@ This document summarizes all fixes applied to make the pmarlo application fully 
 
 ### 1. ✅ Analysis Guardrail Failure (Critical)
 
-**Error**: 
+**Error**:
 ```
 ValueError: Analysis guardrails failed: [{'code': 'total_pairs_lt_5000', 'actual': 0}]
 ```
@@ -32,7 +32,7 @@ ModuleNotFoundError: No module named 'mlcolvar'
 
 **Cause**: `lightning` (pytorch-lightning) not specified in optional dependencies
 
-**Fix**: 
+**Fix**:
 - Added `lightning>=2.0` to `pyproject.toml` mlcv extras
 - Installed required packages: `mlcolvar==1.2.2`, `lightning==2.5.5`
 
@@ -52,7 +52,7 @@ ModuleNotFoundError: No module named 'mlcolvar'
 ### ✅ DeepTICA Integration
 ```bash
 ✓ mlcolvar 1.2.2 installed
-✓ lightning 2.5.5 installed  
+✓ lightning 2.5.5 installed
 ✓ torch 2.7.0+cpu installed
 ✓ Analysis workflow completes
 ```
@@ -203,9 +203,9 @@ python -c "import mlcolvar, lightning, torch; print('✓ All DeepTICA dependenci
 
 ## No Fallbacks Policy
 
-✅ **All errors are properly raised**  
-✅ **No silent fallbacks introduced**  
-✅ **Debug artifacts saved for troubleshooting**  
+✅ **All errors are properly raised**
+✅ **No silent fallbacks introduced**
+✅ **Debug artifacts saved for troubleshooting**
 ✅ **Detailed error messages provided**
 
 ---
@@ -246,4 +246,3 @@ python -c "import mlcolvar, lightning, torch; print('✓ All DeepTICA dependenci
 - ✅ Complete workflow verified
 
 **The pmarlo application is now fully functional!** 🎉
-

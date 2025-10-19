@@ -84,10 +84,10 @@ def deeptica_workflow(
     pytest.importorskip("mlcolvar")
     torch = pytest.importorskip("torch")
 
+    import pmarlo.ml.deeptica.trainer as trainer_mod
     from pmarlo.features.deeptica import DeepTICAConfig
     from pmarlo.features.deeptica.core.inputs import prepare_features
     from pmarlo.features.deeptica.core.trainer_api import train_deeptica_pipeline
-    import pmarlo.ml.deeptica.trainer as trainer_mod
 
     cfg = DeepTICAConfig(
         lag=int(deeptica_schedule[-1]),
@@ -219,16 +219,26 @@ def build_result_payload(deeptica_workflow: Dict[str, Any], simple_msm: Dict[str
 # ---------------------------------------------------------------------------
 
 
-def test_shard_feature_matrix_shapes(shard_arrays, concatenated_features, shard_metadata):
-    assert concatenated_features.shape[0] == sum(block.shape[0] for block in shard_arrays)
+def test_shard_feature_matrix_shapes(
+    shard_arrays, concatenated_features, shard_metadata
+):
+    assert concatenated_features.shape[0] == sum(
+        block.shape[0] for block in shard_arrays
+    )
     assert concatenated_features.shape[1] == shard_arrays[0].shape[1]
-    assert all(int(meta["stop"]) - int(meta["start"]) == block.shape[0] for meta, block in zip(shard_metadata, shard_arrays))
+    assert all(
+        int(meta["stop"]) - int(meta["start"]) == block.shape[0]
+        for meta, block in zip(shard_metadata, shard_arrays)
+    )
 
 
 def test_shard_metadata_frames_consistency(shard_metadata, concatenated_features):
     total_meta = shard_metadata[-1]["stop"] if shard_metadata else 0
     assert total_meta == concatenated_features.shape[0]
-    assert sum(meta["frames_loaded"] for meta in shard_metadata) == concatenated_features.shape[0]
+    assert (
+        sum(meta["frames_loaded"] for meta in shard_metadata)
+        == concatenated_features.shape[0]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +265,11 @@ def test_lagged_pairs_shape_multiple_shards(shard_arrays, deeptica_schedule):
     counts = [
         int(((info.idx_t >= start) & (info.idx_t < stop)).sum())
         for start, stop in zip(
-            [0, shard_arrays[0].shape[0], shard_arrays[0].shape[0] + shard_arrays[1].shape[0]],
+            [
+                0,
+                shard_arrays[0].shape[0],
+                shard_arrays[0].shape[0] + shard_arrays[1].shape[0],
+            ],
             [
                 shard_arrays[0].shape[0],
                 shard_arrays[0].shape[0] + shard_arrays[1].shape[0],
@@ -396,7 +410,11 @@ def test_stationary_distribution_is_left_eigenvector(simple_msm):
 def test_detailed_balance_if_reversible(simple_msm):
     T = simple_msm["T"]
     pi = simple_msm["pi"]
-    assert np.allclose(np.outer(pi, np.ones_like(pi)) * T, np.outer(pi, np.ones_like(pi)) * T.T, atol=1e-6)
+    assert np.allclose(
+        np.outer(pi, np.ones_like(pi)) * T,
+        np.outer(pi, np.ones_like(pi)) * T.T,
+        atol=1e-6,
+    )
 
 
 def test_msm_active_states_trimming(simple_msm):
@@ -411,7 +429,7 @@ def test_trimmed_counts_is_strongly_connected(simple_msm):
     reach = adjacency.copy()
     for _ in range(adjacency.shape[0] - 1):
         reach = (reach @ adjacency > 0).astype(int)
-    reachable = (reach + np.eye(adjacency.shape[0], dtype=int) > 0)
+    reachable = reach + np.eye(adjacency.shape[0], dtype=int) > 0
     assert np.all(reachable & reachable.T)
 
 
@@ -427,7 +445,9 @@ def test_expanded_T_has_valid_rows_and_inactive_self_loops(simple_msm):
     assert np.allclose(T_full.sum(axis=1), 1.0, atol=1e-8)
     inactive = np.setdiff1d(np.arange(4), active)
     assert np.allclose(T_full[inactive, inactive], 1.0)
-    assert np.allclose(T_full[np.ix_(inactive, np.setdiff1d(np.arange(4), inactive))], 0.0)
+    assert np.allclose(
+        T_full[np.ix_(inactive, np.setdiff1d(np.arange(4), inactive))], 0.0
+    )
     assert np.all(pi_full >= 0)
     assert np.isclose(pi_full.sum(), 1.0)
 
@@ -533,9 +553,7 @@ def test_build_result_all_matrix_shapes_with_deeptica(
 ):
     result = build_result_payload["result"]
     assert result.transition_matrix.shape[0] == result.transition_matrix.shape[1]
-    assert result.stationary_distribution.shape == (
-        result.transition_matrix.shape[0],
-    )
+    assert result.stationary_distribution.shape == (result.transition_matrix.shape[0],)
     assert result.cluster_populations.shape[0] == 3
     assert result.fes.F.shape == (12, 10)
     assert deeptica_workflow["outputs"].shape[1] == deeptica_workflow["config"].n_out

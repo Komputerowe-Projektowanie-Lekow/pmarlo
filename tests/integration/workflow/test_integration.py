@@ -37,6 +37,7 @@ class TestPackageImports:
         assert callable(Simulation)
         assert callable(MarkovStateModel)
         assert callable(Pipeline)
+
     def test_convenience_function_import(self):
         """Test importing convenience functions."""
         from pmarlo.transform.pipeline import run_pmarlo

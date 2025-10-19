@@ -23,6 +23,13 @@ from openmm.app import PDBFile, Simulation
 
 from pmarlo import constants as const
 from pmarlo.transform.progress import ProgressCB, ProgressPrinter, ProgressReporter
+from pmarlo.utils.logging_utils import (
+    announce_stage_cancelled,
+    announce_stage_complete,
+    announce_stage_failed,
+    announce_stage_start,
+    format_duration,
+)
 
 from ..demultiplexing.demux import demux_trajectories as _demux_trajectories
 from ..markov_state_model.results import REMDResult
@@ -388,7 +395,7 @@ class ReplicaExchange:
         cv_model_path = getattr(self, "cv_model_path", None)
         cv_scaler_mean = getattr(self, "cv_scaler_mean", None)
         cv_scaler_scale = getattr(self, "cv_scaler_scale", None)
-        
+
         system = create_system(
             pdb,
             forcefield,
@@ -1108,6 +1115,7 @@ class ReplicaExchange:
         reporter = ProgressReporter(progress_callback)
         reporter.emit("setup", {"message": "initializing"})
         self._log_run_start(total_steps)
+        simulation_start = time.perf_counter()
         # Decide reporter stride BEFORE production; do not mutate during run
         if self.reporter_stride is None:
             stride = self.plan_reporter_stride(
@@ -1122,16 +1130,90 @@ class ReplicaExchange:
                 return False
 
         cancelled = False
+        equilibration_elapsed = 0.0
         if equilibration_steps > 0:
+            # Console output
+            print("\n" + "=" * 80, flush=True)
+            print(
+                f"SIMULATION STAGE 1: EQUILIBRATION ({equilibration_steps} steps)",
+                flush=True,
+            )
+            print("=" * 80, flush=True)
+            print(f"Running {self.n_replicas} replicas in parallel", flush=True)
+            print(
+                f"Temperature range: {min(self.temperatures):.1f}K - {max(self.temperatures):.1f}K",
+                flush=True,
+            )
+            print("=" * 80 + "\n", flush=True)
+
+            # Also log
+            logger.info("=" * 80)
+            logger.info(
+                f"SIMULATION STAGE 1: EQUILIBRATION ({equilibration_steps} steps)"
+            )
+            logger.info("=" * 80)
+            logger.info(f"Running {self.n_replicas} replicas in parallel")
+            logger.info(
+                f"Temperature range: {min(self.temperatures):.1f}K - {max(self.temperatures):.1f}K"
+            )
+            logger.info("=" * 80)
+
+            equilibration_start = time.perf_counter()
             cancelled = self._run_equilibration_phase(
                 equilibration_steps, checkpoint_manager, reporter, _should_cancel
             )
+            equilibration_elapsed = time.perf_counter() - equilibration_start
             if cancelled:
+                # Console output
+                print("\n" + "=" * 80, flush=True)
+                print("SIMULATION CANCELLED DURING EQUILIBRATION", flush=True)
+                print("=" * 80 + "\n", flush=True)
+
+                # Also log
+                logger.warning("=" * 80)
+                logger.warning("SIMULATION CANCELLED DURING EQUILIBRATION")
+                logger.warning("=" * 80)
                 reporter.emit("finished", {"status": "cancelled"})
                 return []
+
+            # Console output
+            print("\n" + "=" * 80, flush=True)
+            print("EQUILIBRATION COMPLETE", flush=True)
+            print("=" * 80 + "\n", flush=True)
+            if equilibration_elapsed > 0.0:
+                equil_summary = (
+                    f"Equilibration duration: {format_duration(equilibration_elapsed)}"
+                )
+                print(equil_summary, flush=True)
+                logger.info(equil_summary)
+
+            # Also log
+            logger.info("=" * 80)
+            logger.info("EQUILIBRATION COMPLETE")
+            logger.info("=" * 80)
         if self._skip_production_if_completed(checkpoint_manager):
             return [str(f) for f in self.trajectory_files]
         self._mark_production_started(checkpoint_manager)
+
+        production_steps = total_steps - equilibration_steps
+
+        # Console output
+        print("\n" + "=" * 80, flush=True)
+        print(f"SIMULATION STAGE 2: PRODUCTION ({production_steps} steps)", flush=True)
+        print("=" * 80, flush=True)
+        print(f"Running {self.n_replicas} replicas in parallel", flush=True)
+        print(f"Exchange attempts every {self.exchange_frequency} steps", flush=True)
+        print("=" * 80 + "\n", flush=True)
+
+        # Also log
+        logger.info("=" * 80)
+        logger.info(f"SIMULATION STAGE 2: PRODUCTION ({production_steps} steps)")
+        logger.info("=" * 80)
+        logger.info(f"Running {self.n_replicas} replicas in parallel")
+        logger.info(f"Exchange attempts every {self.exchange_frequency} steps")
+        logger.info("=" * 80)
+
+        production_start = time.perf_counter()
         cancelled = self._run_production_phase(
             total_steps,
             equilibration_steps,
@@ -1140,9 +1222,44 @@ class ReplicaExchange:
             reporter,
             _should_cancel,
         )
+        production_elapsed = time.perf_counter() - production_start
         if cancelled:
+            # Console output
+            print("\n" + "=" * 80, flush=True)
+            print("SIMULATION CANCELLED DURING PRODUCTION", flush=True)
+            print("=" * 80, flush=True)
+            print("Partial trajectories have been saved", flush=True)
+            print("=" * 80 + "\n", flush=True)
+
+            # Also log
+            logger.warning("=" * 80)
+            logger.warning("SIMULATION CANCELLED DURING PRODUCTION")
+            logger.warning("=" * 80)
+            logger.warning("Partial trajectories have been saved")
+            logger.warning("=" * 80)
             reporter.emit("finished", {"status": "cancelled"})
             return []
+
+        # Console output
+        print("\n" + "=" * 80, flush=True)
+        print("PRODUCTION COMPLETE", flush=True)
+        print("=" * 80, flush=True)
+        print("Finalizing trajectories and saving statistics...", flush=True)
+        print("=" * 80 + "\n", flush=True)
+        if production_elapsed > 0.0:
+            prod_summary = (
+                f"Production duration: {format_duration(production_elapsed)}"
+            )
+            print(prod_summary, flush=True)
+            logger.info(prod_summary)
+
+        # Also log
+        logger.info("=" * 80)
+        logger.info("PRODUCTION COMPLETE")
+        logger.info("=" * 80)
+        logger.info("Finalizing trajectories and saving statistics...")
+        logger.info("=" * 80)
+
         self._mark_production_completed(
             total_steps, equilibration_steps, checkpoint_manager
         )
@@ -1157,6 +1274,15 @@ class ReplicaExchange:
         reporter.emit("write_output", {"artifacts": artifacts})
         self.save_results()
         reporter.emit("finished", {"status": "ok"})
+
+        simulation_total_elapsed = time.perf_counter() - simulation_start
+        if simulation_total_elapsed > 0.0:
+            total_msg = (
+                f"Simulation runtime: {format_duration(simulation_total_elapsed)}"
+            )
+            print(total_msg, flush=True)
+            logger.info(total_msg)
+
         return [str(f) for f in self.trajectory_files]
 
     # --- Helpers for run_simulation ---
@@ -1197,7 +1323,7 @@ class ReplicaExchange:
         if checkpoint_manager and checkpoint_manager.is_step_completed(
             "gradual_heating"
         ):
-            logger.info("Gradual heating already completed ✓")
+            logger.info("Gradual heating already completed OK")
         else:
             cancelled = self._run_gradual_heating(
                 equilibration_steps, checkpoint_manager, reporter, should_cancel
@@ -1206,7 +1332,7 @@ class ReplicaExchange:
                 return True
 
         if checkpoint_manager and checkpoint_manager.is_step_completed("equilibration"):
-            logger.info("Temperature equilibration already completed ✓")
+            logger.info("Temperature equilibration already completed OK")
         else:
             cancelled = self._run_temperature_equilibration(
                 equilibration_steps, checkpoint_manager, reporter, should_cancel
@@ -1224,16 +1350,33 @@ class ReplicaExchange:
     ) -> bool:
         if checkpoint_manager:
             checkpoint_manager.mark_step_started("gradual_heating")
-        logger.info(f"Equilibration with gradual heating: {equilibration_steps} steps")
         heating_steps = max(100, equilibration_steps * 40 // 100)
-        logger.info(f"   Phase 1: Gradual heating over {heating_steps} steps")
+        temp_min = min(self.temperatures) if self.temperatures else 0.0
+        temp_max = max(self.temperatures) if self.temperatures else 0.0
+        phase_start = time.perf_counter()
+        announce_stage_start(
+            "REMD Sub-stage: Gradual Heating",
+            logger=logger,
+            details=[
+                f"Gradual heating span: {heating_steps} steps",
+                f"Replica count: {self.n_replicas}",
+                f"Temperature ladder: {temp_min:.1f}K -> {temp_max:.1f}K",
+            ],
+        )
         heat_progress = ProgressPrinter(heating_steps)
         heating_chunk_size = max(10, heating_steps // 20)
+        milestones_logged: set[int] = set()
         for heat_step in range(0, heating_steps, heating_chunk_size):
             if should_cancel is not None and should_cancel():
+                announce_stage_cancelled(
+                    "REMD Sub-stage: Gradual Heating",
+                    logger=logger,
+                    details=["Cancellation requested during heating ramp."],
+                )
                 return True
             current_steps = min(heating_chunk_size, heating_steps - heat_step)
             progress_fraction = (heat_step + current_steps) / heating_steps
+            progress_fraction = min(max(progress_fraction, 0.0), 1.0)
             for replica_idx, replica in enumerate(self.replicas):
                 target_temp = self.temperatures[self.replica_states[replica_idx]]
                 current_temp = 50.0 + (target_temp - 50.0) * progress_fraction
@@ -1244,6 +1387,16 @@ class ReplicaExchange:
             progress = min(40, (heat_step + current_steps) * 40 // heating_steps)
             heat_progress.draw(heat_step + current_steps)
             heat_progress.newline_if_active()
+            progress_percent = int(round(progress_fraction * 100))
+            for threshold in (25, 50, 75, 100):
+                if progress_percent >= threshold and threshold not in milestones_logged:
+                    milestone_message = (
+                        f"Gradual heating progress {threshold}% "
+                        f"({heat_step + current_steps}/{heating_steps} steps)"
+                    )
+                    print(milestone_message, flush=True)
+                    logger.info(milestone_message)
+                    milestones_logged.add(threshold)
             # Report unified equilibrate progress as fraction of total equilibration
             if reporter is not None:
                 cur = min(equilibration_steps, heat_step + current_steps)
@@ -1260,7 +1413,19 @@ class ReplicaExchange:
                 f"   Heating Progress: {progress}% - Current temps: {temps_preview}"
             )
         heat_progress.close()
+        elapsed = time.perf_counter() - phase_start
+        if 100 not in milestones_logged:
+            milestone_message = (
+                f"Gradual heating progress 100% ({heating_steps}/{heating_steps} steps)"
+            )
+            print(milestone_message, flush=True)
+            logger.info(milestone_message)
         if should_cancel is not None and should_cancel():
+            announce_stage_cancelled(
+                "REMD Sub-stage: Gradual Heating",
+                logger=logger,
+                details=["Cancellation requested during heating wrap-up."],
+            )
             return True
         if checkpoint_manager:
             checkpoint_manager.mark_step_completed(
@@ -1272,6 +1437,14 @@ class ReplicaExchange:
                     ],
                 },
             )
+        announce_stage_complete(
+            "REMD Sub-stage: Gradual Heating",
+            logger=logger,
+            details=[
+                f"Executed {heating_steps} heating steps.",
+                f"Duration: {format_duration(elapsed)}",
+            ],
+        )
         # Completed without cancellation
         return False
 
@@ -1315,11 +1488,15 @@ class ReplicaExchange:
         if checkpoint_manager:
             checkpoint_manager.mark_step_started("equilibration")
         temp_equil_steps = max(100, equilibration_steps * 60 // 100)
-        logger.info(
-            (
-                "   Phase 2: Temperature equilibration at target temperatures over "
-                f"{temp_equil_steps} steps"
-            )
+        phase_start = time.perf_counter()
+        announce_stage_start(
+            "REMD Sub-stage: Temperature Equilibration",
+            logger=logger,
+            details=[
+                f"Equilibration span: {temp_equil_steps} steps",
+                f"Replica count: {self.n_replicas}",
+                "Integrators set to target temperatures for all replicas.",
+            ],
         )
         for replica_idx, replica in enumerate(self.replicas):
             target_temp = self.temperatures[self.replica_states[replica_idx]]
@@ -1330,6 +1507,7 @@ class ReplicaExchange:
             # replica.context.setVelocitiesToTemperature(target_temp * unit.kelvin)
         equil_chunk_size = max(1, temp_equil_steps // 10)
         temp_progress = ProgressPrinter(temp_equil_steps)
+        milestones_logged: set[int] = set()
         for i in range(0, temp_equil_steps, equil_chunk_size):
             if should_cancel is not None and should_cancel():
                 return True
@@ -1349,6 +1527,14 @@ class ReplicaExchange:
                             checkpoint_manager.mark_step_failed(
                                 "equilibration", str(exc)
                             )
+                        announce_stage_failed(
+                            "REMD Sub-stage: Temperature Equilibration",
+                            logger=logger,
+                            details=[
+                                f"Replica {replica_idx} encountered non-finite state.",
+                                "Halting equilibration phase.",
+                            ],
+                        )
                         raise RuntimeError(
                             (
                                 "Simulation became unstable for replica "
@@ -1361,6 +1547,19 @@ class ReplicaExchange:
             progress = min(100, 40 + (i + current_steps) * 60 // temp_equil_steps)
             temp_progress.draw(i + current_steps)
             temp_progress.newline_if_active()
+            progress_fraction = min(
+                max((i + current_steps) / max(1, temp_equil_steps), 0.0), 1.0
+            )
+            progress_percent = int(round(progress_fraction * 100))
+            for threshold in (25, 50, 75, 100):
+                if progress_percent >= threshold and threshold not in milestones_logged:
+                    milestone_message = (
+                        f"Temperature equilibration progress {threshold}% "
+                        f"({i + current_steps}/{temp_equil_steps} steps)"
+                    )
+                    print(milestone_message, flush=True)
+                    logger.info(milestone_message)
+                    milestones_logged.add(threshold)
             if reporter is not None:
                 heating_steps = max(100, equilibration_steps * 40 // 100)
                 cur = min(equilibration_steps, heating_steps + i + current_steps)
@@ -1376,7 +1575,20 @@ class ReplicaExchange:
                 )
             )
         temp_progress.close()
+        elapsed = time.perf_counter() - phase_start
+        if 100 not in milestones_logged:
+            milestone_message = (
+                f"Temperature equilibration progress 100% "
+                f"({temp_equil_steps}/{temp_equil_steps} steps)"
+            )
+            print(milestone_message, flush=True)
+            logger.info(milestone_message)
         if should_cancel is not None and should_cancel():
+            announce_stage_cancelled(
+                "REMD Sub-stage: Temperature Equilibration",
+                logger=logger,
+                details=["Cancellation requested during temperature equilibration."],
+            )
             return True
         if checkpoint_manager:
             checkpoint_manager.mark_step_completed(
@@ -1386,14 +1598,21 @@ class ReplicaExchange:
                     "total_equilibration": equilibration_steps,
                 },
             )
-        logger.info("   Equilibration Complete ✓")
+        announce_stage_complete(
+            "REMD Sub-stage: Temperature Equilibration",
+            logger=logger,
+            details=[
+                f"Executed {temp_equil_steps} temperature-hold steps.",
+                f"Duration: {format_duration(elapsed)}",
+            ],
+        )
         return False
 
     def _skip_production_if_completed(self, checkpoint_manager) -> bool:
         if checkpoint_manager and checkpoint_manager.is_step_completed(
             "production_simulation"
         ):
-            logger.info("Production simulation already completed ✓")
+            logger.info("Production simulation already completed OK")
             return True
         return False
 
@@ -1430,6 +1649,7 @@ class ReplicaExchange:
             ProgressPrinter(max(1, exchange_steps)) if exchange_steps > 0 else None
         )
         last_t = time.time()
+        prod_milestones: set[int] = set()
         for step in range(exchange_steps):
             if should_cancel is not None and should_cancel():
                 return True
@@ -1442,7 +1662,11 @@ class ReplicaExchange:
                 if self.replica_visit_counts is not None:
                     self.replica_visit_counts[r, s] += 1
             self._log_production_progress(
-                step, exchange_steps, total_steps, equilibration_steps
+                step,
+                exchange_steps,
+                total_steps,
+                equilibration_steps,
+                prod_milestones,
             )
             # Unified reporter events
             if reporter is not None:
@@ -1574,9 +1798,17 @@ class ReplicaExchange:
                 )
 
     def _log_production_progress(
-        self, step: int, exchange_steps: int, total_steps: int, equilibration_steps: int
+        self,
+        step: int,
+        exchange_steps: int,
+        total_steps: int,
+        equilibration_steps: int,
+        milestones_logged: set[int],
     ) -> None:
-        progress_percent = (step + 1) * 100 // exchange_steps
+        if exchange_steps <= 0:
+            progress_percent = 100
+        else:
+            progress_percent = min(100, (step + 1) * 100 // exchange_steps)
         acceptance_rate = self.exchanges_accepted / max(1, self.exchange_attempts)
         completed_steps = (step + 1) * self.exchange_frequency + equilibration_steps
         logger.debug(
@@ -1587,6 +1819,16 @@ class ReplicaExchange:
                 f"| Acceptance: {acceptance_rate:.3f}"
             )
         )
+        for threshold in (25, 50, 75, 100):
+            if progress_percent >= threshold and threshold not in milestones_logged:
+                milestone_message = (
+                    f"Production progress {threshold}% "
+                    f"({completed_steps}/{total_steps} steps, "
+                    f"acceptance {acceptance_rate*100:.1f}%)"
+                )
+                print(milestone_message, flush=True)
+                logger.info(milestone_message)
+                milestones_logged.add(threshold)
 
     def _mark_production_completed(
         self, total_steps: int, equilibration_steps: int, checkpoint_manager

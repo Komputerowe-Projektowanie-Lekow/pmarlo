@@ -12,9 +12,9 @@ The function writes shard_{i:04d}.npz/.json under an output directory with
 canonical JSON and integrity hashes suitable for reproducible map→reduce.
 """
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
-import re
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 import numpy as np
@@ -68,8 +68,10 @@ def _normalise_source_metadata(path: Path, source: Mapping[str, Any]) -> Dict[st
     data = dict(source) if source is not None else {}
     data.setdefault("traj", str(path))
     if "created_at" not in data:
-        data["created_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds").replace(
-            "+00:00", "Z"
+        data["created_at"] = (
+            datetime.now(timezone.utc)
+            .isoformat(timespec="seconds")
+            .replace("+00:00", "Z")
         )
 
     kind = str(data.get("kind", "")).lower()
@@ -231,7 +233,9 @@ def emit_shards_from_trajectories(
         source["exchange_window_id"] = exchange_window_id
         source["seed"] = int(seed)
         source["n_frames"] = n_frames
-        ordered_periodic = [bool(periodic_flags.get(name, False)) for name in column_order]
+        ordered_periodic = [
+            bool(periodic_flags.get(name, False)) for name in column_order
+        ]
         source["periodic"] = ordered_periodic
         t_kelvin = int(round(float(temperature)))
         # Include kind in shard_id to prevent collisions

@@ -10,6 +10,7 @@ from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter
 from scipy.stats import iqr
 from scipy.stats.mstats import mquantiles
+
 from pmarlo import constants as const
 from pmarlo.utils.thermodynamics import kT_kJ_per_mol
 

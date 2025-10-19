@@ -3,11 +3,11 @@
 - demultiplexing
 - experiments
 - features
-- io 
+- io
 - markov_state_model
 - ml
 - pairs
--
+- protein
 - replica_exchange
 - reporting
 - reweight

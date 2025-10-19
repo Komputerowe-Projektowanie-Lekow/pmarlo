@@ -36,6 +36,7 @@ from .utils import default_output_root, set_seed, timestamp_dir
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class ReplicaExchangeConfig:
     pdb_file: str

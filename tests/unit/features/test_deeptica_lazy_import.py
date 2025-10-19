@@ -26,6 +26,4 @@ def test_deeptica_trainer_import_no_cycle() -> None:
         env=env,
         check=False,
     )
-    assert result.returncode == 0, (
-        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"

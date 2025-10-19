@@ -560,9 +560,7 @@ class ITSMixin:
             if k_request >= arr.shape[0]:
                 evals = np.asarray(_dt_eigenvalues(arr, k=None), dtype=complex)
             else:
-                evals = np.asarray(
-                    _dt_eigenvalues(arr, k=k_request), dtype=complex
-                )
+                evals = np.asarray(_dt_eigenvalues(arr, k=k_request), dtype=complex)
 
             order = np.argsort(-np.real(evals))
             evals = np.asarray(evals[order], dtype=complex)

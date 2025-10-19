@@ -2,10 +2,30 @@
 
 import subprocess
 import sys
+from itertools import count
 from pathlib import Path
 
 from pmarlo.data.shard import write_shard
 from pmarlo.utils.path_utils import ensure_directory
+
+
+_SEGMENT_COUNTER = count()
+
+
+def _canonical_shard_id(temperature_K: float, segment_id: int, replica_id: int) -> str:
+    temp = int(round(temperature_K))
+    return f"T{temp}K_seg{segment_id:04d}_rep{replica_id:03d}"
+
+
+def _source_metadata(segment_id: int, replica_id: int) -> dict[str, object]:
+    return {
+        "created_at": "1970-01-01T00:00:00Z",
+        "kind": "demux",
+        "run_id": "cli-test",
+        "segment_id": int(segment_id),
+        "replica_id": int(replica_id),
+        "exchange_window_id": 0,
+    }
 
 
 def _prepare_workspace(tmp_path: Path) -> tuple[Path, Path]:
@@ -30,15 +50,18 @@ def _prepare_workspace(tmp_path: Path) -> tuple[Path, Path]:
         else:
             state[t] = rng.integers(0, 10)
 
+    segment_id = next(_SEGMENT_COUNTER)
+    replica_id = 0
+    shard_id = _canonical_shard_id(300.0, segment_id, replica_id)
     shard_path = write_shard(
         out_dir=shards_dir,
-        shard_id="synthetic",
+        shard_id=shard_id,
         cvs={"cv1": cv1, "cv2": cv2},
         dtraj=state,
         periodic={"cv1": False, "cv2": False},
         seed=2025,
         temperature=300.0,
-        source={"kind": "synthetic"},
+        source=_source_metadata(segment_id, replica_id),
     )
     return workspace_dir, Path(shard_path)
 

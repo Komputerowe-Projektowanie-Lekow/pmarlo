@@ -5,11 +5,11 @@ from typing import Any, cast
 
 import numpy as np
 from deeptime.markov import pcca as _deeptime_pcca  # type: ignore
-from deeptime.markov.tools.analysis import (  # type: ignore
-    stationary_distribution as _dt_stationary_distribution,
+from deeptime.markov.tools.analysis import (
+    stationary_distribution as _dt_stationary_distribution,  # type: ignore
 )
-from deeptime.markov.tools.estimation.dense.transition_matrix import (  # type: ignore
-    transition_matrix_non_reversible as _dt_row_normalize,
+from deeptime.markov.tools.estimation.dense.transition_matrix import (
+    transition_matrix_non_reversible as _dt_row_normalize,  # type: ignore
 )
 
 from pmarlo import constants as const
@@ -73,8 +73,6 @@ def _stationary_from_T(T: np.ndarray) -> np.ndarray:
 
     pi_dt = _dt_stationary_distribution(arr, check_inputs=False)
     return cast(np.ndarray, np.asarray(pi_dt, dtype=float))
-
-
 
 
 def _canonicalize_macro_labels(labels: np.ndarray, T: np.ndarray) -> np.ndarray:
@@ -255,6 +253,8 @@ def _expand_results(
         T_full[np.ix_(active, active)] = T_active
         pi_full[active] = pi_active
     return T_full, pi_full
+
+
 def pcca_like_macrostates(
     T: np.ndarray, n_macrostates: int = 4, random_state: int | None = 42
 ) -> np.ndarray | None:

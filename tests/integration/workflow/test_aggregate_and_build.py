@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from itertools import count
 from pathlib import Path
 
 import numpy as np
@@ -13,6 +14,25 @@ from pmarlo.transform.plan import TransformPlan, TransformStep
 pytestmark = pytest.mark.integration
 
 
+_SEGMENT_COUNTER = count()
+
+
+def _canonical_shard_id(temperature_K: float, segment_id: int, replica_id: int) -> str:
+    temp = int(round(temperature_K))
+    return f"T{temp}K_seg{segment_id:04d}_rep{replica_id:03d}"
+
+
+def _source_metadata(segment_id: int, replica_id: int) -> dict[str, object]:
+    return {
+        "created_at": "1970-01-01T00:00:00Z",
+        "kind": "demux",
+        "run_id": "integration-test",
+        "segment_id": int(segment_id),
+        "replica_id": int(replica_id),
+        "exchange_window_id": 0,
+    }
+
+
 def _mk_shard(
     tmp: Path, name: str, order: tuple[str, str], periodic=(True, True)
 ) -> Path:
@@ -21,15 +41,18 @@ def _mk_shard(
         order[1]: np.random.default_rng(1).normal(size=30),
     }
     periodic_map = {order[0]: periodic[0], order[1]: periodic[1]}
+    segment_id = next(_SEGMENT_COUNTER)
+    replica_id = 0
+    shard_id = _canonical_shard_id(300.0, segment_id, replica_id)
     return write_shard(
         out_dir=tmp,
-        shard_id=name,
+        shard_id=shard_id,
         cvs=cvs,
         dtraj=None,
         periodic=periodic_map,
         seed=0,
         temperature=300.0,
-        source={"created_at": "1970-01-01T00:00:00Z"},
+        source=_source_metadata(segment_id, replica_id),
     )
 
 

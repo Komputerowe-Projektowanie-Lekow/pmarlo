@@ -235,18 +235,14 @@ class PlotsMixin:
             save_file if str(save_file).lower().endswith(".png") else f"{save_file}.png"
         )
 
+        import matplotlib.pyplot as _plt
         from deeptime.markov import TransitionCountEstimator  # type: ignore
         from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
         from deeptime.plots import plot_ck_test  # type: ignore
         from deeptime.util.validation import ck_test  # type: ignore
-        import matplotlib.pyplot as _plt
 
         base_lag = int(max(1, self.lag_time))
-        facs = (
-            [2, 3, 4]
-            if factors is None
-            else [int(f) for f in factors if int(f) > 1]
-        )
+        facs = [2, 3, 4] if factors is None else [int(f) for f in factors if int(f) > 1]
         lags = [base_lag] + [base_lag * f for f in facs]
         models = []
         for L in lags:
@@ -275,9 +271,7 @@ class PlotsMixin:
             x_vals: list[int] = []
             mse_vals: list[float] = []
             for idx, factor in enumerate(facs, start=1):
-                empirical = np.asarray(
-                    models[idx].transition_matrix, dtype=float
-                )
+                empirical = np.asarray(models[idx].transition_matrix, dtype=float)
                 theoretical = np.linalg.matrix_power(base_T, int(factor))
                 diff = empirical - theoretical
                 mse_vals.append(float(np.mean(diff * diff)))

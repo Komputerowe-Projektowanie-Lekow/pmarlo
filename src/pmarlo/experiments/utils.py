@@ -30,9 +30,7 @@ def _validate_assets_dir(path: Path, required_files: Iterable[str]) -> Path:
         )
     missing = [name for name in required_files if not (path / name).exists()]
     if missing:
-        raise FileNotFoundError(
-            "Missing required test assets: " + ", ".join(missing)
-        )
+        raise FileNotFoundError("Missing required test assets: " + ", ".join(missing))
     return path
 
 

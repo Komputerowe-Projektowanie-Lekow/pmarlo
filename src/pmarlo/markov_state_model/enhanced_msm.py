@@ -88,9 +88,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from ._enhanced_impl import run_complete_msm_analysis as _run_complete_msm_analysis
 else:
     from ._enhanced_impl import EnhancedMSM as _EnhancedMSMImpl
-    from ._enhanced_impl import (
-        run_complete_msm_analysis as _run_complete_msm_analysis,
-    )
+    from ._enhanced_impl import run_complete_msm_analysis as _run_complete_msm_analysis
 
 
 class _RunAnalysisProto(Protocol):

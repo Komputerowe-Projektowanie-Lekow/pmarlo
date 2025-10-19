@@ -100,7 +100,9 @@ def _load_module(module_name: str, *, feature: str, optional: bool) -> Any:
 def _resolve_export(name: str) -> Any:
     if name in _MODULE_EXPORTS:
         module_name = _MODULE_EXPORTS[name]
-        module = _load_module(module_name, feature=name, optional=name in _OPTIONAL_HINTS)
+        module = _load_module(
+            module_name, feature=name, optional=name in _OPTIONAL_HINTS
+        )
         _bind_export(name, module)
         return module
 

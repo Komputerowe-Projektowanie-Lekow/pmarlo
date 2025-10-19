@@ -51,8 +51,10 @@ def test_transform_runner_with_retry(tmp_path):
 
     # Mock the apply_transform_plan to use our failing function
     import pmarlo.transform.apply as apply_module
+    import pmarlo.transform.runner as runner_module
 
     original_apply = apply_module.apply_transform_plan
+    original_runner_apply = runner_module.apply_transform_plan
 
     def mock_apply(dataset, plan):
         for step in plan.steps:
@@ -61,6 +63,7 @@ def test_transform_runner_with_retry(tmp_path):
         return dataset
 
     apply_module.apply_transform_plan = mock_apply
+    runner_module.apply_transform_plan = mock_apply
 
     try:
         plan = TransformPlan(
@@ -85,6 +88,7 @@ def test_transform_runner_with_retry(tmp_path):
     finally:
         # Restore original function
         apply_module.apply_transform_plan = original_apply
+        runner_module.apply_transform_plan = original_runner_apply
 
 
 def test_transform_manifest_persistence(tmp_path):

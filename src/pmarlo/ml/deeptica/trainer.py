@@ -53,9 +53,7 @@ def prepare_batch(
         if len(item) != 3:
             raise ValueError("batch elements must be 3-tuples (x_t, x_tau, weights)")
         xt_arr, xtau_arr, weights = item
-        xt_tensor = torch.as_tensor(
-            np.asarray(xt_arr, dtype=np.float32), device=dev
-        )
+        xt_tensor = torch.as_tensor(np.asarray(xt_arr, dtype=np.float32), device=dev)
         xtau_tensor = torch.as_tensor(
             np.asarray(xtau_arr, dtype=np.float32), device=dev
         )
@@ -74,7 +72,9 @@ def prepare_batch(
     if not use_weights:
         weights_tensor: torch.Tensor | None = None
     elif weight_list:
-        weights_tensor = torch.cat(weight_list, dim=0) if len(weight_list) > 1 else weight_list[0]
+        weights_tensor = (
+            torch.cat(weight_list, dim=0) if len(weight_list) > 1 else weight_list[0]
+        )
         if weights_tensor.numel() != total_frames:
             raise ValueError("weights length does not match batch size")
     else:
@@ -288,12 +288,18 @@ class _EpochAccumulator:
             return 0.0, 0.0, 0.0, 0.0
         postclip_mean = float(np.mean(self.grad_norms))
         postclip_max = float(np.max(self.grad_norms))
-        preclip_mean = float(np.mean(self.grad_norms_preclip)) if self.grad_norms_preclip else 0.0
-        preclip_max = float(np.max(self.grad_norms_preclip)) if self.grad_norms_preclip else 0.0
+        preclip_mean = (
+            float(np.mean(self.grad_norms_preclip)) if self.grad_norms_preclip else 0.0
+        )
+        preclip_max = (
+            float(np.max(self.grad_norms_preclip)) if self.grad_norms_preclip else 0.0
+        )
         return postclip_mean, postclip_max, preclip_mean, preclip_max
 
     def _base_epoch_metrics(self) -> Dict[str, float | List[float]]:
-        grad_mean, grad_max, grad_preclip_mean, grad_preclip_max = self._grad_norm_stats()
+        grad_mean, grad_max, grad_preclip_mean, grad_preclip_max = (
+            self._grad_norm_stats()
+        )
         total_weight = float(self.total_weight)
         return {
             "loss": self.total_loss / total_weight,
@@ -803,8 +809,12 @@ class DeepTICACurriculumTrainer:
         # Enhanced logging with pre-clip gradient norms
         grad_preclip_mean = _metric_scalar(train_metrics, "grad_norm_preclip_mean", 0.0)
         grad_preclip_max = _metric_scalar(train_metrics, "grad_norm_preclip_max", 0.0)
-        clip_threshold = self.cfg.grad_clip_norm if self.cfg.grad_clip_norm is not None else float("inf")
-        
+        clip_threshold = (
+            self.cfg.grad_clip_norm
+            if self.cfg.grad_clip_norm is not None
+            else float("inf")
+        )
+
         logger.info(
             (
                 "tau=%d val_tau=%d epoch=%d/%d lr=%.6e "
@@ -979,19 +989,19 @@ class DeepTICACurriculumTrainer:
             out_tau = self.module(x_tau)
             loss, score = self.loss_fn(out_t, out_tau, weights)
             loss.backward()
-            
+
             # Compute gradient norm BEFORE clipping to get true gradient magnitude
             grad_norm_preclip = self._grad_norm(self._trainable_parameters)
-            
+
             # Apply gradient clipping if configured
             if self.cfg.grad_clip_norm is not None and self._trainable_parameters:
                 torch.nn.utils.clip_grad_norm_(
                     self._trainable_parameters, float(self.cfg.grad_clip_norm)
                 )
-            
+
             # Compute gradient norm AFTER clipping (for diagnostics)
             grad_norm = self._grad_norm(self._trainable_parameters)
-            
+
             self.optimizer.step()
             metrics_obj = getattr(self.loss_fn, "latest_metrics", {})
             metrics = metrics_obj if isinstance(metrics_obj, dict) else {}
@@ -1101,13 +1111,13 @@ class DeepTICACurriculumTrainer:
         """Write real-time training progress to JSON file for live monitoring."""
         if self.cfg.checkpoint_dir is None:
             return
-        
+
         import json
-        
+
         ckpt_dir = Path(self.cfg.checkpoint_dir)
         ensure_directory(ckpt_dir)
         progress_path = ckpt_dir / "training_progress.json"
-        
+
         # Build current epoch data
         epoch_data = {
             "epoch": int(epoch),
@@ -1120,10 +1130,12 @@ class DeepTICACurriculumTrainer:
             "learning_rate": float(lr),
             "grad_norm_mean": float(_metric_scalar(train_metrics, "grad_norm_mean")),
             "grad_norm_max": float(_metric_scalar(train_metrics, "grad_norm_max")),
-            "best_val_score": float(self._best_score) if self._best_score > float("-inf") else 0.0,
+            "best_val_score": (
+                float(self._best_score) if self._best_score > float("-inf") else 0.0
+            ),
             "best_epoch": int(self._best_epoch) if self._best_epoch >= 0 else None,
         }
-        
+
         # Read existing data if available
         history_data = []
         if progress_path.exists():
@@ -1136,10 +1148,10 @@ class DeepTICACurriculumTrainer:
                         history_data = content
             except Exception:
                 history_data = []
-        
+
         # Append current epoch
         history_data.append(epoch_data)
-        
+
         # Write updated progress
         progress = {
             "status": "training",
@@ -1147,7 +1159,7 @@ class DeepTICACurriculumTrainer:
             "total_epochs_planned": int(self._scheduler_total_epochs),
             "epochs": history_data,
         }
-        
+
         with progress_path.open("w") as f:
             json.dump(progress, f, indent=2)
 
@@ -1155,28 +1167,28 @@ class DeepTICACurriculumTrainer:
         """Mark training as complete with final summary in progress file."""
         if self.cfg.checkpoint_dir is None:
             return
-        
+
         import json
-        
+
         ckpt_dir = Path(self.cfg.checkpoint_dir)
         progress_path = ckpt_dir / "training_progress.json"
-        
+
         if not progress_path.exists():
             return
-        
+
         try:
             with progress_path.open("r") as f:
                 progress = json.load(f)
         except Exception:
             return
-        
+
         # Update status to complete
         progress["status"] = "completed"
         progress["wall_time_s"] = float(history.get("wall_time_s", 0.0))
         progress["best_val_score"] = float(history.get("best_val_score", 0.0))
         progress["best_epoch"] = history.get("best_epoch")
         progress["best_tau"] = history.get("best_tau")
-        
+
         with progress_path.open("w") as f:
             json.dump(progress, f, indent=2)
 

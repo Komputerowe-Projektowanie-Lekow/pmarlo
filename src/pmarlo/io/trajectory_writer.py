@@ -15,9 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Protocol
 
-from typing_extensions import Self
-
 import numpy as np
+from typing_extensions import Self
 
 from pmarlo.utils.mdtraj import load_mdtraj_topology
 

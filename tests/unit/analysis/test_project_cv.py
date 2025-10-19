@@ -24,7 +24,9 @@ def test_apply_whitening_applies_transform_and_sets_flag() -> None:
     whitened, applied = apply_whitening_from_metadata(values, metadata)
 
     assert applied is True
-    np.testing.assert_allclose(whitened, np.array([[1.0, 1.0], [2.0, 3.0]], dtype=np.float64))
+    np.testing.assert_allclose(
+        whitened, np.array([[1.0, 1.0], [2.0, 3.0]], dtype=np.float64)
+    )
     assert metadata["output_transform_applied"] is True
 
 

@@ -62,9 +62,7 @@ def resolve_project_path(
         checked.append(resolved)
 
     searched = ", ".join(str(path.parent) for path in checked) or str(Path.cwd())
-    raise FileNotFoundError(
-        f"Could not resolve '{raw}' in search roots: {searched}"
-    )
+    raise FileNotFoundError(f"Could not resolve '{raw}' in search roots: {searched}")
 
 
 def ensure_directory(

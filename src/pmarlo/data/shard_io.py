@@ -67,9 +67,7 @@ def load_shard_meta(json_path: Path) -> BaseShard:
     traj_path = provenance.get("traj") or provenance.get("path")
     traj_path = str(traj_path) if traj_path is not None else None
 
-    exchange_log = provenance.get("exchange_log") or provenance.get(
-        "exchange_log_path"
-    )
+    exchange_log = provenance.get("exchange_log") or provenance.get("exchange_log_path")
     exchange_log = str(exchange_log) if exchange_log is not None else None
 
     bias_payload = provenance.get("bias_info")
