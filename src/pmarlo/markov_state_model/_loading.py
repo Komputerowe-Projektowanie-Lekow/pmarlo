@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Sequence, cast
 
 import mdtraj as md
 
@@ -73,12 +73,15 @@ class LoadingMixin:
         topo_path = self._resolve_topology_path()
         topo = load_mdtraj_topology(topo_path)
         logger = getattr(self, "logger", None)
-        return resolve_atom_selection(
+        resolved = resolve_atom_selection(
             topo,
             atom_selection,
             logger=logger,
             on_error="warn",
         )
+        if resolved is None:
+            return None
+        return tuple(int(idx) for idx in cast(Sequence[int], resolved))
 
     def _resolve_topology_path(self):
         return resolve_project_path(self.topology_file)

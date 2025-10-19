@@ -10,11 +10,13 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
+    Callable,
     Dict,
     Iterator,
     List,
     Mapping,
     Optional,
+    Protocol,
     Sequence,
     TypedDict,
     cast,
@@ -87,7 +89,7 @@ def prepare_batch(
 
 def compute_loss_and_score(
     model: torch.nn.Module,
-    loss_module: torch.nn.Module,
+    loss_module: _LossModule,
     x_t: torch.Tensor,
     x_tau: torch.Tensor,
     weights: torch.Tensor | None,
@@ -96,7 +98,8 @@ def compute_loss_and_score(
 
     z_t = model(x_t)
     z_tau = model(x_tau)
-    return loss_module(z_t, z_tau, weights)
+    loss, score = loss_module(z_t, z_tau, weights)
+    return loss, score
 
 
 def compute_grad_norm(parameters: Sequence[torch.nn.Parameter]) -> float:
@@ -1184,8 +1187,10 @@ class DeepTICACurriculumTrainer:
 
         # Update status to complete
         progress["status"] = "completed"
-        progress["wall_time_s"] = float(history.get("wall_time_s", 0.0))
-        progress["best_val_score"] = float(history.get("best_val_score", 0.0))
+        progress["wall_time_s"] = _coerce_float(history.get("wall_time_s", 0.0))
+        progress["best_val_score"] = _coerce_float(
+            history.get("best_val_score", 0.0)
+        )
         progress["best_epoch"] = history.get("best_epoch")
         progress["best_tau"] = history.get("best_tau")
 
@@ -1272,3 +1277,23 @@ class DeepTICACurriculumTrainer:
                 "CUDA device requested but torch reports no available CUDA runtime"
             )
         return resolved
+class _LossModule(Protocol):
+    def __call__(
+        self,
+        z_t: torch.Tensor,
+        z_tau: torch.Tensor,
+        weights: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        ...
+
+
+def _coerce_float(value: object, default: float = 0.0) -> float:
+    if isinstance(value, numbers.Real):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return default
+    return default
+

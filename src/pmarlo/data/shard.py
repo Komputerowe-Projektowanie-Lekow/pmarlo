@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict, Mapping, Sequence, cast
+
+import numbers
 
 import numpy as np
 
@@ -27,25 +29,27 @@ class ShardDetails:
 
     @property
     def shard_id(self) -> str:
-        return self.meta.shard_id
+        return str(self.meta.shard_id)
 
     @property
     def temperature_K(self) -> float:
-        return self.meta.temperature_K
+        return float(self.meta.temperature_K)
 
     @property
     def cv_names(self) -> tuple[str, ...]:
-        return tuple(self.meta.feature_spec.columns)
+        columns = cast(
+            Sequence[object], getattr(self.meta.feature_spec, "columns", tuple())
+        )
+        return tuple(str(name) for name in columns)
 
     @property
     def periodic(self) -> tuple[bool, ...]:
-        periodic = self.source.get("periodic")
-        require(
-            isinstance(periodic, (list, tuple))
-            and len(periodic) == len(self.meta.feature_spec.columns),
-            "periodic flags missing from shard provenance",
-        )
-        return tuple(bool(v) for v in periodic)
+        periodic_raw = self.source.get("periodic")
+        if not isinstance(periodic_raw, (list, tuple)):
+            raise ValueError("periodic flags missing from shard provenance")
+        if len(periodic_raw) != len(self.cv_names):
+            raise ValueError("periodic flags missing from shard provenance")
+        return tuple(bool(v) for v in periodic_raw)
 
 
 def _stack_columns(cvs: Dict[str, np.ndarray]) -> np.ndarray:
@@ -87,17 +91,36 @@ def write_shard(
     for key in ("created_at", "kind", "run_id", "replica_id", "segment_id"):
         require(key in source_dict, f"source missing required key '{key}'")
 
-    kind = str(source_dict["kind"])
-    require(kind in {"demux", "replica"}, "kind must be 'demux' or 'replica'")
+    kind_raw = source_dict["kind"]
+    if not isinstance(kind_raw, str):
+        raise ValueError("kind must be a string")
+    kind = kind_raw.strip().lower()
+    if kind not in {"demux", "replica"}:
+        raise ValueError("kind must be 'demux' or 'replica'")
 
-    replica_id = int(source_dict["replica_id"])
-    segment_id = int(source_dict["segment_id"])
-    exchange_window_id = int(source_dict.get("exchange_window_id", 0))
+    run_id_raw = source_dict["run_id"]
+    if not isinstance(run_id_raw, str):
+        raise ValueError("run_id must be a string")
+
+    replica_raw = source_dict["replica_id"]
+    if not isinstance(replica_raw, numbers.Integral):
+        raise ValueError("replica_id must be an integer")
+    replica_id = int(replica_raw)
+
+    segment_raw = source_dict["segment_id"]
+    if not isinstance(segment_raw, numbers.Integral):
+        raise ValueError("segment_id must be an integer")
+    segment_id = int(segment_raw)
+
+    exchange_raw = source_dict.get("exchange_window_id", 0)
+    if isinstance(exchange_raw, numbers.Integral):
+        exchange_window_id = int(exchange_raw)
+    else:
+        raise ValueError("exchange_window_id must be an integer if provided")
 
     column_order = tuple(cvs.keys())
-    ordered_periodic = [
-        bool((periodic or {}).get(name, False)) for name in column_order
-    ]
+    periodic_map: Dict[str, bool] = dict(periodic or {})
+    ordered_periodic = [bool(periodic_map.get(name, False)) for name in column_order]
 
     t_kelvin = float(temperature)
     X = _stack_columns(cvs)
@@ -106,7 +129,7 @@ def write_shard(
     source_dict.update(
         {
             "kind": kind,
-            "run_id": str(source_dict["run_id"]),
+            "run_id": run_id_raw,
             "replica_id": replica_id,
             "segment_id": segment_id,
             "exchange_window_id": exchange_window_id,
@@ -117,7 +140,16 @@ def write_shard(
         }
     )
 
-    dt_ps = float(source_dict.get("dt_ps", 1.0))
+    dt_ps_value = source_dict.get("dt_ps", 1.0)
+    if isinstance(dt_ps_value, numbers.Real):
+        dt_ps = float(dt_ps_value)
+    elif isinstance(dt_ps_value, str):
+        try:
+            dt_ps = float(dt_ps_value)
+        except ValueError as exc:  # pragma: no cover - defensive
+            raise ValueError("dt_ps must be numeric") from exc
+    else:
+        raise ValueError("dt_ps must be numeric")
     feature_spec = FeatureSpec(
         name=str(source_dict.get("feature_spec_name", "pmarlo_features")),
         scaler=str(source_dict.get("feature_scaler", "identity")),
@@ -192,7 +224,7 @@ def write_shard(
         payload["dtraj"] = dtraj_arr
         np.savez_compressed(npz_path, **payload)
 
-    return json_path
+    return Path(json_path)
 
 
 def read_shard(json_path: Path) -> tuple[ShardDetails, np.ndarray, np.ndarray | None]:
@@ -208,7 +240,12 @@ def read_shard(json_path: Path) -> tuple[ShardDetails, np.ndarray, np.ndarray | 
             if arr.size > 0:
                 dtraj = arr
 
-    source = dict(shard.meta.provenance)
+    provenance_payload = getattr(shard.meta, "provenance", None)
+    source = (
+        dict(cast(Mapping[str, object], provenance_payload))
+        if isinstance(provenance_payload, Mapping)
+        else {}
+    )
     return (
         ShardDetails(meta=shard.meta, source=source),
         shard.X.astype(np.float64, copy=False),

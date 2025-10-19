@@ -255,7 +255,7 @@ class PlotsMixin:
         from inspect import signature
 
         params = signature(ck_test).parameters
-        ck_params = {"models": models}
+        ck_params: dict[str, Any] = {"models": models}
         if "n_metastable_sets" in params:
             ck_params["n_metastable_sets"] = int(max(2, n_macrostates))
             ckobj = ck_test(**ck_params)
