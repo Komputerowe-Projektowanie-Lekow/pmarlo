@@ -45,18 +45,35 @@ class TRAMMixin:
         msms = getattr(tram_model, "msms", None)
         cm_list = getattr(tram_model, "count_models", None)
 
-        if not (isinstance(msms, list) and 0 <= ref < len(msms)):
+        if isinstance(msms, list) and 0 <= ref < len(msms):
+            msm_ref = msms[ref]
+            self.transition_matrix = _np.asarray(msm_ref.transition_matrix, dtype=float)
+            stationary = getattr(msm_ref, "stationary_distribution", None)
+            if stationary is not None:
+                self.stationary_distribution = _np.asarray(stationary, dtype=float)
+
+            if isinstance(cm_list, list) and 0 <= ref < len(cm_list):
+                self.count_matrix = _np.asarray(
+                    cm_list[ref].count_matrix, dtype=float
+                )
+            return
+
+        msm_collection = getattr(tram_model, "msm_collection", None)
+        if msm_collection is None:
             raise RuntimeError("TRAM did not expose per-ensemble MSMs")
 
-        msm_ref = msms[ref]
-        self.transition_matrix = _np.asarray(msm_ref.transition_matrix, dtype=float)
-        if (
-            hasattr(msm_ref, "stationary_distribution")
-            and msm_ref.stationary_distribution is not None
-        ):
-            self.stationary_distribution = _np.asarray(
-                msm_ref.stationary_distribution, dtype=float
-            )
+        if hasattr(msm_collection, "select"):
+            msm_collection.select(ref)
 
-        if isinstance(cm_list, list) and 0 <= ref < len(cm_list):
-            self.count_matrix = _np.asarray(cm_list[ref].count_matrix, dtype=float)
+        transition = getattr(msm_collection, "transition_matrix", None)
+        if transition is None:
+            raise RuntimeError("TRAM did not yield a transition matrix")
+        self.transition_matrix = _np.asarray(transition, dtype=float)
+
+        stationary = getattr(msm_collection, "stationary_distribution", None)
+        if stationary is not None:
+            self.stationary_distribution = _np.asarray(stationary, dtype=float)
+
+        count_model = getattr(msm_collection, "count_model", None)
+        if count_model is not None and hasattr(count_model, "count_matrix"):
+            self.count_matrix = _np.asarray(count_model.count_matrix, dtype=float)

@@ -235,6 +235,7 @@ markers = [
   "benchmark: pytest-benchmark performance comparison tests",
   "slow: heavy tests within unit or integration",
   "data: tests for src/data",
+  "analysis: tests for src/analysis",
   "io: tests for src/io",
   "features: tests for src/features",
   "cv: tests for collective variable pipelines",
@@ -244,11 +245,14 @@ markers = [
   "demux: tests for src/demultiplexing",
   "msm: tests for src/markov_state_model",
   "replica: tests for src/replica_exchange (REMD)",
+  "samplers: tests for sampler implementations",
   "experiments: tests for src/experiments",
   "protein: tests for src/protein",
+  "pdbfixer: tests that require pdbfixer integration",
   "reporting: tests for src/reporting",
   "workflow: tests for src/workflow",
-  "utils: tests for src/utils"
+  "utils: tests for src/utils",
+  "tica: tests for TICA algorithms"
 ]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
