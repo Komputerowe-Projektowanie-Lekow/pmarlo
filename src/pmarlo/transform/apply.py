@@ -1,5 +1,6 @@
 import functools
 import logging
+import math
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -569,6 +570,32 @@ def _collect_history_metrics(history: Dict[str, Any]) -> Dict[str, Any]:
     ):
         if isinstance(history.get(key), list) and history.get(key):
             summary[key] = history[key]
+
+    best_val_score_value = history.get("best_val_score")
+    best_val_score: Optional[float]
+    if best_val_score_value is None:
+        best_val_score = None
+    else:
+        try:
+            best_val_score = float(best_val_score_value)
+        except Exception:
+            best_val_score = None
+        else:
+            if not math.isfinite(best_val_score):
+                best_val_score = None
+
+    def _coerce_nonnegative_int(value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        try:
+            coerced = int(value)
+        except Exception:
+            return None
+        return coerced if coerced >= 0 else None
+
+    summary["best_val_score"] = best_val_score
+    summary["best_epoch"] = _coerce_nonnegative_int(history.get("best_epoch"))
+    summary["best_tau"] = _coerce_nonnegative_int(history.get("best_tau"))
 
     return summary
 

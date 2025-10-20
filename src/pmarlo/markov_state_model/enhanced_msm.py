@@ -24,6 +24,7 @@ class EnhancedMSMProtocol(Protocol):
         topology_file: str | None = ...,
         temperatures: Sequence[float] | None = ...,
         output_dir: str | None = ...,
+        ignore_trajectory_errors: bool = ...,
         **kwargs: object,
     ) -> None: ...
 
@@ -104,6 +105,7 @@ class _RunAnalysisProto(Protocol):
         stride: int = ...,
         atom_selection: str | Sequence[int] | None = ...,
         chunk_size: int = ...,
+        ignore_trajectory_errors: bool = ...,
     ) -> EnhancedMSMProtocol: ...
 
 

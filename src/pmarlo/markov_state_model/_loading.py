@@ -43,6 +43,8 @@ class LoadingMixin:
         atom_indices = self._resolve_atom_indices(atom_selection)
 
         self.trajectories = []
+        ignore_errors = getattr(self, "ignore_trajectory_errors", False)
+
         for i, traj_file in enumerate(self.trajectory_files):
             joined = self._stream_single_trajectory(
                 traj_file=traj_file,
@@ -60,6 +62,12 @@ class LoadingMixin:
             self._maybe_load_demux_metadata(Path(traj_file))
 
         if not self.trajectories:
+            if ignore_errors:
+                logger.error(
+                    "No trajectories could be loaded; continuing with empty dataset"
+                )
+                self._update_total_frames()
+                return
             raise ValueError("No trajectories loaded successfully")
 
         logger.info(f"Total trajectories loaded: {len(self.trajectories)}")
@@ -118,14 +126,22 @@ class LoadingMixin:
         joined: md.Trajectory | None = None
         topo_path = resolve_project_path(self.topology_file)
 
-        for chunk in traj_io.iterload(
-            resolved_traj,
-            top=topo_path,
-            stride=stride,
-            atom_indices=atom_indices,
-            chunk=chunk_size,
-        ):
-            joined = chunk if joined is None else joined.join(chunk)
+        try:
+            for chunk in traj_io.iterload(
+                resolved_traj,
+                top=topo_path,
+                stride=stride,
+                atom_indices=atom_indices,
+                chunk=chunk_size,
+            ):
+                joined = chunk if joined is None else joined.join(chunk)
+        except Exception as exc:
+            if getattr(self, "ignore_trajectory_errors", False):
+                _logging.getLogger("pmarlo").error(
+                    "Failed to read trajectory %s: %s", resolved_traj, exc
+                )
+                return None
+            raise
         if joined is None:
             _logging.getLogger("pmarlo").warning(f"No frames loaded from {traj_file}")
         return joined

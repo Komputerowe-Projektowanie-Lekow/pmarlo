@@ -51,9 +51,9 @@ from .system_builder import (
     setup_metadynamics,
 )
 from .trajectory import ClosableDCDReporter
+from pmarlo.utils.path_utils import ensure_directory
 
 logger = logging.getLogger("pmarlo")
-
 
 class ReplicaExchange:
     """
@@ -349,6 +349,85 @@ class ReplicaExchange:
         duplication.
         """
         return exponential_temperature_ladder(min_temp, max_temp, n_replicas)
+
+    def _temperature_index(self, target: float) -> int:
+        if not self.temperatures:
+            raise ValueError("Temperature ladder is empty; call setup before export.")
+        target = float(target)
+        return min(
+            range(len(self.temperatures)),
+            key=lambda idx: abs(float(self.temperatures[idx]) - target),
+        )
+
+    def _replica_index_for_temperature(self, target: float) -> int:
+        temperature_index = self._temperature_index(target)
+        if temperature_index >= len(self.state_replicas):
+            raise IndexError(
+                "Replica mapping unavailable; ensure simulation has been executed."
+            )
+        replica_index = int(self.state_replicas[temperature_index])
+        if not (0 <= replica_index < len(self.replicas)):
+            raise IndexError(
+                f"Resolved replica index {replica_index} is outside the valid range."
+            )
+        return replica_index
+
+    def export_current_structure(
+        self,
+        destination: str | Path,
+        *,
+        temperature: float | None = None,
+        replica_index: int | None = None,
+        keep_atom_ids: bool = True,
+    ) -> Path:
+        """Write the current structure for a replica to a PDB file.
+
+        Parameters
+        ----------
+        destination:
+            Output PDB filepath.
+        temperature:
+            Target temperature (Kelvin) whose replica coordinates should be
+            exported. Mutually exclusive with ``replica_index``.
+        replica_index:
+            Explicit replica index to export. Overrides ``temperature``.
+        keep_atom_ids:
+            Whether to preserve atom serial numbers in the output PDB.
+
+        Returns
+        -------
+        Path
+            Resolved path to the written PDB file.
+        """
+        if temperature is not None and replica_index is not None:
+            raise ValueError("Specify either temperature or replica_index, not both.")
+
+        dest = Path(destination)
+        ensure_directory(dest.parent)
+
+        if replica_index is None:
+            target_temp = (
+                float(temperature) if temperature is not None else float(self.temperatures[0])
+            )
+            replica_index = self._replica_index_for_temperature(target_temp)
+        elif not (0 <= replica_index < len(self.replicas)):
+            raise IndexError(
+                f"Replica index {replica_index} is outside the valid range."
+            )
+
+        simulation = self.replicas[replica_index]
+        state = simulation.context.getState(
+            getPositions=True, enforcePeriodicBox=True
+        )
+        positions = state.getPositions()
+        with dest.open("w", encoding="utf-8") as handle:
+            PDBFile.writeFile(
+                simulation.topology,
+                positions,
+                handle,
+                keepIds=bool(keep_atom_ids),
+            )
+        return dest.resolve()
 
     def setup_replicas(self, bias_variables: Optional[List] = None):
         """

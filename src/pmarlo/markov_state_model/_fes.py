@@ -115,8 +115,19 @@ class FESMixin:
         return self.fes_data
 
     def _validate_fes_prerequisites(self: _HasFESAttrs) -> None:
+        if int(getattr(self, "n_states", 0)) <= 0:
+            raise ValueError(
+                "Cannot compute a free energy surface without defined microstates."
+            )
+
         if self.features is None or self.stationary_distribution is None:
             raise ValueError("Features and MSM must be computed first")
+
+        if np.asarray(self.stationary_distribution).size == 0:
+            raise ValueError(
+                "Stationary distribution is empty; MSM construction must succeed "
+                "before computing the free energy surface."
+            )
 
     def _map_stationary_to_frame_weights(self: _HasFESAttrs) -> np.ndarray:
         try:
