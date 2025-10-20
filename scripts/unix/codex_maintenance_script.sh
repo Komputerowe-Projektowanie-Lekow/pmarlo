@@ -37,43 +37,42 @@ echo "[Step 3/6] Updating core Python tools..."
 python -m pip install --upgrade pip setuptools wheel
 python -m pip install --upgrade "poetry>=2.1.3,<3.0"
 
-# 4) Update project dependencies
+# 4) Update project dependencies with pip
 echo "[Step 4/6] Updating project dependencies..."
-poetry config virtualenvs.create false
-poetry config virtualenvs.in-project false
-
-# Update lock file (remove old lock if Python version incompatibility detected)
-echo "  Updating lock file..."
-MAX_RETRIES=3
-for i in $(seq 1 $MAX_RETRIES); do
-    if poetry lock; then
-        break
-    elif [ $i -eq $MAX_RETRIES ]; then
-        echo "  Failed to update lock file after $MAX_RETRIES attempts"
-        echo "  Python version: $(python --version)"
-        echo "  If this is due to Python version incompatibility:"
-        echo "    1. Check pyproject.toml python version constraints"
-        echo "    2. Try: rm poetry.lock && poetry lock"
-        exit 1
-    else
-        echo "  Lock attempt $i failed, retrying..."
-        sleep 2
-    fi
-done
-
-# Sync dependencies (Poetry will skip pdbfixer on Python >= 3.12 via markers)
-echo "  Syncing dependencies..."
 PYTHON_VERSION=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
 echo "  Detected Python version: $PYTHON_VERSION"
 
-# Note: fixer extra includes pdbfixer (Python < 3.12 only), black, isort, and ruff
-# Poetry will automatically skip pdbfixer on Python >= 3.12 due to version markers
-poetry install \
-    --with dev,tests \
-    --extras "mlcv app analysis fixer" \
-    --no-interaction \
-    --no-ansi \
-    --sync
+# Upgrade pip and build tools
+echo "  Upgrading build tools..."
+python -m pip install --upgrade "setuptools>=69" "wheel" "setuptools_scm[toml]>=8.0"
+
+# Reinstall project with all extras (this updates dependencies)
+echo "  Reinstalling pmarlo with all dependencies..."
+if python -c "import sys; exit(0 if sys.version_info < (3, 12) else 1)"; then
+    echo "  Installing with fixer extra (includes pdbfixer)..."
+    python -m pip install --upgrade --force-reinstall --no-deps -e "."
+    python -m pip install -e ".[mlcv,app,analysis,fixer]"
+else
+    echo "  Installing with fixer extra (pdbfixer will be skipped on Python ${PYTHON_VERSION})..."
+    python -m pip install --upgrade --force-reinstall --no-deps -e "."
+    python -m pip install -e ".[mlcv,app,analysis,fixer]"
+fi
+
+# Update dev and test dependencies
+echo "  Updating dev and test dependencies..."
+python -m pip install --upgrade \
+    "pytest>=8.2" \
+    "pytest-xdist>=3.5" \
+    "pytest-randomly>=3.15" \
+    "pytest-testmon>=2.1" \
+    "pytest-picked>=0.5" \
+    "tox>=4.14" \
+    "pre-commit>=3.7" \
+    "mypy>=1.11" \
+    "hypothesis>=6.112" \
+    "filelock>=3.20"
+
+echo "  ✓ Dependencies updated successfully"
 
 # 5) Ensure CPU-only PyTorch (lightning comes from PyPI)
 echo "[Step 5/6] Ensuring CPU-only PyTorch..."

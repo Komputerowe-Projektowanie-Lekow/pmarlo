@@ -12,7 +12,7 @@ import logging
 from collections import defaultdict
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
 from pmarlo.utils.logging_utils import (
     StageTimer,
@@ -37,6 +37,133 @@ from .plan import TransformPlan, TransformStep
 from .runner import apply_plan
 
 logger = logging.getLogger(__name__)
+
+
+class _ProgressReporter:
+    def __init__(
+        self,
+        *,
+        overrides: Mapping[str, str],
+        stage_order: Sequence[str],
+        stage_map: Mapping[str, str],
+        stage_last_step: Mapping[str, str],
+        stage_duration_totals: Dict[str, float],
+        step_duration_totals: Dict[str, float],
+        format_step_name: Callable[[Mapping[str, str], str], str],
+    ) -> None:
+        self._overrides = overrides
+        self._stage_map = stage_map
+        self._stage_last_step = stage_last_step
+        self._stage_duration_totals = stage_duration_totals
+        self._step_duration_totals = step_duration_totals
+        self._format_step_name = format_step_name
+        self._stage_indices = {label: idx + 1 for idx, label in enumerate(stage_order)}
+        self._stage_total = len(stage_order)
+        self._current_stage: str | None = None
+
+    def __call__(self, event: str, payload: Mapping[str, Any]) -> None:
+        step_name = self._extract_step_name(payload)
+        if step_name is None:
+            return
+        label = self._stage_map.get(step_name)
+        if label is None:
+            self._report_untracked(event, step_name, payload)
+            return
+        self._report_stage(event, step_name, label, payload)
+
+    def _extract_step_name(self, payload: Mapping[str, Any]) -> str | None:
+        step_name = payload.get("step_name")
+        if isinstance(step_name, str):
+            return step_name
+        return None
+
+    def _report_untracked(
+        self, event: str, step_name: str, payload: Mapping[str, Any]
+    ) -> None:
+        step_display = self._format_step_name(self._overrides, step_name)
+        if event == "aggregate_step_start":
+            print(f"{step_display}...", flush=True)
+            logger.info(f"Entering transform step: {step_display}")
+            return
+        if event == "aggregate_step_end":
+            self._finalise_step(step_name, payload, step_display)
+
+    def _report_stage(
+        self,
+        event: str,
+        step_name: str,
+        label: str,
+        payload: Mapping[str, Any],
+    ) -> None:
+        step_display = self._format_step_name(self._overrides, step_name)
+        stage_display = self._stage_prefix(label)
+        if event == "aggregate_step_start":
+            self._handle_stage_start(label)
+            message = (
+                f"{stage_display} - {step_display}" if stage_display else step_display
+            )
+            print(f"{message}...", flush=True)
+            logger.info(f"Entering transform step: {message}")
+            return
+        if event == "aggregate_step_end":
+            self._finalise_stage_step(label, step_name, payload, step_display)
+
+    def _handle_stage_start(self, label: str) -> None:
+        if label == self._current_stage:
+            return
+        announce_stage_start(
+            label,
+            logger=logger,
+            index=self._stage_indices.get(label),
+            total=self._stage_total,
+        )
+        self._current_stage = label
+
+    def _finalise_step(
+        self, step_name: str, payload: Mapping[str, Any], step_display: str
+    ) -> None:
+        duration = payload.get("duration_s")
+        message = f"{step_display} complete"
+        if isinstance(duration, (int, float)):
+            duration_value = float(duration)
+            self._step_duration_totals[step_name] = duration_value
+            message += f" ({format_duration(duration_value)})"
+        print(message, flush=True)
+        logger.info(message)
+
+    def _finalise_stage_step(
+        self,
+        label: str,
+        step_name: str,
+        payload: Mapping[str, Any],
+        step_display: str,
+    ) -> None:
+        duration = payload.get("duration_s")
+        message = f"{step_display} complete"
+        if isinstance(duration, (int, float)):
+            duration_value = float(duration)
+            self._step_duration_totals[step_name] = duration_value
+            self._stage_duration_totals[label] += duration_value
+            message += f" ({format_duration(duration_value)})"
+        print(message, flush=True)
+        logger.info(message)
+        if self._stage_last_step.get(label) != step_name:
+            return
+        stage_elapsed = self._stage_duration_totals.get(label, 0.0)
+        details: list[str] = []
+        if stage_elapsed > 0.0:
+            details.append(f"Duration: {format_duration(stage_elapsed)}")
+        announce_stage_complete(
+            label,
+            logger=logger,
+            details=details or None,
+        )
+
+    def _stage_prefix(self, label: str) -> str:
+        index = self._stage_indices.get(label)
+        if index is None or self._stage_total == 0:
+            return label
+        return f"Stage {index}/{self._stage_total}: {label}"
 
 
 class Pipeline:
@@ -128,8 +255,27 @@ class Pipeline:
         logger.info(f"  Metadynamics: {self.use_metadynamics}")
         logger.info(f"  Checkpoints enabled: {self.enable_checkpoints}")
 
+        print("PMARLO Pipeline configuration:", flush=True)
+        print(f"  Input PDB: {self.pdb_file}", flush=True)
+        print(f"  Output directory: {self.output_dir}", flush=True)
+        print(f"  Steps: {self.steps}", flush=True)
+        print(f"  Replica exchange enabled: {self.use_replica_exchange}", flush=True)
+        print(f"  Metadynamics enabled: {self.use_metadynamics}", flush=True)
         if self.use_replica_exchange:
-            stage_sequence = (
+            replicas = len(self.temperatures)
+            temp_min = min(self.temperatures)
+            temp_max = max(self.temperatures)
+            print(f"  Replicas: {replicas}", flush=True)
+            print(
+                f"  Temperature range: {temp_min:.1f}K - {temp_max:.1f}K",
+                flush=True,
+            )
+        else:
+            print(f"  Temperature: {self.temperatures[0]:.1f}K", flush=True)
+        print(f"  Checkpoints enabled: {self.enable_checkpoints}", flush=True)
+
+        if self.use_replica_exchange:
+            stage_sequence: tuple[str, ...] = (
                 "Protein Preparation",
                 "System Setup",
                 "Simulation",
@@ -149,7 +295,7 @@ class Pipeline:
 
     def _build_transform_plan(self) -> TransformPlan:
         """Build a transform plan based on pipeline configuration."""
-        steps = []
+        steps: list[TransformStep] = []
 
         # Protein preparation
         steps.append(
@@ -207,7 +353,7 @@ class Pipeline:
     def _stage_header(self, label: str) -> str:
         index = self._stage_index_map.get(label)
         total = self._stage_total if index is not None else None
-        return format_stage_header(label, index=index, total=total)
+        return str(format_stage_header(label, index=index, total=total))
 
     def setup_protein(self, ph: float = 7.0) -> Protein:
         """
@@ -354,6 +500,186 @@ class Pipeline:
             "markov_state_model": self.markov_state_model,
         }
 
+    def _stage_definitions(self) -> list[tuple[str, set[str]]]:
+        if self.use_replica_exchange:
+            return [
+                ("Protein Preparation", {"PROTEIN_PREPARATION"}),
+                (
+                    "System Setup",
+                    {"SYSTEM_SETUP", "REPLICA_INITIALIZATION", "ENERGY_MINIMIZATION"},
+                ),
+                (
+                    "Simulation",
+                    {
+                        "GRADUAL_HEATING",
+                        "EQUILIBRATION",
+                        "PRODUCTION_SIMULATION",
+                        "TRAJECTORY_DEMUX",
+                    },
+                ),
+                (
+                    "MSM Analysis Setup",
+                    {"TRAJECTORY_ANALYSIS", "MSM_BUILD", "BUILD_ANALYSIS"},
+                ),
+            ]
+        return [
+            ("Protein Preparation", {"PROTEIN_PREPARATION"}),
+            ("Simulation", {"PRODUCTION_SIMULATION"}),
+            (
+                "MSM Analysis Setup",
+                {"TRAJECTORY_ANALYSIS", "MSM_BUILD", "BUILD_ANALYSIS"},
+            ),
+        ]
+
+    @staticmethod
+    def _step_name_overrides() -> dict[str, str]:
+        return {
+            "PROTEIN_PREPARATION": "Protein Preparation",
+            "SYSTEM_SETUP": "System Setup",
+            "REPLICA_INITIALIZATION": "Replica Initialization",
+            "ENERGY_MINIMIZATION": "Energy Minimization",
+            "GRADUAL_HEATING": "Gradual Heating",
+            "EQUILIBRATION": "Equilibration",
+            "PRODUCTION_SIMULATION": "Production Simulation",
+            "TRAJECTORY_DEMUX": "Trajectory Demultiplexing",
+            "TRAJECTORY_ANALYSIS": "Trajectory Analysis",
+            "MSM_BUILD": "MSM Analysis Setup",
+            "BUILD_ANALYSIS": "Analysis Artifact Build",
+        }
+
+    @staticmethod
+    def _resolve_stage_label(
+        stage_definitions: list[tuple[str, set[str]]], step_name: str
+    ) -> str:
+        for label, names in stage_definitions:
+            if step_name in names:
+                return label
+        return step_name.replace("_", " ").title()
+
+    @staticmethod
+    def _format_step_name(overrides: Mapping[str, str], step_name: str) -> str:
+        if step_name in overrides:
+            return overrides[step_name]
+        tokens = step_name.split("_")
+        acronyms = {"MSM", "REMD", "CV"}
+        return " ".join(
+            token if token.upper() in acronyms else token.capitalize()
+            for token in tokens
+        )
+
+    def _prepare_stage_context(
+        self, plan, stage_definitions: list[tuple[str, set[str]]]
+    ) -> tuple[dict[str, str], dict[str, str], list[str], dict[str, int]]:
+        stage_map: dict[str, str] = {}
+        stage_last_step: dict[str, str] = {}
+        stage_order = [label for label, _ in stage_definitions]
+        for step in plan.steps:
+            label = self._resolve_stage_label(stage_definitions, step.name)
+            stage_map[step.name] = label
+            stage_last_step[label] = step.name
+        stage_indices = {label: idx + 1 for idx, label in enumerate(stage_order)}
+        return stage_map, stage_last_step, stage_order, stage_indices
+
+    def _make_progress_handler(
+        self,
+        _stage_definitions: list[tuple[str, set[str]]],
+        stage_order: list[str],
+        stage_map: dict[str, str],
+        stage_last_step: dict[str, str],
+        stage_duration_totals: Dict[str, float],
+        step_duration_totals: Dict[str, float],
+    ) -> Callable[[str, Mapping[str, Any]], None]:
+        overrides = self._step_name_overrides()
+        reporter = _ProgressReporter(
+            overrides=overrides,
+            stage_order=stage_order,
+            stage_map=stage_map,
+            stage_last_step=stage_last_step,
+            stage_duration_totals=stage_duration_totals,
+            step_duration_totals=step_duration_totals,
+            format_step_name=self._format_step_name,
+        )
+        return reporter
+
+    @staticmethod
+    def _start_tracemalloc() -> tuple[Any | None, bool]:
+        try:
+            import tracemalloc as _tracemalloc  # type: ignore
+
+            if not _tracemalloc.is_tracing():
+                _tracemalloc.start()
+                return _tracemalloc, True
+            return _tracemalloc, False
+        except ImportError:  # pragma: no cover - optional tooling
+            return None, False
+
+    @staticmethod
+    def _stop_tracemalloc(tracemalloc_mod: Any | None, started: bool) -> None:
+        if tracemalloc_mod is None:
+            return
+        if started and tracemalloc_mod.is_tracing():
+            tracemalloc_mod.stop()
+
+    def _summarize_stage_timings(
+        self, stage_order: Sequence[str], stage_duration_totals: Mapping[str, float]
+    ) -> None:
+        if not stage_duration_totals:
+            return
+        print("Stage timing summary:", flush=True)
+        logger.info("Stage timing summary:")
+        for label in stage_order:
+            duration_value = stage_duration_totals.get(label, 0.0)
+            if duration_value <= 0.0:
+                continue
+            summary_line = f"- {label}: {format_duration(duration_value)}"
+            print(summary_line, flush=True)
+            logger.info(summary_line)
+
+    def _summarize_results(self, results: Mapping[str, Any]) -> None:
+        replica_info = results.get("replica_exchange")
+        if replica_info:
+            traj_files = replica_info.get("trajectory_files", [])
+            out_dir = replica_info.get("output_dir")
+            summary = (
+                f"Replica exchange produced {len(traj_files)} trajectories -> {out_dir}"
+            )
+            print(summary, flush=True)
+            logger.info(summary)
+
+        sim_info = results.get("simulation")
+        if sim_info:
+            traj_files = sim_info.get("trajectory_files", [])
+            out_dir = sim_info.get("output_dir")
+            summary = f"Simulation produced {len(traj_files)} trajectories -> {out_dir}"
+            print(summary, flush=True)
+            logger.info(summary)
+
+        msm_info = results.get("msm")
+        if msm_info:
+            n_states = msm_info.get("n_states", "unknown")
+            out_dir = msm_info.get("output_dir")
+            summary = f"MSM analysis available with {n_states} states -> {out_dir}"
+            print(summary, flush=True)
+            logger.info(summary)
+
+    def _report_throughput(self, total_elapsed: float) -> None:
+        if total_elapsed <= 0.0:
+            return
+        md_steps = int(max(0, self.steps))
+        if md_steps <= 0:
+            return
+        steps_per_sec = md_steps / total_elapsed
+        if self.use_replica_exchange:
+            replicas = max(1, len(self.temperatures))
+            throughput_msg = (
+                f"Simulation throughput: {md_steps} steps across {replicas} replicas "
+                f"(~{steps_per_sec:.1f} steps/s per replica)"
+            )
+        else:
+            throughput_msg = f"Simulation throughput: {md_steps} steps (~{steps_per_sec:.1f} steps/s)"
+        print(throughput_msg, flush=True)
+        logger.info(throughput_msg)
+
     def run(self) -> Dict[str, Any]:
         """
         Run the complete PMARLO pipeline using transform runner.
@@ -386,163 +712,23 @@ class Pipeline:
             "use_metadynamics": self.use_metadynamics,
         }
 
-        stage_map: Dict[str, str] = {}
-        stage_last_step: Dict[str, str] = {}
-
-        if self.use_replica_exchange:
-            stage_definitions: list[tuple[str, set[str]]] = [
-                ("Protein Preparation", {"PROTEIN_PREPARATION"}),
-                (
-                    "System Setup",
-                    {"SYSTEM_SETUP", "REPLICA_INITIALIZATION", "ENERGY_MINIMIZATION"},
-                ),
-                (
-                    "Simulation",
-                    {
-                        "GRADUAL_HEATING",
-                        "EQUILIBRATION",
-                        "PRODUCTION_SIMULATION",
-                        "TRAJECTORY_DEMUX",
-                    },
-                ),
-                (
-                    "MSM Analysis Setup",
-                    {"TRAJECTORY_ANALYSIS", "MSM_BUILD", "BUILD_ANALYSIS"},
-                ),
-            ]
-        else:
-            stage_definitions = [
-                ("Protein Preparation", {"PROTEIN_PREPARATION"}),
-                ("Simulation", {"PRODUCTION_SIMULATION"}),
-                (
-                    "MSM Analysis Setup",
-                    {"TRAJECTORY_ANALYSIS", "MSM_BUILD", "BUILD_ANALYSIS"},
-                ),
-            ]
-
-        stage_order = [label for label, _ in stage_definitions]
-
-        def _resolve_stage_label(step_name: str) -> str:
-            for label, names in stage_definitions:
-                if step_name in names:
-                    return label
-            return step_name.replace("_", " ").title()
-
-        step_name_overrides = {
-            "PROTEIN_PREPARATION": "Protein Preparation",
-            "SYSTEM_SETUP": "System Setup",
-            "REPLICA_INITIALIZATION": "Replica Initialization",
-            "ENERGY_MINIMIZATION": "Energy Minimization",
-            "GRADUAL_HEATING": "Gradual Heating",
-            "EQUILIBRATION": "Equilibration",
-            "PRODUCTION_SIMULATION": "Production Simulation",
-            "TRAJECTORY_DEMUX": "Trajectory Demultiplexing",
-            "TRAJECTORY_ANALYSIS": "Trajectory Analysis",
-            "MSM_BUILD": "MSM Analysis Setup",
-            "BUILD_ANALYSIS": "Analysis Artifact Build",
-        }
-
-        def _format_step_name(step_name: str) -> str:
-            if step_name in step_name_overrides:
-                return step_name_overrides[step_name]
-            tokens = step_name.split("_")
-            acronyms = {"MSM", "REMD", "CV"}
-            return " ".join(
-                token if token.upper() in acronyms else token.capitalize()
-                for token in tokens
-            )
-
-        for step in plan.steps:
-            label = _resolve_stage_label(step.name)
-            stage_map[step.name] = label
-            stage_last_step[label] = step.name
-
-        stage_indices = {label: idx + 1 for idx, label in enumerate(stage_order)}
-        stage_total = len(stage_order)
-        current_stage: str | None = None
         stage_duration_totals: Dict[str, float] = defaultdict(float)
         step_duration_totals: Dict[str, float] = {}
-
-        def _stage_prefix(label: str | None) -> str:
-            if label is None:
-                return ""
-            index = stage_indices.get(label)
-            if index is None:
-                return label
-            return f"Stage {index}/{stage_total}: {label}"
-
-        def _progress(event: str, payload: Dict[str, Any]) -> None:
-            nonlocal current_stage
-            step_name = payload.get("step_name")
-            if not isinstance(step_name, str):
-                return
-            label = stage_map.get(step_name)
-            if label is None:
-                step_display = _format_step_name(step_name)
-                if event == "aggregate_step_start":
-                    print(f"{step_display}...", flush=True)
-                    logger.info(f"Entering transform step: {step_display}")
-                elif event == "aggregate_step_end":
-                    duration = payload.get("duration_s")
-                    message = f"{step_display} complete"
-                    if isinstance(duration, (int, float)):
-                        step_duration_totals[step_name] = float(duration)
-                        message += f" ({format_duration(float(duration))})"
-                    print(message, flush=True)
-                    logger.info(message)
-                return
-            step_display = _format_step_name(step_name)
-            stage_display = _stage_prefix(label)
-            if event == "aggregate_step_start":
-                if label != current_stage:
-                    announce_stage_start(
-                        label,
-                        logger=logger,
-                        index=stage_indices.get(label),
-                        total=stage_total,
-                    )
-                    current_stage = label
-                message = (
-                    f"{stage_display} - {step_display}"
-                    if stage_display
-                    else step_display
-                )
-                print(f"{message}...", flush=True)
-                logger.info(f"Entering transform step: {message}")
-            elif event == "aggregate_step_end":
-                duration = payload.get("duration_s")
-                message = f"{step_display} complete"
-                if isinstance(duration, (int, float)):
-                    step_duration_totals[step_name] = float(duration)
-                    stage_duration_totals[label] += float(duration)
-                    message += f" ({format_duration(float(duration))})"
-                print(message, flush=True)
-                logger.info(message)
-                if stage_last_step.get(label) == step_name:
-                    stage_elapsed = stage_duration_totals.get(label, 0.0)
-                    details_lines = []
-                    if stage_elapsed > 0.0:
-                        details_lines.append(
-                            f"Duration: {format_duration(stage_elapsed)}"
-                        )
-                    announce_stage_complete(
-                        label,
-                        logger=logger,
-                        details=details_lines or None,
-                    )
+        stage_definitions = self._stage_definitions()
+        stage_map, stage_last_step, stage_order, _ = self._prepare_stage_context(
+            plan, stage_definitions
+        )
+        progress = self._make_progress_handler(
+            stage_definitions,
+            stage_order,
+            stage_map,
+            stage_last_step,
+            stage_duration_totals,
+            step_duration_totals,
+        )
 
         pipeline_start = perf_counter()
-        tracemalloc_mod = None
-        tracemalloc_started = False
-        try:
-            import tracemalloc as _tracemalloc  # type: ignore
-
-            tracemalloc_mod = _tracemalloc
-            if not tracemalloc_mod.is_tracing():
-                tracemalloc_mod.start()
-                tracemalloc_started = True
-        except ImportError:  # pragma: no cover - optional tooling
-            tracemalloc_mod = None
+        tracemalloc_mod, tracemalloc_started = self._start_tracemalloc()
 
         try:
             # Run the pipeline using transform runner with optional checkpointing
@@ -551,7 +737,7 @@ class Pipeline:
             final_context = apply_plan(
                 plan=plan,
                 data=initial_context,
-                progress_callback=_progress,
+                progress_callback=progress,
                 checkpoint_dir=checkpoint_dir,
                 run_id=self.checkpoint_id,
             )
@@ -572,81 +758,25 @@ class Pipeline:
             print(total_elapsed_msg, flush=True)
             logger.info(total_elapsed_msg)
 
-            if total_elapsed > 0.0:
-                md_steps = int(max(0, self.steps))
-                if md_steps > 0:
-                    steps_per_sec = md_steps / total_elapsed
-                    if self.use_replica_exchange:
-                        replicas = max(1, len(self.temperatures))
-                        throughput_msg = (
-                            f"Simulation throughput: {md_steps} steps across "
-                            f"{replicas} replicas (~{steps_per_sec:.1f} steps/s per replica)"
-                        )
-                    else:
-                        throughput_msg = (
-                            f"Simulation throughput: {md_steps} steps "
-                            f"(~{steps_per_sec:.1f} steps/s)"
-                        )
-                    print(throughput_msg, flush=True)
-                    logger.info(throughput_msg)
-
-            if stage_duration_totals:
-                print("Stage timing summary:", flush=True)
-                logger.info("Stage timing summary:")
-                for label in stage_order:
-                    duration_value = stage_duration_totals.get(label, 0.0)
-                    if duration_value <= 0.0:
-                        continue
-                    summary_line = f"- {label}: {format_duration(duration_value)}"
-                    print(summary_line, flush=True)
-                    logger.info(summary_line)
+            self._report_throughput(total_elapsed)
+            self._summarize_stage_timings(stage_order, stage_duration_totals)
 
             peak_memory_mb: float | None = None
             if tracemalloc_mod is not None and tracemalloc_mod.is_tracing():
                 _current, peak_bytes = tracemalloc_mod.get_traced_memory()
                 peak_memory_mb = peak_bytes / (1024.0 * 1024.0)
-                if tracemalloc_started:
-                    tracemalloc_mod.stop()
+            self._stop_tracemalloc(tracemalloc_mod, tracemalloc_started)
             if peak_memory_mb is not None and peak_memory_mb > 0.0:
                 mem_msg = f"Peak memory usage (tracked): {peak_memory_mb:.1f} MB"
                 logger.info(mem_msg)
 
-            replica_info = results.get("replica_exchange")
-            if replica_info:
-                traj_files = replica_info.get("trajectory_files", [])
-                out_dir = replica_info.get("output_dir")
-                summary = f"Replica exchange produced {len(traj_files)} trajectories -> {out_dir}"
-                print(summary, flush=True)
-                logger.info(summary)
-
-            sim_info = results.get("simulation")
-            if sim_info:
-                traj_files = sim_info.get("trajectory_files", [])
-                out_dir = sim_info.get("output_dir")
-                summary = (
-                    f"Simulation produced {len(traj_files)} trajectories -> {out_dir}"
-                )
-                print(summary, flush=True)
-                logger.info(summary)
-
-            msm_info = results.get("msm")
-            if msm_info:
-                n_states = msm_info.get("n_states", "unknown")
-                out_dir = msm_info.get("output_dir")
-                summary = f"MSM analysis available with {n_states} states -> {out_dir}"
-                print(summary, flush=True)
-                logger.info(summary)
-
+            self._summarize_results(results)
             return results
 
         except Exception as e:
             logger.error(f"Pipeline failed: {e}")
-            if (
-                tracemalloc_mod is not None
-                and tracemalloc_started
-                and tracemalloc_mod.is_tracing()
-            ):
-                tracemalloc_mod.stop()
+            print("ERROR: Pipeline failed, see logs for details.", flush=True)
+            self._stop_tracemalloc(tracemalloc_mod, tracemalloc_started)
             emit_banner(
                 format_stage_header("PMARLO PIPELINE FAILED"),
                 logger=logger,

@@ -21,6 +21,7 @@ TorchScript module for execution at MD step time.
 """
 
 from dataclasses import dataclass
+from numbers import Real
 from typing import Iterable, List, Mapping, MutableMapping, Sequence
 
 import torch
@@ -70,6 +71,215 @@ def _as_int_sequence(values: Iterable[int], expected: int, *, label: str) -> Lis
     return items
 
 
+@dataclass(frozen=True)
+class _FeatureRecord:
+    name: str
+    feature_type: str
+    atoms: List[int]
+    weight: float
+    pbc: bool
+    position: int
+
+
+def _coerce_weight(raw_weight: object, feature_name: str) -> float:
+    if isinstance(raw_weight, Real):
+        return float(raw_weight)
+    if isinstance(raw_weight, str):
+        try:
+            return float(raw_weight)
+        except ValueError as exc:
+            raise FeatureSpecError(
+                f"weight for feature '{feature_name}' must be numeric"
+            ) from exc
+    raise FeatureSpecError(f"weight for feature '{feature_name}' must be numeric")
+
+
+def _parse_feature_entry(
+    entry: Mapping[str, object], position: int, default_pbc: bool
+) -> _FeatureRecord:
+    if not isinstance(entry, Mapping):
+        raise FeatureSpecError("each feature entry must be a mapping")
+    entry_map: MutableMapping[str, object] = dict(entry)
+    raw_type = entry_map.get("type")
+    if raw_type is None:
+        raise FeatureSpecError("feature entry missing 'type'")
+    feature_type = str(raw_type).strip().lower()
+    if feature_type == "torsion":
+        feature_type = "dihedral"
+
+    atoms_obj = (
+        entry_map.get("atom_indices")
+        or entry_map.get("atoms")
+        or entry_map.get("indices")
+    )
+    if atoms_obj is None:
+        raise FeatureSpecError(
+            "feature entry missing 'atom_indices' / 'atoms' / 'indices'"
+        )
+    if not isinstance(atoms_obj, Sequence):
+        raise FeatureSpecError("feature atoms must be a sequence of integers")
+    atoms = [int(v) for v in atoms_obj]
+
+    name_obj = entry_map.get("name")
+    feature_name = str(name_obj) if name_obj is not None else f"feature_{position}"
+    weight = _coerce_weight(entry_map.get("weight", 1.0), feature_name)
+    pbc_flag = bool(entry_map.get("pbc", default_pbc))
+    return _FeatureRecord(
+        name=feature_name,
+        feature_type=feature_type,
+        atoms=atoms,
+        weight=weight,
+        pbc=pbc_flag,
+        position=position,
+    )
+
+
+def _normalise_spec_input(
+    spec: Mapping[str, object] | Sequence[Mapping[str, object]],
+) -> tuple[Sequence[Mapping[str, object]], bool]:
+    if isinstance(spec, Mapping):
+        feature_entries = spec.get("features")
+        if feature_entries is None:
+            raise FeatureSpecError("feature spec mapping is missing 'features'")
+        if not isinstance(feature_entries, Sequence):
+            raise FeatureSpecError("feature list must be a sequence")
+        return feature_entries, bool(spec.get("use_pbc", True))
+    if not isinstance(spec, Sequence):
+        raise FeatureSpecError("feature list must be a sequence")
+    return spec, True
+
+
+class _FeatureCollector:
+    def __init__(self, default_pbc: bool) -> None:
+        self._default_pbc = default_pbc
+        self.feature_names: list[str] = []
+        self.feature_weights: list[float] = []
+        self.distance_pairs: list[list[int]] = []
+        self.distance_positions: list[int] = []
+        self.distance_pbc_flags: list[bool] = []
+        self.angle_triplets: list[list[int]] = []
+        self.angle_positions: list[int] = []
+        self.angle_pbc_flags: list[bool] = []
+        self.dihedral_quads: list[list[int]] = []
+        self.dihedral_positions: list[int] = []
+        self.dihedral_pbc_flags: list[bool] = []
+        self._max_index = -1
+        self._any_pbc = False
+        self._handlers = {
+            "distance": self._add_distance,
+            "angle": self._add_angle,
+            "dihedral": self._add_dihedral,
+        }
+
+    def add_entry(self, entry: Mapping[str, object], position: int) -> None:
+        record = _parse_feature_entry(entry, position, self._default_pbc)
+        self._register_metadata(record)
+        handler = self._handlers.get(record.feature_type)
+        if handler is None:
+            raise FeatureSpecError(f"unsupported feature type '{record.feature_type}'")
+        handler(record)
+
+    def _register_metadata(self, record: _FeatureRecord) -> None:
+        self.feature_names.append(record.name)
+        self.feature_weights.append(record.weight)
+        self._any_pbc = self._any_pbc or record.pbc
+        if record.atoms:
+            self._max_index = max(self._max_index, max(record.atoms))
+
+    def _add_distance(self, record: _FeatureRecord) -> None:
+        atoms = _as_int_sequence(record.atoms, 2, label="distance")
+        self.distance_pairs.append(atoms)
+        self.distance_positions.append(record.position)
+        self.distance_pbc_flags.append(record.pbc)
+
+    def _add_angle(self, record: _FeatureRecord) -> None:
+        atoms = _as_int_sequence(record.atoms, 3, label="angle")
+        self.angle_triplets.append(atoms)
+        self.angle_positions.append(record.position)
+        self.angle_pbc_flags.append(record.pbc)
+
+    def _add_dihedral(self, record: _FeatureRecord) -> None:
+        atoms = _as_int_sequence(record.atoms, 4, label="dihedral")
+        self.dihedral_quads.append(atoms)
+        self.dihedral_positions.append(record.position)
+        self.dihedral_pbc_flags.append(record.pbc)
+
+    @staticmethod
+    def _tensor_or_empty(
+        values: Sequence[Sequence[int]] | Sequence[int] | Sequence[bool],
+        *,
+        dtype: torch.dtype,
+        device: torch.device,
+        width: int | None = None,
+    ) -> Tensor:
+        if values:
+            return torch.as_tensor(values, dtype=dtype, device=device)
+        if width is None:
+            return torch.zeros((0,), dtype=dtype, device=device)
+        return torch.zeros((0, width), dtype=dtype, device=device)
+
+    def build(self) -> NormalizedFeatureSpec:
+        if not self.feature_names:
+            raise FeatureSpecError(
+                "feature specification must contain at least one entry"
+            )
+
+        atom_count = self._max_index + 1
+        if atom_count <= 0:
+            raise FeatureSpecError("feature specification references no atoms")
+
+        device = torch.device("cpu")
+        long_dtype = torch.long
+
+        distance_pairs_tensor = self._tensor_or_empty(
+            self.distance_pairs, dtype=long_dtype, device=device, width=2
+        )
+        angle_triplets_tensor = self._tensor_or_empty(
+            self.angle_triplets, dtype=long_dtype, device=device, width=3
+        )
+        dihedral_quads_tensor = self._tensor_or_empty(
+            self.dihedral_quads, dtype=long_dtype, device=device, width=4
+        )
+
+        distance_pos_tensor = self._tensor_or_empty(
+            self.distance_positions, dtype=long_dtype, device=device
+        )
+        angle_pos_tensor = self._tensor_or_empty(
+            self.angle_positions, dtype=long_dtype, device=device
+        )
+        dihedral_pos_tensor = self._tensor_or_empty(
+            self.dihedral_positions, dtype=long_dtype, device=device
+        )
+
+        distance_pbc_tensor = self._tensor_or_empty(
+            self.distance_pbc_flags, dtype=torch.bool, device=device
+        )
+        angle_pbc_tensor = self._tensor_or_empty(
+            self.angle_pbc_flags, dtype=torch.bool, device=device
+        )
+        dihedral_pbc_tensor = self._tensor_or_empty(
+            self.dihedral_pbc_flags, dtype=torch.bool, device=device
+        )
+
+        return NormalizedFeatureSpec(
+            feature_names=tuple(self.feature_names),
+            use_pbc=bool(self._any_pbc),
+            atom_count=int(atom_count),
+            distance_pairs=distance_pairs_tensor,
+            distance_positions=distance_pos_tensor,
+            distance_pbc=distance_pbc_tensor,
+            angle_triplets=angle_triplets_tensor,
+            angle_positions=angle_pos_tensor,
+            angle_pbc=angle_pbc_tensor,
+            dihedral_quads=dihedral_quads_tensor,
+            dihedral_positions=dihedral_pos_tensor,
+            dihedral_pbc=dihedral_pbc_tensor,
+            feature_weights=torch.as_tensor(
+                self.feature_weights, dtype=torch.float32, device=device
+            ),
+        )
+
+
 def canonicalize_feature_spec(
     spec: Mapping[str, object] | Sequence[Mapping[str, object]],
 ) -> NormalizedFeatureSpec:
@@ -91,155 +301,11 @@ def canonicalize_feature_spec(
         Structured representation ready to be embedded inside TorchScript.
     """
 
-    if isinstance(spec, Mapping):
-        feature_entries = spec.get("features")
-        if feature_entries is None:
-            raise FeatureSpecError("feature spec mapping is missing 'features'")
-        features_iter = feature_entries  # type: ignore[assignment]
-        default_pbc = bool(spec.get("use_pbc", True))
-    else:
-        features_iter = spec
-        default_pbc = True
-
-    if not isinstance(features_iter, Sequence):
-        raise FeatureSpecError("feature list must be a sequence")
-
-    feature_names: list[str] = []
-    feature_weights: list[float] = []
-    distance_pairs: list[list[int]] = []
-    distance_positions: list[int] = []
-    distance_pbc_flags: list[bool] = []
-    angle_triplets: list[list[int]] = []
-    angle_positions: list[int] = []
-    angle_pbc_flags: list[bool] = []
-    dihedral_quads: list[list[int]] = []
-    dihedral_positions: list[int] = []
-    dihedral_pbc_flags: list[bool] = []
-
-    max_index = -1
-    any_pbc = False
+    features_iter, default_pbc = _normalise_spec_input(spec)
+    collector = _FeatureCollector(default_pbc)
     for position, entry in enumerate(features_iter):
-        if not isinstance(entry, Mapping):
-            raise FeatureSpecError("each feature entry must be a mapping")
-        entry_map: MutableMapping[str, object] = dict(entry)
-        raw_type = entry_map.get("type")
-        if raw_type is None:
-            raise FeatureSpecError("feature entry missing 'type'")
-        feature_type = str(raw_type).strip().lower()
-        atoms_obj = (
-            entry_map.get("atom_indices")
-            or entry_map.get("atoms")
-            or entry_map.get("indices")
-        )
-        if atoms_obj is None:
-            raise FeatureSpecError(
-                "feature entry missing 'atom_indices' / 'atoms' / 'indices'"
-            )
-        if isinstance(atoms_obj, Sequence):
-            atoms = _as_int_sequence(atoms_obj, len(atoms_obj), label=feature_type)
-        else:
-            raise FeatureSpecError("feature atoms must be a sequence of integers")
-        name_obj = entry_map.get("name")
-        feature_name = str(name_obj) if name_obj is not None else f"feature_{position}"
-        feature_names.append(feature_name)
-
-        weight_val = entry_map.get("weight", 1.0)
-        try:
-            feature_weights.append(float(weight_val))
-        except Exception as exc:
-            raise FeatureSpecError(
-                f"weight for feature '{feature_name}' must be numeric"
-            ) from exc
-
-        pbc_flag = bool(entry_map.get("pbc", default_pbc))
-        any_pbc = any_pbc or pbc_flag
-
-        if feature_type == "distance":
-            atoms = _as_int_sequence(atoms, 2, label="distance")
-            distance_pairs.append(atoms)
-            distance_positions.append(position)
-            distance_pbc_flags.append(pbc_flag)
-        elif feature_type == "angle":
-            atoms = _as_int_sequence(atoms, 3, label="angle")
-            angle_triplets.append(atoms)
-            angle_positions.append(position)
-            angle_pbc_flags.append(pbc_flag)
-        elif feature_type in {"dihedral", "torsion"}:
-            atoms = _as_int_sequence(atoms, 4, label="dihedral")
-            dihedral_quads.append(atoms)
-            dihedral_positions.append(position)
-            dihedral_pbc_flags.append(pbc_flag)
-        else:
-            raise FeatureSpecError(f"unsupported feature type '{feature_type}'")
-
-        max_index = max(max_index, max(atoms))
-
-    if not feature_names:
-        raise FeatureSpecError("feature specification must contain at least one entry")
-
-    atom_count = max_index + 1
-    if atom_count <= 0:
-        raise FeatureSpecError("feature specification references no atoms")
-
-    device = torch.device("cpu")
-    long_dtype = torch.long
-    distance_pairs_tensor = torch.as_tensor(
-        distance_pairs, dtype=long_dtype, device=device
-    )
-    angle_triplets_tensor = torch.as_tensor(
-        angle_triplets, dtype=long_dtype, device=device
-    )
-    dihedral_quads_tensor = torch.as_tensor(
-        dihedral_quads, dtype=long_dtype, device=device
-    )
-    distance_pos_tensor = torch.as_tensor(
-        distance_positions, dtype=long_dtype, device=device
-    )
-    angle_pos_tensor = torch.as_tensor(angle_positions, dtype=long_dtype, device=device)
-    dihedral_pos_tensor = torch.as_tensor(
-        dihedral_positions, dtype=long_dtype, device=device
-    )
-    distance_pbc_tensor = torch.as_tensor(
-        distance_pbc_flags, dtype=torch.bool, device=device
-    )
-    angle_pbc_tensor = torch.as_tensor(angle_pbc_flags, dtype=torch.bool, device=device)
-    dihedral_pbc_tensor = torch.as_tensor(
-        dihedral_pbc_flags, dtype=torch.bool, device=device
-    )
-
-    if distance_pairs_tensor.numel() == 0:
-        distance_pairs_tensor = torch.zeros((0, 2), dtype=long_dtype, device=device)
-        distance_pbc_tensor = torch.zeros((0,), dtype=torch.bool, device=device)
-    if angle_triplets_tensor.numel() == 0:
-        angle_triplets_tensor = torch.zeros((0, 3), dtype=long_dtype, device=device)
-        angle_pbc_tensor = torch.zeros((0,), dtype=torch.bool, device=device)
-    if dihedral_quads_tensor.numel() == 0:
-        dihedral_quads_tensor = torch.zeros((0, 4), dtype=long_dtype, device=device)
-        dihedral_pbc_tensor = torch.zeros((0,), dtype=torch.bool, device=device)
-    if distance_pos_tensor.numel() == 0:
-        distance_pos_tensor = torch.zeros((0,), dtype=long_dtype, device=device)
-    if angle_pos_tensor.numel() == 0:
-        angle_pos_tensor = torch.zeros((0,), dtype=long_dtype, device=device)
-    if dihedral_pos_tensor.numel() == 0:
-        dihedral_pos_tensor = torch.zeros((0,), dtype=long_dtype, device=device)
-
-    return NormalizedFeatureSpec(
-        feature_names=tuple(feature_names),
-        use_pbc=bool(any_pbc),
-        atom_count=int(atom_count),
-        distance_pairs=distance_pairs_tensor,
-        distance_positions=distance_pos_tensor,
-        distance_pbc=distance_pbc_tensor,
-        angle_triplets=angle_triplets_tensor,
-        angle_positions=angle_pos_tensor,
-        angle_pbc=angle_pbc_tensor,
-        dihedral_quads=dihedral_quads_tensor,
-        dihedral_positions=dihedral_pos_tensor,
-        dihedral_pbc=dihedral_pbc_tensor,
-        feature_weights=torch.as_tensor(
-            feature_weights, dtype=torch.float32, device=device
-        ),
-    )
+        collector.add_entry(entry, position)
+    return collector.build()
 
 
 class TorchscriptFeatureExtractor(nn.Module):

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
@@ -67,12 +67,16 @@ def export_cv_bias_potential(
     history: dict[str, Any],
     output_dir: str | Path,
     *,
-    feature_spec: Mapping[str, Any] | Sequence[Mapping[str, Any]],
+    feature_spec: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None,
     model_name: str = "deeptica_cv_bias",
     bias_strength: float = 10.0,
     feature_names: Optional[list[str]] = None,
 ) -> CVModelBundle:
-    """Export a Deep-TICA network wrapped with TorchScript feature extraction and bias."""
+    """Export a Deep-TICA network wrapped with TorchScript feature extraction and bias.
+    
+    Creates a single TorchScript module: positions+box → features → CVs → bias energy.
+    See example_programs/app_usecase/app/CV_INTEGRATION_GUIDE.md for usage.
+    """
 
     from pmarlo.features.deeptica.cv_bias_potential import create_cv_bias_potential
 
@@ -84,12 +88,20 @@ def export_cv_bias_potential(
     if scaler is None:
         raise ValueError("scaler cannot be None")
 
+    if feature_spec is None:
+        from pmarlo.settings import load_feature_spec
+
+        spec_dict, feature_spec_hash = load_feature_spec()
+    else:
+        spec_dict = feature_spec
+        feature_spec_hash = _hash_feature_spec(_json_compatible(spec_dict))
+
     scaler_mean = np.asarray(getattr(scaler, "mean_", []), dtype=np.float32)
     scaler_scale = np.asarray(getattr(scaler, "scale_", []), dtype=np.float32)
     if scaler_mean.size == 0 or scaler_scale.size == 0:
         raise ValueError("scaler must expose non-empty mean_ and scale_ arrays")
 
-    normalized_spec = canonicalize_feature_spec(feature_spec)
+    normalized_spec = canonicalize_feature_spec(spec_dict)
     if normalized_spec.n_features != int(scaler_mean.shape[0]):
         raise ValueError(
             "feature specification defines "
@@ -97,8 +109,7 @@ def export_cv_bias_potential(
             f"{int(scaler_mean.shape[0])}"
         )
 
-    spec_payload = _json_compatible(feature_spec)
-    feature_spec_hash = _hash_feature_spec(spec_payload)
+    spec_payload = _json_compatible(spec_dict)
 
     feature_extractor = build_feature_extractor_module(normalized_spec)
     feature_extractor.eval()

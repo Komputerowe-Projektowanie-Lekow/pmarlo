@@ -196,6 +196,14 @@ class ReplicaExchange:
         self.acceptance_matrix: Optional[np.ndarray] = None
         self.replica_visit_counts: Optional[np.ndarray] = None
 
+        # CV bias monitoring (see Prompt 3: periodic logging every 1000 steps)
+        self._bias_log_interval: int = 1000
+        self._cv_monitor_module = None
+        self._bias_energy_stats = None
+        self._bias_cv_stats = None
+        self._bias_steps_completed = 0
+        self._bias_next_log = 0
+
         logger.info(f"Initialized REMD with {self.n_replicas} replicas")
         logger.info(
             (
@@ -407,6 +415,33 @@ class ReplicaExchange:
         self.metadynamics = setup_metadynamics(
             system, bias_variables, self.temperatures[0], self.output_dir
         )
+
+        # Initialize CV monitoring if model path provided
+        if cv_model_path is not None:
+            try:
+                import torch
+                info = load_cv_model_info(
+                    Path(cv_model_path).parent, Path(cv_model_path).stem
+                )
+                cv_dim = int(info.get("config", {}).get("cv_dim", 0))
+                if cv_dim <= 0:
+                    raise ValueError("cv_dim metadata missing from CV model config.")
+                self._cv_monitor_module = torch.jit.load(
+                    str(cv_model_path), map_location="cpu"
+                )
+                self._cv_monitor_module.eval()
+                self._bias_energy_stats = RunningStats(dim=1)
+                self._bias_cv_stats = RunningStats(dim=cv_dim)
+                self._bias_steps_completed = 0
+                self._bias_next_log = self._bias_log_interval
+                logger.info("CV monitoring initialized (logging interval: %d steps)", self._bias_log_interval)
+            except Exception as exc:
+                logger.warning(
+                    "Unable to initialise CV monitoring for logging: %s", exc
+                )
+                self._cv_monitor_module = None
+                self._bias_energy_stats = None
+                self._bias_cv_stats = None
         platform, platform_properties = select_platform_and_properties(
             logger, prefer_deterministic=True if self.random_seed is not None else False
         )
@@ -1747,6 +1782,55 @@ class ReplicaExchange:
                     )
                 else:
                     raise
+        self._update_bias_monitor()
+
+    def _update_bias_monitor(self) -> None:
+        if (
+            self._cv_monitor_module is None
+            or self._bias_energy_stats is None
+            or self._bias_cv_stats is None
+        ):
+            return
+        import torch
+
+        for replica in self.replicas:
+            state = replica.context.getState(
+                getPositions=True, getEnergy=True, groups={1}
+            )
+            energy = state.getPotentialEnergy().value_in_unit(
+                unit.kilojoules_per_mole
+            )
+            self._bias_energy_stats.update(np.array([energy]))
+            positions = np.array(
+                state.getPositions(asNumpy=True).value_in_unit(unit.nanometer)
+            )
+            pos_tensor = torch.tensor(positions, dtype=torch.float32)
+            try:
+                box_vectors = state.getPeriodicBoxVectors(asNumpy=True)
+                box = torch.tensor(box_vectors, dtype=torch.float32)
+            except Exception:
+                box = torch.eye(3, dtype=torch.float32)
+            with torch.inference_mode():
+                cvs = self._cv_monitor_module.compute_cvs(pos_tensor, box)
+            cv_values = cvs.detach().cpu().numpy()
+            if cv_values.ndim > 1:
+                cv_vector = cv_values.mean(axis=0)
+            else:
+                cv_vector = cv_values
+            self._bias_cv_stats.update(cv_vector)
+        self._bias_steps_completed += self.exchange_frequency
+        if self._bias_steps_completed >= self._bias_next_log:
+            mean_e, std_e = self._bias_energy_stats.summary()
+            mean_cv, std_cv = self._bias_cv_stats.summary()
+            logger.info(
+                "Bias stats after %d steps: energy mean=%.6f std=%.6f; CV mean=%s std=%s",
+                self._bias_steps_completed,
+                float(mean_e[0]),
+                float(std_e[0]),
+                np.array2string(mean_cv, precision=4),
+                np.array2string(std_cv, precision=4),
+            )
+            self._bias_next_log += self._bias_log_interval
 
     def _precompute_energies(self) -> List[Any]:
         energies: List[Any] = []
@@ -1852,6 +1936,12 @@ class ReplicaExchange:
         logger.info(f"Total exchanges attempted: {self.exchange_attempts}")
         logger.info(f"Total exchanges accepted: {self.exchanges_accepted}")
         logger.info("=" * 60)
+        console_acceptance = (
+            f"Final exchange acceptance: {final_acceptance:.3f} "
+            f"({final_acceptance * 100:.1f}%)"
+        )
+        print(console_acceptance, flush=True)
+
         # Warn on poor acceptance
         if final_acceptance < 0.15 or final_acceptance > 0.6:
             logger.warning(
@@ -1860,6 +1950,13 @@ class ReplicaExchange:
                     "Consider increasing number of replicas or widening temperature range."
                 ),
                 final_acceptance,
+            )
+            print(
+                (
+                    "WARNING: Exchange acceptance outside recommended range "
+                    f"(observed {final_acceptance:.2f})."
+                ),
+                flush=True,
             )
 
         # Diffusion diagnostics
@@ -1874,6 +1971,13 @@ class ReplicaExchange:
                         "Consider wider T-range or more replicas."
                     ),
                     diff.get("mean_abs_disp_per_10k_steps", 0.0),
+                )
+                print(
+                    (
+                        "WARNING: Replica diffusion low "
+                        f"({diff.get('mean_abs_disp_per_10k_steps', 0.0):.2f} per 10k steps)."
+                    ),
+                    flush=True,
                 )
         except Exception:
             pass

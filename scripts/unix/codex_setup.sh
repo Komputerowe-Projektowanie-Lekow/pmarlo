@@ -47,52 +47,50 @@ git checkout -B development origin/development
 echo "[Step 5/8] Installing CPU-only PyTorch..."
 python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.2,<3.0"
 
-# 6) Configure Poetry and install project dependencies
-echo "[Step 6/8] Installing project with Poetry..."
-poetry config virtualenvs.create false
-poetry config virtualenvs.in-project false
-
-# Lock dependencies (remove old lock first to regenerate with current pyproject.toml)
-echo "  Locking dependencies..."
-if [ -f poetry.lock ]; then
-    echo "  Removing old poetry.lock to regenerate with updated constraints..."
-    rm poetry.lock
-fi
-
-MAX_RETRIES=3
-for i in $(seq 1 $MAX_RETRIES); do
-    if poetry lock ; then
-        break
-    elif [ $i -eq $MAX_RETRIES ]; then
-        echo "  Failed to lock dependencies after $MAX_RETRIES attempts"
-        echo "  Python version: $(python --version)"
-        echo "  This may be due to Python version incompatibility."
-        exit 1
-    else
-        echo "  Lock attempt $i failed, retrying..."
-        sleep 2
-    fi
-done
-
-# Install with all extras (Poetry will skip pdbfixer on Python >= 3.12 via markers)
-echo "  Installing dependencies..."
+# 6) Install project dependencies with pip (better for restricted networks)
+echo "[Step 6/8] Installing project dependencies..."
 PYTHON_VERSION=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
 echo "  Detected Python version: $PYTHON_VERSION"
 
-# Note: fixer extra includes pdbfixer (Python < 3.12 only), black, isort, and ruff
-# Poetry will automatically skip pdbfixer on Python >= 3.12 due to version markers
-poetry install \
-    --with dev,tests \
-    --extras "mlcv app analysis fixer" \
-    --no-interaction \
-    --no-ansi
+# Install build dependencies
+echo "  Installing build system requirements..."
+python -m pip install --upgrade "setuptools>=69" "wheel" "setuptools_scm[toml]>=8.0"
+
+# Install the project with pip (reads pyproject.toml directly)
+# This works better in restricted network environments than Poetry
+echo "  Installing pmarlo with all dependencies..."
+if python -c "import sys; exit(0 if sys.version_info < (3, 12) else 1)"; then
+    # Python < 3.12: Install all extras including pdbfixer
+    echo "  Installing with fixer extra (includes pdbfixer)..."
+    python -m pip install -e ".[mlcv,app,analysis,fixer]"
+else
+    # Python >= 3.12: pdbfixer will be skipped automatically via markers
+    echo "  Installing with fixer extra (pdbfixer will be skipped on Python ${PYTHON_VERSION})..."
+    python -m pip install -e ".[mlcv,app,analysis,fixer]"
+fi
+
+# Install dev and test dependencies (not in pyproject.toml extras)
+echo "  Installing dev and test dependencies..."
+python -m pip install \
+    "pytest>=8.2" \
+    "pytest-xdist>=3.5" \
+    "pytest-randomly>=3.15" \
+    "pytest-testmon>=2.1" \
+    "pytest-picked>=0.5" \
+    "tox>=4.14" \
+    "pre-commit>=3.7" \
+    "mypy>=1.11" \
+    "hypothesis>=6.112" \
+    "filelock>=3.20"
+
+echo "  ✓ All dependencies installed successfully"
 
 # 7) Re-pin CPU PyTorch to ensure no CUDA builds were pulled
 echo "[Step 7/8] Re-pinning CPU-only PyTorch..."
 python -m pip install --force-reinstall --index-url https://download.pytorch.org/whl/cpu "torch>=2.2,<3.0"
 
 # 8) Run comprehensive smoke tests
-echo "[Step 8/8] Running smoke tests..."
+echo "[Step 8/9] Running smoke tests..."
 python - <<'PY'
 import sys
 
@@ -230,7 +228,14 @@ except ImportError as e:
 
 try:
     import ruff
-    print(f"✓ ruff: {ruff.__version__}")
+    # Ruff doesn't expose __version__, check via CLI
+    import subprocess
+    try:
+        result = subprocess.run(["ruff", "--version"], capture_output=True, text=True, timeout=5)
+        version = result.stdout.strip().split()[-1] if result.returncode == 0 else "installed"
+        print(f"✓ ruff: {version}")
+    except:
+        print(f"✓ ruff: installed")
 except ImportError as e:
     print(f"✗ ruff: FAILED - {e}")
     failures.append("ruff")
@@ -263,6 +268,85 @@ else:
     sys.exit(0)
 PY
 
+# 9) Verify pytest can find OpenMM and pmarlo
+echo "[Step 9/9] Verifying pytest environment..."
+python - <<'PY'
+import sys
+import os
+
+print("\n=== Pytest Environment Verification ===")
+
+# 1. Check sys.path
+print(f"\nPython executable: {sys.executable}")
+print(f"Python version: {sys.version}")
+print(f"\nPython path (first 5 entries):")
+for i, path in enumerate(sys.path[:5]):
+    print(f"  {i}: {path}")
+
+# 2. Verify OpenMM import (critical for replica exchange tests)
+print("\n=== Critical Imports for Replica Exchange ===")
+try:
+    import openmm
+    from openmm import app, unit
+    print(f"✓ openmm: {openmm.__version__}")
+    print(f"  - Location: {openmm.__file__}")
+except ImportError as e:
+    print(f"✗ openmm import FAILED: {e}")
+    sys.exit(1)
+
+# 3. Verify PMARLO import
+try:
+    import pmarlo
+    print(f"✓ pmarlo: {getattr(pmarlo, '__version__', 'unknown')}")
+    print(f"  - Location: {pmarlo.__file__}")
+except ImportError as e:
+    print(f"✗ pmarlo import FAILED: {e}")
+    sys.exit(1)
+
+# 4. Verify replica exchange module
+try:
+    from pmarlo.replica_exchange import ReplicaExchange, RemdConfig
+    print(f"✓ pmarlo.replica_exchange imports successful")
+except ImportError as e:
+    print(f"✗ pmarlo.replica_exchange import FAILED: {e}")
+    sys.exit(1)
+
+# 5. Verify pytest can run
+print("\n=== Pytest Availability ===")
+try:
+    import pytest
+    print(f"✓ pytest: {pytest.__version__}")
+    print(f"  - Location: {pytest.__file__}")
+except ImportError as e:
+    print(f"✗ pytest import FAILED: {e}")
+    sys.exit(1)
+
+# 6. Test that pytest can discover tests
+print("\n=== Test Discovery Check ===")
+test_file = "tests/integration/replica_exchange/test_simulation.py"
+if os.path.exists(test_file):
+    print(f"✓ Found test file: {test_file}")
+else:
+    print(f"⚠ Test file not found: {test_file}")
+
+print("\n" + "="*50)
+print("✓ Pytest environment is correctly configured!")
+print("  OpenMM, pmarlo, and pytest are all importable.")
+print("="*50)
+PY
+
+# Now actually run a quick pytest smoke test
+echo ""
+echo "Running quick pytest verification..."
+cd /workspace/pmarlo
+
+# Try to collect tests (don't run them, just verify pytest can see them)
+if python -m pytest --collect-only tests/integration/replica_exchange/test_simulation.py 2>&1 | grep -q "no tests ran\|ERROR"; then
+    echo "⚠ Warning: pytest collection had issues, but continuing..."
+else
+    echo "✓ pytest can discover replica exchange tests"
+fi
+
 echo ""
 echo "=========================================="
 echo "Setup Complete!"
@@ -272,8 +356,15 @@ echo "To use the environment:"
 echo "  source /workspace/.venv/bin/activate"
 echo ""
 echo "To run tests:"
-echo "  poetry run pytest"
+echo "  python -m pytest                    # Recommended (uses venv directly)"
+echo "  python -m pytest tests/unit -n auto # Run unit tests in parallel"
+echo ""
+echo "To run replica exchange tests:"
+echo "  python -m pytest tests/integration/replica_exchange/"
+echo "  python -m pytest tests/integration/replica_exchange/test_simulation.py -v"
 echo ""
 echo "To run quality checks:"
-echo "  poetry run tox"
+echo "  tox                                 # Run directly (no 'poetry run' needed)"
+echo ""
+echo "Note: Use 'python -m' commands instead of 'poetry run' since we installed with pip."
 echo ""

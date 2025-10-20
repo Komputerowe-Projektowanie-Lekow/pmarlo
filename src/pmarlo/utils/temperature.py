@@ -6,7 +6,7 @@ Helpers for consistently extracting temperature information from nested metadata
 
 import math
 from collections import deque
-from typing import Any, Iterable, Mapping, MutableSequence, Sequence
+from typing import Any, Iterable, Mapping
 
 _TEMPERATURE_KEYS = ("temperature_K", "temperature")
 _SEQUENCE_TYPES = (list, tuple, set)

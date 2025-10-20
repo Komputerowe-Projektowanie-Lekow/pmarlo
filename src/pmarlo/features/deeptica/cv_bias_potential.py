@@ -24,17 +24,19 @@ __all__ = ["CVBiasPotential", "HarmonicExpansionBias", "create_cv_bias_potential
 
 class HarmonicExpansionBias(nn.Module):
     """
-    Harmonic expansion bias for conformational exploration.
+    Harmonic restraint in collective variable space.
 
-    Applies a repulsive potential that pushes the system away from the CV origin,
-    encouraging exploration of diverse conformational states.
+    Applies a quadratic penalty proportional to squared CV values: E_bias = k·Σ(cv_i²).
+    This is a restraint, not an exploration bias—it encourages non-zero CV values but
+    does not guarantee better conformational sampling.
 
-    Bias potential: E_bias = k * sum(cv_i^2)
+    See example_programs/app_usecase/app/CV_REQUIREMENTS.md for physics discussion.
 
     Parameters
     ----------
     strength : float
-        Bias strength (force constant k) in kJ/mol
+        Bias strength (force constant k) in kJ/mol. Default 10.0 is a starting point;
+        tune based on your system (see CV_INTEGRATION_GUIDE.md).
     """
 
     def __init__(self, strength: float = 10.0) -> None:
@@ -53,12 +55,14 @@ class CVBiasPotential(nn.Module):
     """
     Wrap a Deep-TICA CV model with TorchScript feature extraction and biasing.
 
-    Architecture:
-        1. Extract molecular features directly from atomic positions
+    Architecture (all TorchScript, no Python per-step):
+        1. Extract molecular features directly from atomic positions (distances, angles, dihedrals)
         2. Scale features using fitted StandardScaler parameters
         3. Evaluate the Deep-TICA model to obtain CVs
-        4. Apply the configured bias potential to the CVs
-        5. Return the resulting bias energy (OpenMM computes forces via autograd)
+        4. Apply harmonic restraint: E = k·Σ(cv_i²)
+        5. Return energy in kJ/mol (OpenMM computes forces via automatic differentiation)
+
+    See example_programs/app_usecase/app/CV_INTEGRATION_GUIDE.md for usage guide.
     """
 
     def __init__(
@@ -154,6 +158,16 @@ class CVBiasPotential(nn.Module):
         if energy.dim() == 1:
             return energy
         raise RuntimeError("bias potential returned unexpected tensor shape")
+
+    @torch.jit.export
+    def compute_cvs(self, positions: Tensor, box: Tensor) -> Tensor:
+        if positions.dim() != 2 or positions.size(-1) != 3:
+            raise RuntimeError("positions tensor must have shape (N, 3)")
+        features = self.feature_extractor(positions, box)
+        if features.dim() == 1:
+            features = features.unsqueeze(0)
+        scaled = (features - self.scaler_mean) / self.scaler_scale
+        return self.cv_model(scaled)
 
     def get_metadata(self) -> Dict[str, Any]:
         return {

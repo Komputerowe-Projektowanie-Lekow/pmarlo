@@ -14,10 +14,9 @@ from deeptime.markov.tools.estimation.dense.transition_matrix import (
 
 from pmarlo import constants as const
 from pmarlo.utils import msm_utils as _shared_msm_utils
+from pmarlo.utils.msm_utils import ConnectedCountResult
 
 logger = logging.getLogger("pmarlo")
-
-ConnectedCountResult = _shared_msm_utils.ConnectedCountResult
 
 
 def candidate_lag_ladder(
@@ -27,9 +26,10 @@ def candidate_lag_ladder(
 ) -> list[int]:
     """Return the curated MSM lag ladder from :mod:`pmarlo.utils.msm_utils`."""
 
-    return _shared_msm_utils.candidate_lag_ladder(
+    ladder = _shared_msm_utils.candidate_lag_ladder(
         min_lag=min_lag, max_lag=max_lag, n_candidates=n_candidates
     )
+    return list(ladder)
 
 
 def ensure_connected_counts(
