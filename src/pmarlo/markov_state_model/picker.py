@@ -3,21 +3,42 @@ from __future__ import annotations
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
+from scipy import ndimage
 
 
 def find_local_minima_2d(F: np.ndarray) -> List[Tuple[int, int]]:
     """Find simple local minima in a 2D array by 8-neighborhood comparison."""
-    minima: List[Tuple[int, int]] = []
-    nx, ny = F.shape
-    for i in range(1, nx - 1):
-        for j in range(1, ny - 1):
-            val = F[i, j]
-            if not np.isfinite(val):
-                continue
-            neighbors = F[i - 1 : i + 2, j - 1 : j + 2]
-            if np.all(val <= neighbors) and np.any(val < neighbors):
-                minima.append((i, j))
-    return minima
+    array = np.asarray(F)
+    if array.ndim != 2:
+        raise ValueError("find_local_minima_2d expects a 2D array")
+
+    nx, ny = array.shape
+    if nx < 3 or ny < 3:
+        return []
+
+    interior_mask = np.zeros_like(array, dtype=bool)
+    interior_mask[1:-1, 1:-1] = True
+
+    finite_mask = np.isfinite(array)
+    if not np.any(finite_mask & interior_mask):
+        return []
+
+    min_filtered = ndimage.minimum_filter(
+        array, size=3, mode="constant", cval=np.inf
+    )
+    max_filtered = ndimage.maximum_filter(
+        array, size=3, mode="constant", cval=-np.inf
+    )
+
+    minima_mask = (
+        interior_mask
+        & finite_mask
+        & (array == min_filtered)
+        & (max_filtered > array)
+    )
+
+    minima_indices = np.argwhere(minima_mask)
+    return [(int(i), int(j)) for i, j in minima_indices]
 
 
 def pick_frames_around_minima(

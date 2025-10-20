@@ -726,6 +726,9 @@ class ITSMixin:
     def _deterministic_its_from_counts(
         self, lag: int, counts: np.ndarray, n_timescales: int
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        from deeptime.markov.tools.analysis import eigenvalues as _dt_eigenvalues
+        from deeptime.markov.tools.analysis import timescales as _dt_timescales
+
         C_rev = 0.5 * (counts + counts.T)
         row = C_rev.sum(axis=1, keepdims=True)
         with np.errstate(invalid="ignore"):
@@ -733,16 +736,49 @@ class ITSMixin:
         # Similarity transform to symmetric
         pi = np.maximum(T.sum(axis=1), const.NUMERIC_MIN_POSITIVE_STRICT)
         pi = pi / np.sum(pi)
-        sym = np.diag(np.sqrt(pi)) @ T @ np.diag(1.0 / np.sqrt(pi))
-        sym = 0.5 * (sym + sym.T)
-        w = np.sort(np.linalg.eigvalsh(sym))[::-1]
-        eig = w[1 : n_timescales + 1]
-        eig = np.clip(
-            np.abs(eig), const.NUMERIC_MIN_POSITIVE, 1.0 - const.NUMERIC_MIN_POSITIVE
+        n_states = T.shape[0]
+        k_request = n_timescales + 1 if n_timescales > 0 else None
+        if k_request is not None and k_request > n_states:
+            k_eval = None
+        else:
+            k_eval = k_request
+        eigvals = _dt_eigenvalues(T, k=k_eval, reversible=True, mu=pi)
+        eigvals = np.asarray(eigvals, dtype=complex)
+        eigvals = eigvals[np.argsort(-np.real(eigvals))]
+        slow = (
+            np.real(eigvals[1 : 1 + n_timescales])
+            if n_timescales > 0
+            else np.empty((0,), dtype=float)
+        )
+        slow = np.clip(
+            np.abs(slow), const.NUMERIC_MIN_POSITIVE, 1.0 - const.NUMERIC_MIN_POSITIVE
         )
         evals = np.zeros((n_timescales,), dtype=float)
-        evals[: eig.shape[0]] = eig
-        ts_arr = safe_timescales(lag, evals)
+        evals[: slow.shape[0]] = slow
+
+        if n_timescales > 0:
+            if k_request is None:
+                k_times = None
+            else:
+                k_times = min(n_states, n_timescales + 1)
+            ts_raw = _dt_timescales(
+                T,
+                tau=int(max(1, lag)),
+                k=k_times,
+                reversible=True,
+                mu=pi,
+            )
+            ts_raw = np.asarray(ts_raw, dtype=float)
+            ts_arr = ts_raw[1 : 1 + n_timescales]
+        else:
+            ts_arr = np.empty((0,), dtype=float)
+        if ts_arr.shape[0] < n_timescales:
+            ts_arr = np.pad(
+                ts_arr,
+                (0, n_timescales - ts_arr.shape[0]),
+                mode="constant",
+                constant_values=np.nan,
+            )
         rates = np.reciprocal(
             ts_arr, where=np.isfinite(ts_arr), out=np.full_like(ts_arr, np.nan)
         )

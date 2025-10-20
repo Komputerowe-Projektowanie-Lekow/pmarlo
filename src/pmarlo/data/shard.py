@@ -19,6 +19,15 @@ from pmarlo.utils.validation import require
 __all__ = ["write_shard", "read_shard", "_sha256_bytes"]
 
 
+def _normalise_float_dtype(dtype: np.dtype[Any] | type | str) -> np.dtype[Any]:
+    """Return a floating point ``numpy.dtype`` instance for ``dtype``."""
+
+    resolved = np.dtype(dtype)
+    if resolved.kind != "f":
+        raise TypeError("dtype must be a floating-point dtype")
+    return resolved
+
+
 @dataclass(frozen=True)
 class ShardDetails:
     """Lightweight adapter exposing shard metadata for downstream consumers."""
@@ -133,25 +142,26 @@ def _prepare_bias_array(
     n_frames: int,
     *,
     target: Dict[str, object],
+    dtype: np.dtype[Any],
 ) -> np.ndarray | None:
     if bias_potential is None:
         target["has_bias"] = False
         return None
 
-    bias_array = np.asarray(bias_potential, dtype=np.float32).reshape(-1)
+    bias_array = np.asarray(bias_potential, dtype=dtype).reshape(-1)
     if bias_array.shape[0] != n_frames:
         raise ValueError("bias_potential length must match number of frames")
     target["has_bias"] = True
     return bias_array
 
 
-def _stack_columns(cvs: Dict[str, np.ndarray]) -> np.ndarray:
+def _stack_columns(cvs: Dict[str, np.ndarray], *, dtype: np.dtype[Any]) -> np.ndarray:
     if not cvs:
         raise ValueError("cvs dictionary must contain at least one column")
     arrays = []
     length = None
     for key in cvs:
-        arr = np.asarray(cvs[key], dtype=np.float32).reshape(-1)
+        arr = np.asarray(cvs[key], dtype=dtype).reshape(-1)
         if length is None:
             length = arr.shape[0]
         elif arr.shape[0] != length:
@@ -171,12 +181,17 @@ def write_shard(
     source: Dict[str, object] | None = None,
     *,
     bias_potential: np.ndarray | None = None,
+    compute_arrays_hash: bool = False,
+    dtype: np.dtype[Any] | type | str = np.float32,
 ) -> Path:
     """Write a shard using the canonical NPZ+JSON schema."""
 
     out_dir = Path(out_dir)
     ensure_directory(out_dir)
 
+    dtype = _normalise_float_dtype(dtype)
+
+    source_payload = dict(source or {})
     source_dict = _ensure_source_dict(source)
     core = _normalise_source_metadata(source_dict)
 
@@ -184,7 +199,7 @@ def write_shard(
     ordered_periodic = _resolve_periodic_flags(column_order, periodic or {})
 
     t_kelvin = float(temperature)
-    X = _stack_columns(cvs)
+    X = _stack_columns(cvs, dtype=dtype)
     n_frames = X.shape[0]
 
     source_dict.update(
@@ -205,11 +220,25 @@ def write_shard(
         columns=tuple(str(k) for k in column_order),
     )
 
-    bias_array = _prepare_bias_array(bias_potential, n_frames, target=source_dict)
+    bias_array = _prepare_bias_array(
+        bias_potential, n_frames, target=source_dict, dtype=dtype
+    )
+
+    dtraj_arr: np.ndarray | None = None
+    if dtraj is not None:
+        dtraj_arr = np.asarray(dtraj, dtype=np.int32).reshape(-1)
+        if dtraj_arr.shape[0] != n_frames:
+            raise ValueError("dtraj length must match number of frames")
+
+    if compute_arrays_hash:
+        arrays_for_hash = [np.asarray(X, dtype=np.float32, order="C")]
+        if dtraj_arr is not None:
+            arrays_for_hash.append(dtraj_arr)
+        source_dict["arrays_hash"] = _sha256_bytes(*arrays_for_hash)
 
     provenance = dict(source_dict)
     if "source" not in provenance:
-        provenance["source"] = dict(source)
+        provenance["source"] = dict(source_payload)
 
     meta = ShardMeta(
         schema_version=const.SHARD_SCHEMA_VERSION,
@@ -246,7 +275,7 @@ def write_shard(
 
     shard_obj = Shard(
         meta=meta,
-        X=X.astype(np.float32, copy=False),
+        X=X.astype(dtype, copy=False),
         t_index=np.arange(n_frames, dtype=np.int64),
         dt_ps=meta.dt_ps,
         energy=None,
@@ -259,8 +288,7 @@ def write_shard(
         out_dir / f"{meta.shard_id}.json",
     )
 
-    if dtraj is not None:
-        dtraj_arr = np.asarray(dtraj, dtype=np.int32).reshape(-1)
+    if dtraj_arr is not None:
         with np.load(npz_path) as data:
             payload = {name: data[name] for name in data.files}
         payload["dtraj"] = dtraj_arr
@@ -269,8 +297,15 @@ def write_shard(
     return Path(json_path)
 
 
-def read_shard(json_path: Path) -> tuple[ShardDetails, np.ndarray, np.ndarray | None]:
-    """Read a shard in canonical format and return (meta, X, dtraj)."""
+def read_shard(
+    json_path: Path,
+    *,
+    dtype: np.dtype[Any] | type | str = np.float32,
+    validate_arrays_hash: bool = False,
+) -> tuple[ShardDetails, np.ndarray, np.ndarray | None]:
+    """Read a shard in canonical format and return ``(meta, X, dtraj)``."""
+
+    dtype = _normalise_float_dtype(dtype)
 
     json_path = Path(json_path)
     shard = read_shard_npz_json(json_path.with_suffix(".npz"), json_path)
@@ -288,9 +323,23 @@ def read_shard(json_path: Path) -> tuple[ShardDetails, np.ndarray, np.ndarray | 
         if isinstance(provenance_payload, Mapping)
         else {}
     )
+
+    if validate_arrays_hash:
+        expected_hash = source.get("arrays_hash")
+        if not isinstance(expected_hash, str):
+            raise KeyError("arrays_hash missing from shard provenance")
+
+        arrays_for_hash = [np.asarray(shard.X, dtype=np.float32, order="C")]
+        if dtraj is not None:
+            arrays_for_hash.append(np.asarray(dtraj, dtype=np.int32))
+
+        actual_hash = _sha256_bytes(*arrays_for_hash)
+        if actual_hash != expected_hash:
+            raise ValueError("Shard arrays hash mismatch")
+
     return (
         ShardDetails(meta=shard.meta, source=source),
-        shard.X.astype(np.float64, copy=False),
+        shard.X.astype(dtype, copy=False),
         dtraj,
     )
 

@@ -149,6 +149,7 @@ pytest-xdist = "^3.5"
 pytest-randomly = "^3.15"
 pytest-testmon = "^2.1"
 pytest-picked = "^0.5"
+pytest-benchmark = "^4.0"
 tox = "^4.14"
 deeptime = ">=0.4.5,<0.5"
 torch = {version = ">=2.2,<3.0", source = "pytorch-cpu"}
@@ -231,6 +232,7 @@ markers = [
   "unit: fast, isolated tests",
   "integration: slow, cross-module tests",
   "perf: performance/benchmark tests",
+  "benchmark: pytest-benchmark performance comparison tests",
   "slow: heavy tests within unit or integration",
   "data: tests for src/data",
   "io: tests for src/io",

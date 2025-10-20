@@ -48,3 +48,63 @@ def test_auto_switches_to_minibatch():
         mock_mb.return_value.fit_predict.return_value = np.zeros(10, dtype=int)
         cluster_microstates(Y, method="auto", n_states=2, minibatch_threshold=50)
         assert mock_mb.called
+
+
+def test_auto_selection_sampling(monkeypatch):
+    import pmarlo.markov_state_model.clustering as clustering
+
+    Y = np.random.rand(50, 3)
+    fit_sizes: list[int] = []
+
+    class DummyKMeans:
+        def __init__(self, n_clusters, random_state=None, n_init=10):
+            self.n_clusters = n_clusters
+
+        def fit_predict(self, data):
+            fit_sizes.append(data.shape[0])
+            return np.arange(data.shape[0]) % self.n_clusters
+
+    def fake_silhouette(data, labels):
+        assert data.shape[0] == labels.shape[0] == 10
+        return 0.1
+
+    monkeypatch.setattr(clustering, "KMeans", DummyKMeans)
+    monkeypatch.setattr(clustering, "silhouette_score", fake_silhouette)
+
+    result = clustering.cluster_microstates(
+        Y,
+        n_states="auto",
+        random_state=0,
+        silhouette_sample_size=10,
+    )
+
+    assert result.rationale is not None and "sample=10" in result.rationale
+    assert fit_sizes.count(10) == 17  # 4 through 20 inclusive
+    assert fit_sizes.count(50) == 1  # final clustering uses full dataset
+
+
+def test_auto_selection_override(monkeypatch):
+    import pmarlo.markov_state_model.clustering as clustering
+
+    Y = np.random.rand(40, 2)
+    created: list[int] = []
+
+    class DummyKMeans:
+        def __init__(self, n_clusters, random_state=None, n_init=10):
+            created.append(n_clusters)
+            self.n_clusters = n_clusters
+
+        def fit_predict(self, data):
+            return np.arange(data.shape[0]) % self.n_clusters
+
+    monkeypatch.setattr(clustering, "KMeans", DummyKMeans)
+
+    result = clustering.cluster_microstates(
+        Y,
+        n_states="auto",
+        auto_n_states_override=7,
+    )
+
+    assert result.n_states == 7
+    assert result.rationale == "auto-override=7"
+    assert created == [7]

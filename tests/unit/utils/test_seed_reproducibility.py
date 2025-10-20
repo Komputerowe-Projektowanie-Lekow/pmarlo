@@ -1,6 +1,12 @@
-import numpy as np
+import os
+import random
+
 import pytest
+
+pytest.importorskip("sklearn")
 from sklearn.datasets import make_blobs
+
+np = pytest.importorskip("numpy")
 
 pytest.importorskip("torch")
 
@@ -33,3 +39,16 @@ def test_reproducible_clustering_and_msm(tmp_path):
 
     assert np.array_equal(res1.labels, res2.labels)
     assert np.allclose(T1, T2)
+
+
+def test_set_global_seed_synchronizes_python_random(monkeypatch):
+    monkeypatch.delenv("PYTHONHASHSEED", raising=False)
+
+    set_global_seed(4321)
+    first = random.random()
+
+    set_global_seed(4321)
+    second = random.random()
+
+    assert first == second
+    assert os.environ["PYTHONHASHSEED"] == str(4321 & 0xFFFFFFFF)

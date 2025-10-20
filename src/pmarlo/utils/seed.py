@@ -30,6 +30,8 @@ def set_global_seed(seed: Optional[int]) -> None:
     random.seed(s)
     np.random.seed(s)
     torch.manual_seed(s)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(s)
     torch.use_deterministic_algorithms(True)  # type: ignore[attr-defined]
 
 
