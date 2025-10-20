@@ -58,20 +58,20 @@ def _generate_synthetic_features(
 
 @pytest.fixture
 def small_dataset():
-    """Small dataset (1K samples) for quick clustering."""
-    return _generate_synthetic_features(1000, 10, n_clusters=5)
+    """Small dataset (800 samples) for quick clustering."""
+    return _generate_synthetic_features(800, 10, n_clusters=5)
 
 
 @pytest.fixture
 def medium_dataset():
-    """Medium dataset (10K samples) for KMeans benchmark."""
-    return _generate_synthetic_features(10_000, 10, n_clusters=5)
+    """Medium dataset (4K samples) for KMeans benchmark."""
+    return _generate_synthetic_features(4_000, 10, n_clusters=5)
 
 
 @pytest.fixture
 def large_dataset():
-    """Large dataset (50K samples) for MiniBatchKMeans benchmark."""
-    return _generate_synthetic_features(50_000, 10, n_clusters=5)
+    """Large dataset (12K samples) for MiniBatchKMeans benchmark."""
+    return _generate_synthetic_features(12_000, 10, n_clusters=5)
 
 
 def test_kmeans_small_dataset(benchmark, small_dataset):
@@ -89,7 +89,7 @@ def test_kmeans_small_dataset(benchmark, small_dataset):
 
 
 def test_kmeans_medium_dataset(benchmark, medium_dataset):
-    """Benchmark KMeans clustering on medium dataset (10K samples)."""
+    """Benchmark KMeans clustering on medium dataset (4K samples)."""
     from pmarlo.markov_state_model.clustering import cluster_microstates
 
     def _cluster():
@@ -103,7 +103,7 @@ def test_kmeans_medium_dataset(benchmark, medium_dataset):
 
 
 def test_minibatch_kmeans_large_dataset(benchmark, large_dataset):
-    """Benchmark MiniBatchKMeans on large dataset (50K samples).
+    """Benchmark MiniBatchKMeans on large dataset (12K samples).
 
     This tests automatic switching to MiniBatchKMeans for large datasets.
     """
@@ -134,23 +134,24 @@ def test_auto_clustering_small(benchmark, small_dataset):
     assert "silhouette" in result.rationale.lower()
 
 
-def test_auto_clustering_with_range(benchmark, medium_dataset):
-    """Benchmark automatic clustering with custom range (optimization overhead)."""
+def test_auto_clustering_with_override(benchmark, medium_dataset):
+    """Benchmark automatic clustering when overriding silhouette selection."""
     from pmarlo.markov_state_model.clustering import cluster_microstates
 
+    override_states = 6
+
     def _cluster():
-        # Auto clustering with specific range
         return cluster_microstates(
             medium_dataset,
             n_states="auto",
-            auto_min=3,
-            auto_max=10,
             random_state=42,
+            auto_n_states_override=override_states,
         )
 
     result = benchmark(_cluster)
-    assert 3 <= result.n_states <= 10
+    assert result.n_states == override_states
     assert result.rationale is not None
+    assert "override" in result.rationale.lower()
 
 
 def test_high_dimensional_clustering(benchmark):

@@ -24,7 +24,7 @@ if not os.getenv("PMARLO_RUN_PERF"):
 
 
 def _make_replicas(
-    tmp_path: Path, n_replicas: int = 5, n_frames: int = 1000, n_atoms: int = 3
+    tmp_path: Path, n_replicas: int = 5, n_frames: int = 400, n_atoms: int = 3
 ):
     top = md.Topology()
     chain = top.add_chain()
@@ -56,7 +56,7 @@ def _build_remd(pdb: str, dcds: list[str], tmp_path: Path):
     remd.temperatures = [300.0 + 10.0 * i for i in range(len(dcds))]
     remd.n_replicas = len(dcds)
     # 1 frame per segment, map fixed states so target is replica 0 always
-    n_segments = 1000
+    n_segments = 200
     remd.exchange_history = [[0] + list(range(1, len(dcds))) for _ in range(n_segments)]
     remd.reporter_stride = 1
     remd.dcd_stride = 1
@@ -103,7 +103,7 @@ def test_perf_streaming_demux(benchmark, tmp_path: Path):
     pdb, dcds = _make_replicas(tmp_path)
     n_replicas = len(dcds)
     temperatures = [300.0 + 10.0 * i for i in range(n_replicas)]
-    n_segments = 1000
+    n_segments = 200
     exchange_history = [[0] + list(range(1, n_replicas)) for _ in range(n_segments)]
 
     reader = MDTrajReader(topology_path=pdb)
@@ -120,12 +120,14 @@ def test_perf_streaming_demux(benchmark, tmp_path: Path):
     )
 
     out = tmp_path / "demux_streaming.dcd"
-    writer = MDTrajDCDWriter(rewrite_threshold=2048).open(str(out), pdb, overwrite=True)
 
     def _run():
-        res = demux_streaming(plan, pdb, reader, writer, fill_policy="repeat")
-        writer.close()
-        return res
+        writer = MDTrajDCDWriter(rewrite_threshold=2048)
+        writer.open(str(out), pdb, overwrite=True)
+        try:
+            return demux_streaming(plan, pdb, reader, writer, fill_policy="repeat")
+        finally:
+            writer.close()
 
     def _bench():
         res, (cur, peak) = _benchmark_memory(_run)

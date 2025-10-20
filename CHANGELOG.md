@@ -1,3 +1,14 @@
+<a id='changelog-0.117.0'></a>
+# 0.117.0 — 2025-10-16
+
+
+### Added
+Done the main pipeline (REMD, shards, MSM, FES, analysis) full basic prototype (app showcasing is done).
+Changed the demultiplexing algorithm (from greedy to exact recursive, ensuring order and preserving all properties).
+Fixed replica exchange simulation, added telemetry and proper logging visibility.
+Refactored across ~15 modules to align logging (visibility), remove lazy imports (maintainability), strip fallbacks (fail-fast policy), and improve naming (clarity).
+**CRITICAL PERFORMANCE FIX**: Resolved 6x performance regression in REMD caused by incorrect platform selection (Reference platform selected instead of CPU/CUDA when random_seed was set). Added comprehensive benchmark harness (`benchmark_remd_performance.py`) to identify bottlenecks and optimized exchange frequency defaults based on empirical data. REMD performance restored from ~20min/5K steps to ~3min/5K steps.
+
 <a id='changelog-0.113.0'></a>
 # 0.113.0 — 2025-10-16
 

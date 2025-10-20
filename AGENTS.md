@@ -15,9 +15,4 @@
 13. Do not create any fallbacks. All module should be there and if there isn't issue it as an error not a silent fallback.
 14. When you think of implementing some function think if its already implemented somwehre and could use the standard library for it, if so prefer the standard library which is already better tested than our implementation.
 15. Do not use the lazy import. Currently python is as fast as it is so we don't need that technique. Prefer the maintaiability.
-
-Done the main pipeline (REMD, shards, MSM, FES, analysis) full basic prototype (app showcasing is done).
-Changed the demultiplexing algorithm (from greedy to exact recursive, ensuring order and preserving all properties).
-Fixed replica exchange simulation, added telemetry and proper logging visibility.
-Refactored across ~15 modules to align logging (visibility), remove lazy imports (maintainability), strip fallbacks (fail-fast policy), and improve naming (clarity).
-**CRITICAL PERFORMANCE FIX**: Resolved 6x performance regression in REMD caused by incorrect platform selection (Reference platform selected instead of CPU/CUDA when random_seed was set). Added comprehensive benchmark harness (`benchmark_remd_performance.py`) to identify bottlenecks and optimized exchange frequency defaults based on empirical data. REMD performance restored from ~20min/5K steps to ~3min/5K steps.
+16. When you run the poetry run pytest or any pytest command, NEVER USE it with -noProfile.
