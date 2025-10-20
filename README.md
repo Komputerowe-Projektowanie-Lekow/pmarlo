@@ -55,6 +55,17 @@ Suggested commands:
 
 Combine `--focus` with `--testmon` whenever you want to zero in on a subset of packages while letting pytest skip unrelated tests automatically.
 
+### Performance Benchmarking
+
+For performance testing and regression detection, see **[README_BENCHMARKS.md](README_BENCHMARKS.md)**. Quick start:
+
+```bash
+export PMARLO_RUN_PERF=1  # Enable performance tests
+poetry run pytest -m benchmark --benchmark-save=baseline
+# Make your changes...
+poetry run pytest -m benchmark --benchmark-compare=baseline
+```
+
 ## Dependency policy
 
 PMARLO now enforces a single canonical implementation for every feature. All runtime fallbacks and legacy code paths have been removed, and missing dependencies raise clear ImportError exceptions during import or first use. Install the relevant extras (for example, `pip install 'pmarlo[analysis]'`) to enable advanced analyses.

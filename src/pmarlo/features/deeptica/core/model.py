@@ -15,7 +15,8 @@ try:  # pragma: no cover - optional extra
 except Exception as exc:  # pragma: no cover
     raise ImportError("Install optional extra pmarlo[mlcv] to use Deep-TICA") from exc
 
-from .utils import safe_float, set_all_seeds
+from pmarlo.utils.seed import set_global_seed
+from .utils import safe_float
 
 __all__ = [
     "apply_output_whitening",
@@ -275,7 +276,7 @@ def strip_batch_norm(module: Any) -> None:
 
 
 def wrap_network(cfg: Any, scaler, *, seed: int) -> torch.nn.Module:
-    set_all_seeds(seed)
+    set_global_seed(seed)
     core, layers = construct_deeptica_core(cfg, scaler)
     # Note: override_core_mlp and strip_batch_norm are already called in construct_deeptica_core
     net = wrap_with_preprocessing_layers(core, cfg, scaler)

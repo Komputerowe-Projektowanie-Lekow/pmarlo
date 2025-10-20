@@ -4,3 +4,6 @@
 
 ### Added
 - Regression check ensuring DeepTICA telemetry includes best validation metadata in the recorded artifacts.
+
+### Changed
+- Refactored DeepTICA training entrypoint to share preparation/finalisation helpers and support explicit Lightning/mlcolvar backend selection via configuration.

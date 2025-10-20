@@ -10,7 +10,7 @@ import mdtraj as md
 import numpy as np
 import pytest
 
-pytestmark = pytest.mark.perf
+pytestmark = [pytest.mark.perf, pytest.mark.benchmark]
 
 # Optional plugin
 pytest_benchmark = pytest.importorskip(

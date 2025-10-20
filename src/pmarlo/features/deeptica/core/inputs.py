@@ -7,7 +7,7 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler as SkStandardScaler
 from typing_extensions import Self
 
-from .utils import set_all_seeds
+from pmarlo.utils.seed import set_global_seed
 
 
 class _StandardScalerProtocol(Protocol):
@@ -49,7 +49,7 @@ def prepare_features(
 ) -> FeaturePrep:
     """Concatenate feature arrays, fit a scaler, and return float32 tensors."""
 
-    set_all_seeds(seed)
+    set_global_seed(seed)
 
     stacked = [np.asarray(block, dtype=np.float32) for block in arrays]
     if not stacked:

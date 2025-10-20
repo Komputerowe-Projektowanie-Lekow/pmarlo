@@ -25,9 +25,9 @@ from .core.model import strip_batch_norm as core_strip_batch_norm
 from .core.model import (
     wrap_with_preprocessing_layers as core_wrap_with_preprocessing_layers,
 )
-from .core.trainer_api import train_deeptica_pipeline
+from .core.trainer_api import train_deeptica_mlcolvar, train_deeptica_pipeline
 from .core.utils import safe_float as core_safe_float
-from .core.utils import set_all_seeds as _core_set_all_seeds
+from pmarlo.utils.seed import set_global_seed as _set_global_seed
 
 _DEEPTICA_IMPORT_ERROR: Exception | None = None
 try:  # pragma: no cover - optional extra
@@ -40,6 +40,12 @@ else:  # pragma: no cover - optional extra
 
 
 logger = logging.getLogger(__name__)
+
+_TRAINING_BACKENDS: dict[str, Any] = {
+    "lightning": train_deeptica_pipeline,
+    "curriculum": train_deeptica_pipeline,
+    "mlcolvar": train_deeptica_mlcolvar,
+}
 
 
 class PmarloApiIncompatibilityError(RuntimeError):
@@ -57,8 +63,9 @@ if DeepTICA is None:
 
 
 def set_all_seeds(seed: int = 2024) -> None:
-    """Compatibility wrapper around the core RNG seeding helper."""
-    _core_set_all_seeds(int(seed))
+    """Compatibility wrapper maintained for callers importing from this module."""
+
+    _set_global_seed(int(seed))
 
 
 torch.set_float32_matmul_precision("high")
@@ -164,6 +171,7 @@ class DeepTICAConfig:
     log_every: int = 1
     seed: int = 0
     device: str = "cpu"
+    trainer_backend: str = "lightning"
     reweight_mode: str = "scaled_time"  # or "none"
     # New knobs for loaders and validation split
     val_frac: float = 0.1
@@ -192,6 +200,13 @@ class DeepTICAConfig:
     grad_norm_warn: Optional[float] = None
     variance_warn_threshold: float = const.DEEPTICA_DEFAULT_VARIANCE_WARN_THRESHOLD
     mean_warn_threshold: float = 5.0
+
+    def __post_init__(self) -> None:
+        backend = str(getattr(self, "trainer_backend", "lightning")).strip().lower()
+        if backend not in _TRAINING_BACKENDS:
+            valid = ", ".join(sorted(_TRAINING_BACKENDS))
+            raise ValueError(f"trainer_backend must be one of: {valid}")
+        object.__setattr__(self, "trainer_backend", backend)
 
     @classmethod
     def small_data(
@@ -454,7 +469,13 @@ def train_deeptica(
 ) -> DeepTICAModel:
     """Train Deep-TICA using the modular core pipeline."""
 
-    artifacts = train_deeptica_pipeline(X_list, pairs, cfg, weights=weights)
+    backend = str(getattr(cfg, "trainer_backend", "lightning")).strip().lower()
+    training_fn = _TRAINING_BACKENDS.get(backend)
+    if training_fn is None:
+        valid = ", ".join(sorted(_TRAINING_BACKENDS))
+        raise ValueError(f"Unsupported DeepTICA trainer backend '{backend}'. Valid backends: {valid}")
+
+    artifacts = training_fn(X_list, pairs, cfg, weights=weights)
     return DeepTICAModel(
         cfg,
         artifacts.scaler,

@@ -77,7 +77,7 @@ def _repeat_frames(frame: np.ndarray, count: int) -> np.ndarray:
     # frame: (n_atoms, 3) -> (count, n_atoms, 3)
     if count <= 0:
         return np.empty((0,) + frame.shape, dtype=frame.dtype)
-    return np.broadcast_to(frame, (count,) + frame.shape).copy()
+    return np.repeat(frame[np.newaxis, ...], count, axis=0)
 
 
 def _interpolate_frames(last: np.ndarray, nxt: np.ndarray, count: int) -> np.ndarray:
