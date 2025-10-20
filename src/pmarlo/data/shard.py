@@ -5,7 +5,7 @@ from __future__ import annotations
 import numbers
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Mapping, Sequence, cast
+from typing import Any, Dict, Mapping, Sequence, cast
 
 import numpy as np
 
