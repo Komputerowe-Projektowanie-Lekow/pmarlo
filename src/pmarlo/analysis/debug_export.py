@@ -272,6 +272,11 @@ def export_analysis_debug(
 
     arrays_written: Dict[str, str] = {}
 
+    if _requires_transition_artifacts(build_result):
+        _ensure_nonempty_transition_statistics(
+            debug_data.counts, debug_data.state_counts
+        )
+
     counts_path = output_dir / "transition_counts.npy"
     np.save(counts_path, debug_data.counts)
     arrays_written["transition_counts"] = counts_path.name
@@ -585,6 +590,54 @@ def _collect_result_summary(build_result: Any) -> Dict[str, Any]:
     if isinstance(artifacts, Mapping):
         summary["artifact_keys"] = sorted(str(k) for k in artifacts.keys())
     return summary
+
+
+def _requires_transition_artifacts(build_result: Any) -> bool:
+    if build_result is None:
+        return False
+    if _has_payload(getattr(build_result, "transition_matrix", None)):
+        return True
+    if _has_payload(getattr(build_result, "stationary_distribution", None)):
+        return True
+    if _has_payload(getattr(build_result, "cluster_populations", None)):
+        return True
+    return _has_payload(getattr(build_result, "fes", None))
+
+
+def _has_payload(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, np.ndarray):
+        return value.size > 0
+    if isinstance(value, Mapping):
+        return bool(value)
+    if isinstance(value, (list, tuple, set)):
+        return bool(value)
+    return True
+
+
+def _ensure_nonempty_transition_statistics(
+    counts: np.ndarray, state_counts: np.ndarray
+) -> None:
+    counts_arr = np.asarray(counts, dtype=float)
+    if counts_arr.ndim != 2 or counts_arr.size == 0:
+        raise ValueError(
+            "Insufficient data to export MSM artefacts: transition counts array is empty."
+        )
+    if not np.any(counts_arr > 0.0):
+        raise ValueError(
+            "Insufficient data to export MSM artefacts: transition counts contain no observed transitions."
+        )
+
+    state_arr = np.asarray(state_counts, dtype=float)
+    if state_arr.size == 0:
+        raise ValueError(
+            "Insufficient data to export MSM artefacts: state visit counts array is empty."
+        )
+    if not np.any(state_arr > 0.0):
+        raise ValueError(
+            "Insufficient data to export MSM artefacts: state visit counts contain no observations."
+        )
 
 
 def _extract_feature_stats(build_result: Any) -> Mapping[str, Any] | None:

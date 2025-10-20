@@ -64,6 +64,12 @@ class EstimationMixin:
             f"Building MSM with lag time {lag_time} using {method} method..."
         )
 
+        if int(getattr(self, "n_states", 0)) <= 0:
+            raise ValueError(
+                "Cannot build a Markov state model without defined microstates; "
+                "ensure clustering produced at least one state."
+            )
+
         self.lag_time = lag_time
         try:
             if self.features is not None and not hasattr(self, "tica_components_"):

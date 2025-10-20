@@ -7,7 +7,11 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from pmarlo.analysis import compute_analysis_debug, export_analysis_debug
+from pmarlo.analysis import (
+    AnalysisDebugData,
+    compute_analysis_debug,
+    export_analysis_debug,
+)
 from pmarlo.transform.build import BuildResult
 
 
@@ -114,6 +118,29 @@ def test_export_analysis_debug_writes_expected_files(tmp_path: Path) -> None:
     mask_path = summary_path.parent / summary["arrays"]["valid_mask[train]"]
     assert np.array_equal(np.load(state_ids_path), br.msm.assignments["train"])
     assert np.array_equal(np.load(mask_path), br.msm.assignment_masks["train"])
+
+
+def test_export_analysis_debug_rejects_zero_counts(tmp_path: Path) -> None:
+    debug_data = AnalysisDebugData(
+        summary={"warnings": []},
+        counts=np.zeros((1, 1), dtype=float),
+        state_counts=np.zeros((1,), dtype=float),
+        component_labels=np.zeros((1,), dtype=int),
+    )
+    br = BuildResult(
+        transition_matrix=np.eye(1),
+        stationary_distribution=np.array([1.0]),
+    )
+    br.fes = {"result": {"note": "dummy"}}
+
+    with pytest.raises(ValueError, match="transition counts contain no observed transitions"):
+        export_analysis_debug(
+            output_dir=tmp_path,
+            build_result=br,
+            debug_data=debug_data,
+            config=None,
+            dataset_hash="zero",
+        )
 
 
 def test_compute_analysis_debug_requires_shard_ids() -> None:

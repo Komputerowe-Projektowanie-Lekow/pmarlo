@@ -42,6 +42,7 @@ class MSMBase:
         temperatures: Optional[List[float]] = None,
         output_dir: str = "output/msm_analysis",
         random_state: Optional[int] = 42,
+        ignore_trajectory_errors: bool = False,
     ) -> None:
         # IO and configuration
         self.trajectory_files: List[str] = (
@@ -84,6 +85,9 @@ class MSMBase:
         self.time_per_frame_ps: Optional[float] = None
         self.demux_metadata: Optional[Any] = None
         self.total_frames: Optional[int] = None
+
+        # IO behaviour controls
+        self.ignore_trajectory_errors: bool = bool(ignore_trajectory_errors)
 
         # Estimation controls
         self.estimator_backend: str = "deeptime"

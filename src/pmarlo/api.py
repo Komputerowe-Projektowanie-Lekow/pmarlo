@@ -1119,6 +1119,9 @@ def run_replica_exchange(
     exchange_frequency_steps: int | None = None,
     save_state_frequency: int | None = None,
     temperature_schedule_mode: str | None = None,
+    save_final_pdb: bool = False,
+    final_pdb_path: str | Path | None = None,
+    final_pdb_temperature: float | None = None,
     **kwargs: Any,
 ) -> Tuple[List[str], List[float]]:
     """Run REMD and return (trajectory_files, analysis_temperatures).
@@ -1195,6 +1198,26 @@ def run_replica_exchange(
         progress_callback=cb,
         cancel_token=kwargs.get("cancel_token"),
     )
+
+    final_snapshot_written: Optional[Path] = None
+    if save_final_pdb or final_pdb_path is not None:
+        snapshot_target = (
+            Path(final_pdb_path)
+            if final_pdb_path is not None
+            else Path(remd.output_dir) / "restart_final_frame.pdb"
+        )
+        target_temperature = (
+            float(final_pdb_temperature)
+            if final_pdb_temperature is not None
+            else float(temperatures[0])
+        )
+        final_snapshot_written = remd.export_current_structure(
+            snapshot_target, temperature=target_temperature
+        )
+        _emit_banner(
+            "REPLICA EXCHANGE SNAPSHOT SAVED",
+            [f"Restart PDB written to {final_snapshot_written}"],
+        )
 
     _emit_banner(
         "PHASE 1/2: MD SIMULATION COMPLETE",

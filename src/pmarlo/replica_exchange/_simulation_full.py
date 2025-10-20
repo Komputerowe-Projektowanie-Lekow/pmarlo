@@ -9,6 +9,7 @@ system preparation.
 """
 
 import logging
+from contextlib import ExitStack
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
@@ -419,10 +420,18 @@ class Simulation:
         simulation = self.openmm_simulation
         simulation.reporters.clear()
 
-        production_log = self.output_dir / "production.log"
-        simulation.reporters.append(
-            app.StateDataReporter(
-                str(production_log),
+        trajectory_path = self.output_dir / "trajectory.dcd"
+        final_path = self.output_dir / "final.xml"
+
+        exit_stack = ExitStack()
+        new_reporters: list[Any] = []
+
+        try:
+            log_handle = exit_stack.enter_context(
+                open(self.output_dir / "production.log", "w", encoding="utf-8")
+            )
+            state_reporter = app.StateDataReporter(
+                log_handle,
                 stride,
                 step=True,
                 potentialEnergy=True,
@@ -432,21 +441,28 @@ class Simulation:
                 volume=True,
                 density=True,
             )
-        )
+            new_reporters.append(state_reporter)
+            simulation.reporters.append(state_reporter)
 
-        trajectory_path = self.output_dir / "trajectory.dcd"
-        if save_trajectory:
-            simulation.reporters.append(app.DCDReporter(str(trajectory_path), stride))
+            if save_trajectory:
+                dcd_reporter = app.DCDReporter(str(trajectory_path), stride)
+                new_reporters.append(dcd_reporter)
+                simulation.reporters.append(dcd_reporter)
 
-        self.bias_hook = bias_hook
-        simulation.step(total_steps)
+            self.bias_hook = bias_hook
+            simulation.step(total_steps)
 
-        final_state = simulation.context.getState(
-            getPositions=True, getVelocities=True, getEnergy=True
-        )
-        final_path = self.output_dir / "final.xml"
-        with open(final_path, "w", encoding="utf-8") as fh:
-            fh.write(openmm.XmlSerializer.serialize(final_state))
+            final_state = simulation.context.getState(
+                getPositions=True, getVelocities=True, getEnergy=True
+            )
+            with open(final_path, "w", encoding="utf-8") as fh:
+                fh.write(openmm.XmlSerializer.serialize(final_state))
+        finally:
+            for reporter in new_reporters:
+                if reporter in simulation.reporters:
+                    simulation.reporters.remove(reporter)
+                _close_reporter_file(reporter)
+            exit_stack.close()
 
         return str(trajectory_path if save_trajectory else final_path)
 
@@ -937,3 +953,26 @@ def plot_DG(features, save_path=None):
     except ImportError:
         print("Warning: matplotlib not available for plotting")
         return None
+logger = logging.getLogger(__name__)
+
+
+def _close_reporter_file(reporter: Any) -> None:
+    """Ensure OpenMM reporters release underlying file handles."""
+    try:
+        opened = getattr(reporter, "_openedFile")
+    except AttributeError:
+        opened = None
+    if opened is False:
+        return
+    handle = getattr(reporter, "_out", None)
+    if handle is None:
+        return
+    close = getattr(handle, "close", None)
+    if close is None:
+        return
+    try:
+        close()
+    except Exception:  # pragma: no cover - defensive logging
+        logger.warning(
+            "Failed to close OpenMM reporter %r cleanly", reporter, exc_info=True
+        )

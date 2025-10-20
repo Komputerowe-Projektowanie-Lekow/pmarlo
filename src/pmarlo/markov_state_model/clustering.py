@@ -335,6 +335,12 @@ def cluster_microstates(
     else:
         n_states = int(n_states)
 
+    if n_states <= 0:
+        raise ValueError(
+            "Number of microstates must be a positive integer; "
+            f"received {n_states}."
+        )
+
     # Select appropriate clustering algorithm
     chosen_method = _select_clustering_method(method, Y, minibatch_threshold)
 

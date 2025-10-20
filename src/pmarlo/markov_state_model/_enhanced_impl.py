@@ -58,12 +58,14 @@ def run_complete_msm_analysis(
     stride: int = 1,
     atom_selection: str | Sequence[int] | None = None,
     chunk_size: int = 1000,
+    ignore_trajectory_errors: bool = False,
 ) -> EnhancedMSM:
     msm = _initialize_msm(
         trajectory_files=trajectory_files,
         topology_file=topology_file,
         temperatures=temperatures,
         output_dir=output_dir,
+        ignore_trajectory_errors=ignore_trajectory_errors,
     )
     msm_protocol = cast("EnhancedMSMProtocol", msm)
 
@@ -74,6 +76,7 @@ def run_complete_msm_analysis(
         chunk_size=chunk_size,
         feature_type=feature_type,
         n_states=n_states,
+        ignore_trajectory_errors=ignore_trajectory_errors,
     )
 
     _build_and_analyze_msm(
@@ -93,12 +96,14 @@ def _initialize_msm(
     topology_file: str,
     temperatures: Optional[List[float]],
     output_dir: str,
+    ignore_trajectory_errors: bool,
 ) -> EnhancedMSM:
     return EnhancedMSM(
         trajectory_files=trajectory_files,
         topology_file=topology_file,
         temperatures=temperatures,
         output_dir=output_dir,
+        ignore_trajectory_errors=ignore_trajectory_errors,
     )
 
 
@@ -110,12 +115,14 @@ def _load_and_prepare_data(
     chunk_size: int,
     feature_type: str,
     n_states: int | Literal["auto"],
+    ignore_trajectory_errors: bool,
 ) -> None:
     msm.load_trajectories(
         stride=stride,
         atom_selection=atom_selection,
         chunk_size=chunk_size,
     )
+    _validate_loaded_data(msm=msm, ignore_trajectory_errors=ignore_trajectory_errors)
     msm.compute_features(feature_type=feature_type)
     msm.cluster_features(n_states=n_states)
 
@@ -167,6 +174,25 @@ def _try_plot(plot_callable: Callable[[], object]) -> None:
         plot_callable()
     except Exception:  # pragma: no cover - plotting safety net
         pass
+
+
+def _validate_loaded_data(
+    *, msm: "EnhancedMSMProtocol", ignore_trajectory_errors: bool
+) -> None:
+    trajectories = getattr(msm, "trajectories", None)
+    if not trajectories:
+        reason = "No trajectory data were loaded."
+        if ignore_trajectory_errors:
+            raise RuntimeError(
+                f"{reason} Verify trajectory file paths and integrity before rerunning."
+            )
+        raise RuntimeError(reason)
+
+    total_frames = getattr(msm, "total_frames", None)
+    if total_frames is None or int(total_frames) <= 0:
+        raise RuntimeError(
+            "Loaded trajectories contain no frames; aborting MSM/FES analysis."
+        )
 
 
 __all__ = ["EnhancedMSM", "run_complete_msm_analysis"]

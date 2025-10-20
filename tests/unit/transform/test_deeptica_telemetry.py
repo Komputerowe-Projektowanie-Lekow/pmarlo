@@ -39,3 +39,9 @@ def test_training_telemetry_present_in_artifacts():
         assert len(art.get("objective_curve", [])) >= 1
         assert len(art.get("loss_curve", [])) >= 1
         assert art.get("wall_time_s", 0.0) >= 0.0
+        assert art.get("best_val_score") is not None
+        assert art.get("best_epoch") is not None
+        assert art.get("best_tau") is not None
+        assert isinstance(art["best_val_score"], float)
+        assert isinstance(art["best_epoch"], int)
+        assert isinstance(art["best_tau"], int)

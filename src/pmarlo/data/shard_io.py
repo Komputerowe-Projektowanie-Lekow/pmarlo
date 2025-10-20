@@ -3,8 +3,9 @@ from __future__ import annotations
 """Shard discovery and strict, versioned parsing helpers."""
 
 from collections.abc import Iterable as IterableABC
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Mapping
+from typing import Any, Dict, List, Mapping, Sequence
 
 from pmarlo.shards.format import read_shard_npz_json
 from pmarlo.utils.validation import require
@@ -139,3 +140,73 @@ def discover_shards(root: Path | str) -> List[BaseShard]:
             continue
         shards.append(load_shard_meta(p))
     return shards
+
+
+@dataclass(frozen=True, slots=True)
+class ShardRunSummary:
+    """Summary describing the shards emitted for a single run."""
+
+    run_id: str
+    temperature_K: float
+    shard_count: int
+    shard_paths: tuple[Path, ...]
+
+
+def summarize_shard_runs(shard_jsons: Sequence[Path | str]) -> List[ShardRunSummary]:
+    """Group shard JSON paths by run and extract their temperatures.
+
+    Parameters
+    ----------
+    shard_jsons
+        Iterable of shard JSON paths produced by the emission pipeline.
+
+    Returns
+    -------
+    List[ShardRunSummary]
+        Preserving the order of first appearance in ``shard_jsons``.
+
+    Raises
+    ------
+    ValueError
+        If a shard is missing run metadata or temperature, or if a single run
+        reports conflicting temperatures across its shards.
+    """
+
+    run_paths: Dict[str, List[Path]] = {}
+    run_temps: Dict[str, float] = {}
+
+    for raw_path in shard_jsons:
+        json_path = Path(raw_path).resolve()
+        meta = load_shard_meta(json_path)
+        run_id = str(meta.run_id)
+        if not run_id:
+            raise ValueError(f"Shard {json_path} is missing a provenance run_id")
+        temperature_attr = getattr(meta, "temperature_K", None)
+        if temperature_attr is None:
+            raise ValueError(
+                f"Shard {json_path} does not declare temperature_K metadata"
+            )
+        temperature = float(temperature_attr)
+        if run_id not in run_paths:
+            run_paths[run_id] = [json_path]
+            run_temps[run_id] = temperature
+            continue
+        expected = run_temps[run_id]
+        if abs(expected - temperature) > 1e-6:
+            raise ValueError(
+                f"Inconsistent temperatures for run {run_id}: "
+                f"{expected} K vs {temperature} K"
+            )
+        run_paths[run_id].append(json_path)
+
+    summaries: List[ShardRunSummary] = []
+    for run_id, paths in run_paths.items():
+        summaries.append(
+            ShardRunSummary(
+                run_id=run_id,
+                temperature_K=run_temps[run_id],
+                shard_count=len(paths),
+                shard_paths=tuple(paths),
+            )
+        )
+    return summaries

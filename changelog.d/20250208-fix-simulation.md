@@ -7,6 +7,7 @@
 - Test suite for TorchScript feature extraction: parity tests (eager vs scripted), finite-difference force validation, and PBC wrap invariance tests in `tests/force/`.
 - Feature specification validation with SHA-256 hashing to prevent model/spec mismatches at runtime.
 - Explicit unit coverage ensuring the Streamlit backend hits the real REMD runner by default and only engages the synthetic stub when tests request it.
+- Run-level shard summary helper `pmarlo.data.shard_io.summarize_shard_runs` that reports temperature, shard count, and JSON paths for downstream validation.
 
 ### Fixed
 - **CRITICAL: Platform selection bug causing 6x slowdown** - `platform_selector.py` was incorrectly selecting Reference platform (10-100x slower than CPU) whenever `random_seed` was set. Fixed to auto-select fastest available platform (CUDA > CPU > Reference) while maintaining determinism via platform-specific flags. This restores REMD performance from ~20 minutes for 5K steps to ~3 minutes.
@@ -14,6 +15,7 @@
 - Initialize `_bias_log_interval` attribute in `ReplicaExchange.__init__()` to prevent `AttributeError` during CV monitoring setup.
 - Optimize default exchange frequency from 50 to 100 steps based on benchmark showing 100 steps provides best balance of exchange statistics and throughput.
 - Streamlit "quick preset" no longer routes through the synthetic sampling stub; REMD now executes normally unless `SimulationConfig.stub_result` is explicitly set, fixing instant-complete runs in the demo app.
+- Close OpenMM reporters created in `Simulation.run_production()` so Windows clean-up can delete temporary `production.log` files without lingering handles.
 
 ### Changed
 - Surface pipeline configuration, stage timings, runtime summaries, and failure notifications directly in the console for easier headless monitoring (`src/pmarlo/transform/pipeline.py`, `src/pmarlo/utils/logging_utils.py`).
@@ -22,6 +24,7 @@
 - Update `CV_INTEGRATION_GUIDE.md` and `CV_REQUIREMENTS.md` to reflect TorchScript implementation, remove "feature extraction not implemented" warnings, and correct physics terminology: the bias is a **harmonic restraint in CV space** (E = k·Σ(cv²)), not an "exploration" bias. Documentation now includes CPU performance benchmarks, configuration requirements, and explicit usage examples.
 - Export workflow in `features/deeptica/export.py` now produces a single TorchScript module with embedded feature extraction, scaler, CV model, and bias potential, optimized via `torch.jit.optimize_for_inference()`.
 - `system_builder.py` loads TorchScript CV bias models with comprehensive validation, sets PyTorch thread count from configuration, and enforces single-precision computation for CPU performance.
+- Streamlit training and analysis tabs surface per-run shard temperatures beneath the selection banner to prevent mixing incompatible datasets.
 
 ### Removed
 - Silent fallback behaviors in CV bias loading and configuration; all errors now terminate early with clear exceptions.

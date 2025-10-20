@@ -7,6 +7,7 @@ import json
 import pandas as pd
 import streamlit as st
 
+from pmarlo.data.shard_io import ShardRunSummary, summarize_shard_runs
 try:  # Prefer package-relative imports when launched via `streamlit run -m`
     from pmarlo.transform.build import _sanitize_artifacts
 
@@ -94,6 +95,28 @@ def _select_shard_paths(
         for p in paths:
             selected.append(Path(p))
     return selected
+
+
+def _format_run_selection_summary(runs: Sequence[ShardRunSummary]) -> str:
+    if not runs:
+        return ""
+    parts: List[str] = []
+    for run in runs:
+        count = int(run.shard_count)
+        shard_label = "shard" if count == 1 else "shards"
+        parts.append(
+            f"{run.run_id}: {count} {shard_label} @ {run.temperature_K:.1f} K"
+        )
+    return "; ".join(parts)
+
+
+def _summarize_selected_shards(
+    shard_paths: Sequence[Path],
+) -> tuple[List[ShardRunSummary], str]:
+    if not shard_paths:
+        return [], ""
+    summaries = summarize_shard_runs(shard_paths)
+    return summaries, _format_run_selection_summary(summaries)
 
 
 def _metrics_table(flags: Dict[str, object]) -> pd.DataFrame:
@@ -533,6 +556,15 @@ def main() -> None:
                 value=True,
                 key="sim_quick_preset",
             )
+            save_restart = st.checkbox(
+                "Save last frame as restart input",
+                value=True,
+                help=(
+                    "When enabled, the final MD frame is stored in the run directory and "
+                    "copied into app_intputs/ so it becomes available as a protein input."
+                ),
+                key="sim_save_restart_snapshot",
+            )
             random_seed_str = st.text_input(
                 "Random seed (blank = auto)",
                 "",
@@ -642,6 +674,7 @@ def main() -> None:
                         temperatures=temps,
                         steps=int(steps),
                         quick=quick,
+                         save_restart_pdb=bool(save_restart),
                         random_seed=seed_val,
                         label=run_label or None,
                         jitter_start=bool(jitter),
@@ -710,13 +743,20 @@ def main() -> None:
             )
             st.caption(f"Workspace: {sim.run_dir}")
             with st.expander("Run outputs", expanded=False):
-                st.json(
-                    {
-                        "run_id": sim.run_id,
-                        "trajectories": [p.name for p in sim.traj_files],
-                        "analysis_temperatures": sim.analysis_temperatures,
-                    }
-                )
+                payload = {
+                    "run_id": sim.run_id,
+                    "trajectories": [p.name for p in sim.traj_files],
+                    "analysis_temperatures": sim.analysis_temperatures,
+                }
+                if sim.restart_pdb_path:
+                    payload["restart_pdb"] = sim.restart_pdb_path.name
+                if sim.restart_inputs_entry:
+                    payload["restart_input_entry"] = sim.restart_inputs_entry.name
+                st.json(payload)
+                if sim.restart_inputs_entry:
+                    st.caption(
+                        f"Restart snapshot copied to inputs: {sim.restart_inputs_entry.name}"
+                    )
             st.subheader("Emit shards from the latest run")
             with st.form("emit_shards_form"):
                 stride = st.number_input(
@@ -818,7 +858,16 @@ def main() -> None:
                 default=run_ids[-1:] if run_ids else [],
             )
             selected_paths = _select_shard_paths(shard_groups, selected_runs)
-            st.write(f"Selected {len(selected_paths)} shard files.")
+            try:
+                _selection_runs, selection_text = _summarize_selected_shards(
+                    selected_paths
+                )
+            except ValueError as exc:
+                st.error(f"Shard selection invalid: {exc}")
+                st.stop()
+            st.write(f"Using {len(selected_paths)} shard files for training.")
+            if selection_text:
+                st.caption(selection_text)
             col_a, col_b, col_c = st.columns(3)
             lag = col_a.number_input(
                 "Lag (steps)", min_value=1, value=5, step=1, key="train_lag"
@@ -908,7 +957,9 @@ def main() -> None:
                         # Use st.status to show progress during training
                         with st.status("Training Deep-TICA model...", expanded=True) as status:
                             st.write("📊 Loading and preparing shard data...")
-                            st.write(f"- Selected {len(selected_paths)} shard files")
+                            st.write(f"- Using {len(selected_paths)} shard files")
+                            if selection_text:
+                                st.write(f"  Runs: {selection_text}")
                             st.write(f"- Lag: {lag}, Bins: Rg={bins_rg}, RMSD={bins_rmsd}")
                             st.write(f"- Max epochs: {max_epochs}, Patience: {patience}")
                             st.write("")
@@ -1154,7 +1205,16 @@ def main() -> None:
                 default=run_ids,
             )
             selected_paths = _select_shard_paths(shard_groups, selected_runs)
+            try:
+                _analysis_runs, analysis_text = _summarize_selected_shards(
+                    selected_paths
+                )
+            except ValueError as exc:
+                st.error(f"Shard selection invalid: {exc}")
+                st.stop()
             st.write(f"Using {len(selected_paths)} shard files for analysis.")
+            if analysis_text:
+                st.caption(analysis_text)
             col_a, col_b, col_c = st.columns(3)
             lag = col_a.number_input(
                 "Lag (steps)", min_value=1, value=10, step=1, key="analysis_lag"

@@ -27,7 +27,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Sequence, cast
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, cast
 
 from pmarlo.utils.path_utils import ensure_directory
 
@@ -127,6 +127,89 @@ def _slugify(label: Optional[str]) -> Optional[str]:
     return safe or None
 
 
+def _normalize_training_metrics(
+    metrics: Mapping[str, Any] | None,
+    *,
+    tau_schedule: Optional[Sequence[Any]] = None,
+    epochs_per_tau: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Ensure Deep-TICA metrics expose best score/epoch/tau values."""
+
+    if not isinstance(metrics, Mapping):
+        return {}
+
+    normalized: Dict[str, Any] = dict(metrics)
+
+    raw_curve = normalized.get("val_score_curve")
+    finite_scores: List[tuple[int, float]] = []
+    if isinstance(raw_curve, Sequence):
+        for idx, value in enumerate(raw_curve):
+            try:
+                score = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(score):
+                finite_scores.append((idx, score))
+
+    best_val_score = normalized.get("best_val_score")
+    if best_val_score is None and finite_scores:
+        best_idx, best_score = max(finite_scores, key=lambda item: item[1])
+        normalized["best_val_score"] = float(best_score)
+        normalized.setdefault("_best_epoch_index", best_idx)
+    elif finite_scores and isinstance(normalized.get("best_epoch"), (int, float)):
+        idx = int(normalized["best_epoch"]) - 1
+        if 0 <= idx < len(finite_scores):
+            normalized.setdefault("_best_epoch_index", idx)
+
+    best_epoch = normalized.get("best_epoch")
+    if best_epoch is None and finite_scores:
+        best_idx = normalized.get("_best_epoch_index")
+        if not isinstance(best_idx, int):
+            best_idx = max(finite_scores, key=lambda item: item[1])[0]
+        normalized["best_epoch"] = int(best_idx + 1)
+        if normalized.get("best_val_score") is None:
+            normalized["best_val_score"] = float(finite_scores[best_idx][1])
+    elif isinstance(best_epoch, (int, float)):
+        normalized["best_epoch"] = int(best_epoch)
+
+    if normalized.get("best_val_score") is not None:
+        try:
+            normalized["best_val_score"] = float(normalized["best_val_score"])
+        except (TypeError, ValueError):
+            normalized["best_val_score"] = None
+
+    best_tau = normalized.get("best_tau")
+    if best_tau is None:
+        schedule: List[int] = []
+        if isinstance(tau_schedule, Sequence):
+            for item in tau_schedule:
+                try:
+                    schedule.append(int(item))
+                except (TypeError, ValueError):
+                    continue
+        epochs = None
+        if isinstance(epochs_per_tau, (int, float)):
+            epochs = int(epochs_per_tau)
+        if schedule and epochs and epochs > 0:
+            idx = normalized.get("_best_epoch_index")
+            if not isinstance(idx, int):
+                if finite_scores:
+                    idx = max(finite_scores, key=lambda item: item[1])[0]
+                else:
+                    idx = None
+            if isinstance(idx, int):
+                stage = max(0, min(idx // epochs, len(schedule) - 1))
+                normalized["best_tau"] = schedule[stage]
+    else:
+        try:
+            normalized["best_tau"] = int(best_tau)
+        except (TypeError, ValueError):
+            normalized["best_tau"] = None
+
+    normalized.pop("_best_epoch_index", None)
+    return normalized
+
+
 def choose_sim_seed(mode: str, *, fixed: Optional[int] = None) -> Optional[int]:
     """Choose simulation seed based on mode."""
     import random
@@ -188,6 +271,7 @@ def run_short_sim(
         quick=quick,
         random_seed=random_seed,
         stub_result=stub_result,
+        start_from_pdb=start_from,
     )
     return backend.run_sampling(config)
 
@@ -262,6 +346,9 @@ class SimulationConfig:
     temperature_schedule_mode: Optional[str] = None
     cv_model_bundle: Optional[Path] = None  # Path to trained CV model for CV-informed sampling
     stub_result: bool = False  # Use synthetic trajectories instead of running REMD
+    save_restart_pdb: bool = False
+    restart_temperature: Optional[float] = None
+    start_from_pdb: Optional[Path] = None
 
 
 @dataclass
@@ -273,6 +360,8 @@ class SimulationResult:
     analysis_temperatures: List[float]
     steps: int
     created_at: str
+    restart_pdb_path: Optional[Path] = None
+    restart_inputs_entry: Optional[Path] = None
 
 
 @dataclass
@@ -457,8 +546,30 @@ class WorkflowBackend:
         run_dir = (self.layout.sims_dir / run_label).resolve()
         ensure_directory(run_dir)
 
+        restart_paths: Optional[tuple[Path, Path]] = None
+        restart_target_temperature: Optional[float] = None
+        if config.save_restart_pdb:
+            if not config.temperatures:
+                raise ValueError("Temperature ladder required when saving restart PDB.")
+            restart_target_temperature = (
+                float(config.restart_temperature)
+                if config.restart_temperature is not None
+                else float(config.temperatures[0])
+            )
+            restart_paths = self._plan_restart_snapshot_paths(
+                run_label=run_label,
+                run_dir=run_dir,
+                source_pdb=Path(config.pdb_path),
+            )
+
         if use_stub:
-            result, metadata = self._run_quick_sampling_stub(run_label, run_dir, config)
+            result, metadata = self._run_quick_sampling_stub(
+                run_label,
+                run_dir,
+                config,
+                restart_paths=restart_paths,
+                restart_temperature=restart_target_temperature,
+            )
             self.state.append_run(metadata)
             return result
 
@@ -479,9 +590,29 @@ class WorkflowBackend:
                 else None
             ),
             temperature_schedule_mode=config.temperature_schedule_mode,
+            start_from_pdb=(
+                str(config.start_from_pdb) if config.start_from_pdb else None
+            ),
+            save_final_pdb=bool(config.save_restart_pdb),
+            final_pdb_path=str(restart_paths[0]) if restart_paths else None,
+            final_pdb_temperature=restart_target_temperature,
             **cv_kwargs,
         )
         created = _timestamp()
+        restart_pdb_path: Optional[Path] = None
+        restart_inputs_entry: Optional[Path] = None
+        if restart_paths:
+            restart_pdb_path = restart_paths[0].resolve()
+            if not restart_pdb_path.exists():
+                raise FileNotFoundError(
+                    f"Expected restart snapshot at {restart_pdb_path} was not produced."
+                )
+            target_copy = restart_paths[1]
+            # Ensure parent exists (already ensured in planner but guard path operations)
+            ensure_directory(target_copy.parent)
+            shutil.copy2(restart_pdb_path, target_copy)
+            restart_inputs_entry = target_copy.resolve()
+
         result = SimulationResult(
             run_id=run_label,
             run_dir=run_dir.resolve(),
@@ -490,6 +621,8 @@ class WorkflowBackend:
             analysis_temperatures=[float(t) for t in temps],
             steps=int(config.steps),
             created_at=created,
+            restart_pdb_path=restart_pdb_path,
+            restart_inputs_entry=restart_inputs_entry,
         )
         run_metadata = {
             "run_id": run_label,
@@ -506,6 +639,12 @@ class WorkflowBackend:
             "created_at": created,
             "stub_result": bool(use_stub),
         }
+        if restart_pdb_path:
+            run_metadata["restart_pdb"] = str(restart_pdb_path)
+        if restart_inputs_entry:
+            run_metadata["restart_input_entry"] = str(restart_inputs_entry)
+        if restart_target_temperature is not None:
+            run_metadata["restart_temperature"] = float(restart_target_temperature)
 
         # Add CV model reference if used
         if config.cv_model_bundle:
@@ -515,11 +654,41 @@ class WorkflowBackend:
         self.state.append_run(run_metadata)
         return result
 
+    def _plan_restart_snapshot_paths(
+        self,
+        *,
+        run_label: str,
+        run_dir: Path,
+        source_pdb: Path,
+    ) -> Tuple[Path, Path]:
+        """Determine output locations for restart snapshots."""
+        source = Path(source_pdb).resolve()
+        if not source.exists():
+            raise FileNotFoundError(f"Protein input {source} does not exist.")
+        filename = f"{source.stem}_{run_label}.pdb"
+
+        snapshot_dir = run_dir / "restart"
+        ensure_directory(snapshot_dir)
+        ensure_directory(self.layout.inputs_dir)
+
+        run_path = (snapshot_dir / filename).resolve()
+        inputs_path = (self.layout.inputs_dir / filename).resolve()
+
+        for candidate in (run_path, inputs_path):
+            if candidate.exists():
+                raise FileExistsError(
+                    f"Restart PDB already exists at {candidate}. Remove it or choose a different run label."
+                )
+        return run_path, inputs_path
+
     def _run_quick_sampling_stub(
         self,
         run_label: str,
         run_dir: Path,
         config: SimulationConfig,
+        *,
+        restart_paths: Optional[Tuple[Path, Path]] = None,
+        restart_temperature: Optional[float] = None,
     ) -> tuple[SimulationResult, Dict[str, Any]]:
         """Generate a lightweight deterministic sampling result for quick-mode tests."""
 
@@ -541,6 +710,7 @@ class WorkflowBackend:
 
         analysis_temperatures = [float(t) for t in config.temperatures]
         traj_files: list[Path] = []
+        trajectories: list[md.Trajectory] = []
         for idx, temp in enumerate(config.temperatures):
             noise = 0.01 * rng.standard_normal((frames,) + base_coords.shape)
             coords = base_coords + noise
@@ -548,6 +718,28 @@ class WorkflowBackend:
             out_path = rep_dir / f"traj_{idx:02d}.dcd"
             traj.save_dcd(str(out_path))
             traj_files.append(out_path.resolve())
+            trajectories.append(traj)
+
+        restart_pdb_path: Optional[Path] = None
+        restart_inputs_entry: Optional[Path] = None
+        if restart_paths:
+            run_path, inputs_path = restart_paths
+            target_temp = (
+                float(restart_temperature)
+                if restart_temperature is not None
+                else analysis_temperatures[0]
+            )
+            if not analysis_temperatures:
+                raise ValueError("Cannot generate restart snapshot without temperatures.")
+            target_idx = min(
+                range(len(analysis_temperatures)),
+                key=lambda i: abs(analysis_temperatures[i] - target_temp),
+            )
+            final_frame = trajectories[target_idx][-1]
+            final_frame.save_pdb(str(run_path))
+            shutil.copy2(run_path, inputs_path)
+            restart_pdb_path = run_path.resolve()
+            restart_inputs_entry = inputs_path.resolve()
 
         # Minimal diagnostics payload mirroring the real runner structure
         import json as _json
@@ -575,6 +767,8 @@ class WorkflowBackend:
             analysis_temperatures=analysis_temperatures,
             steps=int(config.steps),
             created_at=created,
+            restart_pdb_path=restart_pdb_path,
+            restart_inputs_entry=restart_inputs_entry,
         )
         metadata = {
             "run_id": run_label,
@@ -591,6 +785,12 @@ class WorkflowBackend:
             "created_at": created,
             "stub_result": True,
         }
+        if restart_pdb_path:
+            metadata["restart_pdb"] = str(restart_pdb_path)
+        if restart_inputs_entry:
+            metadata["restart_input_entry"] = str(restart_inputs_entry)
+        if restart_temperature is not None:
+            metadata["restart_temperature"] = float(restart_temperature)
         return result, metadata
 
     def emit_shards(
@@ -826,6 +1026,15 @@ class WorkflowBackend:
         except Exception as exc:
             pmarlo_logger.warning(f"Could not export CV model: {exc}")
 
+        raw_metrics = _sanitize_artifacts(br.artifacts.get("mlcv_deeptica", {}))
+        normalized_metrics = _normalize_training_metrics(
+            raw_metrics,
+            tau_schedule=config.tau_schedule,
+            epochs_per_tau=config.epochs_per_tau,
+        )
+        if isinstance(br.artifacts, dict):
+            br.artifacts["mlcv_deeptica"] = normalized_metrics
+
         result = TrainingResult(
             bundle_path=bundle_path.resolve(),
             dataset_hash=ds_hash,
@@ -850,7 +1059,7 @@ class WorkflowBackend:
                 "val_tau": int(config.val_tau),
                 "epochs_per_tau": int(config.epochs_per_tau),
                 "created_at": stamp,
-                "metrics": _sanitize_artifacts(br.artifacts.get("mlcv_deeptica", {})),
+                "metrics": normalized_metrics,
             }
         )
         return result
@@ -1266,7 +1475,19 @@ class WorkflowBackend:
         return p if p.exists() else None
 
     def list_models(self) -> List[Dict[str, Any]]:
-        return [dict(entry) for entry in self.state.models]
+        enriched: List[Dict[str, Any]] = []
+        for entry in self.state.models:
+            data = dict(entry)
+            metrics = data.get("metrics")
+            tau_schedule = data.get("tau_schedule")
+            epochs_per_tau = data.get("epochs_per_tau")
+            data["metrics"] = _normalize_training_metrics(
+                metrics,
+                tau_schedule=tau_schedule if isinstance(tau_schedule, Sequence) else None,
+                epochs_per_tau=epochs_per_tau if isinstance(epochs_per_tau, (int, float)) else None,
+            )
+            enriched.append(data)
+        return enriched
 
     def list_builds(self) -> List[Dict[str, Any]]:
         return [dict(entry) for entry in self.state.builds]
@@ -1346,6 +1567,18 @@ class WorkflowBackend:
         analysis_temps = [float(t) for t in record.get("analysis_temperatures", [])]
         steps = int(record.get("steps", 0))
         created_at = str(record.get("created_at", "")) or _timestamp()
+        restart_pdb_path: Optional[Path] = None
+        restart_inputs_entry: Optional[Path] = None
+        restart_raw = record.get("restart_pdb")
+        if isinstance(restart_raw, str):
+            candidate = Path(restart_raw)
+            if candidate.exists():
+                restart_pdb_path = candidate.resolve()
+        restart_input_raw = record.get("restart_input_entry")
+        if isinstance(restart_input_raw, str):
+            candidate = Path(restart_input_raw)
+            if candidate.exists():
+                restart_inputs_entry = candidate.resolve()
 
         return SimulationResult(
             run_id=str(record.get("run_id")),
@@ -1355,6 +1588,8 @@ class WorkflowBackend:
             analysis_temperatures=analysis_temps,
             steps=steps,
             created_at=created_at,
+            restart_pdb_path=restart_pdb_path,
+            restart_inputs_entry=restart_inputs_entry,
         )
 
     def load_model(self, index: int) -> Optional[TrainingResult]:
@@ -1526,6 +1761,14 @@ class WorkflowBackend:
             str(getattr(br.metadata, "dataset_hash", "")) if br.metadata else ""
         )
         created_at = str(entry.get("created_at", "")) or _timestamp()
+        metrics = br.artifacts.get("mlcv_deeptica")
+        if isinstance(metrics, Mapping):
+            normalized = _normalize_training_metrics(
+                metrics,
+                tau_schedule=entry.get("tau_schedule"),
+                epochs_per_tau=entry.get("epochs_per_tau"),
+            )
+            br.artifacts["mlcv_deeptica"] = normalized
         return TrainingResult(
             bundle_path=bundle_path.resolve(),
             dataset_hash=dataset_hash,
