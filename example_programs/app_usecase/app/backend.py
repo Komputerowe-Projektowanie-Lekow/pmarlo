@@ -149,8 +149,18 @@ def run_short_sim(
     steps: int = 1000,
     quick: bool = True,
     random_seed: Optional[int] = None,
+    start_from: Optional[Path] = None,
+    use_stub: Optional[bool] = None,
 ) -> "SimulationResult":
-    """Run a short simulation for testing purposes."""
+    """Run a short simulation for testing purposes.
+
+    Parameters
+    ----------
+    use_stub:
+        When ``True`` (default if ``quick`` is ``True``), generate synthetic
+        trajectories rather than invoking the full REMD stack. Setting this to
+        ``False`` forces a real simulation even in quick mode.
+    """
     layout = WorkspaceLayout(
         app_root=workspace,
         inputs_dir=workspace / "inputs",
@@ -165,12 +175,19 @@ def run_short_sim(
     layout.ensure()
 
     backend = WorkflowBackend(layout)
+    effective_steps = int(steps)
+    if quick:
+        effective_steps = max(1, min(effective_steps, 200))
+
+    stub_result = quick if use_stub is None else bool(use_stub)
+
     config = SimulationConfig(
         pdb_path=pdb_path,
         temperatures=temperatures,
-        steps=steps,
+        steps=effective_steps,
         quick=quick,
         random_seed=random_seed,
+        stub_result=stub_result,
     )
     return backend.run_sampling(config)
 
@@ -244,6 +261,7 @@ class SimulationConfig:
     exchange_frequency_steps: Optional[int] = None
     temperature_schedule_mode: Optional[str] = None
     cv_model_bundle: Optional[Path] = None  # Path to trained CV model for CV-informed sampling
+    stub_result: bool = False  # Use synthetic trajectories instead of running REMD
 
 
 @dataclass
@@ -366,15 +384,15 @@ class WorkflowBackend:
     # Sampling & shard emission
     # ------------------------------------------------------------------
     def run_sampling(self, config: SimulationConfig) -> SimulationResult:
-        run_label = _slugify(config.label) or f"run-{_timestamp()}"
-        run_dir = self.layout.sims_dir / run_label
-        ensure_directory(run_dir)
+        base_label = _slugify(config.label) or f"run-{_timestamp()}"
 
         # Prepare CV model info if provided
         # CV biasing is now properly implemented with harmonic expansion bias
         # The exported model includes CVBiasPotential wrapper that transforms CVs → Energy
         cv_kwargs = {}
+        use_stub = bool(config.stub_result)
         if config.cv_model_bundle:
+            use_stub = False
             import logging
             logger = logging.getLogger(__name__)
 
@@ -431,8 +449,18 @@ class WorkflowBackend:
             except Exception as exc:
                 logger.error(f"Could not load CV model: {exc}", exc_info=True)
                 logger.warning("Running simulation WITHOUT CV biasing")
-            finally:
-                logger.info("=" * 60)
+        run_label = base_label
+        if config.random_seed is not None:
+            run_label = f"{base_label}-seed-{int(config.random_seed)}"
+        elif use_stub:
+            run_label = f"{base_label}-stub-{len(self.state.runs)}"
+        run_dir = (self.layout.sims_dir / run_label).resolve()
+        ensure_directory(run_dir)
+
+        if use_stub:
+            result, metadata = self._run_quick_sampling_stub(run_label, run_dir, config)
+            self.state.append_run(metadata)
+            return result
 
         traj_files, temps = run_replica_exchange(
             pdb_file=str(config.pdb_path),
@@ -476,6 +504,7 @@ class WorkflowBackend:
             ),
             "traj_files": [str(p) for p in result.traj_files],
             "created_at": created,
+            "stub_result": bool(use_stub),
         }
 
         # Add CV model reference if used
@@ -485,6 +514,84 @@ class WorkflowBackend:
 
         self.state.append_run(run_metadata)
         return result
+
+    def _run_quick_sampling_stub(
+        self,
+        run_label: str,
+        run_dir: Path,
+        config: SimulationConfig,
+    ) -> tuple[SimulationResult, Dict[str, Any]]:
+        """Generate a lightweight deterministic sampling result for quick-mode tests."""
+
+        import numpy as np
+        import mdtraj as md
+
+        seed = (
+            int(config.random_seed)
+            if config.random_seed is not None
+            else abs(hash(run_label)) % (2**32)
+        )
+        rng = np.random.default_rng(seed)
+        template = md.load(str(config.pdb_path))
+        base_coords = template.xyz[0]
+        frames = max(5, min(50, int(config.steps) if config.steps else 5))
+
+        rep_dir = (run_dir / "replica_exchange").resolve()
+        ensure_directory(rep_dir)
+
+        analysis_temperatures = [float(t) for t in config.temperatures]
+        traj_files: list[Path] = []
+        for idx, temp in enumerate(config.temperatures):
+            noise = 0.01 * rng.standard_normal((frames,) + base_coords.shape)
+            coords = base_coords + noise
+            traj = md.Trajectory(coords, template.topology)
+            out_path = rep_dir / f"traj_{idx:02d}.dcd"
+            traj.save_dcd(str(out_path))
+            traj_files.append(out_path.resolve())
+
+        # Minimal diagnostics payload mirroring the real runner structure
+        import json as _json
+
+        diag_payload = {
+            "temperatures": analysis_temperatures,
+            "exchange_attempts": int(max(1, frames - 1)),
+            "exchange_accepted": int(max(0, frames // 2)),
+            "per_pair_acceptance": [0.5 for _ in analysis_temperatures],
+            "acceptance_mean": 0.5,
+            "mean_abs_disp_per_10k_steps": 0.0,
+            "mean_abs_disp_per_sweep": 0.0,
+            "sparkline": [0.0 for _ in analysis_temperatures],
+        }
+        (rep_dir / "exchange_diagnostics.json").write_text(
+            _json.dumps(diag_payload, indent=2), encoding="utf-8"
+        )
+
+        created = _timestamp()
+        result = SimulationResult(
+            run_id=run_label,
+            run_dir=run_dir.resolve(),
+            pdb_path=Path(config.pdb_path).resolve(),
+            traj_files=traj_files,
+            analysis_temperatures=analysis_temperatures,
+            steps=int(config.steps),
+            created_at=created,
+        )
+        metadata = {
+            "run_id": run_label,
+            "run_dir": str(result.run_dir),
+            "pdb": str(result.pdb_path),
+            "temperatures": analysis_temperatures,
+            "analysis_temperatures": analysis_temperatures,
+            "steps": int(config.steps),
+            "quick": True,
+            "random_seed": (
+                int(config.random_seed) if config.random_seed is not None else None
+            ),
+            "traj_files": [str(p) for p in traj_files],
+            "created_at": created,
+            "stub_result": True,
+        }
+        return result, metadata
 
     def emit_shards(
         self,

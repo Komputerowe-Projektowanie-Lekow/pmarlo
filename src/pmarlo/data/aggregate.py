@@ -15,11 +15,12 @@ from dataclasses import dataclass, replace
 from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, List, Mapping, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, List, Mapping, Optional, Sequence, cast
 
 import numpy as np
 
 from pmarlo.data.shard import ShardDetails, read_shard
+from pmarlo.data.shard_schema import DemuxShard
 from pmarlo.transform.plan import TransformPlan
 from pmarlo.utils.errors import TemperatureConsistencyError
 from pmarlo.utils.path_utils import ensure_directory
@@ -55,8 +56,8 @@ def coerce_progress_callback(
     cb: Optional[Callable[[str, Mapping[str, Any]], None]] = None
     for key in _PROGRESS_ALIAS_KEYS:
         value = kwargs.get(key)
-        if value is not None:
-            cb = value
+        if value is not None and callable(value):
+            cb = cast(Callable[[str, Mapping[str, Any]], None], value)
             break
     if cb is not None:
         kwargs.setdefault("progress_callback", cb)
@@ -66,7 +67,7 @@ def coerce_progress_callback(
 def _unique_shard_uid(details: ShardDetails) -> str:
     """Return the canonical shard identifier."""
 
-    return details.shard_id
+    return str(details.shard_id)
 
 
 @dataclass(slots=True)
@@ -94,7 +95,7 @@ def _aggregate_shard_contents(shard_jsons: Sequence[Path]) -> AggregatedShards:
     for path in paths:
         meta_info = load_shard_meta(path)
         kinds.append(meta_info.kind)
-        if meta_info.kind == "demux":
+        if isinstance(meta_info, DemuxShard):
             temps.append(float(meta_info.temperature_K))
 
         details, X, dtraj = read_shard(path)

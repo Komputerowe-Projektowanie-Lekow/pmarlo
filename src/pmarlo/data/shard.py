@@ -2,9 +2,10 @@ from __future__ import annotations
 
 """Canonical shard helpers exposing the historical pmarlo.data.shard API."""
 
+import numbers
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Mapping, Sequence, cast
 
 import numpy as np
 
@@ -27,25 +28,121 @@ class ShardDetails:
 
     @property
     def shard_id(self) -> str:
-        return self.meta.shard_id
+        return str(self.meta.shard_id)
 
     @property
     def temperature_K(self) -> float:
-        return self.meta.temperature_K
+        return float(self.meta.temperature_K)
 
     @property
     def cv_names(self) -> tuple[str, ...]:
-        return tuple(self.meta.feature_spec.columns)
+        columns = cast(
+            Sequence[object], getattr(self.meta.feature_spec, "columns", tuple())
+        )
+        return tuple(str(name) for name in columns)
 
     @property
     def periodic(self) -> tuple[bool, ...]:
-        periodic = self.source.get("periodic")
-        require(
-            isinstance(periodic, (list, tuple))
-            and len(periodic) == len(self.meta.feature_spec.columns),
-            "periodic flags missing from shard provenance",
-        )
-        return tuple(bool(v) for v in periodic)
+        periodic_raw = self.source.get("periodic")
+        if not isinstance(periodic_raw, (list, tuple)):
+            raise ValueError("periodic flags missing from shard provenance")
+        if len(periodic_raw) != len(self.cv_names):
+            raise ValueError("periodic flags missing from shard provenance")
+        return tuple(bool(v) for v in periodic_raw)
+
+
+@dataclass(frozen=True)
+class _SourceCore:
+    """Normalised required provenance fields used when writing shards."""
+
+    kind: str
+    run_id: str
+    replica_id: int
+    segment_id: int
+    exchange_window_id: int
+
+
+def _ensure_source_dict(source: Mapping[str, object] | None) -> Dict[str, object]:
+    if source is None:
+        raise ValueError("source metadata is required")
+    return dict(source)
+
+
+def _coerce_int(value: object, *, name: str) -> int:
+    if not isinstance(value, numbers.Integral):
+        raise ValueError(f"{name} must be an integer")
+    return int(value)
+
+
+def _coerce_str(value: object, *, name: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be a string")
+    return value
+
+
+def _normalise_source_metadata(source_dict: Dict[str, object]) -> _SourceCore:
+    for key in ("created_at", "kind", "run_id", "replica_id", "segment_id"):
+        require(key in source_dict, f"source missing required key '{key}'")
+
+    kind_raw = _coerce_str(source_dict["kind"], name="kind").strip().lower()
+    if kind_raw not in {"demux", "replica"}:
+        raise ValueError("kind must be 'demux' or 'replica'")
+
+    run_id = _coerce_str(source_dict["run_id"], name="run_id")
+    replica_id = _coerce_int(source_dict["replica_id"], name="replica_id")
+    segment_id = _coerce_int(source_dict["segment_id"], name="segment_id")
+    exchange_window_id = _coerce_int(
+        source_dict.get("exchange_window_id", 0), name="exchange_window_id"
+    )
+
+    source_dict["kind"] = kind_raw
+    source_dict["run_id"] = run_id
+    source_dict["replica_id"] = replica_id
+    source_dict["segment_id"] = segment_id
+    source_dict["exchange_window_id"] = exchange_window_id
+
+    return _SourceCore(
+        kind=kind_raw,
+        run_id=run_id,
+        replica_id=replica_id,
+        segment_id=segment_id,
+        exchange_window_id=exchange_window_id,
+    )
+
+
+def _resolve_periodic_flags(
+    column_order: Sequence[str], periodic: Mapping[str, bool]
+) -> list[bool]:
+    periodic_map: Dict[str, bool] = dict(periodic or {})
+    return [bool(periodic_map.get(name, False)) for name in column_order]
+
+
+def _coerce_dt_ps(value: object) -> float:
+    if isinstance(value, numbers.Real):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError as exc:  # pragma: no cover - defensive
+            raise ValueError("dt_ps must be numeric") from exc
+    raise ValueError("dt_ps must be numeric")
+
+
+def _prepare_bias_array(
+    bias_potential: np.ndarray | None,
+    n_frames: int,
+    *,
+    target: Dict[str, object],
+) -> np.ndarray | None:
+    if bias_potential is None:
+        target["has_bias"] = False
+        return None
+
+    bias_array = np.asarray(bias_potential, dtype=np.float32).reshape(-1)
+    if bias_array.shape[0] != n_frames:
+        raise ValueError("bias_potential length must match number of frames")
+    target["has_bias"] = True
+    return bias_array
 
 
 def _stack_columns(cvs: Dict[str, np.ndarray]) -> np.ndarray:
@@ -80,24 +177,11 @@ def write_shard(
     out_dir = Path(out_dir)
     ensure_directory(out_dir)
 
-    if source is None:
-        raise ValueError("source metadata is required")
-
-    source_dict: Dict[str, object] = dict(source)
-    for key in ("created_at", "kind", "run_id", "replica_id", "segment_id"):
-        require(key in source_dict, f"source missing required key '{key}'")
-
-    kind = str(source_dict["kind"])
-    require(kind in {"demux", "replica"}, "kind must be 'demux' or 'replica'")
-
-    replica_id = int(source_dict["replica_id"])
-    segment_id = int(source_dict["segment_id"])
-    exchange_window_id = int(source_dict.get("exchange_window_id", 0))
+    source_dict = _ensure_source_dict(source)
+    core = _normalise_source_metadata(source_dict)
 
     column_order = tuple(cvs.keys())
-    ordered_periodic = [
-        bool((periodic or {}).get(name, False)) for name in column_order
-    ]
+    ordered_periodic = _resolve_periodic_flags(column_order, periodic or {})
 
     t_kelvin = float(temperature)
     X = _stack_columns(cvs)
@@ -105,33 +189,23 @@ def write_shard(
 
     source_dict.update(
         {
-            "kind": kind,
-            "run_id": str(source_dict["run_id"]),
-            "replica_id": replica_id,
-            "segment_id": segment_id,
-            "exchange_window_id": exchange_window_id,
             "seed": int(seed),
-            "n_frames": n_frames,
-            "periodic": ordered_periodic,
             "temperature_K": t_kelvin,
+            "n_frames": n_frames,
+            "columns": column_order,
+            "periodic": ordered_periodic,
         }
     )
 
-    dt_ps = float(source_dict.get("dt_ps", 1.0))
+    dt_ps_value = source_dict.get("dt_ps", 1.0)
+    dt_ps = _coerce_dt_ps(dt_ps_value)
     feature_spec = FeatureSpec(
         name=str(source_dict.get("feature_spec_name", "pmarlo_features")),
         scaler=str(source_dict.get("feature_scaler", "identity")),
         columns=tuple(str(k) for k in column_order),
     )
 
-    bias_array: np.ndarray | None = None
-    if bias_potential is not None:
-        bias_array = np.asarray(bias_potential, dtype=np.float32).reshape(-1)
-        if bias_array.shape[0] != n_frames:
-            raise ValueError("bias_potential length must match number of frames")
-        source_dict["has_bias"] = True
-    else:
-        source_dict["has_bias"] = False
+    bias_array = _prepare_bias_array(bias_potential, n_frames, target=source_dict)
 
     provenance = dict(source_dict)
     if "source" not in provenance:
@@ -142,9 +216,9 @@ def write_shard(
         shard_id="placeholder",
         temperature_K=t_kelvin,
         beta=float(1.0 / (const.BOLTZMANN_CONSTANT_KJ_PER_MOL * t_kelvin)),
-        replica_id=replica_id,
-        segment_id=segment_id,
-        exchange_window_id=exchange_window_id,
+        replica_id=core.replica_id,
+        segment_id=core.segment_id,
+        exchange_window_id=core.exchange_window_id,
         n_frames=int(n_frames),
         dt_ps=dt_ps,
         feature_spec=feature_spec,
@@ -192,7 +266,7 @@ def write_shard(
         payload["dtraj"] = dtraj_arr
         np.savez_compressed(npz_path, **payload)
 
-    return json_path
+    return Path(json_path)
 
 
 def read_shard(json_path: Path) -> tuple[ShardDetails, np.ndarray, np.ndarray | None]:
@@ -208,7 +282,12 @@ def read_shard(json_path: Path) -> tuple[ShardDetails, np.ndarray, np.ndarray | 
             if arr.size > 0:
                 dtraj = arr
 
-    source = dict(shard.meta.provenance)
+    provenance_payload = getattr(shard.meta, "provenance", None)
+    source = (
+        dict(cast(Mapping[str, object], provenance_payload))
+        if isinstance(provenance_payload, Mapping)
+        else {}
+    )
     return (
         ShardDetails(meta=shard.meta, source=source),
         shard.X.astype(np.float64, copy=False),

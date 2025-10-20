@@ -160,6 +160,108 @@ def ensure_connected_counts(
     return ConnectedCountResult(C_active, active)
 
 
+def _coerce_transition_inputs(
+    T: np.ndarray,
+    pi: np.ndarray,
+    row_tol: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    if np.any(T < 0.0):
+        raise ValueError("Negative probabilities in transition matrix")
+    if not is_transition_matrix(T, tol=row_tol):
+        raise ValueError("transition matrix fails stochasticity checks")
+    pi_sum = float(np.sum(pi))
+    if not np.isfinite(pi_sum) or pi_sum <= 0:
+        raise ValueError("stationary distribution must be normalisable")
+    return T, pi / pi_sum
+
+
+def _check_invariance(
+    pi_norm: np.ndarray,
+    T: np.ndarray,
+    stat_tol: float,
+) -> None:
+    residual = float(np.max(np.abs(pi_norm @ T - pi_norm)))
+    if residual > stat_tol:
+        raise ValueError(
+            f"provided stationary distribution fails invariance check (max residual {residual})"
+        )
+
+
+def _detect_reducibility(T: np.ndarray) -> bool:
+    if T.shape[0] <= 1:
+        return False
+    adjacency = csr_matrix((T > const.NUMERIC_MIN_RATE).astype(int))
+    n_components, labels = connected_components(
+        adjacency, directed=True, connection="strong"
+    )
+    if n_components <= 1:
+        return False
+    recurrent = np.ones(n_components, dtype=bool)
+    for state in range(T.shape[0]):
+        comp_idx = labels[state]
+        if not recurrent[comp_idx]:
+            continue
+        mask = labels != comp_idx
+        if np.any((T[state] > const.NUMERIC_MIN_RATE) & mask):
+            recurrent[comp_idx] = False
+    return bool(np.sum(recurrent) > 1)
+
+
+def _compute_reference_stationary(T: np.ndarray) -> np.ndarray:
+    try:
+        return np.asarray(
+            _dt_stationary_distribution(T, check_inputs=False), dtype=float
+        )
+    except Exception as exc:  # pragma: no cover - should rarely trigger
+        raise ValueError("failed to compute stationary distribution") from exc
+
+
+def _evaluate_stationary_difference(
+    pi_norm: np.ndarray,
+    pi_ref: np.ndarray,
+    T: np.ndarray,
+    stat_tol: float,
+    reducible: bool,
+) -> tuple[np.ndarray, bool]:
+    if pi_ref.shape != pi_norm.shape:
+        raise ValueError("stationary distribution size mismatch")
+
+    diff = np.abs(pi_norm - pi_ref)
+    ignore_states = np.zeros(diff.shape, dtype=bool)
+    support_mask = pi_norm > stat_tol
+    if support_mask.any():
+        for idx_state in range(T.shape[0]):
+            if pi_norm[idx_state] > stat_tol:
+                continue
+            incoming = T[support_mask, idx_state]
+            if np.any(incoming > const.NUMERIC_MIN_RATE):
+                continue
+            ignore_states[idx_state] = True
+    else:
+        ignore_states[:] = True
+
+    if ignore_states.any():
+        diff[ignore_states] = 0.0
+        reducible = True
+
+    max_err = float(np.max(diff)) if diff.size else 0.0
+    if max_err > stat_tol and not reducible:
+        idx = int(np.argmax(diff))
+        raise ValueError(
+            f"Stationary distribution mismatch at state {idx} with error {max_err}"
+        )
+    return diff, reducible
+
+
+def _log_transition_diagnostics(T: np.ndarray, diff: np.ndarray) -> None:
+    row_err = np.abs(T.sum(axis=1) - 1.0)
+    min_entry = T.min(axis=1)
+    lines = ["state row_err min_T pi_diff"]
+    for i in range(T.shape[0]):
+        lines.append(f"{i:5d} {row_err[i]:.2e} {min_entry[i]:.2e} {diff[i]:.2e}")
+    logger.debug("MSM diagnostics:\n%s", "\n".join(lines))
+
+
 def check_transition_matrix(
     T: np.ndarray,
     pi: np.ndarray,
@@ -179,77 +281,12 @@ def check_transition_matrix(
     T = np.asarray(T, dtype=float)
     pi = np.asarray(pi, dtype=float)
 
-    if np.any(T < 0.0):
-        raise ValueError("Negative probabilities in transition matrix")
+    T, pi_norm = _coerce_transition_inputs(T, pi, row_tol)
+    _check_invariance(pi_norm, T, stat_tol)
 
-    if not is_transition_matrix(T, tol=row_tol):
-        raise ValueError("transition matrix fails stochasticity checks")
-
-    pi_sum = float(np.sum(pi))
-    if not np.isfinite(pi_sum) or pi_sum <= 0:
-        raise ValueError("stationary distribution must be normalisable")
-    pi_norm = pi / pi_sum
-
-    residual = np.max(np.abs(pi_norm @ T - pi_norm)) if T.size else 0.0
-    if residual > stat_tol:
-        raise ValueError(
-            f"provided stationary distribution fails invariance check (max residual {residual})"
-        )
-
-    is_reducible = False
-    if T.shape[0] > 1:
-        adjacency = csr_matrix((T > const.NUMERIC_MIN_RATE).astype(int))
-        n_components, labels = connected_components(
-            adjacency, directed=True, connection="strong"
-        )
-        if n_components > 1:
-            recurrent = np.ones(n_components, dtype=bool)
-            for state in range(T.shape[0]):
-                comp_idx = labels[state]
-                if not recurrent[comp_idx]:
-                    continue
-                mask = labels != comp_idx
-                if np.any((T[state] > const.NUMERIC_MIN_RATE) & mask):
-                    recurrent[comp_idx] = False
-            if np.sum(recurrent) > 1:
-                is_reducible = True
-
-    try:
-        pi_ref = np.asarray(
-            _dt_stationary_distribution(T, check_inputs=False), dtype=float
-        )
-    except Exception as exc:  # pragma: no cover - should rarely trigger
-        raise ValueError("failed to compute stationary distribution") from exc
-
-    if pi_ref.shape != pi_norm.shape:
-        raise ValueError("stationary distribution size mismatch")
-
-    diff = np.abs(pi_norm - pi_ref)
-    ignore_states = np.zeros(diff.shape, dtype=bool)
-    support_mask = pi_norm > stat_tol
-    if support_mask.any():
-        for idx_state in range(T.shape[0]):
-            if pi_norm[idx_state] > stat_tol:
-                continue
-            incoming = T[support_mask, idx_state]
-            if np.any(incoming > const.NUMERIC_MIN_RATE):
-                continue
-            ignore_states[idx_state] = True
-    else:
-        ignore_states[:] = True
-    if ignore_states.any():
-        diff[ignore_states] = 0.0
-        is_reducible = True
-    max_err = float(np.max(diff)) if diff.size else 0.0
-    if max_err > stat_tol and not is_reducible:
-        idx = int(np.argmax(diff))
-        raise ValueError(
-            f"Stationary distribution mismatch at state {idx} with error {max_err}"
-        )
-
-    row_err = np.abs(T.sum(axis=1) - 1.0)
-    min_entry = T.min(axis=1)
-    lines = ["state row_err min_T pi_diff"]
-    for i in range(T.shape[0]):
-        lines.append(f"{i:5d} {row_err[i]:.2e} {min_entry[i]:.2e} {diff[i]:.2e}")
-    logger.debug("MSM diagnostics:\n%s", "\n".join(lines))
+    is_reducible = _detect_reducibility(T)
+    pi_ref = _compute_reference_stationary(T)
+    diff, is_reducible = _evaluate_stationary_difference(
+        pi_norm, pi_ref, T, stat_tol, is_reducible
+    )
+    _log_transition_diagnostics(T, diff)

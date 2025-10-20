@@ -4,7 +4,6 @@ import logging
 from typing import Any, Dict, Mapping, MutableMapping, Sequence
 
 import numpy as np
-from scipy.linalg import fractional_matrix_power
 from sklearn.cross_decomposition import CCA
 
 from pmarlo import constants as const

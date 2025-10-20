@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from pathlib import Path
 from typing import Tuple
 
 import numpy as np
 import torch
-import yaml
 from openmm import unit
 from openmm.app import PDBFile
 
@@ -17,15 +14,20 @@ from pmarlo.features.deeptica.ts_feature_extractor import (
     build_feature_extractor_module,
     canonicalize_feature_spec,
 )
+from pmarlo.settings import load_feature_spec
 
-SPEC_PATH = Path(__file__).resolve().parents[1] / "data" / "feature_spec.yaml"
 PDB_PATH = Path(__file__).resolve().parents[1] / "data" / "ala2.pdb"
 BOX_LENGTHS = torch.tensor([1.5, 1.5, 1.5], dtype=torch.float32)
 
 
 def load_spec_dict() -> dict:
-    with SPEC_PATH.open("r", encoding="utf-8") as fh:
-        return yaml.safe_load(fh)
+    spec, _ = load_feature_spec()
+    return spec
+
+
+def spec_hash() -> str:
+    _, hash_value = load_feature_spec()
+    return hash_value
 
 
 def canonical_spec():
@@ -63,15 +65,12 @@ def build_eager_module() -> Tuple[CVBiasPotential, dict]:
     extractor = build_feature_extractor_module(canonical)
     network = _build_network(canonical.n_features)
     scaler = IdentityScaler(canonical.n_features)
-    spec_hash = hashlib.sha256(
-        json.dumps(spec_dict, sort_keys=True).encode("utf-8")
-    ).hexdigest()
     module = CVBiasPotential(
         cv_model=network,
         scaler_mean=scaler.mean_,
         scaler_scale=scaler.scale_,
         feature_extractor=extractor,
-        feature_spec_hash=spec_hash,
+        feature_spec_hash=spec_hash(),
         bias_strength=5.0,
         feature_names=list(canonical.feature_names),
     )

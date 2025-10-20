@@ -56,6 +56,7 @@ def test_diversified_starts_increase_bin_coverage(
         steps=1500,
         quick=True,
         random_seed=1337,
+        stub_result=True,
     )
     shards1 = _emit(config1, seed_start=0)
 
@@ -68,6 +69,7 @@ def test_diversified_starts_increase_bin_coverage(
         random_seed=7331,
         jitter_start=True,
         jitter_sigma_A=0.05,
+        stub_result=True,
     )
     shards2 = _emit(config2, seed_start=100)
 

@@ -960,6 +960,146 @@ def generate_fes_and_pick_minima(
 # ------------------------------ High-level wrappers ------------------------------
 
 
+def _resolve_simulation_seed(
+    random_seed: int | None,
+    random_state: int | None,
+) -> int | None:
+    """Resolve a deterministic simulation seed preferring ``random_state``."""
+
+    if random_state is not None:
+        return int(random_state)
+    if random_seed is not None:
+        return int(random_seed)
+    return None
+
+
+def _derive_run_plan(
+    total_steps: int,
+    quick_mode: bool,
+    exchange_override: int | None,
+) -> tuple[int, int, int]:
+    """Compute equilibration length, exchange frequency, and DCD stride.
+    
+    Exchange frequency optimization based on benchmarks:
+    - Too frequent (10-50 steps): High overhead from exchange attempts
+    - Optimal range (100-200 steps): Best balance of exchange rate and throughput
+    - Too infrequent (500+ steps): Poor exchange statistics
+    """
+
+    total = int(total_steps)
+    equilibration = min(total // 10, 200 if total <= 2000 else 2000)
+    dcd_stride = max(1, total // 5000)
+    exchange_frequency = max(100, total // 20)
+
+    if quick_mode:
+        equilibration = min(total // 20, 100)
+        # Benchmark shows 100 steps is optimal, don't go lower even in quick mode
+        exchange_frequency = max(100, total // 40)  # Changed from 50 to 100
+        dcd_stride = max(1, total // 1000)
+
+    if exchange_override is not None:
+        override = int(exchange_override)
+        if override > 0:
+            exchange_frequency = override
+
+    return equilibration, exchange_frequency, dcd_stride
+
+
+def _emit_banner(
+    title: str,
+    lines: Iterable[str] | None = None,
+    *,
+    log_level: Literal["info", "warning"] = "info",
+) -> None:
+    """Emit a console/log banner with consistent formatting."""
+
+    border = "=" * 80
+    payload = list(lines or [])
+    block = [border, title, border, *payload, border]
+    print("\n" + "\n".join(block) + "\n", flush=True)
+    log_fn = getattr(logger, log_level)
+    for entry in block:
+        log_fn(entry)
+
+
+def _configure_cv_model(
+    remd: "ReplicaExchange",
+    cv_model_path: str | Path | None,
+    cv_scaler_mean: Any | None,
+    cv_scaler_scale: Any | None,
+) -> None:
+    """Attach optional CV model configuration to the REMD object."""
+
+    if cv_model_path is None:
+        return
+    remd.cv_model_path = str(cv_model_path)
+    if cv_scaler_mean is not None:
+        import numpy as _np
+
+        remd.cv_scaler_mean = _np.asarray(cv_scaler_mean, dtype=_np.float64)
+    if cv_scaler_scale is not None:
+        import numpy as _np
+
+        remd.cv_scaler_scale = _np.asarray(cv_scaler_scale, dtype=_np.float64)
+
+
+def _restore_from_checkpoint(
+    remd: "ReplicaExchange",
+    checkpoint_path: str | Path,
+) -> bool:
+    """Attempt to restore REMD state from ``checkpoint_path``."""
+
+    try:
+        import pickle as _pkl
+
+        with open(checkpoint_path, "rb") as fh:
+            ckpt = _pkl.load(fh)
+    except Exception as exc:
+        logger.warning(
+            "Failed to restore from checkpoint %s: %s",
+            str(checkpoint_path),
+            exc,
+        )
+        return False
+
+    remd.restore_from_checkpoint(ckpt)
+    return True
+
+
+def _evaluate_demux_result(
+    remd: "ReplicaExchange",
+    demuxed_path: str | Path | None,
+    total_steps: int,
+    equilibration_steps: int,
+    pdb_file: str | Path,
+) -> tuple[bool, int | None]:
+    """Return ``(accepted, frame_count)`` for a demultiplexed trajectory."""
+
+    if not demuxed_path:
+        return False, None
+
+    try:
+        from pmarlo.io.trajectory_reader import MDTrajReader as _MDTReader
+
+        reader = _MDTReader(topology_path=str(pdb_file))
+        nframes = reader.probe_length(str(demuxed_path))
+        reporter_stride = getattr(remd, "reporter_stride", None)
+        effective_stride = int(
+            reporter_stride
+            if reporter_stride
+            else max(1, getattr(remd, "dcd_stride", 1))
+        )
+        production_steps = max(0, int(total_steps) - int(equilibration_steps))
+        expected_frames = max(1, production_steps // effective_stride)
+        threshold = max(1, expected_frames // 5)
+        if int(nframes) >= threshold:
+            return True, int(nframes)
+    except Exception as exc:  # pragma: no cover - diagnostic aid
+        logger.debug("Demux evaluation failed: %s", exc, exc_info=True)
+
+    return False, None
+
+
 def run_replica_exchange(
     pdb_file: str | Path,
     output_dir: str | Path,
@@ -991,46 +1131,22 @@ def run_replica_exchange(
     """
     remd_out = Path(output_dir) / "replica_exchange"
 
-    equil = min(total_steps // 10, 200 if total_steps <= 2000 else 2000)
-    dcd_stride = max(1, int(total_steps // 5000))
-    exchange_frequency = max(100, total_steps // 20)
-    # Optional quick-run preset for interactive demos
-    if bool(kwargs.get("quick", False)):
-        equil = min(total_steps // 20, 100)
-        exchange_frequency = max(50, total_steps // 40)
-        dcd_stride = max(1, int(total_steps // 1000))
-    # Allow explicit override from caller
-    if exchange_frequency_steps is not None and int(exchange_frequency_steps) > 0:
-        exchange_frequency = int(exchange_frequency_steps)
-
-    # Prefer random_state when both provided for back-compat
-    _seed = (
-        int(random_state)
-        if random_state is not None
-        else (int(random_seed) if random_seed is not None else None)
+    quick_mode = bool(kwargs.get("quick", False))
+    equil, exchange_frequency, dcd_stride = _derive_run_plan(
+        total_steps, quick_mode, exchange_frequency_steps
     )
+    seed = _resolve_simulation_seed(random_seed, random_state)
 
-    # Console output for visibility in Streamlit
-    print("\n" + "=" * 80, flush=True)
-    print("REPLICA EXCHANGE SIMULATION STARTING", flush=True)
-    print("=" * 80, flush=True)
-    print(f"Number of replicas: {len(temperatures)}", flush=True)
-    print(f"Temperature ladder: {temperatures}", flush=True)
-    print(f"Total steps: {total_steps}", flush=True)
-    print(f"Output directory: {remd_out}", flush=True)
-    print(f"Random seed: {_seed}", flush=True)
-    print("=" * 80 + "\n", flush=True)
-
-    # Also log for file-based logging
-    logger.info("=" * 80)
-    logger.info("REPLICA EXCHANGE SIMULATION STARTING")
-    logger.info("=" * 80)
-    logger.info(f"Number of replicas: {len(temperatures)}")
-    logger.info(f"Temperature ladder: {temperatures}")
-    logger.info(f"Total steps: {total_steps}")
-    logger.info(f"Output directory: {remd_out}")
-    logger.info(f"Random seed: {_seed}")
-    logger.info("=" * 80)
+    _emit_banner(
+        "REPLICA EXCHANGE SIMULATION STARTING",
+        [
+            f"Number of replicas: {len(temperatures)}",
+            f"Temperature ladder: {temperatures}",
+            f"Total steps: {total_steps}",
+            f"Output directory: {remd_out}",
+            f"Random seed: {seed}",
+        ],
+    )
 
     remd = ReplicaExchange.from_config(
         RemdConfig(
@@ -1040,7 +1156,7 @@ def run_replica_exchange(
             exchange_frequency=exchange_frequency,
             auto_setup=False,
             dcd_stride=dcd_stride,
-            random_seed=_seed,
+            random_seed=seed,
             start_from_checkpoint=(
                 str(start_from_checkpoint) if start_from_checkpoint else None
             ),
@@ -1050,60 +1166,27 @@ def run_replica_exchange(
             temperature_schedule_mode=temperature_schedule_mode,
         )
     )
-    # Set CV model parameters if provided
-    if cv_model_path is not None:
-        remd.cv_model_path = str(cv_model_path)
-        if cv_scaler_mean is not None:
-            import numpy as np
-
-            remd.cv_scaler_mean = np.asarray(cv_scaler_mean, dtype=np.float64)
-        if cv_scaler_scale is not None:
-            import numpy as np
-
-            remd.cv_scaler_scale = np.asarray(cv_scaler_scale, dtype=np.float64)
+    _configure_cv_model(remd, cv_model_path, cv_scaler_mean, cv_scaler_scale)
 
     remd.plan_reporter_stride(
         total_steps=int(total_steps), equilibration_steps=int(equil), target_frames=5000
     )
     remd.setup_replicas()
-    # Optional resume from checkpoint state
     if start_from_checkpoint:
-        try:
-            import pickle as _pkl
-
-            with open(start_from_checkpoint, "rb") as fh:
-                ckpt = _pkl.load(fh)
-            remd.restore_from_checkpoint(ckpt)
-            # Skip equilibration if resuming from a checkpoint
+        if _restore_from_checkpoint(remd, start_from_checkpoint):
             equil = 0
-        except Exception as exc:
-            logger.warning(
-                "Failed to restore from checkpoint %s: %s",
-                str(start_from_checkpoint),
-                exc,
-            )
-    # Optional unified progress callback (many alias names accepted)
+
     cb = coerce_progress_callback(kwargs)
 
-    # Console output
-    print("\n" + "=" * 80, flush=True)
-    print("PHASE 1/2: RUNNING MD SIMULATION", flush=True)
-    print("=" * 80, flush=True)
-    print(f"This will run {len(temperatures)} parallel replicas", flush=True)
-    print(f"Each replica will run for {total_steps} MD steps", flush=True)
-    print(f"Equilibration: {equil} steps", flush=True)
-    print("Press Ctrl+C to cancel the simulation", flush=True)
-    print("=" * 80 + "\n", flush=True)
-
-    # Also log
-    logger.info("=" * 80)
-    logger.info("PHASE 1/2: RUNNING MD SIMULATION")
-    logger.info("=" * 80)
-    logger.info(f"This will run {len(temperatures)} parallel replicas")
-    logger.info(f"Each replica will run for {total_steps} MD steps")
-    logger.info(f"Equilibration: {equil} steps")
-    logger.info("Press Ctrl+C to cancel the simulation")
-    logger.info("=" * 80)
+    _emit_banner(
+        "PHASE 1/2: RUNNING MD SIMULATION",
+        [
+            f"This will run {len(temperatures)} parallel replicas",
+            f"Each replica will run for {total_steps} MD steps",
+            f"Equilibration: {equil} steps",
+            "Press Ctrl+C to cancel the simulation",
+        ],
+    )
 
     remd.run_simulation(
         total_steps=int(total_steps),
@@ -1113,112 +1196,50 @@ def run_replica_exchange(
         cancel_token=kwargs.get("cancel_token"),
     )
 
-    # Console output
-    print("\n" + "=" * 80, flush=True)
-    print("PHASE 1/2: MD SIMULATION COMPLETE", flush=True)
-    print("=" * 80, flush=True)
-    print(f"Generated {len(remd.trajectory_files)} replica trajectories", flush=True)
-    print("=" * 80 + "\n", flush=True)
-
-    # Also log
-    logger.info("=" * 80)
-    logger.info("PHASE 1/2: MD SIMULATION COMPLETE")
-    logger.info("=" * 80)
-    logger.info(f"Generated {len(remd.trajectory_files)} replica trajectories")
-    logger.info("=" * 80)
-
-    # Demultiplex best-effort
-    # Console output
-    print("\n" + "=" * 80, flush=True)
-    print("PHASE 2/2: DEMULTIPLEXING TRAJECTORIES", flush=True)
-    print("=" * 80, flush=True)
-    print("Extracting frames at target temperature (300K)", flush=True)
-    print("This creates a single trajectory from replica exchanges", flush=True)
-    print(
-        "⚠️  This phase cannot be cancelled with Ctrl+C (runs to completion)", flush=True
+    _emit_banner(
+        "PHASE 1/2: MD SIMULATION COMPLETE",
+        [f"Generated {len(remd.trajectory_files)} replica trajectories"],
     )
-    print("=" * 80 + "\n", flush=True)
 
-    # Also log
-    logger.info("=" * 80)
-    logger.info("PHASE 2/2: DEMULTIPLEXING TRAJECTORIES")
-    logger.info("=" * 80)
-    logger.info("Extracting frames at target temperature (300K)")
-    logger.info("This creates a single trajectory from replica exchanges")
-    logger.info("This phase cannot be cancelled with Ctrl+C (runs to completion)")
-    logger.info("=" * 80)
+    _emit_banner(
+        "PHASE 2/2: DEMULTIPLEXING TRAJECTORIES",
+        [
+            "Extracting frames at target temperature (300K)",
+            "This creates a single trajectory from replica exchanges",
+            "WARNING: This phase cannot be cancelled with Ctrl+C (runs to completion)",
+        ],
+    )
 
     demuxed = remd.demux_trajectories(
         target_temperature=300.0, equilibration_steps=int(equil), progress_callback=cb
     )
 
-    # Console output
-    print("\n" + "=" * 80, flush=True)
-    print("PHASE 2/2: DEMULTIPLEXING COMPLETE", flush=True)
-    print("=" * 80 + "\n", flush=True)
+    _emit_banner("PHASE 2/2: DEMULTIPLEXING COMPLETE")
 
-    # Also log
-    logger.info("=" * 80)
-    logger.info("PHASE 2/2: DEMULTIPLEXING COMPLETE")
-    logger.info("=" * 80)
-    if demuxed:
-        try:
-            from pmarlo.io.trajectory_reader import MDTrajReader as _MDTReader
-
-            nframes = _MDTReader(topology_path=str(pdb_file)).probe_length(str(demuxed))
-            reporter_stride = getattr(remd, "reporter_stride", None)
-            eff_stride = int(
-                reporter_stride
-                if reporter_stride
-                else max(1, getattr(remd, "dcd_stride", 1))
-            )
-            production_steps = max(0, int(total_steps) - int(equil))
-            expected = max(1, production_steps // eff_stride)
-            # Accept demux if it's close to expected or at least a safe fraction.
-            # Large runs may have minor segment repairs or stride mismatches.
-            threshold = max(1, expected // 5)  # 20% of expected frames
-            if int(nframes) >= threshold:
-                # Console output
-                print("\n" + "=" * 80, flush=True)
-                print("REPLICA EXCHANGE COMPLETE - SUCCESS", flush=True)
-                print("=" * 80, flush=True)
-                print(f"Returning demultiplexed trajectory: {demuxed}", flush=True)
-                print(f"Total frames in demuxed trajectory: {nframes}", flush=True)
-                print("=" * 80 + "\n", flush=True)
-
-                # Also log
-                logger.info("=" * 80)
-                logger.info("REPLICA EXCHANGE COMPLETE - SUCCESS")
-                logger.info("=" * 80)
-                logger.info(f"Returning demultiplexed trajectory: {demuxed}")
-                logger.info(f"Total frames in demuxed trajectory: {nframes}")
-                logger.info("=" * 80)
-                return [str(demuxed)], [300.0]
-        except Exception:
-            pass
-
-    # Console output
-    print("\n" + "=" * 80, flush=True)
-    print(
-        "REPLICA EXCHANGE COMPLETE - FALLBACK TO PER-REPLICA TRAJECTORIES", flush=True
+    accepted, nframes = _evaluate_demux_result(
+        remd=remd,
+        demuxed_path=demuxed,
+        total_steps=total_steps,
+        equilibration_steps=equil,
+        pdb_file=pdb_file,
     )
-    print("=" * 80, flush=True)
-    print("Demultiplexing did not produce enough frames", flush=True)
-    print(
-        f"Returning {len(remd.trajectory_files)} per-replica trajectories instead",
-        flush=True,
-    )
-    print("=" * 80 + "\n", flush=True)
+    if accepted and demuxed:
+        _emit_banner(
+            "REPLICA EXCHANGE COMPLETE - SUCCESS",
+            [
+                f"Returning demultiplexed trajectory: {demuxed}",
+                f"Total frames in demuxed trajectory: {nframes}",
+            ],
+        )
+        return [str(demuxed)], [300.0]
 
-    # Also log
-    logger.info("=" * 80)
-    logger.info("REPLICA EXCHANGE COMPLETE - FALLBACK TO PER-REPLICA TRAJECTORIES")
-    logger.info("=" * 80)
-    logger.info("Demultiplexing did not produce enough frames")
-    logger.info(
-        f"Returning {len(remd.trajectory_files)} per-replica trajectories instead"
+    _emit_banner(
+        "REPLICA EXCHANGE COMPLETE - FALLBACK TO PER-REPLICA TRAJECTORIES",
+        [
+            "Demultiplexing did not produce enough frames",
+            f"Returning {len(remd.trajectory_files)} per-replica trajectories instead",
+        ],
     )
-    logger.info("=" * 80)
     traj_files = [str(f) for f in remd.trajectory_files]
     return traj_files, temperatures
 

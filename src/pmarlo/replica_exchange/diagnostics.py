@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Mapping, Sequence
 
 import numpy as np
 from scipy import optimize
@@ -10,6 +11,149 @@ from scipy.special import erfc, erfcinv, softmax
 
 from pmarlo import constants as const
 from pmarlo.utils.path_utils import ensure_directory
+
+
+@dataclass(frozen=True)
+class _PairStats:
+    """Per-neighbour acceptance statistics used for ladder retuning."""
+
+    index: int
+    pair: tuple[int, int]
+    acceptance: float
+    clamped_acceptance: float
+    delta_beta: float
+    sensitivity: float
+    initial_delta: float
+
+
+def _validate_temperature_series(temperatures: Sequence[float]) -> np.ndarray:
+    temps = np.asarray(temperatures, dtype=float)
+    if temps.ndim != 1:
+        temps = temps.ravel()
+    if temps.size < 2:
+        raise ValueError("At least two temperatures are required")
+    temp_diffs = np.diff(temps)
+    if temp_diffs.size and np.any(temp_diffs == 0.0):
+        raise ValueError("Input temperatures must be strictly monotonic")
+    if temp_diffs.size and not (np.all(temp_diffs > 0.0) or np.all(temp_diffs < 0.0)):
+        raise ValueError("Input temperatures must be strictly monotonic")
+    return temps
+
+
+def _collect_pair_records(
+    delta_beta_magnitudes: np.ndarray,
+    pair_attempt_counts: Mapping[tuple[int, int], int],
+    pair_accept_counts: Mapping[tuple[int, int], int],
+    *,
+    erfc_target: float,
+) -> tuple[list[_PairStats], int, int]:
+    records: list[_PairStats] = []
+    total_attempts = 0
+    total_accepts = 0
+
+    for idx, delta_beta in enumerate(delta_beta_magnitudes):
+        pair = (idx, idx + 1)
+        attempts = int(pair_attempt_counts.get(pair, 0))
+        accepts = int(pair_accept_counts.get(pair, 0))
+        rate = accepts / max(1, attempts)
+        rate_clamped = float(
+            np.clip(rate, const.NUMERIC_MIN_RATE, const.NUMERIC_MAX_RATE)
+        )
+        erfc_observed = erfcinv(rate_clamped)
+        sensitivity = erfc_observed / max(delta_beta, const.NUMERIC_MIN_POSITIVE)
+        initial_delta = float(
+            delta_beta * erfc_target / max(erfc_observed, const.NUMERIC_MIN_POSITIVE)
+        )
+        records.append(
+            _PairStats(
+                index=idx,
+                pair=pair,
+                acceptance=rate,
+                clamped_acceptance=rate_clamped,
+                delta_beta=float(delta_beta),
+                sensitivity=float(sensitivity),
+                initial_delta=initial_delta,
+            )
+        )
+        total_attempts += attempts
+        total_accepts += accepts
+
+    return records, total_attempts, total_accepts
+
+
+def _compute_initial_weights(
+    initial_deltas: np.ndarray, total_span: float
+) -> np.ndarray:
+    initial_sum = float(initial_deltas.sum())
+    if initial_sum <= 0.0:
+        scaled_initial = np.full_like(
+            initial_deltas, total_span / max(1, len(initial_deltas))
+        )
+    else:
+        scaled_initial = initial_deltas * (total_span / initial_sum)
+
+    weights = scaled_initial / max(
+        const.NUMERIC_MIN_POSITIVE, float(np.sum(scaled_initial))
+    )
+    weights = np.clip(weights, const.NUMERIC_MIN_POSITIVE, None)
+    weights /= float(np.sum(weights))
+    return weights
+
+
+def _solve_spacing(
+    sensitivities: np.ndarray,
+    target_vec: np.ndarray,
+    total_span: float,
+    weights0: np.ndarray,
+) -> tuple[
+    np.ndarray, np.ndarray, optimize.OptimizeResult, Callable[[np.ndarray], np.ndarray]
+]:
+    def _params_to_deltas(params: np.ndarray) -> np.ndarray:
+        weights = softmax(params)
+        return total_span * weights
+
+    def residuals(params: np.ndarray) -> np.ndarray:
+        deltas = _params_to_deltas(params)
+        predicted = erfc(sensitivities * deltas)
+        return predicted - target_vec
+
+    params0 = np.log(weights0)
+    lsq = optimize.least_squares(residuals, params0, method="trf")
+    optimized_params = params0
+    if lsq.success and np.all(np.isfinite(lsq.x)):
+        optimized_params = np.asarray(lsq.x, dtype=float)
+
+    optimized_deltas = _params_to_deltas(optimized_params)
+    predicted_acceptance = erfc(sensitivities * optimized_deltas)
+    return optimized_deltas, predicted_acceptance, lsq, residuals
+
+
+def _summarise_pair_statistics(
+    records: Sequence[_PairStats],
+    initial_deltas: np.ndarray,
+    optimized_deltas: np.ndarray,
+    predicted_acceptance: np.ndarray,
+    target_acceptance: float,
+) -> list[Dict[str, Any]]:
+    pair_stats: list[Dict[str, Any]] = []
+    for record, init_delta, opt_delta, pred_rate in zip(
+        records, initial_deltas, optimized_deltas, predicted_acceptance
+    ):
+        pair_stats.append(
+            {
+                "pair": record.pair,
+                "acceptance": record.acceptance,
+                "initial_delta_beta_estimate": float(init_delta),
+                "suggested_delta_beta": float(opt_delta),
+                "predicted_acceptance": float(pred_rate),
+                "residual": float(pred_rate - target_acceptance),
+            }
+        )
+        print(
+            f"{record.pair}  {record.acceptance*100:5.1f}%"
+            f"  {init_delta:11.6f}  {opt_delta:12.6f}  {pred_rate*100:7.3f}%"
+        )
+    return pair_stats
 
 
 def compute_exchange_statistics(
@@ -105,148 +249,43 @@ def retune_temperature_ladder(
     output_json: str = "output/temperatures_suggested.json",
     dry_run: bool = False,
 ) -> Dict[str, Any]:
-    """Suggest a new temperature ladder based on pairwise acceptance.
+    """Suggest a new temperature ladder based on pairwise acceptance."""
 
-    Uses the Kofke spacing adjustment to estimate the required inverse-
-    temperature spacing for a desired acceptance rate. The function prints a
-    table summarising current pairwise acceptance and the suggested ``Δβ`` for
-    each neighbour pair and writes a new ladder to ``output_json``.
-
-    Parameters
-    ----------
-    temperatures:
-        Current replica temperatures in Kelvin.
-    pair_attempt_counts:
-        Mapping of ``(i, j)`` neighbour pairs to attempted exchanges.
-    pair_accept_counts:
-        Mapping of ``(i, j)`` neighbour pairs to accepted exchanges.
-    target_acceptance:
-        Desired per-pair acceptance probability (default ``0.30``).
-    output_json:
-        Path to save the suggested temperatures.
-    dry_run:
-        If ``True`` only report the expected speed-up without modifying the
-        replica count.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Dictionary with global acceptance and suggested temperatures.
-    """
-
-    if len(temperatures) < 2:
-        raise ValueError("At least two temperatures are required")
-
-    temps = np.asarray(temperatures, dtype=float)
-    if temps.ndim != 1:
-        temps = temps.ravel()
-
-    temp_diffs = np.diff(temps)
-    if temp_diffs.size and np.any(temp_diffs == 0.0):
-        raise ValueError("Input temperatures must be strictly monotonic")
-    if temp_diffs.size and not (np.all(temp_diffs > 0.0) or np.all(temp_diffs < 0.0)):
-        raise ValueError("Input temperatures must be strictly monotonic")
-
+    temps = _validate_temperature_series(temperatures)
     betas = 1.0 / temps
-    pair_stats: List[Dict[str, Any]] = []
-    total_attempts = 0
-    total_accepts = 0
+    delta_betas = np.diff(betas)
+    if np.any(delta_betas == 0.0):
+        raise ValueError("Input temperatures must be strictly monotonic")
+    delta_beta_magnitudes = np.abs(delta_betas)
 
     print("Pair  Acc%  Initial dBeta  Optimized dBeta  Pred Acc%")
     target_acceptance_clamped = float(
         np.clip(target_acceptance, const.NUMERIC_MIN_RATE, const.NUMERIC_MAX_RATE)
     )
     erfc_target = erfcinv(target_acceptance_clamped)
-    delta_betas = np.diff(betas)
-    if np.any(delta_betas == 0.0):
-        raise ValueError("Input temperatures must be strictly monotonic")
-    delta_beta_magnitudes = np.abs(delta_betas)
-    span_sign = 1.0 if betas[-1] >= betas[0] else -1.0
 
-    pair_data: List[Dict[str, Any]] = []
-    sensitivities: List[float] = []
-    initial_deltas: List[float] = []
-    for i in range(len(temperatures) - 1):
-        pair = (i, i + 1)
-        att = pair_attempt_counts.get(pair, 0)
-        acc = pair_accept_counts.get(pair, 0)
-        rate = acc / max(1, att)
-        total_attempts += att
-        total_accepts += acc
+    records, total_attempts, total_accepts = _collect_pair_records(
+        delta_beta_magnitudes,
+        pair_attempt_counts,
+        pair_accept_counts,
+        erfc_target=erfc_target,
+    )
+    if not records:
+        raise ValueError("Unable to derive ladder suggestion from inputs")
 
-        delta_beta = delta_beta_magnitudes[i]
-        # Clamp rate to avoid division by zero when acceptance is perfect
-        rate_clamped = float(
-            np.clip(rate, const.NUMERIC_MIN_RATE, const.NUMERIC_MAX_RATE)
-        )
-        erfc_observed = erfcinv(rate_clamped)
-        sensitivity = erfc_observed / max(delta_beta, const.NUMERIC_MIN_POSITIVE)
-        sensitivities.append(sensitivity)
-        initial_delta = float(
-            delta_beta * erfc_target / max(erfc_observed, const.NUMERIC_MIN_POSITIVE)
-        )
-        initial_deltas.append(initial_delta)
-        pair_data.append(
-            {
-                "pair": pair,
-                "acceptance": rate,
-                "rate_clamped": rate_clamped,
-            }
-        )
+    sensitivities_arr = np.asarray([rec.sensitivity for rec in records], dtype=float)
+    initial_deltas_arr = np.asarray([rec.initial_delta for rec in records], dtype=float)
 
     global_acceptance = total_accepts / max(1, total_attempts)
-
     beta_start = float(betas[0])
     beta_end = float(betas[-1])
     total_span = float(np.sum(delta_beta_magnitudes))
 
-    sensitivities_arr = np.asarray(sensitivities, dtype=float)
-    initial_deltas_arr = np.asarray(initial_deltas, dtype=float)
-    if not len(initial_deltas_arr):
-        raise ValueError("Unable to derive ladder suggestion from inputs")
-
-    initial_sum = float(initial_deltas_arr.sum())
-    if initial_sum <= 0.0:
-        scaled_initial = np.full_like(
-            initial_deltas_arr, total_span / max(1, len(initial_deltas_arr))
-        )
-    else:
-        scaled_initial = initial_deltas_arr * (total_span / initial_sum)
-
-    # Parameterise Δβ with a softmax so that the linear constraint
-    # ``sum(Δβ) = total_span`` is always satisfied while each component
-    # remains strictly positive. The initial guess is converted into the
-    # softmax parameter space to seed the non-linear solver.
-    initial_weights = scaled_initial / max(
-        const.NUMERIC_MIN_POSITIVE, float(np.sum(scaled_initial))
-    )
-    initial_weights = np.clip(initial_weights, const.NUMERIC_MIN_POSITIVE, None)
-    initial_weights /= float(np.sum(initial_weights))
-    params0 = np.log(initial_weights)
-
+    initial_weights = _compute_initial_weights(initial_deltas_arr, total_span)
     target_vec = np.full_like(sensitivities_arr, target_acceptance_clamped)
-
-    def _params_to_deltas(params: np.ndarray) -> np.ndarray:
-        weights = softmax(params)
-        return total_span * weights
-
-    def residuals(params: np.ndarray) -> np.ndarray:
-        deltas = _params_to_deltas(params)
-        predicted = erfc(sensitivities_arr * deltas)
-        return predicted - target_vec
-
-    lsq = optimize.least_squares(
-        residuals,
-        params0,
-        method="trf",
+    optimized_deltas, predicted_acceptance, lsq, residuals = _solve_spacing(
+        sensitivities_arr, target_vec, total_span, initial_weights
     )
-
-    optimized_params = params0
-    if lsq.success and np.all(np.isfinite(lsq.x)):
-        optimized_params = np.asarray(lsq.x, dtype=float)
-
-    optimized_deltas = _params_to_deltas(optimized_params)
-    predicted_acceptance = erfc(sensitivities_arr * optimized_deltas)
 
     median_delta = float(np.median(initial_deltas_arr))
     if not np.isfinite(median_delta) or median_delta <= 0.0:
@@ -256,26 +295,14 @@ def retune_temperature_ladder(
     new_betas = np.linspace(beta_start, beta_end, n_points, dtype=float)
     suggested_temps = (1.0 / new_betas).tolist()
 
-    pair_stats = []
-    for data, init_delta, opt_delta, pred_rate in zip(
-        pair_data, initial_deltas_arr, optimized_deltas, predicted_acceptance
-    ):
-        pair_stats.append(
-            {
-                "pair": data["pair"],
-                "acceptance": data["acceptance"],
-                "initial_delta_beta_estimate": float(init_delta),
-                "suggested_delta_beta": float(opt_delta),
-                "predicted_acceptance": float(pred_rate),
-                "residual": float(pred_rate - target_acceptance_clamped),
-            }
-        )
-        print(
-            f"{data['pair']}  {data['acceptance']*100:5.1f}%"
-            f"  {init_delta:11.6f}  {opt_delta:12.6f}  {pred_rate*100:7.3f}%"
-        )
+    pair_stats = _summarise_pair_statistics(
+        records,
+        initial_deltas_arr,
+        optimized_deltas,
+        predicted_acceptance,
+        target_acceptance_clamped,
+    )
 
-    # Ensure parent directory exists, even if caller passed a custom path
     try:
         out_path = Path(output_json)
         if out_path.parent:
@@ -297,6 +324,6 @@ def retune_temperature_ladder(
         "fit_residual_norm": (
             float(np.linalg.norm(lsq.fun))
             if lsq.success and lsq.fun is not None
-            else float(np.linalg.norm(residuals(params0)))
+            else float(np.linalg.norm(residuals(np.log(initial_weights))))
         ),
     }

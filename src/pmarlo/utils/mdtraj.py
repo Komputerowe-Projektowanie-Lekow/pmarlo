@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Literal, Sequence
+from typing import Callable, Literal, Sequence
 
 import mdtraj as md
 
@@ -23,6 +23,42 @@ def load_mdtraj_topology(topology: str | os.PathLike[str] | Path) -> "md.Topolog
     return md.load_topology(_as_str_path(topology))
 
 
+def _validate_on_error(on_error: str) -> None:
+    if on_error not in {"raise", "warn", "ignore"}:
+        raise ValueError("on_error must be 'raise', 'warn', or 'ignore'")
+
+
+def _resolve_selection_from_string(
+    topo: "md.Topology",
+    expression: str,
+    handle_failure: Callable[[Exception | None], None],
+) -> Sequence[int] | None:
+    try:
+        selection = topo.select(expression)
+    except Exception as exc:  # pragma: no cover - delegated to mdtraj
+        handle_failure(exc)
+        return None
+    if selection.size == 0:
+        handle_failure(None)
+        return None
+    return [int(i) for i in selection]
+
+
+def _resolve_selection_from_sequence(
+    selection: Sequence[object],
+    handle_failure: Callable[[Exception | None], None],
+) -> Sequence[int] | None:
+    try:
+        indices = [int(i) for i in selection]
+    except Exception as exc:
+        handle_failure(exc)
+        return None
+    if not indices:
+        handle_failure(None)
+        return None
+    return indices
+
+
 def resolve_atom_selection(
     topo: "md.Topology",
     atom_selection: str | Sequence[int] | None,
@@ -35,8 +71,7 @@ def resolve_atom_selection(
     if atom_selection is None:
         return None
 
-    if on_error not in {"raise", "warn", "ignore"}:
-        raise ValueError("on_error must be 'raise', 'warn', or 'ignore'")
+    _validate_on_error(on_error)
 
     def _handle_failure(exc: Exception | None) -> None:
         if on_error == "raise":
@@ -48,22 +83,5 @@ def resolve_atom_selection(
             logger.warning(msg if exc is None else f"{msg}: {exc}")
 
     if isinstance(atom_selection, str):
-        try:
-            selection = topo.select(atom_selection)
-        except Exception as exc:  # pragma: no cover - delegated to mdtraj
-            _handle_failure(exc)
-            return None
-        if selection.size == 0:
-            _handle_failure(None)
-            return None
-        return [int(i) for i in selection]
-
-    try:
-        selection = [int(i) for i in atom_selection]
-    except Exception as exc:
-        _handle_failure(exc)
-        return None
-    if not selection:
-        _handle_failure(None)
-        return None
-    return selection
+        return _resolve_selection_from_string(topo, atom_selection, _handle_failure)
+    return _resolve_selection_from_sequence(atom_selection, _handle_failure)

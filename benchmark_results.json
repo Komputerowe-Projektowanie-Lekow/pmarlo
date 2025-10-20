@@ -1,0 +1,15 @@
+{
+  "md_throughput": {
+    "md_steps_per_sec": 30.20450266615931,
+    "time_per_step_ms": 33.10764660000132,
+    "total_time": 16.55382330000066
+  },
+  "exchange_overhead": {
+    "setup_time": 63.70704830000068,
+    "setup_time_per_replica": 15.92676207500017,
+    "run_time": 59.1424152999989,
+    "throughput_total_steps_per_sec": 33.816677757494915,
+    "n_exchanges": 30,
+    "acceptance": 0.0
+  }
+}

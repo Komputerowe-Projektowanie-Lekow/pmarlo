@@ -2,10 +2,7 @@ import math
 
 import torch
 
-from pmarlo.features.deeptica.cv_bias_potential import (
-    CVBiasPotential,
-    HarmonicExpansionBias,
-)
+from pmarlo.features.deeptica.cv_bias_potential import CVBiasPotential
 from pmarlo.features.deeptica.ts_feature_extractor import (
     build_feature_extractor_module,
     canonicalize_feature_spec,

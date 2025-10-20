@@ -100,7 +100,7 @@ def ensure_directory(
     directory = Path(path)
     try:
         directory.mkdir(parents=parents, exist_ok=exist_ok)
-    except FileExistsError as exc:
+    except FileExistsError:
         if exist_ok and directory.is_dir():
             # The directory already exists (possibly created concurrently);
             # treat this as success to mirror the previous idiom.

@@ -231,7 +231,7 @@ class CVBiasForce:
 
         try:
             # Get state with forces
-            state = simulation.context.getState(
+            simulation.context.getState(
                 getEnergy=True, groups={self.force.getForceGroup()}
             )
             # CV values would need to be extracted from the force
