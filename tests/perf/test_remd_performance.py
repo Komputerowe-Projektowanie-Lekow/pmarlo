@@ -14,6 +14,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+openmm = pytest.importorskip("openmm")
+from openmm import unit
+from openmm.app import ForceField, PDBFile, Simulation
+
+from pmarlo.replica_exchange.system_builder import create_system
+
 pytestmark = [pytest.mark.perf, pytest.mark.benchmark, pytest.mark.replica]
 
 pytest.importorskip("pytest_benchmark", reason="pytest-benchmark not installed")
@@ -22,6 +28,51 @@ if not os.getenv("PMARLO_RUN_PERF"):
     pytest.skip(
         "perf tests disabled; set PMARLO_RUN_PERF=1 to run", allow_module_level=True
     )
+
+
+@pytest.fixture(scope="module")
+def ala2_inputs() -> tuple[PDBFile, ForceField]:
+    """Provide a tiny solvated-like topology with a periodic box for OpenMM tests."""
+
+    pdb_path = Path(__file__).resolve().parents[1] / "data" / "ala2.pdb"
+    pdb = PDBFile(str(pdb_path))
+    box_vectors = unit.Quantity(
+        (
+            openmm.Vec3(3.0, 0.0, 0.0),
+            openmm.Vec3(0.0, 3.0, 0.0),
+            openmm.Vec3(0.0, 0.0, 3.0),
+        ),
+        unit.nanometer,
+    )
+    pdb.topology.setPeriodicBoxVectors(box_vectors)
+    forcefield = ForceField("amber14-all.xml")
+    return pdb, forcefield
+
+
+@pytest.fixture
+def ala2_simulation(ala2_inputs: tuple[PDBFile, ForceField]) -> Simulation:
+    """Construct a lightweight Simulation instance for integrator benchmarks."""
+
+    pdb, forcefield = ala2_inputs
+    system = create_system(pdb, forcefield)
+    integrator = openmm.LangevinMiddleIntegrator(
+        300.0 * unit.kelvin,
+        1.0 / unit.picoseconds,
+        2.0 * unit.femtoseconds,
+    )
+    integrator.setRandomNumberSeed(1234)
+    platform = openmm.Platform.getPlatformByName("Reference")
+    simulation = Simulation(pdb.topology, system, integrator, platform)
+    box_vectors = system.getDefaultPeriodicBoxVectors()
+    if box_vectors is not None:
+        simulation.context.setPeriodicBoxVectors(*box_vectors)
+    simulation.context.setPositions(pdb.positions)
+    simulation.context.setVelocitiesToTemperature(300.0 * unit.kelvin, 5678)
+    try:
+        yield simulation
+    finally:
+        del simulation
+        del integrator
 
 
 def _synthetic_exchange_history(
@@ -123,3 +174,29 @@ def test_temperature_ladder_retune_benchmark(benchmark, tmp_path: Path):
     assert output_json.exists()
     assert "suggested_temperatures" in result
     assert len(result["suggested_temperatures"]) >= 2
+
+
+def test_openmm_system_builder_benchmark(benchmark, ala2_inputs):
+    """Benchmark the cost of parameterizing an OpenMM System for REMD."""
+
+    pdb, forcefield = ala2_inputs
+
+    def _build():
+        return create_system(pdb, forcefield)
+
+    system = benchmark(_build)
+    assert system.getNumParticles() == pdb.topology.getNumAtoms()
+    assert system.getNumForces() >= 1
+
+
+def test_langevin_integrator_single_step(benchmark, ala2_simulation: Simulation):
+    """Benchmark a single Langevin integration step within the REMD simulation."""
+
+    simulation = ala2_simulation
+
+    def _step():
+        simulation.step(1)
+
+    benchmark(_step)
+    state = simulation.context.getState()
+    assert state.getTime().value_in_unit(unit.femtoseconds) > 0.0

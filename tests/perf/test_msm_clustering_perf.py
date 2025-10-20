@@ -15,6 +15,8 @@ import os
 import numpy as np
 import pytest
 
+from pmarlo.markov_state_model._clustering import ClusteringMixin
+
 pytestmark = [pytest.mark.perf, pytest.mark.benchmark, pytest.mark.msm]
 
 # Optional plugin
@@ -72,6 +74,67 @@ def medium_dataset():
 def large_dataset():
     """Large dataset (12K samples) for MiniBatchKMeans benchmark."""
     return _generate_synthetic_features(12_000, 10, n_clusters=5)
+
+
+def _generate_tica_projection(
+    n_trajectories: int = 4,
+    trajectory_length: int = 800,
+    feature_dim: int = 6,
+    lag: int = 5,
+    n_components: int = 3,
+) -> tuple[np.ndarray, list[int]]:
+    """Generate synthetic trajectories and return their TICA projection."""
+
+    deeptime = pytest.importorskip(
+        "deeptime",
+        reason="deeptime is required for TICA-projected clustering benchmarks",
+    )
+    from deeptime.decomposition import TICA
+
+    rng = np.random.default_rng(314159)
+    raw_trajectories: list[np.ndarray] = []
+
+    for _ in range(n_trajectories):
+        base = rng.standard_normal((trajectory_length, feature_dim))
+        time_axis = np.linspace(0.0, 2.0 * np.pi, trajectory_length)
+        base[:, 0] += np.sin(time_axis) * 0.5
+        base[:, 1] += np.cos(time_axis) * 0.5
+        base[:, 2] += 0.1 * time_axis
+        raw_trajectories.append(base.astype(np.float32))
+
+    tica = TICA(lagtime=int(max(1, lag)), dim=int(max(1, n_components)))
+    model = tica.fit(raw_trajectories).fetch_model()
+    projected = model.transform(raw_trajectories)
+
+    concatenated = np.concatenate(projected, axis=0).astype(np.float32)
+    lengths = [traj.shape[0] for traj in projected]
+    return concatenated, lengths
+
+
+@pytest.fixture
+def tica_projected_dataset():
+    """TICA-projected dataset used for clustering mixin benchmarks."""
+
+    return _generate_tica_projection()
+
+
+class _MockTrajectory:
+    """Minimal trajectory stub providing ``n_frames`` attribute for the mixin."""
+
+    def __init__(self, n_frames: int) -> None:
+        self.n_frames = n_frames
+
+
+class _ClusteringHarness(ClusteringMixin):
+    """Concrete harness to exercise :class:`ClusteringMixin` in benchmarks."""
+
+    def __init__(self, features: np.ndarray, lengths: list[int], seed: int = 11) -> None:
+        self.features = features
+        self.random_state = seed
+        self.trajectories = [_MockTrajectory(length) for length in lengths]
+        self.dtrajs: list[np.ndarray] = []
+        self.cluster_centers = None
+        self.n_states = 0
 
 
 def test_kmeans_small_dataset(benchmark, small_dataset):
@@ -235,4 +298,55 @@ def test_silhouette_scoring_overhead(benchmark, small_dataset):
 
     score = benchmark(_compute_score)
     assert -1.0 <= score <= 1.0
+
+
+def test_clustering_mixin_kmeans_on_tica_projection(
+    benchmark, tica_projected_dataset
+):
+    """Benchmark full mixin-based KMeans clustering on TICA-projected data."""
+
+    features, lengths = tica_projected_dataset
+
+    def _cluster_with_mixin():
+        harness = _ClusteringHarness(features.copy(), lengths, seed=23)
+        harness.cluster_features(n_states=8, algorithm="kmeans", random_state=23)
+        return harness
+
+    result = benchmark(_cluster_with_mixin)
+
+    assert isinstance(result, _ClusteringHarness)
+    assert result.n_states == 8
+    assert result.cluster_centers is not None
+    assert result.cluster_centers.shape == (8, features.shape[1])
+    assert len(result.dtrajs) == len(lengths)
+    assert sum(len(traj) for traj in result.dtrajs) == features.shape[0]
+    for traj, expected_length in zip(result.dtrajs, lengths):
+        assert traj.shape[0] == expected_length
+
+
+def test_regspace_clustering_on_tica_projection(
+    benchmark, tica_projected_dataset
+):
+    """Benchmark RegularSpace clustering on TICA features."""
+
+    pytest.importorskip(
+        "deeptime", reason="deeptime is required for Regspace clustering benchmark"
+    )
+    from deeptime.clustering import RegularSpace
+
+    features, _ = tica_projected_dataset
+
+    def _cluster_regspace():
+        estimator = RegularSpace(dmin=0.35, max_centers=60)
+        model = estimator.fit(features).fetch_model()
+        assignments = model.transform(features)
+        return assignments, model.cluster_centers
+
+    labels, centers = benchmark(_cluster_regspace)
+
+    assert labels.shape[0] == features.shape[0]
+    assert centers.shape[1] == features.shape[1]
+    assert centers.shape[0] >= 2
+    assert centers.shape[0] <= 60
+    assert len(np.unique(labels)) == centers.shape[0]
 

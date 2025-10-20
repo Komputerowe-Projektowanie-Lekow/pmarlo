@@ -1,3 +1,153 @@
+<a id='changelog-0.119.0'></a>
+# 0.119.0 — 2025-10-16
+
+### Removed
+
+Silent fallback behaviors in CV bias loading and configuration; all errors now terminate early with clear exceptions.
+
+### Fixed
+
+- Streaming demux benchmark reinitializes its trajectory writer for every run, preventing \"Writer is not open\" errors during repeated iterations
+- Shard aggregation performance helper now emits canonical NPZ/JSON shards via `pmarlo.data.shard.write_shard`, restoring compatibility with the current shard metadata API
+- DeepTICA, MSM, and REMD performance benchmarks updated for the current dataset/loader, clustering, and exchange statistics APIs, eliminating AttributeError and outdated assertion failures
+
+
+Preserve DeepTICA best validation score, epoch, and tau in mlcv_deeptica artifacts so the Streamlit training dashboard no longer shows N/A for key metrics.
+
+Streamlit backend now infers and stores missing best-score metadata for previously recorded models, ensuring historical runs display complete metrics.
+
+Ensured stub sampling path mirrors restart snapshot behaviour so quick tests exercise restart wiring.
+
+CRITICAL: Platform selection bug causing 6x slowdown - platform_selector.py was incorrectly selecting Reference platform (10-100x slower than CPU) whenever random_seed was set. Fixed to auto-select fastest available platform (CUDA > CPU > Reference) while maintaining determinism via platform-specific flags. This restores REMD performance from ~20 minutes for 5K steps to ~3 minutes.
+
+Restore the replica-exchange Simulation helper to accept modern configuration options and create its output directory, allowing deterministic integration tests to pass again.
+
+Initialize _bias_log_interval attribute in ReplicaExchange.__init__() to prevent AttributeError during CV monitoring setup.
+
+Optimize default exchange frequency from 50 to 100 steps based on benchmark showing 100 steps provides best balance of exchange statistics and throughput.
+
+Streamlit "quick preset" no longer routes through the synthetic sampling stub; REMD now executes normally unless SimulationConfig.stub_result is explicitly set, fixing instant-complete runs in the demo app.
+
+Close OpenMM reporters created in Simulation.run_production() so Windows clean-up can delete temporary production.log files without lingering handles.
+
+### Changed
+
+- Enhanced existing `tests/perf/test_demux_perf.py` with benchmark marker
+- Extended pytest markers configuration to include dedicated `benchmark` marker
+- Added `tests/perf` to pytest discovery paths so performance benchmarks are actually collected when requested
+- Reworked performance suites to favor lightweight algorithm-focused micro-benchmarks, drastically reducing data volumes for DeepTICA, MSM clustering, shard aggregation, and REMD diagnostics workloads
+
+Refactored DeepTICA training entrypoint to share preparation/finalisation helpers and support explicit Lightning/mlcolvar backend selection via configuration.
+
+Surface pipeline configuration, stage timings, runtime summaries, and failure notifications directly in the console for easier headless monitoring (src/pmarlo/transform/pipeline.py, src/pmarlo/utils/logging_utils.py).
+
+Add timing and quality diagnostics to replica exchange runs, including elapsed durations for equilibration/production and console warnings when acceptance or diffusion fall outside recommended ranges (src/pmarlo/replica_exchange/replica_exchange.py).
+
+Report demultiplexing runtime, output metadata, and duration summaries at completion so downstream workflows can validate performance (src/pmarlo/demultiplexing/demux.py).
+
+Update CV_INTEGRATION_GUIDE.md and CV_REQUIREMENTS.md to reflect TorchScript implementation, remove "feature extraction not implemented" warnings, and correct physics terminology: the bias is a harmonic restraint in CV space (E = k·Σ(cv²)), not an "exploration" bias. Documentation now includes CPU performance benchmarks, configuration requirements, and explicit usage examples.
+
+Export workflow in features/deeptica/export.py now produces a single TorchScript module with embedded feature extraction, scaler, CV model, and bias potential, optimized via torch.jit.optimize_for_inference().
+
+system_builder.py loads TorchScript CV bias models with comprehensive validation, sets PyTorch thread count from configuration, and enforces single-precision computation for CPU performance.
+
+Streamlit training and analysis tabs surface per-run shard temperatures beneath the selection banner to prevent mixing incompatible datasets.
+
+Export DeepTICA helper symbols directly from the package namespace and simplify lazy loading bookkeeping.
+
+Reworked DeepTICA feature canonicalisation to use a dedicated collector, reducing branching complexity.
+
+Introduced a reusable progress reporter for pipeline stage updates to lower cyclomatic complexity in the handler.
+
+Refactored REMD orchestration, diagnostics, and shard authoring logic into reusable helpers so tox -e lint passes without suppressing cyclomatic thresholds.
+
+Compute DeepTICA output variance directly with PyTorch tensors to avoid redundant NumPy transfers and keep GPU execution paths consistent on CPU and CUDA devices.
+
+Refactored find_local_minima_2d in pmarlo.markov_state_model.picker to use SciPy filters for neighborhood comparisons, removing nested Python loops for improved performance and clarity.
+
+### Added
+
+- Performance benchmarks validating that discretization assignments map each frame to the nearest learned cluster center, covering direct KMeans transforms and full `discretize_dataset` workflows.
+
+- Performance micro-benchmarks for trajectory readers/writers, protein topology parsing, shard emission, shard aggregation, and shard pair building.
+
+
+
+
+- Comprehensive `pytest-benchmark` performance benchmarking suite covering critical operations:
+- Added PCCA+ coarse-graining and TRAM MSM construction benchmarks covering metastable lumping and multi-ensemble TRAM builds
+
+  - REMD (Replica Exchange MD): system creation, MD throughput, exchange overhead, platform selection
+  - Demultiplexing: facade and streaming engine performance
+  - MSM Clustering: KMeans vs MiniBatchKMeans, automatic state selection, silhouette scoring
+- DeepTICA Training: feature preparation, network operations, VAMP-2 loss computation, full epoch training
+  - DeepTICA Training: added targeted benchmarks for DataLoader batch iteration throughput and whitening layer forward passes
+  - FES Computation: weighted histograms, Gaussian smoothing, probability-to-free-energy conversion
+- Sharded Data Pipeline: shard I/O, aggregation, validation, memory-efficient streaming
+- Added focused OpenMM micro-benchmarks that measure replica system construction and a single Langevin integration step, keeping the REMD performance suite centered on critical setup costs.
+- Feature featurization: C-alpha/heavy-atom distance matrices and Ramachandran dihedral surfaces
+- Added `@pytest.mark.benchmark` marker for targeted performance testing
+- Benchmark tests can be run with `pytest -m benchmark` for focused performance comparisons
+- All benchmark tests respect `PMARLO_RUN_PERF` environment variable for CI/CD control
+- Added `pytest-benchmark ^4.0` to test dependencies in pyproject.toml
+- Added harmonic potential energy and temperature ladder micro-benchmarks to
+  exercise exchange probability calculations and ladder heuristics directly
+  inside `tests/perf`.
+
+- Performance benchmarks for the MSM TICA pipeline covering the mixin-driven fitting flow and covariance matrix construction to keep regression checks focused on lightweight algorithmic hotspots.
+
+- Perf benchmarks covering VAMP-2 loss evaluation and DeepTICA forward passes to guard critical DeepTICA routines.
+
+- Focused unit tests for the streaming demultiplexing engine covering repeat, skip, and interpolate policies using lightweight in-memory fixtures.
+- Deterministic unit tests for the replica exchange Metropolis acceptance engine, including probability validation and RNG-driven acceptance checks.
+
+- Optional `silhouette_sample_size` argument for MSM microstate clustering to evaluate silhouette scores on a random subset of frames, reducing auto-selection overhead for large datasets.
+- `auto_n_states_override` parameter to bypass the silhouette optimization loop while keeping `n_states="auto"` semantics, plus regression tests covering both new code paths.
+
+
+Regression check ensuring DeepTICA telemetry includes best validation metadata in the recorded artifacts.
+
+Performance benchmarks for MSM validation primitives covering the Chapman–Kolmogorov microstate diagnostic and stationary distribution solver to ensure critical algorithms remain stable and efficient.
+
+Optional REMD restart snapshot export hook that writes the last simulation frame to a PDB for reuse.
+
+Streamlit app controls to persist final-frame PDBs into the inputs catalog and load them for follow-up runs.
+
+Performance benchmarks for the balanced temperature sampler covering uniform draws, frame-weighted selection, and rare-event boosting scenarios. These tests focus on micro-benchmarks that exercise shard construction and sampling heuristics without invoking the full workflow.
+
+Learned CV inference benchmarks that validate linear and nonlinear DeepTICA transformations plus dataset storage updates, ensuring the transform path can be profiled independently of model training.
+
+Added MSM estimation and implied timescale benchmarks that exercise transition matrix reconstruction and Bayesian ITS sampling on synthetic Markov trajectories, expanding coverage of the perf suite.
+
+TorchScript-based feature extraction module (src/pmarlo/features/deeptica/ts_feature_extractor.py) that computes molecular features (distances, angles, dihedrals) directly from atomic positions and box vectors at MD step time, eliminating Python callbacks and enabling CPU-viable CV biasing.
+
+Comprehensive validation infrastructure in system_builder.py and export.py: hash-locked feature specifications, strict dtype checking (float32 enforcement), dimension validation, scaler sanity checks, and required method verification. All validations raise hard errors with no fallbacks.
+
+Configuration module (src/pmarlo/settings/) with explicit required keys (enable_cv_bias, bias_mode, torch_threads, precision) and strict validation; missing or invalid keys cause immediate ConfigurationError.
+
+Periodic CV and bias energy logging every 1000 steps during replica exchange simulations, reporting mean and standard deviation of collective variables and bias energy.
+
+Benchmark harness (scripts/bench_openmm.py) to measure OpenMM performance with and without CV biasing, reporting steps/second, bias energy statistics, and CV statistics for performance assessment on CPU and GPU platforms.
+
+Test suite for TorchScript feature extraction: parity tests (eager vs scripted), finite-difference force validation, and PBC wrap invariance tests in tests/force/.
+
+Feature specification validation with SHA-256 hashing to prevent model/spec mismatches at runtime.
+
+Explicit unit coverage ensuring the Streamlit backend hits the real REMD runner by default and only engages the synthetic stub when tests request it.
+
+Run-level shard summary helper pmarlo.data.shard_io.summarize_shard_runs that reports temperature, shard count, and JSON paths for downstream validation.
+
+Performance benchmarks covering DeepTICA training artifacts:
+
+Checkpoint serialization ensures improved validation scores persist model weights to disk.
+
+Training history logging writes per-epoch loss and validation metrics to CSV using LossHistory utilities.
+
+Unit tests covering the tensor-based variance helper to ensure biased and unbiased variance cases remain stable.
+
+Unit tests covering edge cases and invalid-value handling for find_local_minima_2d in tests/unit/markov_state_model/test_picker.py.
+
+
 <a id='changelog-0.117.0'></a>
 # 0.117.0 — 2025-10-16
 

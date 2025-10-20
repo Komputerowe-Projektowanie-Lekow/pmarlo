@@ -12,9 +12,12 @@ Run with: pytest -m benchmark tests/perf/test_fes_computation_perf.py
 """
 
 import os
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
+
+from pmarlo.markov_state_model._fes import FESMixin
 
 pytestmark = [pytest.mark.perf, pytest.mark.benchmark, pytest.mark.msm]
 
@@ -313,4 +316,93 @@ def test_contour_level_computation(benchmark):
 
     levels = benchmark(_compute_levels)
     assert len(levels) == 10
+
+
+class _SyntheticMSM(FESMixin):
+    """Minimal MSM implementation for benchmarking FES mixin behavior."""
+
+    def __init__(self, cv1: np.ndarray, cv2: np.ndarray, frame_weights: np.ndarray):
+        self._cv_store = {
+            "cv1": np.asarray(cv1, dtype=float),
+            "cv2": np.asarray(cv2, dtype=float),
+        }
+        self._frame_weights = np.asarray(frame_weights, dtype=float)
+        self._frame_weights /= float(self._frame_weights.sum())
+
+        self.features = np.column_stack((self._cv_store["cv1"], self._cv_store["cv2"]))
+        n_frames = self.features.shape[0]
+        self.stationary_distribution = np.full(n_frames, 1.0 / n_frames, dtype=float)
+        self.lag_time = 1
+        self.dtrajs = [np.arange(n_frames, dtype=int)]
+        self.trajectories = [SimpleNamespace(n_frames=n_frames)]
+        self.fes_data = None
+        self.n_states = n_frames
+
+    def _extract_collective_variables(
+        self, cv1_name: str, cv2_name: str
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return (
+            self._cv_store[cv1_name].copy(),
+            self._cv_store[cv2_name].copy(),
+        )
+
+    def _map_stationary_to_frame_weights(self) -> np.ndarray:
+        return self._frame_weights.copy()
+
+
+def test_fes_mixin_projection_to_cvs(benchmark):
+    """Benchmark MSM FES generation through the mixin projection pathway."""
+
+    rng = np.random.default_rng(12345)
+    n_frames = 90_000
+    cv1 = rng.normal(loc=0.0, scale=1.0, size=n_frames)
+    cv2 = 0.3 * cv1 + rng.normal(loc=0.0, scale=0.5, size=n_frames)
+    weights = rng.random(n_frames)
+
+    model = _SyntheticMSM(cv1, cv2, weights)
+    requested_bins = 50
+    expected_bins = model._choose_bins(n_frames, requested_bins)
+
+    def _generate():
+        return model.generate_free_energy_surface(
+            "cv1", "cv2", bins=requested_bins, temperature=310.0
+        )
+
+    fes_data = benchmark(_generate)
+    free_energy = fes_data["free_energy"]
+    assert free_energy.shape == (expected_bins, expected_bins)
+    assert np.isfinite(free_energy).any()
+    assert fes_data["cv1_name"] == "cv1"
+    assert fes_data["cv2_name"] == "cv2"
+
+
+def test_weighted_histogram_density_conservation(benchmark):
+    """Benchmark the mixin's histogramming routine for density preservation."""
+
+    rng = np.random.default_rng(24680)
+    n_frames = 40_000
+    cv1 = rng.uniform(-2.0, 2.0, size=n_frames)
+    cv2 = rng.normal(size=n_frames)
+    weights = rng.random(n_frames)
+
+    model = _SyntheticMSM(cv1, cv2, weights)
+    bins = 80
+
+    def _histogram():
+        return model._compute_weighted_histogram(
+            cv1.copy(),
+            cv2.copy(),
+            model._map_stationary_to_frame_weights(),
+            bins=bins,
+            ranges=None,
+            smooth_sigma=None,
+            periodic=False,
+        )
+
+    H, xedges, yedges = benchmark(_histogram)
+    assert H.shape == (bins, bins)
+    bin_areas = np.outer(np.diff(xedges), np.diff(yedges))
+    density_integral = float(np.sum(H * bin_areas))
+    assert np.isfinite(density_integral)
+    assert 0.9 <= density_integral <= 1.1
 
