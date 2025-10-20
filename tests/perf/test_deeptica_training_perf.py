@@ -41,6 +41,9 @@ class MockConfig:
     batch_norm: bool = False
     residual: bool = False
     device: str = "cpu"
+    batch_size: int = 128
+    val_frac: float = 0.1
+    num_workers: int = 0
 
 
 def _generate_synthetic_trajectories(
@@ -66,20 +69,20 @@ def _generate_synthetic_trajectories(
 
 @pytest.fixture
 def small_trajs():
-    """Small trajectories (3 trajs, 200 frames, 10 features)."""
-    return _generate_synthetic_trajectories(3, 200, 10)
+    """Small trajectories (3 trajs, 128 frames, 12 features)."""
+    return _generate_synthetic_trajectories(3, 128, 12)
 
 
 @pytest.fixture
 def medium_trajs():
-    """Medium trajectories (5 trajs, 1000 frames, 20 features)."""
-    return _generate_synthetic_trajectories(5, 1000, 20)
+    """Medium trajectories (4 trajs, 512 frames, 24 features)."""
+    return _generate_synthetic_trajectories(4, 512, 24)
 
 
 @pytest.fixture
 def large_trajs():
-    """Large trajectories (10 trajs, 2000 frames, 50 features)."""
-    return _generate_synthetic_trajectories(10, 2000, 50)
+    """Large trajectories (6 trajs, 1024 frames, 32 features)."""
+    return _generate_synthetic_trajectories(6, 1024, 32)
 
 
 def test_feature_preparation(benchmark, medium_trajs):
@@ -93,7 +96,7 @@ def test_feature_preparation(benchmark, medium_trajs):
 
     prep = benchmark(_prepare)
     assert prep.scaler is not None
-    assert prep.X_scaled is not None
+    assert prep.Z is not None
 
 
 def test_network_construction(benchmark, medium_trajs):
@@ -136,14 +139,13 @@ def test_dataset_creation(benchmark, medium_trajs):
     prep = prepare_features(medium_trajs, tau_schedule=(1, 5, 10), seed=42)
 
     # Create dummy indices
-    n_pairs = min(5000, prep.X_scaled.shape[0] - 10)
+    n_pairs = min(5000, prep.Z.shape[0] - 10)
     idx_t = np.arange(n_pairs, dtype=np.int64)
     idx_tau = idx_t + 10
+    weights = np.ones(n_pairs, dtype=np.float32)
 
     def _create_dataset():
-        return create_dataset(
-            prep.X_scaled, idx_t, idx_tau, lengths=[len(t) for t in medium_trajs]
-        )
+        return create_dataset(prep.Z, idx_t, idx_tau, weights)
 
     dataset = benchmark(_create_dataset)
     assert len(dataset) > 0
@@ -156,28 +158,20 @@ def test_dataloader_creation(benchmark, medium_trajs):
 
     prep = prepare_features(medium_trajs, tau_schedule=(1, 5, 10), seed=42)
 
-    n_pairs = min(5000, prep.X_scaled.shape[0] - 10)
+    n_pairs = min(5000, prep.Z.shape[0] - 10)
     idx_t = np.arange(n_pairs, dtype=np.int64)
     idx_tau = idx_t + 10
     weights = np.ones(n_pairs, dtype=np.float32)
 
-    sequences = [np.arange(len(t)) for t in medium_trajs]
-    lengths = [len(t) for t in medium_trajs]
+    dataset = create_dataset(prep.Z, idx_t, idx_tau, weights)
+    cfg = MockConfig(batch_size=256, val_frac=0.2, num_workers=0)
 
     def _create_loaders():
-        return create_loaders(
-            prep.X_scaled,
-            idx_t,
-            idx_tau,
-            weights,
-            sequences,
-            lengths,
-            batch_size=256,
-            device="cpu",
-        )
+        return create_loaders(dataset, cfg)
 
-    loaders = benchmark(_create_loaders)
-    assert loaders is not None
+    bundle = benchmark(_create_loaders)
+    assert bundle.train_loader is not None
+    assert bundle.val_loader is not None
 
 
 def test_vamp2_loss_computation(benchmark, medium_trajs):
@@ -258,7 +252,7 @@ def test_backward_pass(benchmark, medium_trajs):
 def test_full_training_epoch_small(benchmark, small_trajs):
     """Benchmark one full training epoch on small dataset."""
     import torch
-    from pmarlo.features.deeptica.core.dataset import create_loaders
+    from pmarlo.features.deeptica.core.dataset import create_dataset, create_loaders
     from pmarlo.features.deeptica.core.inputs import prepare_features
     from pmarlo.features.deeptica.core.model import build_network
     from pmarlo.features.deeptica.core.pairs import build_pair_info
@@ -272,26 +266,23 @@ def test_full_training_epoch_small(benchmark, small_trajs):
         small_trajs, (1, 5, 10), pairs=None, weights=None
     )
 
-    sequences = [np.arange(len(t)) for t in small_trajs]
-    lengths = [len(t) for t in small_trajs]
-
-    train_loader, val_loader = create_loaders(
-        prep.X_scaled,
-        pair_info.idx_t,
-        pair_info.idx_tau,
-        pair_info.weights,
-        sequences,
-        lengths,
-        batch_size=128,
-        device="cpu",
+    weights = (
+        np.asarray(pair_info.weights, dtype=np.float32).reshape(-1)
+        if pair_info.weights is not None
+        else np.ones_like(pair_info.idx_t, dtype=np.float32)
     )
+    dataset = create_dataset(prep.Z, pair_info.idx_t, pair_info.idx_tau, weights)
+    bundle = create_loaders(dataset, MockConfig(batch_size=64, val_frac=0.2))
+    train_loader = bundle.train_loader
+    assert train_loader is not None
 
     optimizer = torch.optim.Adam(network.parameters(), lr=0.001)
 
     def _train_epoch():
         total_loss = 0.0
         for batch in train_loader:
-            X_t, X_tau = batch[:2]
+            X_t = batch["data"]
+            X_tau = batch["data_lag"]
             optimizer.zero_grad()
             output_t = network(X_t)
             output_tau = network(X_tau)
@@ -299,7 +290,7 @@ def test_full_training_epoch_small(benchmark, small_trajs):
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
-        return total_loss / len(train_loader)
+        return total_loss / max(1, len(train_loader))
 
     loss = benchmark(_train_epoch)
     assert loss is not None
@@ -328,19 +319,21 @@ def test_output_whitening(benchmark, medium_trajs):
         apply_output_whitening,
         build_network,
     )
+    from pmarlo.features.deeptica.core.pairs import build_pair_info
 
     prep = prepare_features(medium_trajs, tau_schedule=(1, 5, 10), seed=42)
     cfg = MockConfig()
     network = build_network(cfg, prep.scaler, seed=42)
 
-    # Get sample output
-    X = torch.randn(1000, medium_trajs[0].shape[1])
-    with torch.no_grad():
-        output = network(X).numpy()
+    pair_info = build_pair_info(
+        medium_trajs, prep.tau_schedule, pairs=None, weights=None
+    )
+    idx_tau = np.asarray(pair_info.idx_tau, dtype=np.int64)
 
     def _whiten():
-        return apply_output_whitening(network, output)
+        return apply_output_whitening(network, prep.Z, idx_tau, apply=False)
 
-    whitened_net = benchmark(_whiten)
+    whitened_net, info = benchmark(_whiten)
     assert whitened_net is not None
+    assert "transform" in info and info["transform"]
 

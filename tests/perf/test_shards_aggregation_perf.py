@@ -32,7 +32,12 @@ def _create_synthetic_shard(
     n_frames: int, n_cvs: int, output_path: Path, temp: float = 300.0, seed: int = 42
 ) -> Path:
     """Create a synthetic shard file for benchmarking."""
-    from pmarlo.data.shard import ShardMetadata, write_shard
+    from datetime import datetime, timezone
+
+    from pmarlo import constants as const
+    from pmarlo.data.shard import write_shard
+    from pmarlo.shards.id import canonical_shard_id
+    from pmarlo.shards.schema import FeatureSpec, ShardMeta
 
     rng = np.random.default_rng(seed)
 
@@ -43,48 +48,95 @@ def _create_synthetic_shard(
     cv_names = [f"cv_{i}" for i in range(n_cvs)]
     periodic = [False] * n_cvs
 
-    metadata = ShardMetadata(
-        cv_names=tuple(cv_names),
-        periodic=tuple(periodic),
-        temperature=temp,
-        length=n_frames,
-        source="synthetic_benchmark",
+    feature_spec = FeatureSpec(
+        name="synthetic_benchmark",
+        scaler="identity",
+        columns=tuple(cv_names),
     )
 
-    # Write shard
-    write_shard(output_path, metadata, cv_data, dtraj=None)
-    return output_path
+    replica_id = 0
+    segment_id = seed
+    exchange_window_id = 0
+    provenance = {
+        "kind": "demux",
+        "run_id": f"benchmark_{seed}",
+        "replica_id": replica_id,
+        "segment_id": segment_id,
+        "exchange_window_id": exchange_window_id,
+    }
+    provisional_meta = ShardMeta(
+        schema_version=const.SHARD_SCHEMA_VERSION,
+        shard_id="placeholder",
+        temperature_K=temp,
+        beta=1.0 / (const.BOLTZMANN_CONSTANT_KJ_PER_MOL * temp),
+        replica_id=replica_id,
+        segment_id=segment_id,
+        exchange_window_id=exchange_window_id,
+        n_frames=n_frames,
+        dt_ps=1.0,
+        feature_spec=feature_spec,
+        provenance=provenance,
+    )
+    shard_id = canonical_shard_id(provisional_meta)
+
+    cvs = {name: cv_data[:, idx] for idx, name in enumerate(cv_names)}
+    out_dir = output_path.parent
+    source_payload = {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "kind": provenance["kind"],
+        "run_id": provenance["run_id"],
+        "replica_id": replica_id,
+        "segment_id": segment_id,
+        "exchange_window_id": exchange_window_id,
+    }
+
+    json_path = write_shard(
+        out_dir=out_dir,
+        shard_id=shard_id,
+        cvs=cvs,
+        dtraj=None,
+        periodic={name: flag for name, flag in zip(cv_names, periodic)},
+        seed=seed,
+        temperature=temp,
+        source=source_payload,
+        compute_arrays_hash=True,
+        dtype=np.float32,
+    )
+    return json_path
 
 
 @pytest.fixture
 def small_shards(tmp_path):
-    """Create small shards (3 shards, 200 frames each, 5 CVs)."""
+    """Create small shards (3 shards, 120 frames each, 6 CVs)."""
     shards = []
     for i in range(3):
-        shard_path = tmp_path / f"shard_small_{i}.npz"
-        _create_synthetic_shard(200, 5, shard_path, seed=42 + i)
+        shard_path = _create_synthetic_shard(
+            120, 6, tmp_path / f"shard_small_{i}.npz", seed=42 + i
+        )
         shards.append(shard_path)
     return shards
 
 
 @pytest.fixture
 def medium_shards(tmp_path):
-    """Create medium shards (5 shards, 1000 frames each, 10 CVs)."""
+    """Create medium shards (5 shards, 320 frames each, 12 CVs)."""
     shards = []
     for i in range(5):
-        shard_path = tmp_path / f"shard_medium_{i}.npz"
-        _create_synthetic_shard(1000, 10, shard_path, seed=42 + i)
+        shard_path = _create_synthetic_shard(
+            320, 12, tmp_path / f"shard_medium_{i}.npz", seed=42 + i
+        )
         shards.append(shard_path)
     return shards
 
 
 @pytest.fixture
 def large_shards(tmp_path):
-    """Create large shards (10 shards, 2000 frames each, 20 CVs)."""
+    """Create large shards (8 shards, 640 frames each, 16 CVs)."""
     shards = []
-    for i in range(10):
-        shard_path = tmp_path / f"shard_large_{i}.npz"
-        _create_synthetic_shard(2000, 20, shard_path, seed=42 + i)
+    for i in range(8):
+        shard_path = _create_synthetic_shard(
+            640, 16, tmp_path / f"shard_large_{i}.npz", seed=42 + i
+        )
         shards.append(shard_path)
     return shards
 
@@ -288,8 +340,8 @@ def test_shard_metadata_extraction(benchmark, medium_shards):
             metadata_list.append(
                 {
                     "cv_names": metadata.cv_names,
-                    "temperature": metadata.temperature,
-                    "length": metadata.length,
+                    "temperature": metadata.temperature_K,
+                    "length": metadata.meta.n_frames,
                     "source": metadata.source,
                 }
             )
@@ -302,15 +354,20 @@ def test_shard_metadata_extraction(benchmark, medium_shards):
 def test_parallel_shard_write(benchmark, tmp_path):
     """Benchmark parallel shard writing (simulate batch emission)."""
     n_shards = 5
-    n_frames = 500
-    n_cvs = 10
+    n_frames = 280
+    n_cvs = 12
 
     def _write_multiple_shards():
         shard_paths = []
         for i in range(n_shards):
-            shard_path = tmp_path / f"parallel_shard_{i}.npz"
-            _create_synthetic_shard(n_frames, n_cvs, shard_path, seed=42 + i)
-            shard_paths.append(shard_path)
+            shard_paths.append(
+                _create_synthetic_shard(
+                    n_frames,
+                    n_cvs,
+                    tmp_path / f"parallel_shard_{i}.npz",
+                    seed=42 + i,
+                )
+            )
         return shard_paths
 
     result = benchmark(_write_multiple_shards)
@@ -323,13 +380,14 @@ def test_large_single_shard_io(benchmark, tmp_path):
     from pmarlo.data.shard import read_shard
 
     # Create large shard
-    shard_path = tmp_path / "large_shard.npz"
-    _create_synthetic_shard(10_000, 50, shard_path)
+    shard_path = _create_synthetic_shard(
+        2_000, 24, tmp_path / "large_shard.npz"
+    )
 
     def _read_large_shard():
         return read_shard(shard_path)
 
     result = benchmark(_read_large_shard)
     metadata, X, _ = result
-    assert X.shape == (10_000, 50)
+    assert X.shape == (2_000, 24)
 

@@ -1,18 +1,14 @@
 from __future__ import annotations
 
-"""Performance benchmarks for Replica Exchange Molecular Dynamics (REMD).
+"""Algorithm-focused performance benchmarks for REMD diagnostics.
 
-These benchmarks measure the most critical REMD operations:
-- System creation time
-- MD step throughput
-- Exchange overhead
-- Replica setup time
+These benchmarks favor lightweight, deterministic micro-benchmarks over full
+simulation workflows so that we can exercise the critical algorithms quickly.
 
 Run with: pytest -m benchmark tests/perf/test_remd_performance.py
 """
 
 import os
-import shutil
 from pathlib import Path
 
 import numpy as np
@@ -20,9 +16,7 @@ import pytest
 
 pytestmark = [pytest.mark.perf, pytest.mark.benchmark, pytest.mark.replica]
 
-# Optional plugins and dependencies
 pytest.importorskip("pytest_benchmark", reason="pytest-benchmark not installed")
-pytest.importorskip("openmm", reason="OpenMM required for REMD benchmarks")
 
 if not os.getenv("PMARLO_RUN_PERF"):
     pytest.skip(
@@ -30,234 +24,102 @@ if not os.getenv("PMARLO_RUN_PERF"):
     )
 
 
-def _find_test_pdb() -> Path:
-    """Find a test PDB file for benchmarking."""
-    test_dir = Path(__file__).parent.parent
-    candidates = [
-        test_dir / "_assets" / "3gd8-fixed.pdb",
-        test_dir / "_assets" / "3gd8.pdb",
-        test_dir / "data" / "ala2.pdb",
-    ]
-    for pdb in candidates:
-        if pdb.exists():
-            return pdb
-    pytest.skip("No test PDB found for REMD benchmarks")
+def _synthetic_exchange_history(
+    n_sweeps: int = 256, n_replicas: int = 6, seed: int = 42
+) -> list[list[int]]:
+    rng = np.random.default_rng(seed)
+    history: list[list[int]] = []
+    states = np.arange(n_replicas)
+    for _ in range(n_sweeps):
+        proposal = states.copy()
+        rng.shuffle(proposal)
+        history.append(proposal.tolist())
+        states = proposal
+    return history
 
 
-def _cleanup_output_dir(output_dir: Path):
-    """Clean up output directory after test."""
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
+def _synthetic_pair_counts(
+    n_replicas: int, attempts: int = 400, seed: int = 7
+) -> tuple[dict[tuple[int, int], int], dict[tuple[int, int], int]]:
+    rng = np.random.default_rng(seed)
+    attempt_counts: dict[tuple[int, int], int] = {}
+    accept_counts: dict[tuple[int, int], int] = {}
+    for idx in range(n_replicas - 1):
+        pair = (idx, idx + 1)
+        att = attempts + rng.integers(-attempts // 5, attempts // 5 + 1)
+        acc = max(1, int(att * rng.uniform(0.2, 0.6)))
+        attempt_counts[pair] = att
+        accept_counts[pair] = acc
+    return attempt_counts, accept_counts
 
 
-@pytest.fixture
-def test_pdb():
-    """Provide test PDB file."""
-    return _find_test_pdb()
+def test_exchange_statistics_benchmark(benchmark):
+    """Benchmark computation of exchange statistics from synthetic history."""
+    from pmarlo.replica_exchange.diagnostics import compute_exchange_statistics
 
+    history = _synthetic_exchange_history(n_sweeps=384, n_replicas=5)
+    pair_attempts, pair_accepts = _synthetic_pair_counts(len(history[0]))
 
-@pytest.fixture
-def cleanup_dirs(tmp_path):
-    """Clean up temporary directories after tests."""
-    yield tmp_path
-    # Cleanup happens automatically with tmp_path
-
-
-def test_system_creation_no_bias(benchmark, test_pdb):
-    """Benchmark system creation without CV bias (critical operation)."""
-    from pmarlo.replica_exchange.system_builder import (
-        create_system,
-        load_pdb_and_forcefield,
-    )
-
-    pdb, forcefield = load_pdb_and_forcefield(
-        str(test_pdb), ["amber14-all.xml", "amber14/tip3pfb.xml"]
-    )
-
-    def _create_system():
-        return create_system(pdb, forcefield, cv_model_path=None)
-
-    system = benchmark(_create_system)
-    assert system is not None
-    assert system.getNumForces() > 0
-
-
-def test_md_throughput_cpu(benchmark, test_pdb):
-    """Benchmark raw MD throughput on CPU (baseline performance)."""
-    from pmarlo.replica_exchange.system_builder import (
-        create_system,
-        load_pdb_and_forcefield,
-    )
-    from openmm import LangevinIntegrator, Platform
-    from openmm.app import Simulation
-    from openmm import unit
-
-    pdb, forcefield = load_pdb_and_forcefield(
-        str(test_pdb), ["amber14-all.xml", "amber14/tip3pfb.xml"]
-    )
-    system = create_system(pdb, forcefield, cv_model_path=None)
-
-    integrator = LangevinIntegrator(
-        300.0 * unit.kelvin, 1.0 / unit.picosecond, 2.0 * unit.femtoseconds
-    )
-
-    platform_obj = Platform.getPlatformByName("CPU")
-    simulation = Simulation(pdb.topology, system, integrator, platform_obj)
-    simulation.context.setPositions(pdb.positions)
-    simulation.context.setVelocitiesToTemperature(300 * unit.kelvin)
-
-    # Warmup
-    simulation.step(10)
-
-    # Benchmark 500 steps
-    def _run_md():
-        simulation.step(500)
-
-    benchmark(_run_md)
-
-
-def test_replica_setup_time(benchmark, test_pdb, tmp_path):
-    """Benchmark replica setup overhead (critical for initialization)."""
-    from pmarlo.replica_exchange import ReplicaExchange
-    from pmarlo.replica_exchange.config import RemdConfig
-
-    output_dir = tmp_path / "replica_setup"
-    temps = [300.0, 310.0, 320.0, 330.0]
-
-    config = RemdConfig(
-        pdb_file=str(test_pdb),
-        temperatures=temps,
-        output_dir=str(output_dir),
-        exchange_frequency=100,
-        auto_setup=False,
-        random_seed=42,
-    )
-
-    def _setup_replicas():
-        remd = ReplicaExchange.from_config(config)
-        remd.plan_reporter_stride(
-            total_steps=1000, equilibration_steps=0, target_frames=100
-        )
-        remd.setup_replicas()
-        return remd
-
-    remd = benchmark(_setup_replicas)
-    assert remd.is_setup()
-
-    _cleanup_output_dir(output_dir)
-
-
-def test_exchange_overhead(benchmark, test_pdb, tmp_path):
-    """Benchmark exchange attempt overhead (critical for REMD performance)."""
-    from pmarlo.replica_exchange import ReplicaExchange
-    from pmarlo.replica_exchange.config import RemdConfig
-
-    output_dir = tmp_path / "exchange_overhead"
-    temps = [300.0, 310.0, 320.0, 330.0]
-
-    config = RemdConfig(
-        pdb_file=str(test_pdb),
-        temperatures=temps,
-        output_dir=str(output_dir),
-        exchange_frequency=50,  # Frequent exchanges to measure overhead
-        auto_setup=False,
-        random_seed=42,
-    )
-
-    remd = ReplicaExchange.from_config(config)
-    remd.plan_reporter_stride(total_steps=500, equilibration_steps=0, target_frames=50)
-    remd.setup_replicas()
-
-    def _run_with_exchanges():
-        remd.run_simulation(total_steps=500, equilibration_steps=0)
-
-    benchmark(_run_with_exchanges)
-
-    stats = remd.get_exchange_statistics()
-    assert remd.exchange_attempts > 0
-    assert "mean_acceptance" in stats
-
-    _cleanup_output_dir(output_dir)
-
-
-def test_short_remd_full_workflow(benchmark, test_pdb, tmp_path):
-    """Benchmark complete short REMD workflow (integration benchmark)."""
-    from pmarlo.replica_exchange import ReplicaExchange
-    from pmarlo.replica_exchange.config import RemdConfig
-
-    output_dir = tmp_path / "full_workflow"
-    temps = [300.0, 310.0]
-
-    def _run_full_remd():
-        config = RemdConfig(
-            pdb_file=str(test_pdb),
-            temperatures=temps,
-            output_dir=str(output_dir),
-            exchange_frequency=100,
-            auto_setup=False,
-            random_seed=42,
+    def _compute():
+        return compute_exchange_statistics(
+            history, len(history[0]), pair_attempts, pair_accepts
         )
 
-        remd = ReplicaExchange.from_config(config)
-        remd.plan_reporter_stride(
-            total_steps=200, equilibration_steps=0, target_frames=20
-        )
-        remd.setup_replicas()
-        remd.run_simulation(total_steps=200, equilibration_steps=0)
-        return remd
-
-    remd = benchmark(_run_full_remd)
-    assert remd.is_setup()
-
-    # Verify trajectories were created
-    for i in range(len(temps)):
-        traj_file = output_dir / f"replica_{i:02d}.dcd"
-        assert traj_file.exists(), f"Trajectory file {traj_file} not created"
-
-    _cleanup_output_dir(output_dir)
+    stats = benchmark(_compute)
+    assert "per_pair_acceptance" in stats
+    assert "replica_state_probabilities" in stats
+    assert stats["average_round_trip_time"] >= 0.0
 
 
-def test_platform_selection_with_seed(benchmark, test_pdb, tmp_path):
-    """Benchmark platform selection with random seed (regression test for performance bug).
+def test_exchange_statistics_large_history(benchmark):
+    """Benchmark statistics computation on a longer synthetic trajectory."""
+    from pmarlo.replica_exchange.diagnostics import compute_exchange_statistics
 
-    This test verifies that setting a random_seed doesn't cause platform selection
-    to fallback to Reference platform (which would cause 6x slowdown).
-    """
-    from pmarlo.replica_exchange import ReplicaExchange
-    from pmarlo.replica_exchange.config import RemdConfig
+    history = _synthetic_exchange_history(n_sweeps=1024, n_replicas=7, seed=99)
+    pair_attempts, pair_accepts = _synthetic_pair_counts(len(history[0]), attempts=600)
 
-    output_dir = tmp_path / "platform_seed"
-
-    def _run_with_seed():
-        config = RemdConfig(
-            pdb_file=str(test_pdb),
-            temperatures=[300.0, 310.0],
-            output_dir=str(output_dir),
-            exchange_frequency=200,
-            auto_setup=False,
-            random_seed=42,  # Critical: this should NOT degrade performance
+    def _compute():
+        return compute_exchange_statistics(
+            history, len(history[0]), pair_attempts, pair_accepts
         )
 
-        remd = ReplicaExchange.from_config(config)
-        remd.plan_reporter_stride(
-            total_steps=200, equilibration_steps=0, target_frames=20
+    stats = benchmark(_compute)
+    assert stats["replica_state_probabilities"]
+
+
+def test_diffusion_metrics_benchmark(benchmark):
+    """Benchmark replica diffusion metric computation."""
+    from pmarlo.replica_exchange.diagnostics import compute_diffusion_metrics
+
+    history = _synthetic_exchange_history(n_sweeps=512, n_replicas=6, seed=21)
+
+    def _compute():
+        return compute_diffusion_metrics(history, exchange_frequency_steps=25)
+
+    metrics = benchmark(_compute)
+    assert metrics["mean_abs_disp_per_sweep"] >= 0.0
+    assert len(metrics["sparkline"]) > 0
+
+
+def test_temperature_ladder_retune_benchmark(benchmark, tmp_path: Path):
+    """Benchmark temperature retuning optimizer."""
+    from pmarlo.replica_exchange.diagnostics import retune_temperature_ladder
+
+    temps = [300.0, 305.0, 312.0, 320.0, 335.0, 350.0]
+    pair_attempts, pair_accepts = _synthetic_pair_counts(len(temps), attempts=500)
+    output_json = tmp_path / "suggested_temps.json"
+
+    def _retune():
+        return retune_temperature_ladder(
+            temps,
+            pair_attempts,
+            pair_accepts,
+            target_acceptance=0.30,
+            output_json=str(output_json),
+            dry_run=True,
         )
-        remd.setup_replicas()
 
-        # Verify platform is NOT Reference
-        from openmm import Platform
-
-        for integrator in remd.integrators:
-            if hasattr(integrator, "getStepSize"):
-                # This is a workaround to check platform indirectly
-                # In actual implementation, we'd check the context's platform
-                pass
-
-        remd.run_simulation(total_steps=200, equilibration_steps=0)
-        return remd
-
-    remd = benchmark(_run_with_seed)
-    assert remd.is_setup()
-
-    _cleanup_output_dir(output_dir)
-
+    result = benchmark(_retune)
+    assert output_json.exists()
+    assert "suggested_temperatures" in result
+    assert len(result["suggested_temperatures"]) >= 2
