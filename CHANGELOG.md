@@ -5,6 +5,10 @@
 - Logged discrete trajectory shape and unique-state counts after MSM discretization to aid debugging missing transition pairs.
 - Added debug print statements and error diagnostics around `WorkflowBackend.build_analysis` to expose analysis failures in the example app.
 - Added pre-build analysis debug logging in the app use case backend to expose dataset statistics and debug summary metrics before MSM construction.
+- Added `scriv` and `tox` to the development dependency group so the lint tox
+  environment and changelog tooling are available after a default install.
+
+
 
 ### Fixed
 - Corrected `total_pairs_from_shards` to reuse `expected_pairs` so strided counting tallies every valid transition pair in debug summaries.
@@ -22,6 +26,18 @@
   are unavailable.
 - Handled trajectory reader failures during demultiplexing by recording a warning and continuing with the remaining segments.
 - Applied DeepTICA whitening metadata directly without additional drift corrections so downstream analysis sees the stored transform.
+- Corrected scaled-time pair construction to handle unbiased shards and prevent
+  overflow when converting bias potentials to log weights for Deep-TICA
+  training pairs.
+- Prevent demultiplexing from raising when replica trajectory files are missing by logging the probe failure and exiting early when no readable frames remain.
+- Handle missing replica trajectory files during demultiplexing by reporting zero available frames instead of raising runtime errors.
+- Prevented demultiplexing from crashing when replica trajectory files are missing by logging the probe failure and returning no output instead of raising.
+- Restore TorchScript export for DeepTICA models with custom `named_children()` overrides by normalizing copied modules before tracing.
+- Annotated the replica exchange output directory attribute so the DCD reporter helper returns a concrete :class:`pathlib.Path`,
+  clearing the final ``tox -e type`` regression in REMD setup.
+- Restored a clean `poetry run tox -e lint` run by tidying import order in
+  `pmarlo.api` and removing unused test imports flagged by flake8.
+- Reworked DeepTICA TorchScript export to trace a standalone inference pipeline and added a regression test that validates the scripted model matches native outputs.
 
 
 
