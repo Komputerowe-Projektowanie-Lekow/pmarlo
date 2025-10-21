@@ -1,0 +1,2 @@
+- Fixed the demultiplexing engine to skip streaming from source-less segments before attempting I/O and correctly report progress.
+- Updated `safe_float` to gracefully return the provided default when conversion fails.

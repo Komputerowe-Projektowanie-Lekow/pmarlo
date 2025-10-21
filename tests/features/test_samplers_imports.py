@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib
 
 import numpy as np
-import pytest
 
 from pmarlo.samplers import BalancedTempSampler
 from pmarlo.shards.pair_builder import PairBuilder

@@ -200,7 +200,7 @@ def _smooth_sparse_bins(hist: np.ndarray, min_count: int) -> tuple[np.ndarray, i
 
     def _neighbor_mean(values: np.ndarray) -> float:
         centre = values.size // 2
-        total = np.sum(values) - values[centre]
+        total = float(np.sum(values, dtype=np.float64)) - float(values[centre])
         return total / float(values.size - 1)
 
     neighbor_mean = ndimage.generic_filter(
