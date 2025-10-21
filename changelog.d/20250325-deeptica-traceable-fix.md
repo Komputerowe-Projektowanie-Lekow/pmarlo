@@ -1,0 +1,1 @@
+- Restore TorchScript export for DeepTICA models with custom `named_children()` overrides by normalizing copied modules before tracing.

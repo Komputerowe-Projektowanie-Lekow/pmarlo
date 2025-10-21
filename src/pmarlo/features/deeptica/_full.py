@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import types
 from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -483,6 +484,34 @@ def _mark_module_scripting_safe(module: Any, *, _seen: set[int] | None = None) -
         _mark_module_scripting_safe(child, _seen=_seen)
 
 
+def _ensure_module_children_resolve(module: Any) -> None:
+    try:
+        import torch.nn as _nn  # type: ignore
+    except Exception:  # pragma: no cover - optional dependency
+        return
+
+    if not isinstance(module, _nn.Module):
+        return
+
+    stack: list[_nn.Module] = [module]
+    while stack:
+        current = stack.pop()
+        try:
+            named = list(current.named_children())
+        except Exception:
+            named = []
+        invalid = [name for name, _child in named if name not in current._modules]
+        if invalid:
+            # Restore default traversal behaviour so tracing can locate child modules
+            current.named_children = types.MethodType(_nn.Module.named_children, current)  # type: ignore[assignment]
+            current.children = types.MethodType(_nn.Module.children, current)  # type: ignore[assignment]
+            current.named_modules = types.MethodType(_nn.Module.named_modules, current)  # type: ignore[assignment]
+            current.modules = types.MethodType(_nn.Module.modules, current)  # type: ignore[assignment]
+        for child in current._modules.values():
+            if isinstance(child, _nn.Module):
+                stack.append(child)
+
+
 def _normalize_module_name(name: str) -> str:
     sanitized = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in name)
     return sanitized or "module"
@@ -500,6 +529,7 @@ def _build_traceable_deeptica_module(net: Any) -> torch.nn.Module:
         module_copy = copy.deepcopy(module)
         module_copy.eval()
         module_copy = module_copy.to(device=torch.device("cpu"), dtype=torch.float32)
+        _ensure_module_children_resolve(module_copy)
         key = _normalize_module_name(name)
         suffix = counters.get(key, 0)
         counters[key] = suffix + 1
