@@ -17,3 +17,4 @@
 15. Do not use the lazy import. Currently python is as fast as it is so we don't need that technique. Prefer the maintaiability.
 16. When you run the poetry run pytest or any pytest command, NEVER USE it with -noProfile.
 17. Whenever a test case is required, always use real data—never stubs or synthetically generated examples. For instance, consistently use the 3gd8-fixed PDB file rather than any other fabricated version.
+18. Whenever you can't run the poetry run pytest, try it with the 'POETRY_VIRTUALENVS_CREATE=true'.
