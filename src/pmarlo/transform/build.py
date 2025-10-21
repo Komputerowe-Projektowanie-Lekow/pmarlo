@@ -702,8 +702,13 @@ def _build_msm_payload(
         return None, None, None
     logger.info("Building MSM...")
     msm_result = _build_msm(working_dataset, opts, applied)
-    if isinstance(msm_result, tuple) and len(msm_result) == 2:
-        return msm_result[0], msm_result[1], None
+    if isinstance(msm_result, tuple):
+        if len(msm_result) == 2:
+            # Old format: (T, pi)
+            return msm_result[0], msm_result[1], None
+        elif len(msm_result) == 3:
+            # New format: (T, pi, msm_data)
+            return msm_result[0], msm_result[1], msm_result[2]
     return None, None, msm_result
 
 
@@ -1319,6 +1324,38 @@ def _observed_state_count(dtrajs: Sequence[np.ndarray]) -> int:
     return len(observed)
 
 
+def _compute_msm_statistics(
+    dtrajs: Sequence[np.ndarray], n_states: int, lag_time: int
+) -> tuple[np.ndarray, int, np.ndarray]:
+    """Compute transition counts and state counts from discrete trajectories.
+    
+    Returns:
+        (counts, total_pairs, state_counts)
+    """
+    counts = np.zeros((n_states, n_states), dtype=float)
+    state_counts = np.zeros((n_states,), dtype=float)
+    total_pairs = 0
+    
+    for dtraj in dtrajs:
+        arr = np.asarray(dtraj, dtype=np.int32)
+        
+        # Count state visits
+        for state in arr:
+            if 0 <= state < n_states:
+                state_counts[state] += 1.0
+        
+        # Count transitions with sliding window
+        if arr.size > lag_time:
+            for i in range(0, arr.size - lag_time):
+                s_i = int(arr[i])
+                s_j = int(arr[i + lag_time])
+                if 0 <= s_i < n_states and 0 <= s_j < n_states:
+                    counts[s_i, s_j] += 1.0
+                    total_pairs += 1
+    
+    return counts, total_pairs, state_counts
+
+
 def _build_msm(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
     _ensure_msm_whitened(dataset)
     dtrajs = _prepare_dtrajs(dataset, opts)
@@ -1348,7 +1385,23 @@ def _build_msm(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
     )
     if pi.size == 0 or not np.isfinite(np.sum(pi)) or np.sum(pi) == 0.0:
         raise RuntimeError("Failed to compute a valid stationary distribution")
-    return T, pi
+    
+    # Also compute and return detailed MSM statistics
+    n_states = T.shape[0]
+    counts, total_pairs, state_counts = _compute_msm_statistics(clean, n_states, lag_time)
+    
+    msm_data = {
+        "transition_matrix": T,
+        "stationary_distribution": pi,
+        "counts": counts,
+        "state_counts": state_counts,
+        "counted_pairs": {"all": total_pairs},
+        "n_states": n_states,
+        "lag_time": lag_time,
+        "dtrajs": clean,  # Store for debugging
+    }
+    
+    return T, pi, msm_data
 
 
 def _build_fes(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:

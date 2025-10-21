@@ -56,6 +56,19 @@ def test_compute_analysis_debug_basic_metrics() -> None:
     assert summary["effective_tau_frames"] == summary["tau_frames"]
 
 
+def test_compute_analysis_debug_accepts_mapping_dtrajs() -> None:
+    dataset = _fake_dataset()
+    dataset["dtrajs"] = {
+        "train": dataset["dtrajs"][0],
+        "val": dataset["dtrajs"][1],
+    }
+
+    debug_data = compute_analysis_debug(dataset, lag=1)
+
+    assert debug_data.summary["total_pairs"] == 8
+    assert debug_data.counts.sum() == 8
+
+
 def test_export_analysis_debug_writes_expected_files(tmp_path: Path) -> None:
     dataset = _fake_dataset()
     debug_data = compute_analysis_debug(dataset, lag=1)

@@ -86,13 +86,27 @@ def compute_analysis_debug(
     lag: int,
     count_mode: str = "sliding",
 ) -> AnalysisDebugData:
-    """Compute dataset diagnostics ahead of MSM construction."""
+    """Compute dataset diagnostics ahead of MSM construction.
+    
+    Requires the dataset to have discrete trajectories (dtrajs) already computed.
+    Raises an error if dtrajs are missing or empty.
+    """
 
     shards_raw = _normalise_shard_info(dataset.get("__shards__", ()))
     shard_lengths = [int(entry["length"]) for entry in shards_raw]
     total_frames = sum(shard_lengths)
 
     dtrajs = _coerce_dtrajs(dataset.get("dtrajs", ()))
+    
+    # Enforce that dtrajs must exist - no silent fallbacks
+    if not dtrajs or all(d.size == 0 for d in dtrajs):
+        raise ValueError(
+            "Cannot compute analysis debug statistics: dataset has no discrete trajectories (dtrajs). "
+            "The dataset must be discretized (clustered) before transition counts can be computed. "
+            f"Dataset contains {total_frames} frames across {len(shard_lengths)} shards, "
+            "but no state assignments are present. Run discretization first."
+        )
+    
     n_states = _infer_n_states(dtrajs)
     counts, total_pairs = _build_transition_counts(dtrajs, n_states, lag, count_mode)
     state_counts = _count_state_visits(dtrajs, n_states)
@@ -426,10 +440,14 @@ def _normalise_shard_info(shards: Iterable[Mapping[str, Any]]) -> List[Dict[str,
 
 
 def _coerce_dtrajs(
-    dtrajs: Iterable[Iterable[int]] | Iterable[np.ndarray],
+    dtrajs: Iterable[Iterable[int]] | Mapping[Any, Iterable[int]] | Iterable[np.ndarray],
 ) -> List[np.ndarray]:
     coerced: List[np.ndarray] = []
-    for traj in dtrajs:
+    if isinstance(dtrajs, Mapping):
+        iterable = dtrajs.values()
+    else:
+        iterable = dtrajs
+    for traj in iterable:
         try:
             arr = np.asarray(traj, dtype=int).reshape(-1)
         except Exception:

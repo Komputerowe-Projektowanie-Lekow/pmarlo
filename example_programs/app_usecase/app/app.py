@@ -1391,19 +1391,32 @@ def main() -> None:
                         fes_bandwidth=bandwidth_val,
                         fes_min_count_per_bin=int(min_count_per_bin),
                     )
-                    artifact = backend.build_analysis(selected_paths, build_cfg)
-                    st.session_state[_LAST_BUILD] = artifact
-                    st.success(
-                        f"Bundle {artifact.bundle_path.name} written (hash {artifact.dataset_hash})."
-                    )
-                    _show_build_outputs(artifact)
-                    summary = (
-                        artifact.build_result.artifacts.get("mlcv_deeptica")
-                        if artifact.build_result
-                        else None
-                    )
-                    if summary:
-                        _render_deeptica_summary(summary)
+                    artifact: BuildArtifact | None = None
+                    try:
+                        artifact = backend.build_analysis(selected_paths, build_cfg)
+                    except ValueError as err:
+                        error_message = str(err)
+                        if "No transition pairs found" in error_message:
+                            st.warning(
+                                "Analysis halted: "
+                                "no transition pairs were detected for the current lag. "
+                                f"{error_message}"
+                            )
+                        else:
+                            raise
+                    if artifact is not None:
+                        st.session_state[_LAST_BUILD] = artifact
+                        st.success(
+                            f"Bundle {artifact.bundle_path.name} written (hash {artifact.dataset_hash})."
+                        )
+                        _show_build_outputs(artifact)
+                        summary = (
+                            artifact.build_result.artifacts.get("mlcv_deeptica")
+                            if artifact.build_result
+                            else None
+                        )
+                        if summary:
+                            _render_deeptica_summary(summary)
                 except Exception as exc:
                     print(f"--- DEBUG: Analysis failed with exception: {exc}")
                     traceback.print_exc()
