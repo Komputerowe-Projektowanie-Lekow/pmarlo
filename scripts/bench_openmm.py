@@ -122,7 +122,7 @@ if __name__ == "__main__":
         raise SystemExit("--model is required when --with-bias=yes")
 
     base_spec = resolve_feature_spec_path()
-    pdb_path = Path(__file__).resolve().parents[1] / "tests" / "data" / "ala2.pdb"
+    pdb_path = Path(__file__).resolve().parents[1] / "tests" / "_assets" / "3gd8-fixed.pdb"
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)

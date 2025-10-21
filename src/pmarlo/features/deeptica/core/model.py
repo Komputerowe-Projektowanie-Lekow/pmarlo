@@ -216,7 +216,8 @@ def apply_output_whitening(
 
 def construct_deeptica_core(cfg: Any, scaler) -> tuple[Any, list[int]]:
     in_dim = int(np.asarray(getattr(scaler, "mean_", []), dtype=np.float64).shape[0])
-    layers = [in_dim, *resolve_hidden_layers(cfg), int(getattr(cfg, "n_out", 2))]
+    out_dim = int(getattr(cfg, "n_out", getattr(cfg, "output_dim", 2)))
+    layers = [in_dim, *resolve_hidden_layers(cfg), out_dim]
     activation_name = str(getattr(cfg, "activation", "gelu")).lower().strip() or "gelu"
 
     # Use a safe activation for mlcolvar (it doesn't support all activations like gelu)
@@ -229,7 +230,7 @@ def construct_deeptica_core(cfg: Any, scaler) -> tuple[Any, list[int]]:
 
     core = DeepTICA(
         layers=layers,
-        n_cvs=int(getattr(cfg, "n_out", 2)),
+        n_cvs=out_dim,
         options={"norm_in": False, "nn": {"activation": safe_activation}},
     )
     override_core_mlp(

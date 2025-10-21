@@ -38,7 +38,6 @@ def find_test_pdb() -> Path:
     candidates = [
         Path(__file__).parent.parent / "tests" / "_assets" / "3gd8-fixed.pdb",
         Path(__file__).parent.parent / "tests" / "_assets" / "3gd8.pdb",
-        Path(__file__).parent.parent / "tests" / "data" / "ala2.pdb",
     ]
     for pdb in candidates:
         if pdb.exists():

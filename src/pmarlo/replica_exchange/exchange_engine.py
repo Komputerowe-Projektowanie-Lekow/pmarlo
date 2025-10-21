@@ -7,6 +7,26 @@ import openmm
 from openmm import unit
 
 
+def _quantity_to_float(
+    quantity: openmm.unit.quantity.Quantity,
+    expected_unit: openmm.unit.Unit | None,
+    *,
+    context: str,
+) -> float:
+    """Coerce an OpenMM quantity into a float while validating its unit."""
+
+    if not hasattr(quantity, "value_in_unit"):
+        raise TypeError(f"{context} must provide a value_in_unit method")
+
+    if expected_unit is None:
+        expected_unit = unit.dimensionless
+
+    try:
+        return float(quantity.value_in_unit(expected_unit))
+    except TypeError as exc:  # pragma: no cover - defensive path guarded by tests
+        raise TypeError(f"{context} is not convertible to the expected unit") from exc
+
+
 class ExchangeEngine:
     def __init__(self, temperatures: List[float], rng: np.random.Generator):
         self.temperatures = temperatures
@@ -21,16 +41,37 @@ class ExchangeEngine:
     ) -> float:
         temp_i = self.temperatures[replica_states[i]]
         temp_j = self.temperatures[replica_states[j]]
-        beta_i = 1.0 / (unit.MOLAR_GAS_CONSTANT_R * temp_i * unit.kelvin)
-        beta_j = 1.0 / (unit.MOLAR_GAS_CONSTANT_R * temp_j * unit.kelvin)
-        e_i = energies[i]
-        e_j = energies[j]
-        if not hasattr(e_i, "value_in_unit") or not hasattr(e_j, "value_in_unit"):
-            raise TypeError("Energies must be OpenMM quantities with value_in_unit")
-        # Correct Metropolis acceptance for exchanging temperatures of two states
-        # Δ = (β_i - β_j) * (U_j - U_i)
-        delta_q = (beta_i - beta_j) * (e_j - e_i)
-        delta = delta_q.value_in_unit(unit.dimensionless)
+
+        gas_constant_unit = getattr(unit, "kilojoule_per_mole", None)
+        if gas_constant_unit is not None:
+            gas_constant_unit = gas_constant_unit / unit.kelvin
+
+        gas_constant = (
+            float(unit.MOLAR_GAS_CONSTANT_R)
+            if not hasattr(unit.MOLAR_GAS_CONSTANT_R, "value_in_unit")
+            else _quantity_to_float(
+                unit.MOLAR_GAS_CONSTANT_R,
+                gas_constant_unit,
+                context="Gas constant",
+            )
+        )
+
+        beta_i = 1.0 / (gas_constant * temp_i)
+        beta_j = 1.0 / (gas_constant * temp_j)
+
+        energy_unit = getattr(unit, "kilojoule_per_mole", None)
+        energy_i = _quantity_to_float(
+            energies[i],
+            energy_unit,
+            context="Energy term",
+        )
+        energy_j = _quantity_to_float(
+            energies[j],
+            energy_unit,
+            context="Energy term",
+        )
+
+        delta = (beta_i - beta_j) * (energy_j - energy_i)
         return float(min(1.0, np.exp(delta)))
 
     def accept(self, prob: float) -> bool:

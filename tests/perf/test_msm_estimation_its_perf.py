@@ -10,6 +10,9 @@ from typing import TYPE_CHECKING, Dict, List
 import numpy as np
 import pytest
 
+from pmarlo import constants as const
+from pmarlo.utils.msm_utils import ensure_connected_counts
+
 pytestmark = [pytest.mark.perf, pytest.mark.benchmark, pytest.mark.msm]
 
 # Optional plugin
@@ -155,12 +158,16 @@ def _expected_transition_matrix(
         if not np.any(valid):
             continue
         np.add.at(counts, (i_states[valid], j_states[valid]), 1.0)
-    row_sums = counts.sum(axis=1, keepdims=True)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        transitions = np.divide(counts, row_sums, where=row_sums > 0.0)
-    for idx, row_sum in enumerate(row_sums.flatten()):
-        if row_sum <= 0.0:
-            transitions[idx] = np.eye(n_states, dtype=float)[idx]
+    res = ensure_connected_counts(
+        counts,
+        alpha=const.NUMERIC_DIRICHLET_ALPHA,
+        epsilon=const.NUMERIC_MIN_POSITIVE,
+    )
+    transitions = np.eye(n_states, dtype=float)
+    if res.counts.size:
+        row_sums = res.counts.sum(axis=1, keepdims=True)
+        T_active = np.divide(res.counts, row_sums, where=row_sums > 0.0)
+        transitions[np.ix_(res.active, res.active)] = T_active
     return transitions
 
 

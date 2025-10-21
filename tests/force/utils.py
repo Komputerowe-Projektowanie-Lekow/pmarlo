@@ -16,8 +16,28 @@ from pmarlo.features.deeptica.ts_feature_extractor import (
 )
 from pmarlo.settings import load_feature_spec
 
-PDB_PATH = Path(__file__).resolve().parents[1] / "data" / "ala2.pdb"
-BOX_LENGTHS = torch.tensor([1.5, 1.5, 1.5], dtype=torch.float32)
+PDB_PATH = Path(__file__).resolve().parents[1] / "_assets" / "3gd8-fixed.pdb"
+
+
+def _compute_box_lengths() -> torch.Tensor:
+    pdb = PDBFile(str(PDB_PATH))
+    vectors = pdb.topology.getPeriodicBoxVectors()
+    if vectors is None:
+        raise RuntimeError("3gd8-fixed.pdb must define periodic box vectors.")
+    lengths: list[float] = []
+    for vec in vectors:
+        components = vec.value_in_unit(unit.nanometer)
+        lengths.append(
+            float(
+                np.linalg.norm(
+                    np.asarray([components[0], components[1], components[2]])
+                )
+            )
+        )
+    return torch.tensor(lengths, dtype=torch.float32)
+
+
+BOX_LENGTHS = _compute_box_lengths()
 
 
 def load_spec_dict() -> dict:
