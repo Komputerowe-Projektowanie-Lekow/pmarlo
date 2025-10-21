@@ -1073,10 +1073,10 @@ class WorkflowBackend:
         """Extract debug data from the build result after discretization."""
         import numpy as np
         from pmarlo.analysis.debug_export import AnalysisDebugData
-        
+
         # Extract MSM data from build result
         msm_obj = getattr(br, "msm", None)
-        
+
         if msm_obj is None or not isinstance(msm_obj, Mapping):
             # No MSM data available
             shards_meta = dataset.get("__shards__", [])
@@ -1098,36 +1098,36 @@ class WorkflowBackend:
                 state_counts=np.zeros((0,), dtype=float),
                 component_labels=np.zeros((0,), dtype=int),
             )
-        
+
         # Extract counts and state_counts from MSM dict
         counts = np.asarray(msm_obj.get("counts", np.zeros((0, 0), dtype=float)), dtype=float)
         state_counts = np.asarray(msm_obj.get("state_counts", np.zeros((0,), dtype=float)), dtype=float)
         counted_pairs_dict = msm_obj.get("counted_pairs", {})
         total_pairs = sum(int(v) for v in counted_pairs_dict.values() if v is not None)
-        
+
         # Extract shard metadata
         shards_meta = dataset.get("__shards__", [])
         n_frames = sum(int(s.get("length", 0)) for s in shards_meta if isinstance(s, Mapping))
         n_frames_with_states = int(state_counts.sum())
-        
+
         # Compute zero rows
         zero_rows = int(np.count_nonzero(counts.sum(axis=1) == 0)) if counts.size > 0 else 0
-        
+
         # Compute connected components
         from pmarlo.analysis.debug_export import _strongly_connected_components, _coverage_fraction
         components, component_labels = _strongly_connected_components(counts)
         largest_size = max((len(comp) for comp in components), default=0)
         largest_indices = max(components, key=len) if components else []
         largest_cover = _coverage_fraction(state_counts, largest_indices)
-        
+
         # Compute diagonal mass
         from pmarlo.analysis.debug_export import _transition_diag_mass
         diag_mass_val = _transition_diag_mass(counts)
-        
+
         # Build summary
         stride_max = max(stride_values) if stride_values else 1
         effective_tau_frames = int(lag * stride_max) if lag > 0 else 0
-        
+
         warnings: list[dict[str, Any]] = []
         if total_pairs < 5000:
             warnings.append({
@@ -1139,7 +1139,7 @@ class WorkflowBackend:
                 "code": "ZERO_ROW_STATES_PRESENT",
                 "message": "States with zero outgoing counts detected before regularisation."
             })
-        
+
         summary = {
             "tau_frames": int(lag),
             "count_mode": "sliding",
@@ -1162,7 +1162,7 @@ class WorkflowBackend:
             "diag_mass": float(diag_mass_val),
             "warnings": warnings,
         }
-        
+
         return AnalysisDebugData(
             summary=summary,
             counts=counts,
@@ -1185,7 +1185,7 @@ class WorkflowBackend:
             stamp = _timestamp()
             bundle_path = self.layout.bundles_dir / f"bundle-{stamp}.pbz"
             dataset = load_shards_as_dataset(shards)
-            
+
             # Log basic dataset info before building
             dataset_frames: int | None = None
             dataset_shard_count: int | None = None
@@ -1280,17 +1280,17 @@ class WorkflowBackend:
                     stride_map[str(shard_id)] = int(eff_stride)
                 if shard_entry.get("preview_truncated"):
                     preview_truncated.append(str(shard_entry.get("id", idx)))
-            
+
             stride_max = max(stride_values) if stride_values else 1
             tau_frames = int(config.lag)
             effective_tau_frames = tau_frames * stride_max if tau_frames > 0 else 0
             expected_effective_tau = effective_tau_frames  # Expected based on stride
-            
+
             # Now that discretization is complete, compute debug data from the build result
             debug_data = self._extract_debug_data_from_build_result(
                 br, dataset, config.lag, stride_values, stride_map, preview_truncated
             )
-            
+
             # Extract actual statistics from the MSM build result (post-clustering)
             total_pairs_val = 0
             zero_rows_val = 0

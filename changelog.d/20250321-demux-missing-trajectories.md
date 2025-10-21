@@ -1,1 +1,0 @@
-- Prevent demultiplexing from raising when replica trajectory files are missing by logging the probe failure and exiting early when no readable frames remain.

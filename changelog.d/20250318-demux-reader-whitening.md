@@ -1,2 +1,0 @@
-- Handled trajectory reader failures during demultiplexing by recording a warning and continuing with the remaining segments.
-- Applied DeepTICA whitening metadata directly without additional drift corrections so downstream analysis sees the stored transform.

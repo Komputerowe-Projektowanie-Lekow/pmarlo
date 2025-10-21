@@ -159,7 +159,6 @@ if _nn is not None:
             y = y - self.mean
             return torch.matmul(y, self.transform.T)
 
-
     class _WhitenTransformModule(_nn.Module):  # type: ignore[misc]
         """Apply a fixed whitening transform to its inputs."""
 
@@ -547,12 +546,22 @@ def _collect_deeptica_modules_for_inference(
 
     collected: list[tuple[str, torch.nn.Module | None]] = []
     # Handle whitening wrappers generated during training
-    if hasattr(module, "mean") and hasattr(module, "transform") and hasattr(module, "inner"):
+    if (
+        hasattr(module, "mean")
+        and hasattr(module, "transform")
+        and hasattr(module, "inner")
+    ):
         collected.extend(_collect_deeptica_modules_for_inference(module.inner))
-        collected.append(("whiten", _WhitenTransformModule(module.mean, module.transform)))
+        collected.append(
+            ("whiten", _WhitenTransformModule(module.mean, module.transform))
+        )
         return collected
     # Handle preprocessing wrapper that applies layer norm and dropout
-    if hasattr(module, "ln") and hasattr(module, "drop_in") and hasattr(module, "inner"):
+    if (
+        hasattr(module, "ln")
+        and hasattr(module, "drop_in")
+        and hasattr(module, "inner")
+    ):
         ln = getattr(module, "ln", None)
         drop_in = getattr(module, "drop_in", None)
         if isinstance(ln, _nn.Module):
