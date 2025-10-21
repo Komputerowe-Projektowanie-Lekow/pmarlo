@@ -76,17 +76,8 @@ def total_pairs_from_shards(
     if count_mode not in {"sliding", "strided"}:
         raise ValueError(f"Unsupported count_mode: {count_mode}")
 
-    total = 0
-    if count_mode == "strided":
-        step = max(1, tau)
-        for length in lengths:
-            span = max(0, int(length) - tau)
-            total += span // step
-        return total
-
-    for length in lengths:
-        total += max(0, int(length) - tau)
-    return total
+    stride = 1 if count_mode == "sliding" else max(1, tau)
+    return expected_pairs(lengths, tau, stride)
 
 
 def compute_analysis_debug(

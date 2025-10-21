@@ -770,6 +770,14 @@ def _process_split_assignment(
     unique_states = (
         np.unique(labels[valid_mask]) if n_assigned else np.asarray([], dtype=np.int32)
     )
+    labels_shape = tuple(labels.shape)
+    logger.info(
+        "Discretization split '%s' produced labels shape %s with %d valid frames across %d unique states",
+        split_name,
+        labels_shape,
+        n_assigned,
+        unique_states.size,
+    )
     logger.debug(
         "Split %s state assignment summary: %d assigned frames across %d states",
         split_name,
@@ -962,6 +970,19 @@ def discretize_dataset(
     train_labels = np.asarray(assignments[train_key], dtype=np.int32, copy=False)
     train_mask = assignment_masks[train_key]
     _ensure_train_assignments(train_key, train_data, discretizer, train_mask)
+
+    valid_train_labels = train_labels[train_mask]
+    unique_train_states = (
+        np.unique(valid_train_labels)
+        if valid_train_labels.size
+        else np.asarray([], dtype=np.int32)
+    )
+    logger.info(
+        "MSM discretization train split dtrajs shape %s with %d valid frames across %d unique states",
+        tuple(train_labels.shape),
+        int(valid_train_labels.size),
+        int(unique_train_states.size),
+    )
 
     weights = _coerce_weights(frame_weights, train_labels.size, train_key)
 

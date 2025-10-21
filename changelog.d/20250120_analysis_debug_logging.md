@@ -1,0 +1,1 @@
+- Added pre-build analysis debug logging in the app use case backend to expose dataset statistics and debug summary metrics before MSM construction.

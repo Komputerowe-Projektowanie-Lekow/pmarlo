@@ -419,7 +419,7 @@ class TrainingConfig:
 class TrainingResult:
     bundle_path: Path
     dataset_hash: str
-    build_result: BuildResult
+    build_result: "_BuildResult"
     created_at: str
     checkpoint_dir: Optional[Path] = None
     cv_model_bundle: Optional[Dict[str, Any]] = None  # Paths to exported CV model files
@@ -450,7 +450,7 @@ class BuildConfig:
 class BuildArtifact:
     bundle_path: Path
     dataset_hash: str
-    build_result: BuildResult
+    build_result: "_BuildResult"
     created_at: str
     debug_dir: Optional[Path] = None
     debug_summary: Optional[Dict[str, Any]] = None
@@ -1069,400 +1069,486 @@ class WorkflowBackend:
         shard_jsons: Sequence[Path],
         config: BuildConfig,
     ) -> BuildArtifact:
-        shards = [Path(p).resolve() for p in shard_jsons]
-        if not shards:
-            raise ValueError("No shards selected for analysis")
-        stamp = _timestamp()
-        bundle_path = self.layout.bundles_dir / f"bundle-{stamp}.pbz"
-        dataset = load_shards_as_dataset(shards)
-        debug_data = compute_analysis_debug(
-            dataset,
-            lag=int(config.lag),
-            count_mode="sliding",
+        print(
+            f"--- DEBUG: backend.build_analysis called with {len(shard_jsons)} shards ---"
         )
-        config_payload = asdict(config)
-        analysis_notes = dict(config.notes or {})
-        if config.learn_cv and "model_dir" not in analysis_notes:
-            analysis_notes["model_dir"] = str(self.layout.models_dir)
-        analysis_notes["apply_cv_whitening_requested"] = bool(config.apply_cv_whitening)
-        analysis_notes["apply_cv_whitening_enforced"] = True
-        analysis_notes["kmeans_kwargs"] = dict(config.kmeans_kwargs)
-        analysis_notes["analysis_overrides"] = {
-            "cluster_mode": str(config.cluster_mode),
-            "n_microstates": int(config.n_microstates),
-            "reweight_mode": str(config.reweight_mode),
-            "fes_method": str(config.fes_method),
-            "fes_bandwidth": config.fes_bandwidth,
-            "fes_min_count_per_bin": int(config.fes_min_count_per_bin),
-            "kmeans_kwargs": dict(config.kmeans_kwargs),
-        }
-        requested_fingerprint = {
-            "mode": str(config.cluster_mode),
-            "n_states": int(config.n_microstates),
-            "seed": int(config.seed),
-        }
-        previous_fingerprint = analysis_notes.get("discretizer_fingerprint")
-        if previous_fingerprint and previous_fingerprint != requested_fingerprint:
-            analysis_notes.setdefault(
-                "discretizer_fingerprint_previous", previous_fingerprint
-            )
-            logger.info(
-                "Discretizer fingerprint override changed from %s to %s; "
-                "forcing refit of clusterer.",
-                previous_fingerprint,
-                requested_fingerprint,
-            )
-        analysis_notes["discretizer_fingerprint_requested"] = requested_fingerprint
-        analysis_notes["analysis_tau_requested"] = int(config.lag)
-        analysis_notes["debug_summary"] = _sanitize_artifacts(debug_data.summary)
-        logger.info(
-            (
-                "Analysis debug summary: frames=%d states=%d pairs=%d zero_rows=%d "
-                "warnings=%d"
-            ),
-            int(debug_data.summary.get("total_frames_with_states", 0)),
-            int(debug_data.counts.shape[0]),
-            int(debug_data.summary.get("total_pairs", 0)),
-            int(debug_data.summary.get("zero_rows", 0)),
-            len(debug_data.summary.get("warnings", [])),
-        )
-
-        br, ds_hash = build_from_shards(
-            shard_jsons=shards,
-            out_bundle=bundle_path,
-            bins=dict(config.bins),
-            lag=int(config.lag),
-            seed=int(config.seed),
-            temperature=float(config.temperature),
-            learn_cv=bool(config.learn_cv),
-            deeptica_params=config.deeptica_params,
-            notes=analysis_notes,
-            kmeans_kwargs=dict(config.kmeans_kwargs),
-        )
-
-        summary = debug_data.summary
-
-        def _safe_int(value: Any, default: int) -> int:
-            try:
-                return int(value)
-            except (TypeError, ValueError):
-                return default
-
-        def _safe_float(value: Any, default: float = float("nan")) -> float:
-            try:
-                return float(value)
-            except (TypeError, ValueError):
-                return default
-
-        tau_frames = _safe_int(summary.get("tau_frames"), int(config.lag))
-        stride_max = max(1, _safe_int(summary.get("effective_stride_max"), 1))
-        effective_tau_frames = _safe_int(
-            summary.get("effective_tau_frames"), tau_frames
-        )
-        raw_stride_values = summary.get("effective_strides") or []
-        stride_values = []
-        for value in raw_stride_values:
-            try:
-                stride_values.append(int(value))
-            except (TypeError, ValueError):
-                continue
-        stride_map = summary.get("effective_stride_map") or {}
-        preview_truncated = summary.get("preview_truncated") or []
-
-        # NOTE: Don't use pre-clustering debug data for pair counts, as clustering hasn't happened yet
-        # Extract actual statistics from the MSM build result
-        total_pairs_val = 0  # Will be updated from MSM diagnostics below
-        zero_rows_val = 0    # Will be updated from MSM diagnostics below
-        largest_cover_raw = summary.get("largest_scc_frame_fraction")
         try:
-            largest_cover = (
-                float(largest_cover_raw)
-                if largest_cover_raw is not None
-                else None
+            shards = [Path(p).resolve() for p in shard_jsons]
+            if not shards:
+                raise ValueError("No shards selected for analysis")
+            stamp = _timestamp()
+            bundle_path = self.layout.bundles_dir / f"bundle-{stamp}.pbz"
+            dataset = load_shards_as_dataset(shards)
+            debug_data = compute_analysis_debug(
+                dataset,
+                lag=int(config.lag),
+                count_mode="sliding",
             )
-        except (TypeError, ValueError):
-            largest_cover = None
-        diag_mass_val = _safe_float(summary.get("diag_mass"))
-        expected_effective_tau = tau_frames * stride_max if tau_frames > 0 else 0
 
-        actual_seed = int(config.seed)
-        if getattr(br.metadata, "seed", None) is not None:
-            try:
-                actual_seed = int(br.metadata.seed)  # type: ignore[arg-type]
-            except Exception:
-                actual_seed = int(config.seed)
-        fingerprint = {
-            "mode": str(config.cluster_mode),
-            "n_states": int(config.n_microstates),
-            "seed": actual_seed,
-        }
-        msm_obj = getattr(br, "msm", None)
-        feature_schema_payload: Dict[str, Any] | None = None
-        if isinstance(msm_obj, Mapping):
-            schema_candidate = msm_obj.get("feature_schema")
-        else:
-            schema_candidate = getattr(msm_obj, "feature_schema", None)
-        if isinstance(schema_candidate, Mapping):
-            feature_schema_payload = {
-                "names": list(schema_candidate.get("names", [])),
-                "n_features": int(schema_candidate.get("n_features", 0)),
-            }
-            fingerprint["feature_schema"] = feature_schema_payload
-
-        fingerprint_compare = {
-            "mode": fingerprint.get("mode"),
-            "n_states": fingerprint.get("n_states"),
-            "seed": fingerprint.get("seed"),
-        }
-        fingerprint_changed = fingerprint_compare != requested_fingerprint
-
-        # Guardrail checks based on post-clustering statistics
-        # Note: total_pairs and zero_rows checks are removed because they require
-        # post-clustering data which we'll validate from the build result instead
-        guardrail_violations: List[Dict[str, Any]] = []
-
-        # Check if MSM build succeeded by verifying the transition matrix exists
-        if br.transition_matrix is None or br.transition_matrix.size == 0:
-            guardrail_violations.append(
-                {"code": "msm_build_failed", "actual": "no_transition_matrix"}
+            summary_map: Mapping[str, Any] = (
+                debug_data.summary if isinstance(debug_data.summary, Mapping) else {}
             )
-        else:
-            # Extract actual statistics from the built MSM
-            n_states_actual = br.transition_matrix.shape[0]
-            if n_states_actual == 0:
-                guardrail_violations.append(
-                    {"code": "no_states_in_msm", "actual": 0}
-                )
 
-        if effective_tau_frames != expected_effective_tau:
-            logger.warning(
-                "Effective tau mismatch: expected=%d, actual=%d",
-                expected_effective_tau,
-                effective_tau_frames,
-            )
-            # Don't treat tau mismatch as a hard failure
+            def _coerce_int(value: Any) -> int | None:
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    return None
 
-        analysis_healthy = not guardrail_violations
+            dataset_frames: int | None = None
+            dataset_shard_count: int | None = None
+            if isinstance(dataset, Mapping):
+                dataset_shard_count = len(dataset.get("__shards__", []))
+                if "X" in dataset:
+                    try:
+                        dataset_frames = int(len(dataset["X"]))
+                    except TypeError:
+                        dataset_frames = None
+            else:
+                frames_attr = getattr(dataset, "n_frames", None)
+                if frames_attr is not None:
+                    dataset_frames = _coerce_int(frames_attr)
+                shards_attr = getattr(dataset, "shards", None)
+                if isinstance(shards_attr, Sequence):
+                    dataset_shard_count = len(shards_attr)
 
-        summary_overrides = {
-            "fingerprint": fingerprint,
-            "analysis_guardrail_violations": guardrail_violations,
-            "analysis_expected_effective_tau_frames": expected_effective_tau,
-            "analysis_healthy": analysis_healthy,
-            "discretizer_fingerprint_changed": bool(fingerprint_changed),
-        }
-        summary.update(summary_overrides)
-
-        debug_dir = (self.layout.analysis_debug_dir / f"analysis-{stamp}").resolve()
-        export_info = export_analysis_debug(
-            output_dir=debug_dir,
-            build_result=br,
-            debug_data=debug_data,
-            config=config_payload,
-            dataset_hash=ds_hash,
-            summary_overrides=summary_overrides,
-            fingerprint=fingerprint,
-        )
-
-        for idx, shard in enumerate(summary.get("shards", [])):
-            shard_id = shard.get("id", f"shard-{idx}")
-            frames_loaded = shard.get("frames_loaded", shard.get("length"))
-            frames_declared = shard.get("frames_declared", shard.get("length"))
-            stride_val = shard.get("effective_frame_stride")
             logger.info(
-                "Shard %s: loaded=%s declared=%s stride=%s",
-                shard_id,
-                frames_loaded,
-                frames_declared,
-                stride_val,
-            )
-            if shard.get("first_timestamp") is not None or shard.get("last_timestamp") is not None:
-                logger.info(
-                    "Shard %s timestamps: first=%s last=%s",
-                    shard_id,
-                    shard.get("first_timestamp"),
-                    shard.get("last_timestamp"),
-                )
-
-        if not analysis_healthy:
-            summary_path = Path(export_info["summary"]).resolve()
-            raise ValueError(
-                "Analysis guardrails failed: "
-                f"{guardrail_violations}. "
-                f"See {summary_path} for details."
-            )
-
-        logger.info(
-            "Analysis lag requested=%d, applied=%d, effective_tau=%d (max stride=%d, stride values=%s)",
-            int(config.lag),
-            tau_frames,
-            effective_tau_frames,
-            stride_max,
-            stride_values,
-        )
-        if fingerprint_changed:
-            logger.info(
-                "Effective discretizer fingerprint differs from request: %s (requested %s)",
-                fingerprint,
-                requested_fingerprint,
-            )
-        if tau_frames != int(config.lag):
-            logger.warning(
-                "Analysis lag mismatch: requested %d frames, applied %d frames",
+                "[ANALYSIS_DEBUG] Pre-build config: lag=%d shard_count=%d dataset_frames=%s dataset_shards=%s",
                 int(config.lag),
-                tau_frames,
+                len(shards),
+                dataset_frames if dataset_frames is not None else "unknown",
+                dataset_shard_count if dataset_shard_count is not None else "unknown",
             )
-        analysis_notes["discretizer_fingerprint"] = fingerprint
-        analysis_notes["analysis_total_pairs"] = int(total_pairs_val)
-        analysis_notes["analysis_zero_rows"] = int(zero_rows_val)
-        analysis_notes["analysis_largest_scc_fraction"] = (
-            float(largest_cover) if largest_cover is not None else None
-        )
-        analysis_notes["analysis_diag_mass"] = float(diag_mass_val)
-        analysis_notes["analysis_tau_frames"] = tau_frames
-        analysis_notes["analysis_effective_tau_frames"] = effective_tau_frames
-        analysis_notes["analysis_effective_stride_max"] = stride_max
-        analysis_notes["analysis_effective_stride_values"] = stride_values
-        analysis_notes["analysis_effective_stride_map"] = stride_map
-        analysis_notes["analysis_expected_effective_tau_frames"] = expected_effective_tau
-        analysis_notes["analysis_healthy"] = analysis_healthy
-        if preview_truncated:
-            analysis_notes["analysis_preview_truncated"] = preview_truncated
-        analysis_notes["analysis_guardrail_violations"] = guardrail_violations
-        analysis_notes["discretizer_fingerprint_changed"] = bool(fingerprint_changed)
-        analysis_notes["analysis_kmeans_kwargs"] = dict(config.kmeans_kwargs)
-        analysis_notes.pop("discretizer_fingerprint_requested", None)
-
-        try:
-            flags = dict(br.flags or {})
-        except Exception:
-            flags = {}
-        flags["discretizer_fingerprint"] = fingerprint
-        flags["discretizer_fingerprint_changed"] = bool(fingerprint_changed)
-        flags["analysis_requested_tau_frames"] = int(config.lag)
-        flags["analysis_total_pairs"] = int(total_pairs_val)
-        flags["analysis_zero_rows"] = int(zero_rows_val)
-        flags["analysis_largest_scc_fraction"] = (
-            float(largest_cover) if largest_cover is not None else None
-        )
-        flags["analysis_diag_mass"] = float(diag_mass_val)
-        flags["analysis_tau_frames"] = int(tau_frames)
-        flags["analysis_effective_tau_frames"] = int(effective_tau_frames)
-        flags["analysis_expected_effective_tau_frames"] = int(expected_effective_tau)
-        flags["analysis_effective_stride_max"] = int(stride_max)
-        flags["analysis_healthy"] = analysis_healthy
-        flags["analysis_guardrail_violations"] = guardrail_violations
-        flags["analysis_kmeans_kwargs"] = dict(config.kmeans_kwargs)
-        if stride_values:
-            flags["analysis_effective_stride_values"] = list(stride_values)
-        if stride_map:
-            flags["analysis_effective_stride_map"] = stride_map
-        if preview_truncated:
-            flags["analysis_preview_truncated"] = list(preview_truncated)
-        if tau_frames != int(config.lag):
-            flags["analysis_tau_mismatch"] = {
-                "requested": int(config.lag),
-                "actual": int(tau_frames),
-            }
-        overrides = {
-            "cluster_mode": str(config.cluster_mode),
-            "n_microstates": int(config.n_microstates),
-            "reweight_mode": str(config.reweight_mode),
-            "fes_method": str(config.fes_method),
-            "fes_bandwidth": config.fes_bandwidth,
-            "fes_min_count_per_bin": int(config.fes_min_count_per_bin),
-            "apply_whitening": bool(config.apply_cv_whitening),
-            "kmeans_kwargs": dict(config.kmeans_kwargs),
-        }
-        flags.setdefault("analysis_overrides", overrides)
-        flags.setdefault("analysis_reweight_mode", str(config.reweight_mode))
-        flags.setdefault("analysis_apply_whitening", bool(config.apply_cv_whitening))
-        warning_count = len(debug_data.summary.get("warnings", []))
-        flags.setdefault("analysis_debug_warning_count", warning_count)
-        if warning_count:
-            flags.setdefault(
-                "analysis_debug_warnings",
-                _sanitize_artifacts(debug_data.summary.get("warnings")),
+            logger.info(
+                "[ANALYSIS_DEBUG] Debug summary: total_pairs=%s effective_tau_frames=%s "
+                "effective_stride_max=%s zero_rows=%s warnings=%s",
+                summary_map.get("total_pairs"),
+                summary_map.get("effective_tau_frames"),
+                summary_map.get("effective_stride_max"),
+                summary_map.get("zero_rows"),
+                summary_map.get("warnings"),
             )
-        br.flags = flags  # type: ignore[assignment]
-        try:
-            artifacts = dict(br.artifacts or {})
-            artifacts["analysis_debug"] = {
-                "directory": str(debug_dir),
-                "summary": str(Path(export_info["summary"]).name),
-                "arrays": export_info.get("arrays", {}),
-            }
-            artifacts["analysis_discretizer_fingerprint"] = fingerprint
-            artifacts["analysis_tau_frames"] = int(tau_frames)
-            artifacts["analysis_effective_tau_frames"] = int(effective_tau_frames)
-            artifacts["analysis_effective_stride_max"] = int(stride_max)
-            if stride_map:
-                artifacts["analysis_effective_stride_map"] = stride_map
-            if preview_truncated:
-                artifacts["analysis_preview_truncated"] = list(preview_truncated)
-            br.artifacts = artifacts  # type: ignore[assignment]
-        except Exception:
-            logger.debug("Failed to attach analysis debug artifacts", exc_info=True)
 
-        artifact = BuildArtifact(
-            bundle_path=bundle_path.resolve(),
-            dataset_hash=ds_hash,
-            build_result=br,
-            created_at=stamp,
-            debug_dir=debug_dir,
-            debug_summary=debug_data.summary,
-            discretizer_fingerprint=fingerprint,
-            tau_frames=int(tau_frames),
-            effective_tau_frames=int(effective_tau_frames),
-            effective_stride_max=int(stride_max),
-            analysis_healthy=analysis_healthy,
-            guardrail_violations=guardrail_violations or None,
-        )
-        self.state.append_build(
-            {
-                "bundle": str(bundle_path.resolve()),
-                "dataset_hash": ds_hash,
-                "lag": int(config.lag),
-                "bins": dict(config.bins),
-                "seed": int(config.seed),
-                "temperature": float(config.temperature),
-                "learn_cv": bool(config.learn_cv),
-                "deeptica_params": (
-                    _sanitize_artifacts(config.deeptica_params)
-                    if config.deeptica_params
-                    else None
-                ),
-                "created_at": stamp,
-                "flags": _sanitize_artifacts(br.flags),
-                "mlcv": _sanitize_artifacts(br.artifacts.get("mlcv_deeptica", {})),
-                "apply_cv_whitening": bool(config.apply_cv_whitening),
+            config_payload = asdict(config)
+            analysis_notes = dict(config.notes or {})
+            if config.learn_cv and "model_dir" not in analysis_notes:
+                analysis_notes["model_dir"] = str(self.layout.models_dir)
+            analysis_notes["apply_cv_whitening_requested"] = bool(config.apply_cv_whitening)
+            analysis_notes["apply_cv_whitening_enforced"] = True
+            analysis_notes["kmeans_kwargs"] = dict(config.kmeans_kwargs)
+            analysis_notes["analysis_overrides"] = {
                 "cluster_mode": str(config.cluster_mode),
                 "n_microstates": int(config.n_microstates),
-                "kmeans_kwargs": _sanitize_artifacts(config.kmeans_kwargs),
                 "reweight_mode": str(config.reweight_mode),
                 "fes_method": str(config.fes_method),
                 "fes_bandwidth": config.fes_bandwidth,
                 "fes_min_count_per_bin": int(config.fes_min_count_per_bin),
-                "debug_dir": str(debug_dir),
-                "debug_summary": _sanitize_artifacts(debug_data.summary),
-                "debug_summary_file": str(Path(export_info["summary"]).name),
-                "discretizer_fingerprint": _sanitize_artifacts(fingerprint),
-                "discretizer_fingerprint_changed": bool(fingerprint_changed),
-                "tau_frames": int(tau_frames),
-                "effective_tau_frames": int(effective_tau_frames),
-                "effective_stride_max": int(stride_max),
-                "effective_stride_values": list(stride_values),
-                "effective_stride_map": _sanitize_artifacts(stride_map),
-                "preview_truncated": list(preview_truncated),
-                "analysis_healthy": bool(analysis_healthy),
-                "guardrail_violations": _sanitize_artifacts(guardrail_violations),
-                "total_pairs": int(total_pairs_val),
-                "zero_rows": int(zero_rows_val),
-                "largest_scc_fraction": float(largest_cover) if largest_cover is not None else None,
-                "diag_mass": float(diag_mass_val),
+                "kmeans_kwargs": dict(config.kmeans_kwargs),
             }
-        )
-        return artifact
+            requested_fingerprint = {
+                "mode": str(config.cluster_mode),
+                "n_states": int(config.n_microstates),
+                "seed": int(config.seed),
+            }
+            previous_fingerprint = analysis_notes.get("discretizer_fingerprint")
+            if previous_fingerprint and previous_fingerprint != requested_fingerprint:
+                analysis_notes.setdefault(
+                    "discretizer_fingerprint_previous", previous_fingerprint
+                )
+                logger.info(
+                    "Discretizer fingerprint override changed from %s to %s; "
+                    "forcing refit of clusterer.",
+                    previous_fingerprint,
+                    requested_fingerprint,
+                )
+            analysis_notes["discretizer_fingerprint_requested"] = requested_fingerprint
+            analysis_notes["analysis_tau_requested"] = int(config.lag)
+            analysis_notes["debug_summary"] = _sanitize_artifacts(debug_data.summary)
+            logger.info(
+                (
+                    "Analysis debug summary: frames=%d states=%d pairs=%d zero_rows=%d "
+                    "warnings=%d"
+                ),
+                int(debug_data.summary.get("total_frames_with_states", 0)),
+                int(debug_data.counts.shape[0]),
+                int(debug_data.summary.get("total_pairs", 0)),
+                int(debug_data.summary.get("zero_rows", 0)),
+                len(debug_data.summary.get("warnings", [])),
+            )
+
+            br, ds_hash = build_from_shards(
+                shard_jsons=shards,
+                out_bundle=bundle_path,
+                bins=dict(config.bins),
+                lag=int(config.lag),
+                seed=int(config.seed),
+                temperature=float(config.temperature),
+                learn_cv=bool(config.learn_cv),
+                deeptica_params=config.deeptica_params,
+                notes=analysis_notes,
+                kmeans_kwargs=dict(config.kmeans_kwargs),
+            )
+
+            summary = debug_data.summary
+
+            def _safe_int(value: Any, default: int) -> int:
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    return default
+
+            def _safe_float(value: Any, default: float = float("nan")) -> float:
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    return default
+
+            tau_frames = _safe_int(summary.get("tau_frames"), int(config.lag))
+            stride_max = max(1, _safe_int(summary.get("effective_stride_max"), 1))
+            effective_tau_frames = _safe_int(
+                summary.get("effective_tau_frames"), tau_frames
+            )
+            raw_stride_values = summary.get("effective_strides") or []
+            stride_values = []
+            for value in raw_stride_values:
+                try:
+                    stride_values.append(int(value))
+                except (TypeError, ValueError):
+                    continue
+            stride_map = summary.get("effective_stride_map") or {}
+            preview_truncated = summary.get("preview_truncated") or []
+
+            # NOTE: Don't use pre-clustering debug data for pair counts, as clustering hasn't happened yet
+            # Extract actual statistics from the MSM build result
+            total_pairs_val = 0  # Will be updated from MSM diagnostics below
+            zero_rows_val = 0    # Will be updated from MSM diagnostics below
+            largest_cover_raw = summary.get("largest_scc_frame_fraction")
+            try:
+                largest_cover = (
+                    float(largest_cover_raw)
+                    if largest_cover_raw is not None
+                    else None
+                )
+            except (TypeError, ValueError):
+                largest_cover = None
+            diag_mass_val = _safe_float(summary.get("diag_mass"))
+            expected_effective_tau = tau_frames * stride_max if tau_frames > 0 else 0
+
+            actual_seed = int(config.seed)
+            if getattr(br.metadata, "seed", None) is not None:
+                try:
+                    actual_seed = int(br.metadata.seed)  # type: ignore[arg-type]
+                except Exception:
+                    actual_seed = int(config.seed)
+            fingerprint = {
+                "mode": str(config.cluster_mode),
+                "n_states": int(config.n_microstates),
+                "seed": actual_seed,
+            }
+            msm_obj = getattr(br, "msm", None)
+            feature_schema_payload: Dict[str, Any] | None = None
+            if isinstance(msm_obj, Mapping):
+                schema_candidate = msm_obj.get("feature_schema")
+            else:
+                schema_candidate = getattr(msm_obj, "feature_schema", None)
+            if isinstance(schema_candidate, Mapping):
+                feature_schema_payload = {
+                    "names": list(schema_candidate.get("names", [])),
+                    "n_features": int(schema_candidate.get("n_features", 0)),
+                }
+                fingerprint["feature_schema"] = feature_schema_payload
+
+            fingerprint_compare = {
+                "mode": fingerprint.get("mode"),
+                "n_states": fingerprint.get("n_states"),
+                "seed": fingerprint.get("seed"),
+            }
+            fingerprint_changed = fingerprint_compare != requested_fingerprint
+
+            # Guardrail checks based on post-clustering statistics
+            # Note: total_pairs and zero_rows checks are removed because they require
+            # post-clustering data which we'll validate from the build result instead
+            guardrail_violations: List[Dict[str, Any]] = []
+
+            # Check if MSM build succeeded by verifying the transition matrix exists
+            if br.transition_matrix is None or br.transition_matrix.size == 0:
+                guardrail_violations.append(
+                    {"code": "msm_build_failed", "actual": "no_transition_matrix"}
+                )
+            else:
+                # Extract actual statistics from the built MSM
+                n_states_actual = br.transition_matrix.shape[0]
+                if n_states_actual == 0:
+                    guardrail_violations.append(
+                        {"code": "no_states_in_msm", "actual": 0}
+                    )
+
+            if effective_tau_frames != expected_effective_tau:
+                logger.warning(
+                    "Effective tau mismatch: expected=%d, actual=%d",
+                    expected_effective_tau,
+                    effective_tau_frames,
+                )
+                # Don't treat tau mismatch as a hard failure
+
+            analysis_healthy = not guardrail_violations
+
+            summary_overrides = {
+                "fingerprint": fingerprint,
+                "analysis_guardrail_violations": guardrail_violations,
+                "analysis_expected_effective_tau_frames": expected_effective_tau,
+                "analysis_healthy": analysis_healthy,
+                "discretizer_fingerprint_changed": bool(fingerprint_changed),
+            }
+            summary.update(summary_overrides)
+
+            debug_dir = (self.layout.analysis_debug_dir / f"analysis-{stamp}").resolve()
+            export_info = export_analysis_debug(
+                output_dir=debug_dir,
+                build_result=br,
+                debug_data=debug_data,
+                config=config_payload,
+                dataset_hash=ds_hash,
+                summary_overrides=summary_overrides,
+                fingerprint=fingerprint,
+            )
+
+            for idx, shard in enumerate(summary.get("shards", [])):
+                shard_id = shard.get("id", f"shard-{idx}")
+                frames_loaded = shard.get("frames_loaded", shard.get("length"))
+                frames_declared = shard.get("frames_declared", shard.get("length"))
+                stride_val = shard.get("effective_frame_stride")
+                logger.info(
+                    "Shard %s: loaded=%s declared=%s stride=%s",
+                    shard_id,
+                    frames_loaded,
+                    frames_declared,
+                    stride_val,
+                )
+                if (
+                    shard.get("first_timestamp") is not None
+                    or shard.get("last_timestamp") is not None
+                ):
+                    logger.info(
+                        "Shard %s timestamps: first=%s last=%s",
+                        shard_id,
+                        shard.get("first_timestamp"),
+                        shard.get("last_timestamp"),
+                    )
+
+            if not analysis_healthy:
+                summary_path = Path(export_info["summary"]).resolve()
+                raise ValueError(
+                    "Analysis guardrails failed: "
+                    f"{guardrail_violations}. "
+                    f"See {summary_path} for details."
+                )
+
+            logger.info(
+                "Analysis lag requested=%d, applied=%d, effective_tau=%d (max stride=%d, stride values=%s)",
+                int(config.lag),
+                tau_frames,
+                effective_tau_frames,
+                stride_max,
+                stride_values,
+            )
+            if fingerprint_changed:
+                logger.info(
+                    "Effective discretizer fingerprint differs from request: %s (requested %s)",
+                    fingerprint,
+                    requested_fingerprint,
+                )
+            if tau_frames != int(config.lag):
+                logger.warning(
+                    "Analysis lag mismatch: requested %d frames, applied %d frames",
+                    int(config.lag),
+                    tau_frames,
+                )
+            analysis_notes["discretizer_fingerprint"] = fingerprint
+            analysis_notes["analysis_total_pairs"] = int(total_pairs_val)
+            analysis_notes["analysis_zero_rows"] = int(zero_rows_val)
+            analysis_notes["analysis_largest_scc_fraction"] = (
+                float(largest_cover) if largest_cover is not None else None
+            )
+            analysis_notes["analysis_diag_mass"] = float(diag_mass_val)
+            analysis_notes["analysis_tau_frames"] = tau_frames
+            analysis_notes["analysis_effective_tau_frames"] = effective_tau_frames
+            analysis_notes["analysis_effective_stride_max"] = stride_max
+            analysis_notes["analysis_effective_stride_values"] = stride_values
+            analysis_notes["analysis_effective_stride_map"] = stride_map
+            analysis_notes["analysis_expected_effective_tau_frames"] = expected_effective_tau
+            analysis_notes["analysis_healthy"] = analysis_healthy
+            if preview_truncated:
+                analysis_notes["analysis_preview_truncated"] = preview_truncated
+            analysis_notes["analysis_guardrail_violations"] = guardrail_violations
+            analysis_notes["discretizer_fingerprint_changed"] = bool(
+                fingerprint_changed
+            )
+            analysis_notes["analysis_kmeans_kwargs"] = dict(config.kmeans_kwargs)
+            analysis_notes.pop("discretizer_fingerprint_requested", None)
+
+            try:
+                flags = dict(br.flags or {})
+            except Exception:
+                flags = {}
+            flags["discretizer_fingerprint"] = fingerprint
+            flags["discretizer_fingerprint_changed"] = bool(fingerprint_changed)
+            flags["analysis_requested_tau_frames"] = int(config.lag)
+            flags["analysis_total_pairs"] = int(total_pairs_val)
+            flags["analysis_zero_rows"] = int(zero_rows_val)
+            flags["analysis_largest_scc_fraction"] = (
+                float(largest_cover) if largest_cover is not None else None
+            )
+            flags["analysis_diag_mass"] = float(diag_mass_val)
+            flags["analysis_tau_frames"] = int(tau_frames)
+            flags["analysis_effective_tau_frames"] = int(effective_tau_frames)
+            flags["analysis_expected_effective_tau_frames"] = int(
+                expected_effective_tau
+            )
+            flags["analysis_effective_stride_max"] = int(stride_max)
+            flags["analysis_healthy"] = analysis_healthy
+            flags["analysis_guardrail_violations"] = guardrail_violations
+            flags["analysis_kmeans_kwargs"] = dict(config.kmeans_kwargs)
+            if stride_values:
+                flags["analysis_effective_stride_values"] = list(stride_values)
+            if stride_map:
+                flags["analysis_effective_stride_map"] = stride_map
+            if preview_truncated:
+                flags["analysis_preview_truncated"] = list(preview_truncated)
+            if tau_frames != int(config.lag):
+                flags["analysis_tau_mismatch"] = {
+                    "requested": int(config.lag),
+                    "actual": int(tau_frames),
+                }
+            overrides = {
+                "cluster_mode": str(config.cluster_mode),
+                "n_microstates": int(config.n_microstates),
+                "reweight_mode": str(config.reweight_mode),
+                "fes_method": str(config.fes_method),
+                "fes_bandwidth": config.fes_bandwidth,
+                "fes_min_count_per_bin": int(config.fes_min_count_per_bin),
+                "apply_whitening": bool(config.apply_cv_whitening),
+                "kmeans_kwargs": dict(config.kmeans_kwargs),
+            }
+            flags.setdefault("analysis_overrides", overrides)
+            flags.setdefault("analysis_reweight_mode", str(config.reweight_mode))
+            flags.setdefault("analysis_apply_whitening", bool(config.apply_cv_whitening))
+            warning_count = len(debug_data.summary.get("warnings", []))
+            flags.setdefault("analysis_debug_warning_count", warning_count)
+            if warning_count:
+                flags.setdefault(
+                    "analysis_debug_warnings",
+                    _sanitize_artifacts(debug_data.summary.get("warnings")),
+                )
+            br.flags = flags  # type: ignore[assignment]
+            try:
+                artifacts = dict(br.artifacts or {})
+                artifacts["analysis_debug"] = {
+                    "directory": str(debug_dir),
+                    "summary": str(Path(export_info["summary"]).name),
+                    "arrays": export_info.get("arrays", {}),
+                }
+                artifacts["analysis_discretizer_fingerprint"] = fingerprint
+                artifacts["analysis_tau_frames"] = int(tau_frames)
+                artifacts["analysis_effective_tau_frames"] = int(
+                    effective_tau_frames
+                )
+                artifacts["analysis_effective_stride_max"] = int(stride_max)
+                if stride_map:
+                    artifacts["analysis_effective_stride_map"] = stride_map
+                if preview_truncated:
+                    artifacts["analysis_preview_truncated"] = list(
+                        preview_truncated
+                    )
+                br.artifacts = artifacts  # type: ignore[assignment]
+            except Exception:
+                logger.debug(
+                    "Failed to attach analysis debug artifacts", exc_info=True
+                )
+
+            artifact = BuildArtifact(
+                bundle_path=bundle_path.resolve(),
+                dataset_hash=ds_hash,
+                build_result=br,
+                created_at=stamp,
+                debug_dir=debug_dir,
+                debug_summary=debug_data.summary,
+                discretizer_fingerprint=fingerprint,
+                tau_frames=int(tau_frames),
+                effective_tau_frames=int(effective_tau_frames),
+                effective_stride_max=int(stride_max),
+                analysis_healthy=analysis_healthy,
+                guardrail_violations=guardrail_violations or None,
+            )
+            self.state.append_build(
+                {
+                    "bundle": str(bundle_path.resolve()),
+                    "dataset_hash": ds_hash,
+                    "lag": int(config.lag),
+                    "bins": dict(config.bins),
+                    "seed": int(config.seed),
+                    "temperature": float(config.temperature),
+                    "learn_cv": bool(config.learn_cv),
+                    "deeptica_params": (
+                        _sanitize_artifacts(config.deeptica_params)
+                        if config.deeptica_params
+                        else None
+                    ),
+                    "created_at": stamp,
+                    "flags": _sanitize_artifacts(br.flags),
+                    "mlcv": _sanitize_artifacts(
+                        br.artifacts.get("mlcv_deeptica", {})
+                    ),
+                    "apply_cv_whitening": bool(config.apply_cv_whitening),
+                    "cluster_mode": str(config.cluster_mode),
+                    "n_microstates": int(config.n_microstates),
+                    "kmeans_kwargs": _sanitize_artifacts(config.kmeans_kwargs),
+                    "reweight_mode": str(config.reweight_mode),
+                    "fes_method": str(config.fes_method),
+                    "fes_bandwidth": config.fes_bandwidth,
+                    "fes_min_count_per_bin": int(
+                        config.fes_min_count_per_bin
+                    ),
+                    "debug_dir": str(debug_dir),
+                    "debug_summary": _sanitize_artifacts(debug_data.summary),
+                    "debug_summary_file": str(Path(export_info["summary"]).name),
+                    "discretizer_fingerprint": _sanitize_artifacts(
+                        fingerprint
+                    ),
+                    "discretizer_fingerprint_changed": bool(
+                        fingerprint_changed
+                    ),
+                    "tau_frames": int(tau_frames),
+                    "effective_tau_frames": int(effective_tau_frames),
+                    "effective_stride_max": int(stride_max),
+                    "effective_stride_values": list(stride_values),
+                    "effective_stride_map": _sanitize_artifacts(stride_map),
+                    "preview_truncated": list(preview_truncated),
+                    "analysis_healthy": bool(analysis_healthy),
+                    "guardrail_violations": _sanitize_artifacts(
+                        guardrail_violations
+                    ),
+                    "total_pairs": int(total_pairs_val),
+                    "zero_rows": int(zero_rows_val),
+                    "largest_scc_fraction": (
+                        float(largest_cover) if largest_cover is not None else None
+                    ),
+                    "diag_mass": float(diag_mass_val),
+                }
+            )
+            print("--- DEBUG: backend.build_analysis finished successfully ---")
+            return artifact
+
+        except Exception as e:
+            import traceback
+
+            print("--- DEBUG: ERROR INSIDE backend.build_analysis ---")
+            print(f"Error Type: {type(e)}")
+            print(f"Error Details: {e}")
+            print("Traceback:")
+            traceback.print_exc()
+            print("--- END DEBUG ERROR ---")
+            raise
 
     # ------------------------------------------------------------------
     # Utilities used by the UI
