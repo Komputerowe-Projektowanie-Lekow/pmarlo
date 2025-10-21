@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 import json
+import traceback
 
 import pandas as pd
 import streamlit as st
@@ -1360,6 +1361,7 @@ def main() -> None:
                 disabled=disabled,
                 key="analysis_build_button",
             ):
+                print("--- DEBUG: Build MSM/FES button clicked! ---")
                 try:
                     bw_clean = fes_bandwidth.strip()
                     try:
@@ -1403,6 +1405,8 @@ def main() -> None:
                     if summary:
                         _render_deeptica_summary(summary)
                 except Exception as exc:
+                    print(f"--- DEBUG: Analysis failed with exception: {exc}")
+                    traceback.print_exc()
                     st.error(f"Analysis failed: {exc}")
 
     with tab_model_preview:

@@ -12,6 +12,7 @@ from pmarlo.analysis import (
     compute_analysis_debug,
     export_analysis_debug,
 )
+from pmarlo.analysis.debug_export import total_pairs_from_shards
 from pmarlo.transform.build import BuildResult
 
 
@@ -118,6 +119,22 @@ def test_export_analysis_debug_writes_expected_files(tmp_path: Path) -> None:
     mask_path = summary_path.parent / summary["arrays"]["valid_mask[train]"]
     assert np.array_equal(np.load(state_ids_path), br.msm.assignments["train"])
     assert np.array_equal(np.load(mask_path), br.msm.assignment_masks["train"])
+
+
+def test_total_pairs_from_shards_strided_counts_all_pairs() -> None:
+    lengths = [9, 12, 6]
+    tau = 4
+    predicted = total_pairs_from_shards(lengths, tau, count_mode="strided")
+
+    step = max(1, tau)
+    manual = 0
+    for length in lengths:
+        span = max(0, int(length) - tau)
+        if span == 0:
+            continue
+        manual += 1 + (span - 1) // step
+
+    assert predicted == manual
 
 
 def test_export_analysis_debug_rejects_zero_counts(tmp_path: Path) -> None:
