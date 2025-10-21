@@ -1,7 +1,7 @@
 # ─────────────────────────── Build backend ────────────────────────────
 [build-system]
-requires = ["setuptools>=69", "wheel", "setuptools_scm[toml]>=8.0"]
-build-backend = "setuptools.build_meta"
+requires = ["poetry-core>=1.0.0", "poetry-dynamic-versioning>=1.0.0,<2.0.0"]
+build-backend = "poetry_dynamic_versioning.backend"
 
 # ───────────────────────────── Metadata ───────────────────────────────
 [project]
@@ -33,7 +33,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Chemistry",
     "Topic :: Scientific/Engineering :: Physics",
 ]
-dynamic = ["version"]            # ostateczną wersję dostarcza setuptools-scm
+dynamic = ["version"]            # version is provided by poetry-dynamic-versioning
 
 dependencies = [
   "numpy>=1.24,<2.4",
@@ -94,7 +94,7 @@ description = "Protein Markov State Model Analysis with Replica Exchange"
 authors = ["PMARLO Development Team <konrad.jan.gorzelanczyk@gmail.com>"]
 readme = "README.md"
 packages = [{include = "pmarlo", from = "src"}]
-version = "0.0.0"  # placeholder for Poetry; real version comes from setuptools-scm
+version = "0.1.1.dev9"  # placeholder for Poetry; real version comes from poetry-dynamic-versioning
 
 [[tool.poetry.source]]
 name = "pytorch-cpu"
@@ -267,3 +267,25 @@ format = "md"
 changelog = "CHANGELOG.md"
 fragment_directory = "changelog.d"
 version = "literal"
+
+# ────────────────────── Poetry dynamic versioning ─────────────────────
+[tool.poetry-dynamic-versioning]
+enable = false
+vcs = "git"
+style = "pep440"
+pattern = "^v(?P<base>\\d+\\.\\d+\\.\\d+)"
+format-jinja = """
+{%- if distance == 0 -%}
+    {{ base }}
+{%- else -%}
+    {%- set parts = base.split('.') -%}
+    {%- set major = parts[0] | int -%}
+    {%- set minor = parts[1] | int -%}
+    {%- set patch = parts[2] | int -%}
+    {{ major }}.{{ minor }}.{{ patch + 1 }}.dev{{ distance }}
+{%- endif -%}
+"""
+
+[tool.poetry-dynamic-versioning.substitution]
+files = ["src/pmarlo/_version.py"]
+patterns = ["(^__version__\\s*=\\s*['\"])[^'\"]*(['\"])"]
