@@ -53,9 +53,7 @@ class TRAMMixin:
                 self.stationary_distribution = _np.asarray(stationary, dtype=float)
 
             if isinstance(cm_list, list) and 0 <= ref < len(cm_list):
-                self.count_matrix = _np.asarray(
-                    cm_list[ref].count_matrix, dtype=float
-                )
+                self.count_matrix = _np.asarray(cm_list[ref].count_matrix, dtype=float)
             return
 
         msm_collection = getattr(tram_model, "msm_collection", None)

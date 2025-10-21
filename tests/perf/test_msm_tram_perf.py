@@ -48,7 +48,9 @@ class _TRAMHarness:
         builder = _Builder()
         builder.temperatures = self.temperatures
         builder.dtrajs = [np.asarray(dt, dtype=int) for dt in self.dtrajs]
-        builder.bias_matrices = [np.asarray(bias, dtype=float) for bias in self.bias_matrices]
+        builder.bias_matrices = [
+            np.asarray(bias, dtype=float) for bias in self.bias_matrices
+        ]
         builder.transition_matrix = None
         builder.count_matrix = None
         builder.stationary_distribution = None

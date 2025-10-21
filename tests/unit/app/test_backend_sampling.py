@@ -101,7 +101,9 @@ def test_explicit_stub_flag_skips_engine(
     layout.ensure()
     backend = WorkflowBackend(layout)
 
-    def fake_run_replica_exchange(*_args: object, **_kwargs: object) -> tuple[list[str], list[float]]:
+    def fake_run_replica_exchange(
+        *_args: object, **_kwargs: object
+    ) -> tuple[list[str], list[float]]:
         raise AssertionError("Engine should not be called when stub_result=True")
 
     monkeypatch.setattr(
@@ -207,7 +209,9 @@ def test_save_restart_snapshot_creates_inputs_copy(
 
 
 @pytest.mark.unit
-def test_stub_restart_snapshot_written(monkeypatch, tmp_path: Path, test_fixed_pdb_file: Path) -> None:
+def test_stub_restart_snapshot_written(
+    monkeypatch, tmp_path: Path, test_fixed_pdb_file: Path
+) -> None:
     layout = WorkspaceLayout(
         app_root=tmp_path,
         inputs_dir=tmp_path / "inputs",

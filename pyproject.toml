@@ -153,6 +153,7 @@ pytest-benchmark = "^4.0"
 tox = "^4.14"
 deeptime = ">=0.4.5,<0.5"
 torch = {version = ">=2.2,<3.0", source = "pytorch-cpu"}
+types-pyyaml = "^6.0.12.20250915"
 
 [tool.poetry.group.docs.dependencies]
 sphinx = "^7.3"

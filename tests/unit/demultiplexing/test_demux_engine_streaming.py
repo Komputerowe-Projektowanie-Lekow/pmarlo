@@ -16,17 +16,16 @@ class _DictTrajectoryReader:
     def __init__(self, frames: Dict[str, np.ndarray]):
         self._frames = {k: np.asarray(v) for k, v in frames.items()}
 
-    def iter_frames(self, path: str, start: int, stop: int, stride: int = 1) -> Iterator[np.ndarray]:
+    def iter_frames(
+        self, path: str, start: int, stop: int, stride: int = 1
+    ) -> Iterator[np.ndarray]:
         data = self._frames.get(path)
         if data is None:
             return iter(())
         start = max(0, int(start))
         stop = max(start, min(int(stop), data.shape[0]))
         stride = 1 if stride <= 0 else int(stride)
-        return (
-            np.array(data[idx], copy=True)
-            for idx in range(start, stop, stride)
-        )
+        return (np.array(data[idx], copy=True) for idx in range(start, stop, stride))
 
     def probe_length(self, path: str) -> int:
         arr = self._frames.get(path)
@@ -43,7 +42,9 @@ class _RecordingWriter:
         self.frames: List[np.ndarray] = []
         self.flush_calls = 0
 
-    def open(self, path: str, topology_path: str | None, overwrite: bool = False) -> "_RecordingWriter":
+    def open(
+        self, path: str, topology_path: str | None, overwrite: bool = False
+    ) -> "_RecordingWriter":
         self.opened = True
         self.path = path
         self.topology = topology_path

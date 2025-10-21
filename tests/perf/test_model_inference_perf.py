@@ -9,7 +9,10 @@ from typing import Callable, Protocol
 import numpy as np
 import pytest
 
-from pmarlo.transform.apply import _store_transformed_features, _transform_features_with_model
+from pmarlo.transform.apply import (
+    _store_transformed_features,
+    _transform_features_with_model,
+)
 
 pytestmark = [pytest.mark.perf, pytest.mark.benchmark, pytest.mark.transform]
 
@@ -19,7 +22,6 @@ if not os.getenv("PMARLO_RUN_PERF"):
     pytest.skip(
         "perf tests disabled; set PMARLO_RUN_PERF=1 to run", allow_module_level=True
     )
-
 
 
 class _Transformer(Protocol):
@@ -86,7 +88,10 @@ def test_nonlinear_model_inference(benchmark, feature_matrix, nonlinear_model):
     """Benchmark nonlinear inference used for DeepTICA activation stacks."""
 
     transformed = _benchmark_transform(benchmark, nonlinear_model, feature_matrix)
-    assert transformed.shape == (feature_matrix.shape[0], nonlinear_model.weights.shape[1])
+    assert transformed.shape == (
+        feature_matrix.shape[0],
+        nonlinear_model.weights.shape[1],
+    )
     assert np.all(np.abs(transformed) <= 1.0)
 
 
@@ -100,8 +105,13 @@ def test_transform_storage_round_trip(benchmark, feature_matrix, nonlinear_model
         return dataset
 
     dataset = benchmark(_apply_and_store)
-    assert dataset["X"].shape == (feature_matrix.shape[0], nonlinear_model.weights.shape[1])
+    assert dataset["X"].shape == (
+        feature_matrix.shape[0],
+        nonlinear_model.weights.shape[1],
+    )
     assert dataset["cv_names"] == tuple(
         f"DeepTICA_{i+1}" for i in range(nonlinear_model.weights.shape[1])
     )
-    assert dataset["periodic"] == tuple(False for _ in range(nonlinear_model.weights.shape[1]))
+    assert dataset["periodic"] == tuple(
+        False for _ in range(nonlinear_model.weights.shape[1])
+    )

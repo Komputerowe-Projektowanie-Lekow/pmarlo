@@ -141,8 +141,8 @@ if "deeptime" not in sys.modules:
     estimation_mod.dense = dense_mod
     dense_mod.transition_matrix = tm_mod
     tm_mod.TransitionMatrixEstimator = _StubEstimator
-    tm_mod.transition_matrix_non_reversible = (
-        lambda *args, **kwargs: args[0] if args else None
+    tm_mod.transition_matrix_non_reversible = lambda *args, **kwargs: (
+        args[0] if args else None
     )
     decomposition_mod.TICA = _StubEstimator
     decomposition_mod.VAMP = _StubEstimator
@@ -161,9 +161,7 @@ if "deeptime" not in sys.modules:
     sys.modules["deeptime.markov.tools.analysis"] = analysis_mod
     sys.modules["deeptime.markov.tools.estimation"] = estimation_mod
     sys.modules["deeptime.markov.tools.estimation.dense"] = dense_mod
-    sys.modules[
-        "deeptime.markov.tools.estimation.dense.transition_matrix"
-    ] = tm_mod
+    sys.modules["deeptime.markov.tools.estimation.dense.transition_matrix"] = tm_mod
     sys.modules["deeptime.decomposition"] = decomposition_mod
     sys.modules["deeptime.plots"] = plots_mod
     sys.modules["deeptime.util"] = util_mod
@@ -171,8 +169,8 @@ if "deeptime" not in sys.modules:
 
 import pytest
 
-from pmarlo.markov_state_model.enhanced_msm import run_complete_msm_analysis
 from pmarlo.markov_state_model._loading import LoadingMixin
+from pmarlo.markov_state_model.enhanced_msm import run_complete_msm_analysis
 
 
 class _LoaderHarness(LoadingMixin):  # type: ignore[misc, valid-type]
@@ -229,74 +227,83 @@ def test_loading_mixin_raises_when_not_ignoring_errors(
         loader.load_trajectories()
 
 
-def test_run_complete_pipeline_fails_when_no_frames(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    class DummyMSM:
-        def __init__(
-            self,
-            *,
-            trajectory_files: Sequence[str] | str | None = None,
-            topology_file: str | None = None,
-            output_dir: str | None = None,
-            temperatures: Sequence[float] | None = None,
-            ignore_trajectory_errors: bool = False,
-            **_: object,
-        ) -> None:
-            if isinstance(trajectory_files, str):
-                self.trajectory_files = [trajectory_files]
-            else:
-                self.trajectory_files = list(trajectory_files or [])
-            self.topology_file = topology_file
-            self.temperatures = list(temperatures or [])
-            self.output_dir = Path(output_dir or tmp_path)
-            self.ignore_trajectory_errors = ignore_trajectory_errors
-            self.trajectories: list[object] = []
-            self.total_frames: int | None = 0
+class _NoOpEnhancedMSM:
+    """Minimal EnhancedMSM stub that records load attempts and rejects further work."""
 
-        def load_trajectories(self, **_: object) -> None:
-            self.trajectories = []
-            self.total_frames = 0
+    def __init__(
+        self,
+        *,
+        trajectory_files: Sequence[str] | str | None = None,
+        topology_file: str | None = None,
+        output_dir: str | Path | None = None,
+        temperatures: Sequence[float] | None = None,
+        ignore_trajectory_errors: bool = False,
+        **_: object,
+    ) -> None:
+        if isinstance(trajectory_files, str):
+            self.trajectory_files = [trajectory_files]
+        else:
+            self.trajectory_files = list(trajectory_files or [])
+        self.topology_file = topology_file
+        self.temperatures = list(temperatures or [])
+        self.output_dir = Path(output_dir or Path.cwd())
+        self.ignore_trajectory_errors = bool(ignore_trajectory_errors)
+        self.trajectories: list[object] = []
+        self.total_frames: int | None = 0
 
-        def compute_features(self, **_: object) -> None:  # pragma: no cover - guard ensures skip
-            raise AssertionError("features should not be computed")
+    def load_trajectories(self, **_: object) -> None:
+        self.trajectories = []
+        self.total_frames = 0
 
-        def cluster_features(self, **_: object) -> None:  # pragma: no cover
-            raise AssertionError("clustering should not be reached")
+    def _fail(self, stage: str) -> None:
+        raise AssertionError(f"{stage} should not be reached")
 
-        def build_msm(self, **_: object) -> None:  # pragma: no cover
-            raise AssertionError("build should not be reached")
+    def compute_features(self, **_: object) -> None:  # pragma: no cover - guard
+        self._fail("features")
 
-        def compute_implied_timescales(self) -> None:  # pragma: no cover
-            raise AssertionError("ITS should not be reached")
+    def cluster_features(self, **_: object) -> None:  # pragma: no cover
+        self._fail("clustering")
 
-        def generate_free_energy_surface(self, **_: object):  # pragma: no cover
-            raise AssertionError("FES should not be reached")
+    def build_msm(self, **_: object) -> None:  # pragma: no cover
+        self._fail("build")
 
-        def create_state_table(self) -> None:  # pragma: no cover
-            raise AssertionError("state table should not be reached")
+    def compute_implied_timescales(self) -> None:  # pragma: no cover
+        self._fail("ITS")
 
-        def extract_representative_structures(self) -> None:  # pragma: no cover
-            raise AssertionError("representatives should not be reached")
+    def generate_free_energy_surface(self, **_: object) -> None:  # pragma: no cover
+        self._fail("FES")
 
-        def save_analysis_results(self) -> None:  # pragma: no cover
-            raise AssertionError("save should not be reached")
+    def create_state_table(self) -> None:  # pragma: no cover
+        self._fail("state table")
 
-        def plot_free_energy_surface(self, **_: object) -> None:  # pragma: no cover
-            raise AssertionError("plot should not be reached")
+    def extract_representative_structures(self) -> None:  # pragma: no cover
+        self._fail("representatives")
 
-        def plot_implied_timescales(self, **_: object) -> None:  # pragma: no cover
-            raise AssertionError("plot should not be reached")
+    def save_analysis_results(self) -> None:  # pragma: no cover
+        self._fail("save")
 
-        def plot_implied_rates(self, **_: object) -> None:  # pragma: no cover
-            raise AssertionError("plot should not be reached")
+    def plot_free_energy_surface(self, **_: object) -> None:  # pragma: no cover
+        self._fail("plot")
 
-        def plot_free_energy_profile(self, **_: object) -> None:  # pragma: no cover
-            raise AssertionError("plot should not be reached")
+    def plot_implied_timescales(self, **_: object) -> None:  # pragma: no cover
+        self._fail("plot")
 
-        def plot_ck_test(self, **_: object) -> None:  # pragma: no cover
-            raise AssertionError("plot should not be reached")
+    def plot_implied_rates(self, **_: object) -> None:  # pragma: no cover
+        self._fail("plot")
 
+    def plot_free_energy_profile(self, **_: object) -> None:  # pragma: no cover
+        self._fail("plot")
+
+    def plot_ck_test(self, **_: object) -> None:  # pragma: no cover
+        self._fail("plot")
+
+
+def test_run_complete_pipeline_fails_when_no_frames(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.setattr(
-        "pmarlo.markov_state_model._enhanced_impl.EnhancedMSM", DummyMSM
+        "pmarlo.markov_state_model._enhanced_impl.EnhancedMSM",
+        _NoOpEnhancedMSM,
     )
     with pytest.raises(RuntimeError, match="No trajectory data were loaded"):
         run_complete_msm_analysis(

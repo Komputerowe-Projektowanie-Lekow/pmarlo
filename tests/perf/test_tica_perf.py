@@ -22,7 +22,12 @@ import pytest
 
 from pmarlo.markov_state_model._features import FeaturesMixin
 
-pytestmark = [pytest.mark.perf, pytest.mark.benchmark, pytest.mark.msm, pytest.mark.tica]
+pytestmark = [
+    pytest.mark.perf,
+    pytest.mark.benchmark,
+    pytest.mark.msm,
+    pytest.mark.tica,
+]
 
 # Optional dependencies
 pytest.importorskip("pytest_benchmark", reason="pytest-benchmark not installed")
@@ -80,8 +85,12 @@ class _TICAHarness(FeaturesMixin):
     """Minimal harness that exposes the TICA mixin hooks for benchmarks."""
 
     def __init__(self, trajectories: Iterable[np.ndarray]) -> None:
-        self.trajectories = [SimpleNamespace(n_frames=len(traj)) for traj in trajectories]
-        self._trajectory_arrays = [np.asarray(traj, dtype=np.float32) for traj in trajectories]
+        self.trajectories = [
+            SimpleNamespace(n_frames=len(traj)) for traj in trajectories
+        ]
+        self._trajectory_arrays = [
+            np.asarray(traj, dtype=np.float32) for traj in trajectories
+        ]
         self.features = np.vstack(self._trajectory_arrays)
         self.feature_stride = 1
         self.tica_lag = 0
@@ -144,7 +153,9 @@ def _build_tica_covariances(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Construct instantaneous and time-lagged covariance matrices."""
 
-    traj_arrays: List[np.ndarray] = [np.asarray(traj, dtype=np.float64) for traj in trajectories]
+    traj_arrays: List[np.ndarray] = [
+        np.asarray(traj, dtype=np.float64) for traj in trajectories
+    ]
     if not traj_arrays:
         return np.empty((0, 0)), np.empty((0, 0))
 

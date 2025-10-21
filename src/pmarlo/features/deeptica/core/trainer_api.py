@@ -100,7 +100,9 @@ def _prepare_training_prep(
     net = build_network(cfg, prep.scaler, seed=seed)
     core = getattr(net, "inner", None)
     if not isinstance(core, nn.Module):
-        raise RuntimeError("Wrapped DeepTICA module is missing expected 'inner' network")
+        raise RuntimeError(
+            "Wrapped DeepTICA module is missing expected 'inner' network"
+        )
 
     pair_info: PairInfo = build_pair_info(
         arrays, prep.tau_schedule, pairs=pairs, weights=weights
@@ -111,8 +113,8 @@ def _prepare_training_prep(
     pair_diagnostics = dict(pair_info.diagnostics)
 
     requested_lag = int(prep.tau_schedule[-1])
-    usable_pairs, coverage, short_shards, total_possible, lag_used = _log_pair_diagnostics(
-        pair_diagnostics, len(arrays), requested_lag
+    usable_pairs, coverage, short_shards, total_possible, lag_used = (
+        _log_pair_diagnostics(pair_diagnostics, len(arrays), requested_lag)
     )
 
     net.eval()
@@ -169,7 +171,9 @@ def _train_with_curriculum(
         device = "cuda" if torch.cuda.is_available() else "cpu"
     else:
         device = str(device_spec)
-    return _TrainingOutcome(history=dict(history), summary_dir=summary_dir, device=device)
+    return _TrainingOutcome(
+        history=dict(history), summary_dir=summary_dir, device=device
+    )
 
 
 def _train_with_mlcolvar(
@@ -251,7 +255,9 @@ def _finalize_training_artifacts(
     history.setdefault("val_loss_curve", [])
     history.setdefault("val_score_curve", [])
     history.setdefault("grad_norm_curve", [])
-    history["wall_time_s"] = float(history.get("wall_time_s", time.time() - prep.start_time))
+    history["wall_time_s"] = float(
+        history.get("wall_time_s", time.time() - prep.start_time)
+    )
     history["vamp2_before"] = float(prep.obj_before)
     history["vamp2_after"] = obj_after
     history["output_variance"] = output_variance
@@ -273,9 +279,7 @@ def _finalize_training_artifacts(
     history["short_shards"] = prep.short_shards
     history["total_possible_pairs"] = prep.total_possible
     history["lag_used"] = prep.lag_used
-    history["weights_mean"] = (
-        float(np.mean(prep.weights)) if prep.weights.size else 0.0
-    )
+    history["weights_mean"] = float(np.mean(prep.weights)) if prep.weights.size else 0.0
     history["weights_count"] = int(prep.weights.size)
 
     pair_diag_entry = history.get("pair_diagnostics")
@@ -295,7 +299,9 @@ def _finalize_training_artifacts(
         history.setdefault("summary_dir", str(summary_dir))
 
     device = outcome.device or "cpu"
-    device = device if device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu")
+    device = (
+        device if device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu")
+    )
 
     return TrainingArtifacts(
         scaler=prep.prep.scaler,

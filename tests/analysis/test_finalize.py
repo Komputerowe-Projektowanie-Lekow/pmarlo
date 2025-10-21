@@ -118,7 +118,9 @@ def _short_trajectory_dataset(frames: int = 200) -> dict:
         "output_transform_applied": False,
     }
     dataset = {
-        "splits": {"train": {"X": X, "feature_schema": feature_schema, "meta": whitening_meta}},
+        "splits": {
+            "train": {"X": X, "feature_schema": feature_schema, "meta": whitening_meta}
+        },
         "__shards__": [{"id": "short", "start": 0, "stop": frames}],
         "dtrajs": [dtraj],
     }

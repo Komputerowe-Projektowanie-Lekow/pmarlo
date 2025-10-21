@@ -14,7 +14,7 @@ import os
 import pickle
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import openmm
@@ -22,6 +22,7 @@ from openmm import Platform, unit
 from openmm.app import PDBFile, Simulation
 
 from pmarlo import constants as const
+from pmarlo.features.deeptica.export import load_cv_model_info
 from pmarlo.transform.progress import ProgressCB, ProgressPrinter, ProgressReporter
 from pmarlo.utils.logging_utils import (
     announce_stage_cancelled,
@@ -30,6 +31,7 @@ from pmarlo.utils.logging_utils import (
     announce_stage_start,
     format_duration,
 )
+from pmarlo.utils.path_utils import ensure_directory
 
 from ..demultiplexing.demux import demux_trajectories as _demux_trajectories
 from ..markov_state_model.results import REMDResult
@@ -51,9 +53,78 @@ from .system_builder import (
     setup_metadynamics,
 )
 from .trajectory import ClosableDCDReporter
-from pmarlo.utils.path_utils import ensure_directory
+
+
+class RunningStats:
+    """Track running mean and standard deviation for vector inputs."""
+
+    def __init__(self, dim: int) -> None:
+        if dim <= 0:
+            raise ValueError("dim must be a positive integer")
+        self._dim = int(dim)
+        self._count = 0
+        self._mean = np.zeros(self._dim, dtype=float)
+        self._m2 = np.zeros(self._dim, dtype=float)
+
+    @property
+    def count(self) -> int:
+        return self._count
+
+    def update(self, values: Sequence[float] | np.ndarray) -> None:
+        arr = np.asarray(values, dtype=float).reshape(-1)
+        if arr.size != self._dim:
+            raise ValueError(
+                f"Expected values of length {self._dim}, received {arr.size}"
+            )
+        self._count += 1
+        delta = arr - self._mean
+        self._mean += delta / self._count
+        self._m2 += delta * (arr - self._mean)
+
+    def summary(self) -> Tuple[np.ndarray, np.ndarray]:
+        if self._count == 0:
+            return self._mean.copy(), np.zeros(self._dim, dtype=float)
+        if self._count == 1:
+            return self._mean.copy(), np.zeros(self._dim, dtype=float)
+        variance = self._m2 / max(1, self._count - 1)
+        variance = np.clip(variance, a_min=0.0, a_max=None)
+        return self._mean.copy(), np.sqrt(variance)
 
 logger = logging.getLogger("pmarlo")
+
+
+class RunningStats:
+    """Online mean and standard deviation tracker for vector observations."""
+
+    def __init__(self, dim: int) -> None:
+        if dim <= 0:
+            raise ValueError("RunningStats requires a positive dimension")
+        self._dim = int(dim)
+        self._count = 0
+        self._mean = np.zeros(self._dim, dtype=float)
+        self._m2 = np.zeros(self._dim, dtype=float)
+
+    @property
+    def count(self) -> int:
+        return self._count
+
+    def update(self, values: np.ndarray | Sequence[float]) -> None:
+        array = np.asarray(values, dtype=float).reshape(-1)
+        if array.size != self._dim:
+            raise ValueError(f"Expected {self._dim} values but received {array.size}")
+        self._count += 1
+        delta = array - self._mean
+        self._mean += delta / self._count
+        delta2 = array - self._mean
+        self._m2 += delta * delta2
+
+    def summary(self) -> tuple[np.ndarray, np.ndarray]:
+        if self._count <= 1:
+            zero = np.zeros(self._dim, dtype=float)
+            return zero, zero
+        variance = np.maximum(self._m2 / (self._count - 1), 0.0)
+        return self._mean.copy(), np.sqrt(variance)
+
 
 class ReplicaExchange:
     """
@@ -198,9 +269,9 @@ class ReplicaExchange:
 
         # CV bias monitoring (see Prompt 3: periodic logging every 1000 steps)
         self._bias_log_interval: int = 1000
-        self._cv_monitor_module = None
-        self._bias_energy_stats = None
-        self._bias_cv_stats = None
+        self._cv_monitor_module: Any | None = None
+        self._bias_energy_stats: RunningStats | None = None
+        self._bias_cv_stats: RunningStats | None = None
         self._bias_steps_completed = 0
         self._bias_next_log = 0
 
@@ -407,7 +478,9 @@ class ReplicaExchange:
 
         if replica_index is None:
             target_temp = (
-                float(temperature) if temperature is not None else float(self.temperatures[0])
+                float(temperature)
+                if temperature is not None
+                else float(self.temperatures[0])
             )
             replica_index = self._replica_index_for_temperature(target_temp)
         elif not (0 <= replica_index < len(self.replicas)):
@@ -416,9 +489,7 @@ class ReplicaExchange:
             )
 
         simulation = self.replicas[replica_index]
-        state = simulation.context.getState(
-            getPositions=True, enforcePeriodicBox=True
-        )
+        state = simulation.context.getState(getPositions=True, enforcePeriodicBox=True)
         positions = state.getPositions()
         with dest.open("w", encoding="utf-8") as handle:
             PDBFile.writeFile(
@@ -499,6 +570,7 @@ class ReplicaExchange:
         if cv_model_path is not None:
             try:
                 import torch
+
                 info = load_cv_model_info(
                     Path(cv_model_path).parent, Path(cv_model_path).stem
                 )
@@ -513,7 +585,10 @@ class ReplicaExchange:
                 self._bias_cv_stats = RunningStats(dim=cv_dim)
                 self._bias_steps_completed = 0
                 self._bias_next_log = self._bias_log_interval
-                logger.info("CV monitoring initialized (logging interval: %d steps)", self._bias_log_interval)
+                logger.info(
+                    "CV monitoring initialized (logging interval: %d steps)",
+                    self._bias_log_interval,
+                )
             except Exception as exc:
                 logger.warning(
                     "Unable to initialise CV monitoring for logging: %s", exc
@@ -1876,9 +1951,7 @@ class ReplicaExchange:
             state = replica.context.getState(
                 getPositions=True, getEnergy=True, groups={1}
             )
-            energy = state.getPotentialEnergy().value_in_unit(
-                unit.kilojoules_per_mole
-            )
+            energy = state.getPotentialEnergy().value_in_unit(unit.kilojoules_per_mole)
             self._bias_energy_stats.update(np.array([energy]))
             positions = np.array(
                 state.getPositions(asNumpy=True).value_in_unit(unit.nanometer)

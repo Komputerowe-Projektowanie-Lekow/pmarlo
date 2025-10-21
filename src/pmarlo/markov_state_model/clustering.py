@@ -400,8 +400,7 @@ def cluster_microstates(
 
     if n_states <= 0:
         raise ValueError(
-            "Number of microstates must be a positive integer; "
-            f"received {n_states}."
+            "Number of microstates must be a positive integer; " f"received {n_states}."
         )
 
     # Select appropriate clustering algorithm

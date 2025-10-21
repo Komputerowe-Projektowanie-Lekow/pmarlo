@@ -93,7 +93,5 @@ def test_summarize_shard_runs_inconsistent_temperature(tmp_path: Path) -> None:
         tmp_path, run_id="run-mix", segment_id=2, temperature=290.0
     )
 
-    with pytest.raises(
-        ValueError, match="Inconsistent temperatures for run run-mix"
-    ):
+    with pytest.raises(ValueError, match="Inconsistent temperatures for run run-mix"):
         summarize_shard_runs([shard_hot, shard_cold])

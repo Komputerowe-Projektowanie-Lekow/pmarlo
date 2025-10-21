@@ -22,7 +22,11 @@ def run_complete_msm_analysis(
     ignore_trajectory_errors: bool = False,
 ) -> EnhancedMSMProtocol:
     msm = _create_msm(
-        trajectory_files, topology_file, temperatures, output_dir, ignore_trajectory_errors
+        trajectory_files,
+        topology_file,
+        temperatures,
+        output_dir,
+        ignore_trajectory_errors,
     )
     msm_pipeline: SupportsMSMPipeline = msm
     _load_and_featurize(

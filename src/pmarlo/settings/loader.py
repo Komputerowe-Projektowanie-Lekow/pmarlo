@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Tuple
 
 import numpy as np
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 REQUIRED_CONFIG_KEYS = {"enable_cv_bias", "bias_mode", "torch_threads", "precision"}
 ALLOWED_BIAS_MODES = {"harmonic"}

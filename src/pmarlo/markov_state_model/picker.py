@@ -23,18 +23,11 @@ def find_local_minima_2d(F: np.ndarray) -> List[Tuple[int, int]]:
     if not np.any(finite_mask & interior_mask):
         return []
 
-    min_filtered = ndimage.minimum_filter(
-        array, size=3, mode="constant", cval=np.inf
-    )
-    max_filtered = ndimage.maximum_filter(
-        array, size=3, mode="constant", cval=-np.inf
-    )
+    min_filtered = ndimage.minimum_filter(array, size=3, mode="constant", cval=np.inf)
+    max_filtered = ndimage.maximum_filter(array, size=3, mode="constant", cval=-np.inf)
 
     minima_mask = (
-        interior_mask
-        & finite_mask
-        & (array == min_filtered)
-        & (max_filtered > array)
+        interior_mask & finite_mask & (array == min_filtered) & (max_filtered > array)
     )
 
     minima_indices = np.argwhere(minima_mask)

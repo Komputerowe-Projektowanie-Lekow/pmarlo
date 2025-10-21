@@ -55,9 +55,7 @@ def calpha_pairs(reference_traj: md.Trajectory) -> np.ndarray:
     if ca_indices.size < 2:
         pytest.skip("reference structure lacks multiple C-alpha atoms")
 
-    combinations = np.array(
-        list(itertools.combinations(ca_indices, 2)), dtype=np.int32
-    )
+    combinations = np.array(list(itertools.combinations(ca_indices, 2)), dtype=np.int32)
     if combinations.shape[0] > 4000:
         rng = np.random.default_rng(42)
         keep = rng.choice(combinations.shape[0], size=4000, replace=False)

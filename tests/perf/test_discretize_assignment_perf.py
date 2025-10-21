@@ -40,7 +40,9 @@ def _generate_gaussian_clusters(
     centers = rng.normal(loc=0.0, scale=5.0, size=(n_clusters, n_features))
     clusters = []
     for center in centers:
-        cluster_samples = center + rng.normal(scale=0.2, size=(samples_per_cluster, n_features))
+        cluster_samples = center + rng.normal(
+            scale=0.2, size=(samples_per_cluster, n_features)
+        )
         clusters.append(cluster_samples)
     data = np.vstack(clusters).astype(np.float64)
     return data, centers.astype(np.float64)
@@ -54,7 +56,9 @@ def _feature_schema(n_features: int) -> Dict[str, object]:
 
 
 @pytest.fixture(scope="module")
-def fitted_kmeans_discretizer() -> Tuple[_KMeansDiscretizer, np.ndarray, Dict[str, object]]:
+def fitted_kmeans_discretizer() -> (
+    Tuple[_KMeansDiscretizer, np.ndarray, Dict[str, object]]
+):
     """Fit a KMeans discretizer on synthetic clustered data."""
 
     data, _ = _generate_gaussian_clusters(
@@ -66,7 +70,9 @@ def fitted_kmeans_discretizer() -> Tuple[_KMeansDiscretizer, np.ndarray, Dict[st
     return discretizer, data, schema
 
 
-def test_kmeans_assignment_matches_nearest_centers(benchmark, fitted_kmeans_discretizer):
+def test_kmeans_assignment_matches_nearest_centers(
+    benchmark, fitted_kmeans_discretizer
+):
     """Assignments should match the nearest learned centers for training points."""
 
     discretizer, data, _ = fitted_kmeans_discretizer
@@ -140,4 +146,6 @@ def test_discretize_dataset_assignments_follow_centers(benchmark):
 
     distances = np.linalg.norm(valid_data[:, None, :] - centers[None, :, :], axis=2)
     expected = np.argmin(distances, axis=1).astype(np.int32)
-    np.testing.assert_array_equal(validation_labels[validation_mask], expected[validation_mask])
+    np.testing.assert_array_equal(
+        validation_labels[validation_mask], expected[validation_mask]
+    )

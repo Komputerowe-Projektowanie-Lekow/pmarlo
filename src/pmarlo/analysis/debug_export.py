@@ -261,6 +261,56 @@ def export_analysis_debug(
     output_dir = Path(output_dir)
     ensure_directory(output_dir)
 
+    summary_payload = _prepare_summary_payload(
+        debug_data,
+        dataset_hash=dataset_hash,
+        config=config,
+        summary_overrides=summary_overrides,
+        fingerprint=fingerprint,
+    )
+
+    if _requires_transition_artifacts(build_result):
+        _ensure_nonempty_transition_statistics(
+            debug_data.counts, debug_data.state_counts
+        )
+
+    arrays_written = _export_core_arrays(debug_data, output_dir)
+    arrays_written.update(_export_result_arrays(build_result, output_dir))
+
+    fes_payload = _maybe_export_fes(build_result, output_dir)
+    if fes_payload:
+        arrays_written.update(fes_payload)
+
+    summary_payload["result"] = _collect_result_summary(build_result)
+    summary_payload["arrays"] = arrays_written
+
+    _write_additional_metadata(build_result, output_dir, summary_payload)
+
+    msm_obj = getattr(build_result, "msm", None)
+    assignment_arrays, assignment_splits = _maybe_export_assignments(
+        msm_obj, output_dir
+    )
+    if assignment_arrays:
+        arrays_written.update(assignment_arrays)
+        summary_payload["state_assignment_splits"] = assignment_splits
+
+    summary_path = _write_summary(output_dir, summary_payload)
+    return {"summary": summary_path, "arrays": arrays_written}
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _prepare_summary_payload(
+    debug_data: AnalysisDebugData,
+    *,
+    dataset_hash: str,
+    config: Mapping[str, Any] | None,
+    summary_overrides: Mapping[str, Any] | None,
+    fingerprint: Mapping[str, Any] | None,
+) -> Dict[str, Any]:
     summary_payload = debug_data.to_summary_dict()
     if summary_overrides:
         summary_payload.update(_make_json_ready(summary_overrides))
@@ -269,14 +319,13 @@ def export_analysis_debug(
     summary_payload["dataset_hash"] = str(dataset_hash)
     if config is not None:
         summary_payload["config"] = _make_json_ready(config)
+    return summary_payload
 
+
+def _export_core_arrays(
+    debug_data: AnalysisDebugData, output_dir: Path
+) -> Dict[str, str]:
     arrays_written: Dict[str, str] = {}
-
-    if _requires_transition_artifacts(build_result):
-        _ensure_nonempty_transition_statistics(
-            debug_data.counts, debug_data.state_counts
-        )
-
     counts_path = output_dir / "transition_counts.npy"
     np.save(counts_path, debug_data.counts)
     arrays_written["transition_counts"] = counts_path.name
@@ -288,28 +337,34 @@ def export_analysis_debug(
     component_labels_path = output_dir / "component_labels.npy"
     np.save(component_labels_path, debug_data.component_labels.astype(int))
     arrays_written["component_labels"] = component_labels_path.name
+    return arrays_written
 
-    if getattr(build_result, "transition_matrix", None) is not None:
+
+def _export_result_arrays(build_result: Any, output_dir: Path) -> Dict[str, str]:
+    arrays_written: Dict[str, str] = {}
+    transition_matrix = getattr(build_result, "transition_matrix", None)
+    if transition_matrix is not None:
         tm_path = output_dir / "transition_matrix.npy"
-        np.save(tm_path, np.asarray(build_result.transition_matrix, dtype=float))
+        np.save(tm_path, np.asarray(transition_matrix, dtype=float))
         arrays_written["transition_matrix"] = tm_path.name
-    if getattr(build_result, "stationary_distribution", None) is not None:
+
+    stationary = getattr(build_result, "stationary_distribution", None)
+    if stationary is not None:
         pi_path = output_dir / "stationary_distribution.npy"
-        np.save(pi_path, np.asarray(build_result.stationary_distribution, dtype=float))
+        np.save(pi_path, np.asarray(stationary, dtype=float))
         arrays_written["stationary_distribution"] = pi_path.name
-    if getattr(build_result, "cluster_populations", None) is not None:
+
+    cluster_pop = getattr(build_result, "cluster_populations", None)
+    if cluster_pop is not None:
         cp_path = output_dir / "cluster_populations.npy"
-        np.save(cp_path, np.asarray(build_result.cluster_populations, dtype=float))
+        np.save(cp_path, np.asarray(cluster_pop, dtype=float))
         arrays_written["cluster_populations"] = cp_path.name
+    return arrays_written
 
-    fes_payload = _maybe_export_fes(build_result, output_dir)
-    if fes_payload:
-        arrays_written.update(fes_payload)
 
-    result_summary = _collect_result_summary(build_result)
-    summary_payload["result"] = result_summary
-    summary_payload["arrays"] = arrays_written
-
+def _write_additional_metadata(
+    build_result: Any, output_dir: Path, summary_payload: Dict[str, Any]
+) -> None:
     diagnostics = getattr(build_result, "diagnostics", None)
     if isinstance(diagnostics, Mapping):
         diag_path = output_dir / "diagnostics.json"
@@ -328,23 +383,11 @@ def export_analysis_debug(
         stats_path.write_text(json.dumps(_make_json_ready(feature_stats), indent=2))
         summary_payload["feature_stats_file"] = stats_path.name
 
-    msm_obj = getattr(build_result, "msm", None)
-    assignment_arrays, assignment_splits = _maybe_export_assignments(
-        msm_obj, output_dir
-    )
-    if assignment_arrays:
-        arrays_written.update(assignment_arrays)
-        summary_payload["state_assignment_splits"] = assignment_splits
 
+def _write_summary(output_dir: Path, summary_payload: Mapping[str, Any]) -> Path:
     summary_path = output_dir / "summary.json"
-    summary_path.write_text(json.dumps(summary_payload, indent=2))
-
-    return {"summary": summary_path, "arrays": arrays_written}
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+    summary_path.write_text(json.dumps(_make_json_ready(summary_payload), indent=2))
+    return summary_path
 
 
 def _normalise_shard_info(shards: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
@@ -608,7 +651,7 @@ def _has_payload(value: Any) -> bool:
     if value is None:
         return False
     if isinstance(value, np.ndarray):
-        return value.size > 0
+        return int(value.size) > 0
     if isinstance(value, Mapping):
         return bool(value)
     if isinstance(value, (list, tuple, set)):

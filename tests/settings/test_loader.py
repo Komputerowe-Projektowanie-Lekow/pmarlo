@@ -8,8 +8,7 @@ from pmarlo.settings import ConfigurationError, load_defaults
 
 def test_load_defaults_requires_keys(monkeypatch, tmp_path):
     cfg_path = tmp_path / "config.yaml"
-    cfg_path.write_text("enable_cv_bias: true
-", encoding="utf-8")
+    cfg_path.write_text("enable_cv_bias: true\n", encoding="utf-8")
     monkeypatch.setenv("PMARLO_CONFIG_FILE", str(cfg_path))
     load_defaults.cache_clear()
     with pytest.raises(ConfigurationError):

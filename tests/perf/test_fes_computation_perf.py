@@ -405,4 +405,3 @@ def test_weighted_histogram_density_conservation(benchmark):
     density_integral = float(np.sum(H * bin_areas))
     assert np.isfinite(density_integral)
     assert 0.9 <= density_integral <= 1.1
-

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List
+from typing import TYPE_CHECKING, Dict, List
 
 import numpy as np
 import pytest
@@ -16,7 +16,13 @@ pytestmark = [pytest.mark.perf, pytest.mark.benchmark, pytest.mark.msm]
 pytest.importorskip("pytest_benchmark", reason="pytest-benchmark not installed")
 
 if not os.getenv("PMARLO_RUN_PERF"):
-    pytest.skip("perf tests disabled; set PMARLO_RUN_PERF=1 to run", allow_module_level=True)
+    pytest.skip(
+        "perf tests disabled; set PMARLO_RUN_PERF=1 to run", allow_module_level=True
+    )
+
+if TYPE_CHECKING:
+    from pmarlo.markov_state_model._estimation import EstimationMixin
+    from pmarlo.markov_state_model._its import ITSMixin
 
 
 @dataclass
@@ -50,10 +56,14 @@ class _ToyMSMEstimator:
                 self.estimator_backend = "local"
 
             # Protocol hooks that are unused in this benchmark
-            def _maybe_apply_tica(self, n_components: int, lag: int) -> None:  # pragma: no cover - perf harness
+            def _maybe_apply_tica(
+                self, n_components: int, lag: int
+            ) -> None:  # pragma: no cover - perf harness
                 return None
 
-            def _build_tram_msm(self, lag_time: int) -> None:  # pragma: no cover - perf harness
+            def _build_tram_msm(
+                self, lag_time: int
+            ) -> None:  # pragma: no cover - perf harness
                 raise NotImplementedError("TRAM method not supported in toy benchmark")
 
             def _should_use_deeptime(self) -> bool:
@@ -61,7 +71,7 @@ class _ToyMSMEstimator:
 
         self._impl = _Estimator(state, output_dir=output_dir)
 
-    def run(self, *, lag_time: int) -> "_Estimator":
+    def run(self, *, lag_time: int) -> "EstimationMixin":
         self._impl.build_msm(lag_time=lag_time, method="standard")
         return self._impl
 
@@ -69,11 +79,15 @@ class _ToyMSMEstimator:
 class _ToyITSEngine:
     """Deterministic harness around :class:`ITSMixin` for benchmarking ITS."""
 
-    def __init__(self, counts_by_lag: Dict[int, np.ndarray], *, dtrajs: List[np.ndarray]):
+    def __init__(
+        self, counts_by_lag: Dict[int, np.ndarray], *, dtrajs: List[np.ndarray]
+    ):
         from pmarlo.markov_state_model._its import ITSMixin
 
         class _Engine(ITSMixin):
-            def __init__(self, counts: Dict[int, np.ndarray], trajectories: List[np.ndarray]):
+            def __init__(
+                self, counts: Dict[int, np.ndarray], trajectories: List[np.ndarray]
+            ):
                 self.random_state = 13
                 self.dtrajs = [np.asarray(dt, dtype=int) for dt in trajectories]
                 self.count_mode = "sliding"
@@ -81,7 +95,9 @@ class _ToyITSEngine:
                 self.n_states = int(next(iter(counts.values())).shape[0])
                 self.time_per_frame_ps = 1.0
                 self.implied_timescales = None
-                self.counts_by_lag = {int(k): np.asarray(v, dtype=float) for k, v in counts.items()}
+                self.counts_by_lag = {
+                    int(k): np.asarray(v, dtype=float) for k, v in counts.items()
+                }
                 self.effective_frames = None
 
             def _counts_from_deeptime_backend(self, lag: int) -> np.ndarray:
@@ -100,7 +116,7 @@ class _ToyITSEngine:
         n_samples: int,
         ci: float,
         dirichlet_alpha: float,
-    ) -> "_Engine":
+    ) -> "ITSMixin":
         self._impl.compute_implied_timescales(
             lag_times=lag_times,
             n_timescales=n_timescales,
@@ -119,7 +135,9 @@ def synthetic_state() -> _ToyMSMState:
     return _ToyMSMState(dtrajs=[traj_a, traj_b], n_states=3, count_mode="sliding")
 
 
-def _expected_transition_matrix(dtrajs: List[np.ndarray], n_states: int, *, lag: int, mode: str) -> np.ndarray:
+def _expected_transition_matrix(
+    dtrajs: List[np.ndarray], n_states: int, *, lag: int, mode: str
+) -> np.ndarray:
     counts = np.zeros((n_states, n_states), dtype=float)
     step = lag if mode == "strided" else 1
     for dtraj in dtrajs:
@@ -150,7 +168,9 @@ def test_standard_msm_transition_estimation(benchmark, synthetic_state, tmp_path
     """Benchmark standard MSM estimation using synthetic trajectories."""
 
     def _build():
-        estimator = _ToyMSMEstimator(synthetic_state, output_dir=str(tmp_path / "estimation"))
+        estimator = _ToyMSMEstimator(
+            synthetic_state, output_dir=str(tmp_path / "estimation")
+        )
         return estimator.run(lag_time=1)
 
     result = benchmark(_build)
@@ -225,5 +245,6 @@ def test_its_timescale_computation(benchmark):
     assert np.allclose(its_result.eigenvalues[0, :2], expected_eigs, atol=0.05)
     assert np.allclose(its_result.timescales[0, :2], expected_ts, rtol=0.1)
     assert np.all(np.isfinite(its_result.rates[0, :2]))
-    assert np.all(its_result.timescales_ci[0, :, 0] <= its_result.timescales_ci[0, :, 1])
-
+    assert np.all(
+        its_result.timescales_ci[0, :, 0] <= its_result.timescales_ci[0, :, 1]
+    )

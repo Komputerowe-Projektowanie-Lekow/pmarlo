@@ -22,7 +22,9 @@ def test_normalize_training_metrics_preserves_existing_best_values():
         "best_epoch": 2,
         "best_tau": 7,
     }
-    normalized = _normalize_training_metrics(metrics, tau_schedule=[2, 7], epochs_per_tau=2)
+    normalized = _normalize_training_metrics(
+        metrics, tau_schedule=[2, 7], epochs_per_tau=2
+    )
     assert normalized["best_val_score"] == 0.3
     assert normalized["best_epoch"] == 2
     assert normalized["best_tau"] == 7
