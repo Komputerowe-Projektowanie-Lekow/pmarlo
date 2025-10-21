@@ -14,7 +14,7 @@ from typing import List, Literal, Optional
 
 import numpy as np
 
-from ..io.trajectory_reader import TrajectoryReader
+from ..io.trajectory_reader import TrajectoryIOError, TrajectoryReader
 from ..io.trajectory_writer import TrajectoryWriteError, TrajectoryWriter
 from ..transform.progress import ProgressCB, ProgressReporter
 from ..utils.errors import DemuxWriterError
@@ -461,24 +461,39 @@ def _stream_segment_frames(
         return 0
     acc: List[np.ndarray] = []
     got = 0
-    for frame in context.reader.iter_frames(
-        segment.source_path,
-        start=int(segment.start_frame),
-        stop=int(segment.stop_frame),
-        stride=1,
-    ):
-        arr = np.asarray(frame)
-        acc.append(arr)
-        got += 1
-        if len(acc) >= write_chunk:
-            state.total_written += _flush_batch(
-                context,
-                state,
-                acc,
-                index,
-                "flushing batch",
-            )
-        state.last_written_frame = np.array(arr, copy=True)
+    try:
+        for frame in context.reader.iter_frames(
+            segment.source_path,
+            start=int(segment.start_frame),
+            stop=int(segment.stop_frame),
+            stride=1,
+        ):
+            arr = np.asarray(frame)
+            acc.append(arr)
+            got += 1
+            if len(acc) >= write_chunk:
+                state.total_written += _flush_batch(
+                    context,
+                    state,
+                    acc,
+                    index,
+                    "flushing batch",
+                )
+            state.last_written_frame = np.array(arr, copy=True)
+    except TrajectoryIOError as exc:
+        state.total_written += _flush_batch(
+            context,
+            state,
+            acc,
+            index,
+            "flushing batch",
+        )
+        message = (
+            f"Segment {index} reader failed after {got} frame(s): {exc}"
+        )
+        logger.warning(message)
+        state.warnings.append(message)
+        return got
     state.total_written += _flush_batch(
         context,
         state,

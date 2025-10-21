@@ -26,8 +26,9 @@ def scaled_time_pairs(
     length:
         Number of frames in the shard.
     logw:
-        Per-frame log-weights, log w_t = beta * V(s_t). Must be provided to
-        construct scaled-time pairs.
+        Per-frame log-weights, log w_t = beta * V(s_t). When omitted, uniform
+        time increments are assumed and `tau_scaled` is rounded to the nearest
+        integer frame lag.
     tau_scaled:
         Target lag in scaled time units.
     jitter:
@@ -38,7 +39,18 @@ def scaled_time_pairs(
     if length <= 1:
         return np.array([], dtype=np.int64), np.array([], dtype=np.int64)
 
-    if logw is None or getattr(logw, "size", 0) == 0:
+    if logw is None:
+        lag = int(round(float(tau_scaled)))
+        if lag <= 0:
+            raise ValueError("tau_scaled must be positive when log weights are absent")
+        if lag >= length:
+            return np.array([], dtype=np.int64), np.array([], dtype=np.int64)
+
+        i = np.arange(0, length - lag, dtype=np.int64)
+        j = i + lag
+        return i, j
+
+    if getattr(logw, "size", 0) == 0:
         raise ValueError("Scaled-time pairing requires per-frame log weights")
 
     lw = np.asarray(logw, dtype=np.float64).reshape(-1)
@@ -73,7 +85,8 @@ def make_training_pairs_from_shards(
     ----------
     shard_records:
         Iterable of tuples (X, dtraj, bias_potential, temperature_K). Only X
-        and bias/temperature are used to build pairs.
+        and bias/temperature are used to build pairs. When either bias or
+        temperature is missing, uniform time spacing is assumed.
     tau_scaled:
         Target scaled-time lag passed to :func:`scaled_time_pairs`.
 
@@ -93,16 +106,13 @@ def make_training_pairs_from_shards(
         X = np.asarray(X, dtype=np.float64)
         n = int(X.shape[0])
         X_list.append(X)
-        # Compute log-weights if bias and temperature are available
-        if bias is None or T is None:
-            raise ValueError(
-                "Bias potential and temperature are required to compute scaled-time pairs"
-            )
-
-        beta = 1.0 / (0.008314462618 / float(T))  # kJ/mol/K to 1/kJ/mol
-        logw = beta * np.asarray(bias, dtype=np.float64)
-        if logw.shape[0] != n:
-            raise ValueError("Bias potential must match number of frames")
+        if bias is not None and T is not None:
+            beta = 1.0 / (0.008314462618 * float(T))  # kJ/mol/K to 1/kJ/mol
+            logw = beta * np.asarray(bias, dtype=np.float64)
+            if logw.shape[0] != n:
+                raise ValueError("Bias potential must match number of frames")
+        else:
+            logw = None
 
         i, j = scaled_time_pairs(n, logw, tau_scaled)
         if len(i) > 0:
