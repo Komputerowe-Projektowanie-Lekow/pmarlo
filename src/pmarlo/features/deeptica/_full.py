@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import copy
 import json
 import logging
+from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, List, Optional, Tuple, cast
@@ -154,6 +156,28 @@ if _nn is not None:
         def forward(self, x):  # type: ignore[override]
             y = self.inner(x)
             y = y - self.mean
+            return torch.matmul(y, self.transform.T)
+
+
+    class _WhitenTransformModule(_nn.Module):  # type: ignore[misc]
+        """Apply a fixed whitening transform to its inputs."""
+
+        def __init__(
+            self,
+            mean: np.ndarray | torch.Tensor,
+            transform: np.ndarray | torch.Tensor,
+        ) -> None:
+            super().__init__()
+            self.register_buffer(
+                "mean", torch.as_tensor(mean, dtype=torch.float32, device="cpu")
+            )
+            self.register_buffer(
+                "transform",
+                torch.as_tensor(transform, dtype=torch.float32, device="cpu"),
+            )
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
+            y = x - self.mean
             return torch.matmul(y, self.transform.T)
 
 
@@ -364,14 +388,12 @@ class DeepTICAModel:
     def to_torchscript(self, path: Path) -> Path:
         path = Path(path)
         ensure_directory(path.parent)
-        self.net.eval()
+        traceable = _build_traceable_deeptica_module(self.net)
+        traceable.eval()
+        traceable = traceable.to(device=torch.device("cpu"), dtype=torch.float32)
         # Trace with single precision (typical for inference)
         example = torch.zeros(1, int(self.scaler.mean_.shape[0]), dtype=torch.float32)
-        _mark_module_scripting_safe(self.net)
-        base = getattr(self.net, "inner", None)
-        if base is not None:
-            _mark_module_scripting_safe(base)
-        ts = torch.jit.trace(self.net.to(torch.float32), example)
+        ts = torch.jit.trace(traceable, example)
         out = path.with_suffix(".ts")
         try:
             ts.save(str(out))
@@ -459,6 +481,73 @@ def _mark_module_scripting_safe(module: Any, *, _seen: set[int] | None = None) -
         return
     for _name, child in iterator:
         _mark_module_scripting_safe(child, _seen=_seen)
+
+
+def _normalize_module_name(name: str) -> str:
+    sanitized = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in name)
+    return sanitized or "module"
+
+
+def _build_traceable_deeptica_module(net: Any) -> torch.nn.Module:
+    import torch.nn as _nn  # type: ignore
+
+    modules = _collect_deeptica_modules_for_inference(net)
+    ordered: list[tuple[str, torch.nn.Module]] = []
+    counters: dict[str, int] = {}
+    for name, module in modules:
+        if module is None:
+            continue
+        module_copy = copy.deepcopy(module)
+        module_copy.eval()
+        module_copy = module_copy.to(device=torch.device("cpu"), dtype=torch.float32)
+        key = _normalize_module_name(name)
+        suffix = counters.get(key, 0)
+        counters[key] = suffix + 1
+        unique = key if suffix == 0 else f"{key}_{suffix}"
+        ordered.append((unique, module_copy))
+    if not ordered:
+        ordered.append(("identity", _nn.Identity()))
+    return _nn.Sequential(OrderedDict(ordered))
+
+
+def _collect_deeptica_modules_for_inference(
+    module: Any,
+) -> list[tuple[str, torch.nn.Module | None]]:
+    import torch.nn as _nn  # type: ignore
+
+    collected: list[tuple[str, torch.nn.Module | None]] = []
+    # Handle whitening wrappers generated during training
+    if hasattr(module, "mean") and hasattr(module, "transform") and hasattr(module, "inner"):
+        collected.extend(_collect_deeptica_modules_for_inference(module.inner))
+        collected.append(("whiten", _WhitenTransformModule(module.mean, module.transform)))
+        return collected
+    # Handle preprocessing wrapper that applies layer norm and dropout
+    if hasattr(module, "ln") and hasattr(module, "drop_in") and hasattr(module, "inner"):
+        ln = getattr(module, "ln", None)
+        drop_in = getattr(module, "drop_in", None)
+        if isinstance(ln, _nn.Module):
+            collected.append(("ln", ln))
+        if isinstance(drop_in, _nn.Module):
+            collected.append(("drop_in", drop_in))
+        collected.extend(_collect_deeptica_modules_for_inference(module.inner))
+        return collected
+    # Core DeepTICA module from mlcolvar
+    blocks = getattr(module, "BLOCKS", None)
+    if isinstance(blocks, Iterable):
+        preprocessing = getattr(module, "preprocessing", None)
+        postprocessing = getattr(module, "postprocessing", None)
+        if isinstance(preprocessing, _nn.Module):
+            collected.append(("preprocessing", preprocessing))
+        for block_name in blocks:
+            block = getattr(module, block_name, None)
+            if isinstance(block, _nn.Module):
+                collected.append((str(block_name), block))
+        if isinstance(postprocessing, _nn.Module):
+            collected.append(("postprocessing", postprocessing))
+        return collected
+    if isinstance(module, _nn.Module):
+        return [(module.__class__.__name__.lower(), module)]
+    return []
 
 
 def train_deeptica(
