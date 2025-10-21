@@ -12,7 +12,6 @@ import mdtraj as md
 import numpy as np
 import pytest
 
-
 pytestmark = [pytest.mark.perf, pytest.mark.benchmark]
 
 # Optional plugin
@@ -168,8 +167,7 @@ def test_mdttraj_writer_chunked_rewrite(benchmark, tmp_path):
     traj = _make_linear_trajectory(tmp_path, n_frames=120, n_atoms=8)
     rng = np.random.default_rng(1337)
     batches = [
-        rng.standard_normal((40, traj.n_atoms, 3)).astype(np.float32)
-        for _ in range(3)
+        rng.standard_normal((40, traj.n_atoms, 3)).astype(np.float32) for _ in range(3)
     ]
     counter = itertools.count()
 
@@ -270,9 +268,7 @@ def test_pair_builder_dense_pairs(benchmark, tmp_path):
     from pmarlo.shards.format import read_shard as read_full_shard
     from pmarlo.shards.pair_builder import PairBuilder
 
-    payload, _, _, _ = _build_shard_inputs(
-        n_frames=360, n_cvs=6, seed=900
-    )
+    payload, _, _, _ = _build_shard_inputs(n_frames=360, n_cvs=6, seed=900)
     shard_path = write_shard(out_dir=tmp_path / "pair_shards", **payload)
     shard = read_full_shard(shard_path)
     builder = PairBuilder(tau_steps=7)
@@ -291,9 +287,7 @@ def test_pair_builder_sparse_pairs(benchmark, tmp_path):
     from pmarlo.shards.format import read_shard as read_full_shard
     from pmarlo.shards.pair_builder import PairBuilder
 
-    payload, _, _, _ = _build_shard_inputs(
-        n_frames=5, n_cvs=3, seed=1337
-    )
+    payload, _, _, _ = _build_shard_inputs(n_frames=5, n_cvs=3, seed=1337)
     shard_path = write_shard(out_dir=tmp_path / "pair_shards_small", **payload)
     shard = read_full_shard(shard_path)
     builder = PairBuilder(tau_steps=10)
@@ -303,4 +297,3 @@ def test_pair_builder_sparse_pairs(benchmark, tmp_path):
 
     pairs = benchmark(_build_pairs)
     assert pairs.shape == (0, 2)
-

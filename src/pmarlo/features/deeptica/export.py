@@ -73,7 +73,7 @@ def export_cv_bias_potential(
     feature_names: Optional[list[str]] = None,
 ) -> CVModelBundle:
     """Export a Deep-TICA network wrapped with TorchScript feature extraction and bias.
-    
+
     Creates a single TorchScript module: positions+box → features → CVs → bias energy.
     See example_programs/app_usecase/app/CV_INTEGRATION_GUIDE.md for usage.
     """

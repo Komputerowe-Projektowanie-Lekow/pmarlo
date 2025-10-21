@@ -37,8 +37,10 @@ def _make_synthetic_projection(
 
     # The whitening transform is the inverse of the Cholesky factor (upper form)
     transform = np.linalg.inv(cholesky.T)
-    return correlated.astype(np.float64), mean.astype(np.float64), transform.astype(
-        np.float64
+    return (
+        correlated.astype(np.float64),
+        mean.astype(np.float64),
+        transform.astype(np.float64),
     )
 
 
@@ -77,7 +79,7 @@ def test_apply_output_transform_whitens_projections(
 
 
 def test_apply_output_transform_noop_when_already_applied(
-    benchmark: pytest.BenchmarkFixture
+    benchmark: pytest.BenchmarkFixture,
 ) -> None:
     """Benchmark and validate that the \"already applied\" flag avoids extra work."""
 

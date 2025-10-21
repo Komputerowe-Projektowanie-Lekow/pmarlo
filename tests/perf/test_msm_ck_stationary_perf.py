@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
@@ -18,6 +19,9 @@ if not os.getenv("PMARLO_RUN_PERF"):
     pytest.skip(
         "perf tests disabled; set PMARLO_RUN_PERF=1 to run", allow_module_level=True
     )
+
+if TYPE_CHECKING:
+    from pmarlo.markov_state_model.enhanced_msm import EnhancedMSM
 
 
 def _build_cycle_msm(tmp_path: Path) -> "EnhancedMSM":

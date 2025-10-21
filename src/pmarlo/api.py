@@ -14,6 +14,7 @@ from typing import (
     Literal,
     Mapping,
     Optional,
+    Protocol,
     Sequence,
     Tuple,
 )
@@ -26,6 +27,16 @@ from pmarlo.utils.path_utils import ensure_directory
 
 if TYPE_CHECKING:
     from .io.trajectory_writer import MDTrajDCDWriter
+
+
+class ReplicaExchangeProtocol(Protocol):
+    cv_model_path: str | None
+    cv_scaler_mean: Any | None
+    cv_scaler_scale: Any | None
+    reporter_stride: int | None
+    dcd_stride: int | None
+
+    def restore_from_checkpoint(self, checkpoint: Any) -> None: ...
 
 from .config import JOINT_USE_REWEIGHT
 from .data.aggregate import aggregate_and_build as _aggregate_and_build
@@ -979,7 +990,7 @@ def _derive_run_plan(
     exchange_override: int | None,
 ) -> tuple[int, int, int]:
     """Compute equilibration length, exchange frequency, and DCD stride.
-    
+
     Exchange frequency optimization based on benchmarks:
     - Too frequent (10-50 steps): High overhead from exchange attempts
     - Optimal range (100-200 steps): Best balance of exchange rate and throughput
@@ -1023,7 +1034,7 @@ def _emit_banner(
 
 
 def _configure_cv_model(
-    remd: "ReplicaExchange",
+    remd: ReplicaExchangeProtocol,
     cv_model_path: str | Path | None,
     cv_scaler_mean: Any | None,
     cv_scaler_scale: Any | None,
@@ -1044,7 +1055,7 @@ def _configure_cv_model(
 
 
 def _restore_from_checkpoint(
-    remd: "ReplicaExchange",
+    remd: ReplicaExchangeProtocol,
     checkpoint_path: str | Path,
 ) -> bool:
     """Attempt to restore REMD state from ``checkpoint_path``."""
@@ -1067,7 +1078,7 @@ def _restore_from_checkpoint(
 
 
 def _evaluate_demux_result(
-    remd: "ReplicaExchange",
+    remd: ReplicaExchangeProtocol,
     demuxed_path: str | Path | None,
     total_steps: int,
     equilibration_steps: int,

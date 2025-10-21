@@ -16,6 +16,7 @@ except Exception as exc:  # pragma: no cover
     raise ImportError("Install optional extra pmarlo[mlcv] to use Deep-TICA") from exc
 
 from pmarlo.utils.seed import set_global_seed
+
 from .utils import safe_float
 
 __all__ = [

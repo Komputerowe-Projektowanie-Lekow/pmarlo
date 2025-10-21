@@ -72,7 +72,9 @@ def _assert_block_alignment(labels: np.ndarray, block_size: int, n_blocks: int) 
         assert counts[dominant] >= int(0.6 * block_size)
 
 
-def test_pcca_macrostate_lumping_block_structure(benchmark: pytest.BenchmarkFixture) -> None:
+def test_pcca_macrostate_lumping_block_structure(
+    benchmark: pytest.BenchmarkFixture,
+) -> None:
     """Benchmark PCCA+ coarse graining on a well-separated 4-block system."""
     from pmarlo.markov_state_model.bridge import pcca_like_macrostates
 
@@ -90,7 +92,9 @@ def test_pcca_macrostate_lumping_block_structure(benchmark: pytest.BenchmarkFixt
     _assert_block_alignment(labels, block_size, n_blocks)
 
 
-def test_pcca_scales_to_hundreds_of_microstates(benchmark: pytest.BenchmarkFixture) -> None:
+def test_pcca_scales_to_hundreds_of_microstates(
+    benchmark: pytest.BenchmarkFixture,
+) -> None:
     """Benchmark PCCA+ when lumping 8x80 microstates."""
     from pmarlo.markov_state_model.bridge import pcca_like_macrostates
 

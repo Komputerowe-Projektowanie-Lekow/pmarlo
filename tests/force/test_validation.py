@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
 import yaml
 from openmm.app import ForceField, PDBFile
 
-from pmarlo.settings import load_defaults, resolve_feature_spec_path
 from pmarlo.replica_exchange.system_builder import create_system
-from .utils import export_bias_module, PDB_PATH
+from pmarlo.settings import load_defaults, resolve_feature_spec_path
+
+from .utils import PDB_PATH, export_bias_module
 
 
 @pytest.fixture()
@@ -38,7 +38,9 @@ def _write_config(tmp_path: Path, spec_path: Path, enable_bias: bool = True) -> 
     return cfg_path
 
 
-def test_create_system_accepts_matching_spec(monkeypatch, tmp_path, model_bundle, pdb_forcefield):
+def test_create_system_accepts_matching_spec(
+    monkeypatch, tmp_path, model_bundle, pdb_forcefield
+):
     _, bundle = model_bundle
     spec_source = resolve_feature_spec_path()
     spec_copy = tmp_path / "feature_spec.yaml"
@@ -52,8 +54,9 @@ def test_create_system_accepts_matching_spec(monkeypatch, tmp_path, model_bundle
     load_defaults.cache_clear()
 
 
-
-def test_create_system_rejects_mismatched_spec(monkeypatch, tmp_path, model_bundle, pdb_forcefield):
+def test_create_system_rejects_mismatched_spec(
+    monkeypatch, tmp_path, model_bundle, pdb_forcefield
+):
     _, bundle = model_bundle
     spec_source = resolve_feature_spec_path()
     spec_payload = yaml.safe_load(spec_source.read_text(encoding="utf-8"))
@@ -75,4 +78,3 @@ def test_create_system_rejects_mismatched_spec(monkeypatch, tmp_path, model_bund
     load_defaults.cache_clear()
 
     load_defaults.cache_clear()
-

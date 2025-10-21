@@ -10,7 +10,6 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
-    Callable,
     Dict,
     Iterator,
     List,
@@ -1275,14 +1274,15 @@ class DeepTICACurriculumTrainer:
                 "CUDA device requested but torch reports no available CUDA runtime"
             )
         return resolved
+
+
 class _LossModule(Protocol):
     def __call__(
         self,
         z_t: torch.Tensor,
         z_tau: torch.Tensor,
         weights: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        ...
+    ) -> tuple[torch.Tensor, torch.Tensor]: ...
 
 
 def _coerce_float(value: object, default: float = 0.0) -> float:

@@ -30,24 +30,35 @@ def select_platform_and_properties(
         logger.info("Using forced OpenMM platform: %s", forced)
     else:
         # Auto-select fastest available platform
-        available_platforms = [Platform.getPlatform(i).getName() 
-                               for i in range(Platform.getNumPlatforms())]
-        
+        available_platforms = [
+            Platform.getPlatform(i).getName() for i in range(Platform.getNumPlatforms())
+        ]
+
         # Prefer CUDA > CPU > Reference (Reference is VERY slow, avoid if possible)
         if "CUDA" in available_platforms:
             platform_name = "CUDA"
-            logger.info("Using CUDA platform%s", " (deterministic mode)" if prefer_deterministic else "")
+            logger.info(
+                "Using CUDA platform%s",
+                " (deterministic mode)" if prefer_deterministic else "",
+            )
         elif "CPU" in available_platforms:
             platform_name = "CPU"
-            logger.info("Using CPU platform%s", " (deterministic mode)" if prefer_deterministic else "")
+            logger.info(
+                "Using CPU platform%s",
+                " (deterministic mode)" if prefer_deterministic else "",
+            )
         elif "Reference" in available_platforms:
             platform_name = "Reference"
-            logger.warning("Using Reference platform - this is VERY slow (10-100x slower than CPU). "
-                          "Install OpenMM with CPU support for better performance.")
+            logger.warning(
+                "Using Reference platform - this is VERY slow (10-100x slower than CPU). "
+                "Install OpenMM with CPU support for better performance."
+            )
         else:
             # This should never happen but handle gracefully
             platform_name = "CUDA"
-            logger.warning("No standard OpenMM platform found, attempting CUDA as fallback")
+            logger.warning(
+                "No standard OpenMM platform found, attempting CUDA as fallback"
+            )
 
     platform = Platform.getPlatformByName(platform_name)
 

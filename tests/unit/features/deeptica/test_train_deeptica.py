@@ -18,7 +18,9 @@ def _make_artifacts() -> TrainingArtifacts:
     scaler = _ScalerStub()
     network = nn.Linear(1, 1)
     history: dict[str, object] = {}
-    return TrainingArtifacts(scaler=scaler, network=network, history=history, device="cpu")
+    return TrainingArtifacts(
+        scaler=scaler, network=network, history=history, device="cpu"
+    )
 
 
 def _dummy_pairs() -> tuple[np.ndarray, np.ndarray]:
@@ -31,10 +33,14 @@ def _dummy_data() -> list[np.ndarray]:
     return [np.zeros((3, 1), dtype=np.float32)]
 
 
-def test_train_deeptica_uses_lightning_backend_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_train_deeptica_uses_lightning_backend_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     called: dict[str, bool] = {}
 
-    def fake_pipeline(X_list, pairs, cfg, weights=None):  # pragma: no cover - simple stub
+    def fake_pipeline(
+        X_list, pairs, cfg, weights=None
+    ):  # pragma: no cover - simple stub
         called["lightning"] = True
         return _make_artifacts()
 
@@ -48,10 +54,14 @@ def test_train_deeptica_uses_lightning_backend_by_default(monkeypatch: pytest.Mo
     assert isinstance(model, deeptica_full.DeepTICAModel)
 
 
-def test_train_deeptica_routes_to_mlcolvar_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_train_deeptica_routes_to_mlcolvar_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     called: dict[str, bool] = {}
 
-    def fake_mlcolvar(X_list, pairs, cfg, weights=None):  # pragma: no cover - simple stub
+    def fake_mlcolvar(
+        X_list, pairs, cfg, weights=None
+    ):  # pragma: no cover - simple stub
         called["mlcolvar"] = True
         return _make_artifacts()
 

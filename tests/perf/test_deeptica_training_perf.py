@@ -91,9 +91,7 @@ def test_feature_preparation(benchmark, medium_trajs):
     from pmarlo.features.deeptica.core.inputs import prepare_features
 
     def _prepare():
-        return prepare_features(
-            medium_trajs, tau_schedule=(1, 5, 10), seed=42
-        )
+        return prepare_features(medium_trajs, tau_schedule=(1, 5, 10), seed=42)
 
     prep = benchmark(_prepare)
     assert prep.scaler is not None
@@ -122,9 +120,7 @@ def test_pair_building(benchmark, medium_trajs):
     tau_schedule = (1, 5, 10)
 
     def _build_pairs():
-        return build_pair_info(
-            medium_trajs, tau_schedule, pairs=None, weights=None
-        )
+        return build_pair_info(medium_trajs, tau_schedule, pairs=None, weights=None)
 
     pair_info = benchmark(_build_pairs)
     assert pair_info.idx_t is not None
@@ -211,6 +207,7 @@ def test_dataloader_batch_iteration(benchmark, medium_trajs):
 def test_vamp2_loss_computation(benchmark, medium_trajs):
     """Benchmark VAMP-2 loss computation (core training objective)."""
     import torch
+
     from pmarlo.features.deeptica.core.inputs import prepare_features
     from pmarlo.features.deeptica.core.model import build_network
 
@@ -281,8 +278,16 @@ def test_backward_pass_and_optimizer_step(benchmark):
 
     weights = np.full(batch_frames, 1.0 / float(batch_frames), dtype=np.float32)
     batch = [
-        (x_t_full[: batch_frames // 2], x_tau_full[: batch_frames // 2], weights[: batch_frames // 2]),
-        (x_t_full[batch_frames // 2 :], x_tau_full[batch_frames // 2 :], weights[batch_frames // 2 :]),
+        (
+            x_t_full[: batch_frames // 2],
+            x_tau_full[: batch_frames // 2],
+            weights[: batch_frames // 2],
+        ),
+        (
+            x_t_full[batch_frames // 2 :],
+            x_tau_full[batch_frames // 2 :],
+            weights[batch_frames // 2 :],
+        ),
     ]
 
     x_t, x_tau, w = loops.prepare_batch(batch, use_weights=True)
@@ -295,7 +300,9 @@ def test_backward_pass_and_optimizer_step(benchmark):
     model.train()
     loss_module = VAMP2Loss(dtype=torch.float64)
     parameters = tuple(model.parameters())
-    baseline_state = {name: param.detach().clone() for name, param in model.state_dict().items()}
+    baseline_state = {
+        name: param.detach().clone() for name, param in model.state_dict().items()
+    }
 
     def _train_step() -> tuple[float, float, float]:
         model.load_state_dict(baseline_state)
@@ -305,7 +312,11 @@ def test_backward_pass_and_optimizer_step(benchmark):
         loss.backward()
         grad_norm = loops.compute_grad_norm(parameters)
         optimizer.step()
-        return (float(loss.detach().cpu().item()), float(score.detach().cpu().item()), float(grad_norm))
+        return (
+            float(loss.detach().cpu().item()),
+            float(score.detach().cpu().item()),
+            float(grad_norm),
+        )
 
     loss_value, score_value, grad_norm_value = benchmark(_train_step)
 
@@ -313,8 +324,13 @@ def test_backward_pass_and_optimizer_step(benchmark):
     assert np.isfinite(score_value)
     assert grad_norm_value > 0.0
 
-    final_state = {name: param.detach().clone() for name, param in model.state_dict().items()}
-    assert any(not torch.allclose(final_state[name], baseline_state[name]) for name in baseline_state)
+    final_state = {
+        name: param.detach().clone() for name, param in model.state_dict().items()
+    }
+    assert any(
+        not torch.allclose(final_state[name], baseline_state[name])
+        for name in baseline_state
+    )
 
 
 def test_iter_pair_batches_sampling(benchmark):
@@ -330,14 +346,18 @@ def test_iter_pair_batches_sampling(benchmark):
     idx_t = np.arange(total_pairs, dtype=np.int64)
     idx_tau = idx_t + 5
     weights = np.ones(total_pairs, dtype=np.float32)
-    pair_info = PairInfo(idx_t=idx_t, idx_tau=idx_tau, weights=weights, diagnostics={"lag": 5})
+    pair_info = PairInfo(
+        idx_t=idx_t, idx_tau=idx_tau, weights=weights, diagnostics={"lag": 5}
+    )
 
     expected_batches = list(
         iter_pair_batches(pair_info, batch_size=batch_size, shuffle=True, seed=99)
     )
 
     def _collect_batches():
-        return list(iter_pair_batches(pair_info, batch_size=batch_size, shuffle=True, seed=99))
+        return list(
+            iter_pair_batches(pair_info, batch_size=batch_size, shuffle=True, seed=99)
+        )
 
     batches = benchmark(_collect_batches)
 
@@ -364,13 +384,17 @@ def test_iter_pair_batches_data_loading(benchmark):
     idx_t = np.arange(total_pairs, dtype=np.int64)
     idx_tau = idx_t + lag
     weights = np.ones(total_pairs, dtype=np.float32)
-    pair_info = PairInfo(idx_t=idx_t, idx_tau=idx_tau, weights=weights, diagnostics={"lag": lag})
+    pair_info = PairInfo(
+        idx_t=idx_t, idx_tau=idx_tau, weights=weights, diagnostics={"lag": lag}
+    )
 
     frames = np.arange(total_pairs + lag, dtype=np.float32).reshape(-1, 1)
 
     def _load_batches():
         result: list[tuple[np.ndarray, np.ndarray]] = []
-        for batch_idx in iter_pair_batches(pair_info, batch_size=10, shuffle=False, seed=None):
+        for batch_idx in iter_pair_batches(
+            pair_info, batch_size=10, shuffle=False, seed=None
+        ):
             frames_t = frames[pair_info.idx_t[batch_idx]]
             frames_tau = frames[pair_info.idx_tau[batch_idx]]
             result.append((frames_t, frames_tau))
@@ -391,6 +415,7 @@ def test_iter_pair_batches_data_loading(benchmark):
 def test_forward_pass(benchmark, medium_trajs):
     """Benchmark network forward pass (inference speed)."""
     import torch
+
     from pmarlo.features.deeptica.core.inputs import prepare_features
     from pmarlo.features.deeptica.core.model import build_network
 
@@ -413,6 +438,7 @@ def test_forward_pass(benchmark, medium_trajs):
 def test_backward_pass(benchmark, medium_trajs):
     """Benchmark network backward pass (training overhead)."""
     import torch
+
     from pmarlo.features.deeptica.core.inputs import prepare_features
     from pmarlo.features.deeptica.core.model import build_network
 
@@ -440,6 +466,7 @@ def test_backward_pass(benchmark, medium_trajs):
 def test_full_training_epoch_small(benchmark, small_trajs):
     """Benchmark one full training epoch on small dataset."""
     import torch
+
     from pmarlo.features.deeptica.core.dataset import create_dataset, create_loaders
     from pmarlo.features.deeptica.core.inputs import prepare_features
     from pmarlo.features.deeptica.core.model import build_network
@@ -450,9 +477,7 @@ def test_full_training_epoch_small(benchmark, small_trajs):
     network = build_network(cfg, prep.scaler, seed=42)
     network.train()
 
-    pair_info = build_pair_info(
-        small_trajs, (1, 5, 10), pairs=None, weights=None
-    )
+    pair_info = build_pair_info(small_trajs, (1, 5, 10), pairs=None, weights=None)
 
     weights = (
         np.asarray(pair_info.weights, dtype=np.float32).reshape(-1)
@@ -501,7 +526,6 @@ def test_scaling_overhead(benchmark, large_trajs):
 
 def test_output_whitening(benchmark, medium_trajs):
     """Benchmark output whitening application."""
-    import torch
     from pmarlo.features.deeptica.core.inputs import prepare_features
     from pmarlo.features.deeptica.core.model import (
         apply_output_whitening,
@@ -530,6 +554,7 @@ def test_model_checkpointing_persists_state(benchmark, tmp_path):
     """Benchmark model checkpoint serialization and validate saved state."""
 
     import torch
+
     from pmarlo.ml.deeptica.trainer import checkpoint_if_better
 
     model = torch.nn.Sequential(
@@ -626,7 +651,6 @@ def test_training_history_logging_to_csv(benchmark, tmp_path):
         assert float(val_score_str) == pytest.approx(collected["val_score_curve"][idx])
 
 
-
 def test_vamp2_loss_core_computation(benchmark, medium_trajs):
     """Benchmark the core VAMP-2 loss evaluation."""
 
@@ -690,4 +714,3 @@ def test_deeptica_model_forward_core(benchmark, medium_trajs):
     outputs = benchmark(_forward)
     assert outputs.shape == (batch.shape[0], cfg.output_dim)
     assert torch.isfinite(outputs).all()
-

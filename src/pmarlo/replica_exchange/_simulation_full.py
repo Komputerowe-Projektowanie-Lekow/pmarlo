@@ -9,8 +9,8 @@ system preparation.
 """
 
 import logging
-from contextlib import ExitStack
 from collections import defaultdict
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -228,7 +228,9 @@ class Simulation:
                 self.platform_name,
                 exc,
             )
-            fallback_order = [name for name in ("CPU", "Reference") if name != self.platform_name]
+            fallback_order = [
+                name for name in ("CPU", "Reference") if name != self.platform_name
+            ]
             for candidate in fallback_order:
                 try:
                     self.platform = openmm.Platform.getPlatformByName(candidate)
@@ -953,6 +955,8 @@ def plot_DG(features, save_path=None):
     except ImportError:
         print("Warning: matplotlib not available for plotting")
         return None
+
+
 logger = logging.getLogger(__name__)
 
 

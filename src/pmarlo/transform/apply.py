@@ -473,86 +473,86 @@ def _convert_history_array(value: Any) -> Any:
         return value
 
 
+def _history_map(history: Dict[str, Any] | Any) -> Dict[str, Any]:
+    return history if isinstance(history, dict) else {}
+
+
+def _coerce_optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        result = float(value)
+    except Exception:
+        return None
+    return result if math.isfinite(result) else None
+
+
+def _curve_last(
+    history_map: Dict[str, Any],
+    key: str,
+    *,
+    converter: Callable[[Any], Any] | None = None,
+) -> Any:
+    sequence = history_map.get(key)
+    if not isinstance(sequence, list) or not sequence:
+        return None
+    value = sequence[-1]
+    if converter is None:
+        return value
+    try:
+        return converter(value)
+    except Exception:
+        return None
+
+
+def _maybe_attach_curve(
+    history_map: Dict[str, Any], summary: Dict[str, Any], key: str
+) -> None:
+    sequence = history_map.get(key)
+    if isinstance(sequence, list) and sequence:
+        summary[key] = sequence
+
+
+def _coerce_nonnegative_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        coerced = int(value)
+    except Exception:
+        return None
+    return coerced if coerced >= 0 else None
+
+
 def _collect_history_metrics(history: Dict[str, Any]) -> Dict[str, Any]:
-    output_mean = history.get("output_mean") if isinstance(history, dict) else None
-    output_transform = (
-        history.get("output_transform") if isinstance(history, dict) else None
-    )
-    history_flag = (
-        bool(history.get("output_transform_applied"))
-        if isinstance(history, dict)
-        else False
-    )
-    export_transform_applied = bool(
+    history_map = _history_map(history)
+    output_mean = history_map.get("output_mean")
+    output_transform = history_map.get("output_transform")
+    transform_applied_flag = bool(history_map.get("output_transform_applied")) or (
         output_mean is not None and output_transform is not None
     )
-    transform_applied_flag = history_flag or export_transform_applied
-    initial_objective_value = history.get("initial_objective")
-    initial_objective_float = (
-        0.0 if initial_objective_value is None else float(initial_objective_value)
-    )
 
-    summary = {
-        "wall_time_s": float(history.get("wall_time_s", 0.0)),
-        "initial_objective": (
-            initial_objective_float if initial_objective_value is not None else None
+    summary: Dict[str, Any] = {
+        "wall_time_s": float(history_map.get("wall_time_s", 0.0)),
+        "initial_objective": _coerce_optional_float(
+            history_map.get("initial_objective")
         ),
-        "output_variance": history.get("output_variance"),
-        "loss_curve_last": (
-            float(history["loss_curve"][-1])
-            if isinstance(history.get("loss_curve"), list) and history.get("loss_curve")
-            else None
-        ),
-        "objective_last": (
-            float(history["objective_curve"][-1])
-            if isinstance(history.get("objective_curve"), list)
-            and history.get("objective_curve")
-            else None
-        ),
-        "val_score_last": (
-            float(history["val_score_curve"][-1])
-            if isinstance(history.get("val_score_curve"), list)
-            and history.get("val_score_curve")
-            else None
-        ),
-        "var_z0_last": (
-            history.get("var_z0_curve", [None])[-1]
-            if isinstance(history.get("var_z0_curve"), list)
-            and history.get("var_z0_curve")
-            else None
-        ),
-        "var_zt_last": (
-            history.get("var_zt_curve", [None])[-1]
-            if isinstance(history.get("var_zt_curve"), list)
-            and history.get("var_zt_curve")
-            else None
-        ),
-        "cond_c00_last": (
-            float(history.get("cond_c00_curve", [None])[-1])
-            if isinstance(history.get("cond_c00_curve"), list)
-            and history.get("cond_c00_curve")
-            else None
-        ),
-        "cond_ctt_last": (
-            float(history.get("cond_ctt_curve", [None])[-1])
-            if isinstance(history.get("cond_ctt_curve"), list)
-            and history.get("cond_ctt_curve")
-            else None
-        ),
-        "grad_norm_last": (
-            float(history.get("grad_norm_curve", [None])[-1])
-            if isinstance(history.get("grad_norm_curve"), list)
-            and history.get("grad_norm_curve")
-            else None
-        ),
+        "output_variance": history_map.get("output_variance"),
+        "loss_curve_last": _curve_last(history_map, "loss_curve", converter=float),
+        "objective_last": _curve_last(history_map, "objective_curve", converter=float),
+        "val_score_last": _curve_last(history_map, "val_score_curve", converter=float),
+        "var_z0_last": _curve_last(history_map, "var_z0_curve"),
+        "var_zt_last": _curve_last(history_map, "var_zt_curve"),
+        "cond_c00_last": _curve_last(history_map, "cond_c00_curve", converter=float),
+        "cond_ctt_last": _curve_last(history_map, "cond_ctt_curve", converter=float),
+        "grad_norm_last": _curve_last(history_map, "grad_norm_curve", converter=float),
         "output_mean": output_mean,
         "output_transform": output_transform,
         "output_transform_applied": transform_applied_flag,
     }
 
-    if summary.get("output_mean") is not None:
+    if summary["output_mean"] is not None:
         summary["output_mean"] = _convert_history_array(summary["output_mean"])
-    if summary.get("output_transform") is not None:
+    if summary["output_transform"] is not None:
         summary["output_transform"] = _convert_history_array(
             summary["output_transform"]
         )
@@ -568,34 +568,13 @@ def _collect_history_metrics(history: Dict[str, Any]) -> Dict[str, Any]:
         "grad_norm_curve",
         "val_score",
     ):
-        if isinstance(history.get(key), list) and history.get(key):
-            summary[key] = history[key]
+        _maybe_attach_curve(history_map, summary, key)
 
-    best_val_score_value = history.get("best_val_score")
-    best_val_score: Optional[float]
-    if best_val_score_value is None:
-        best_val_score = None
-    else:
-        try:
-            best_val_score = float(best_val_score_value)
-        except Exception:
-            best_val_score = None
-        else:
-            if not math.isfinite(best_val_score):
-                best_val_score = None
-
-    def _coerce_nonnegative_int(value: Any) -> Optional[int]:
-        if value is None:
-            return None
-        try:
-            coerced = int(value)
-        except Exception:
-            return None
-        return coerced if coerced >= 0 else None
-
-    summary["best_val_score"] = best_val_score
-    summary["best_epoch"] = _coerce_nonnegative_int(history.get("best_epoch"))
-    summary["best_tau"] = _coerce_nonnegative_int(history.get("best_tau"))
+    summary["best_val_score"] = _coerce_optional_float(
+        history_map.get("best_val_score")
+    )
+    summary["best_epoch"] = _coerce_nonnegative_int(history_map.get("best_epoch"))
+    summary["best_tau"] = _coerce_nonnegative_int(history_map.get("best_tau"))
 
     return summary
 

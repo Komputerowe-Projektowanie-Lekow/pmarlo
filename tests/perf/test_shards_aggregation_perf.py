@@ -249,6 +249,7 @@ def test_data_concatenation_large(benchmark, large_shards):
 def test_shard_aggregation_with_hashing(benchmark, medium_shards):
     """Benchmark shard aggregation with hash computation (determinism check)."""
     import hashlib
+
     from pmarlo.data.shard import read_shard
 
     def _aggregate_and_hash():
@@ -380,9 +381,7 @@ def test_large_single_shard_io(benchmark, tmp_path):
     from pmarlo.data.shard import read_shard
 
     # Create large shard
-    shard_path = _create_synthetic_shard(
-        2_000, 24, tmp_path / "large_shard.npz"
-    )
+    shard_path = _create_synthetic_shard(2_000, 24, tmp_path / "large_shard.npz")
 
     def _read_large_shard():
         return read_shard(shard_path)
@@ -390,4 +389,3 @@ def test_large_single_shard_io(benchmark, tmp_path):
     result = benchmark(_read_large_shard)
     metadata, X, _ = result
     assert X.shape == (2_000, 24)
-

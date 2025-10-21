@@ -45,11 +45,16 @@ def _resolve_selection_from_string(
 
 
 def _resolve_selection_from_sequence(
-    selection: Sequence[object],
+    selection: Sequence[int | str],
     handle_failure: Callable[[Exception | None], None],
 ) -> Sequence[int] | None:
     try:
-        indices = [int(i) for i in selection]
+        indices: list[int] = []
+        for item in selection:
+            if isinstance(item, str):
+                indices.append(int(item, 10))
+            else:
+                indices.append(int(item))
     except Exception as exc:
         handle_failure(exc)
         return None

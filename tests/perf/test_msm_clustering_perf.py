@@ -50,9 +50,7 @@ def _generate_synthetic_features(
     # Handle remaining samples
     remaining = n_samples - (samples_per_cluster * n_clusters)
     if remaining > 0:
-        extra = (
-            centers[0] + rng.standard_normal((remaining, n_features)) * 2.0
-        )
+        extra = centers[0] + rng.standard_normal((remaining, n_features)) * 2.0
         features.append(extra)
 
     return np.vstack(features).astype(np.float32)
@@ -85,7 +83,7 @@ def _generate_tica_projection(
 ) -> tuple[np.ndarray, list[int]]:
     """Generate synthetic trajectories and return their TICA projection."""
 
-    deeptime = pytest.importorskip(
+    pytest.importorskip(
         "deeptime",
         reason="deeptime is required for TICA-projected clustering benchmarks",
     )
@@ -128,7 +126,9 @@ class _MockTrajectory:
 class _ClusteringHarness(ClusteringMixin):
     """Concrete harness to exercise :class:`ClusteringMixin` in benchmarks."""
 
-    def __init__(self, features: np.ndarray, lengths: list[int], seed: int = 11) -> None:
+    def __init__(
+        self, features: np.ndarray, lengths: list[int], seed: int = 11
+    ) -> None:
         self.features = features
         self.random_state = seed
         self.trajectories = [_MockTrajectory(length) for length in lengths]
@@ -142,9 +142,7 @@ def test_kmeans_small_dataset(benchmark, small_dataset):
     from pmarlo.markov_state_model.clustering import cluster_microstates
 
     def _cluster():
-        return cluster_microstates(
-            small_dataset, n_states=5, random_state=42
-        )
+        return cluster_microstates(small_dataset, n_states=5, random_state=42)
 
     result = benchmark(_cluster)
     assert result.n_states == 5
@@ -156,9 +154,7 @@ def test_kmeans_medium_dataset(benchmark, medium_dataset):
     from pmarlo.markov_state_model.clustering import cluster_microstates
 
     def _cluster():
-        return cluster_microstates(
-            medium_dataset, n_states=5, random_state=42
-        )
+        return cluster_microstates(medium_dataset, n_states=5, random_state=42)
 
     result = benchmark(_cluster)
     assert result.n_states == 5
@@ -173,9 +169,7 @@ def test_minibatch_kmeans_large_dataset(benchmark, large_dataset):
     from pmarlo.markov_state_model.clustering import cluster_microstates
 
     def _cluster():
-        return cluster_microstates(
-            large_dataset, n_states=5, random_state=42
-        )
+        return cluster_microstates(large_dataset, n_states=5, random_state=42)
 
     result = benchmark(_cluster)
     assert result.n_states == 5
@@ -187,9 +181,7 @@ def test_auto_clustering_small(benchmark, small_dataset):
     from pmarlo.markov_state_model.clustering import cluster_microstates
 
     def _cluster():
-        return cluster_microstates(
-            small_dataset, n_states="auto", random_state=42
-        )
+        return cluster_microstates(small_dataset, n_states="auto", random_state=42)
 
     result = benchmark(_cluster)
     assert result.n_states > 0
@@ -237,9 +229,7 @@ def test_clustering_with_centers(benchmark, medium_dataset):
     from pmarlo.markov_state_model.clustering import cluster_microstates
 
     def _cluster():
-        result = cluster_microstates(
-            medium_dataset, n_states=5, random_state=42
-        )
+        result = cluster_microstates(medium_dataset, n_states=5, random_state=42)
         # Centers should be computed by default
         return result
 
@@ -255,9 +245,7 @@ def test_repeated_clustering_stability(benchmark, small_dataset):
     def _cluster_multiple():
         results = []
         for _ in range(5):
-            result = cluster_microstates(
-                small_dataset, n_states=5, random_state=42
-            )
+            result = cluster_microstates(small_dataset, n_states=5, random_state=42)
             results.append(result)
         return results
 
@@ -275,9 +263,7 @@ def test_many_states_clustering(benchmark, medium_dataset):
     from pmarlo.markov_state_model.clustering import cluster_microstates
 
     def _cluster():
-        return cluster_microstates(
-            medium_dataset, n_states=50, random_state=42
-        )
+        return cluster_microstates(medium_dataset, n_states=50, random_state=42)
 
     result = benchmark(_cluster)
     assert result.n_states == 50
@@ -300,9 +286,7 @@ def test_silhouette_scoring_overhead(benchmark, small_dataset):
     assert -1.0 <= score <= 1.0
 
 
-def test_clustering_mixin_kmeans_on_tica_projection(
-    benchmark, tica_projected_dataset
-):
+def test_clustering_mixin_kmeans_on_tica_projection(benchmark, tica_projected_dataset):
     """Benchmark full mixin-based KMeans clustering on TICA-projected data."""
 
     features, lengths = tica_projected_dataset
@@ -324,9 +308,7 @@ def test_clustering_mixin_kmeans_on_tica_projection(
         assert traj.shape[0] == expected_length
 
 
-def test_regspace_clustering_on_tica_projection(
-    benchmark, tica_projected_dataset
-):
+def test_regspace_clustering_on_tica_projection(benchmark, tica_projected_dataset):
     """Benchmark RegularSpace clustering on TICA features."""
 
     pytest.importorskip(
@@ -349,4 +331,3 @@ def test_regspace_clustering_on_tica_projection(
     assert centers.shape[0] >= 2
     assert centers.shape[0] <= 60
     assert len(np.unique(labels)) == centers.shape[0]
-

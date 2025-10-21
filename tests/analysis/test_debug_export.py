@@ -133,7 +133,9 @@ def test_export_analysis_debug_rejects_zero_counts(tmp_path: Path) -> None:
     )
     br.fes = {"result": {"note": "dummy"}}
 
-    with pytest.raises(ValueError, match="transition counts contain no observed transitions"):
+    with pytest.raises(
+        ValueError, match="transition counts contain no observed transitions"
+    ):
         export_analysis_debug(
             output_dir=tmp_path,
             build_result=br,

@@ -38,9 +38,7 @@ def _make_shard(spec: _ShardSpec, n_frames: int, n_features: int) -> Shard:
         scaler="standard",
         columns=tuple(f"f{i}" for i in range(n_features)),
     )
-    shard_id = (
-        f"T{int(round(spec.temperature))}K_seg{spec.segment_id:04d}_rep{spec.replica_id:03d}"
-    )
+    shard_id = f"T{int(round(spec.temperature))}K_seg{spec.segment_id:04d}_rep{spec.replica_id:03d}"
     meta = ShardMeta(
         schema_version="1.0",
         shard_id=shard_id,

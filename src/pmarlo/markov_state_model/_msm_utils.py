@@ -17,6 +17,8 @@ from pmarlo.utils import msm_utils as _shared_msm_utils
 from pmarlo.utils.msm_utils import ConnectedCountResult
 
 logger = logging.getLogger("pmarlo")
+
+
 def candidate_lag_ladder(
     min_lag: int = 1,
     max_lag: int = 200,
