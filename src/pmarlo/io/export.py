@@ -8,6 +8,8 @@ from typing import Any, Optional
 
 import torch
 
+from pmarlo.utils.path_utils import ensure_directory
+
 
 def export_deeptica_bundle(
     model,
@@ -25,7 +27,7 @@ def export_deeptica_bundle(
       - history.csv (if metrics.csv is available)
     """
     out = Path(out_dir)
-    out.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out)
 
     _save_model_state(out, model, ckpt_path)
     _save_scaler_state(out, scaler)

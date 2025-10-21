@@ -10,17 +10,9 @@ import json
 import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Dict,
-    List,
-    Mapping,
-    NotRequired,
-    Optional,
-    TypedDict,
-    cast,
-)
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, TypedDict, cast
+
+from typing_extensions import NotRequired
 
 from pmarlo.utils.errors import DemuxIntegrityError as _DemuxIntegrityError
 

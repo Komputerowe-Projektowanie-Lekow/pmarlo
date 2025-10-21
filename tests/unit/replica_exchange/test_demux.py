@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import json
 from pathlib import Path
 from typing import List
 
@@ -10,10 +9,12 @@ import pytest
 
 from pmarlo.api import demultiplex_run
 from pmarlo.io.trajectory_reader import MDTrajReader
+from pmarlo.utils.json_io import load_json_file
+from pmarlo.utils.path_utils import ensure_directory
 
 
 def _write_minimal_pdb(path: Path, n_atoms: int = 1) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(path.parent)
     lines: List[str] = []
     for i in range(n_atoms):
         # Simple CA-only atoms; PDB requires fixed-width fields
@@ -49,7 +50,7 @@ def _read_x_coords(path: Path, topology: Path) -> List[float]:
 
 
 def _write_exchange_csv(path: Path, rows: List[List[int]]) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(path.parent)
     with path.open("w", newline="") as f:
         writer = csv.writer(f)
         header = ["slice"] + [f"replica_for_T{i}" for i in range(len(rows[0]))]
@@ -113,7 +114,7 @@ def test_demux_plan_exactness_and_lengths(tmp_path: Path):
 
     # JSON contents and lengths
     for jp, Tk in zip(sorted(jsons), [300.0, 310.0, 320.0]):
-        data = json.loads(Path(jp).read_text())
+        data = load_json_file(jp)
         assert data["schema_version"] == "2.0"
         assert data["kind"] == "demux"
         assert data["run_id"] == "run-TEST"
@@ -163,8 +164,8 @@ def test_reproducibility_hashes(tmp_path: Path):
         out_dir=out2,
     )
     # Compare hashes in JSON manifests
-    h1 = [json.loads(Path(p).read_text())["integrity"]["traj_sha256"] for p in j1]
-    h2 = [json.loads(Path(p).read_text())["integrity"]["traj_sha256"] for p in j2]
+    h1 = [load_json_file(p)["integrity"]["traj_sha256"] for p in j1]
+    h2 = [load_json_file(p)["integrity"]["traj_sha256"] for p in j2]
     assert sorted(h1) == sorted(h2)
 
 

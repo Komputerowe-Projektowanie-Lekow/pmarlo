@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from pmarlo.utils.path_utils import ensure_directory
+
 
 @pytest.mark.skipif(
     __import__("importlib.util").util.find_spec("mdtraj") is None,
@@ -20,7 +22,7 @@ def test_random_highT_frame_differs_from_base(
 
     # Create a fake run directory structure with analysis_results.json
     rd = tmp_path / "run"
-    (rd / "replica_exchange").mkdir(parents=True, exist_ok=True)
+    ensure_directory(rd / "replica_exchange")
     # Copy or reference existing DCD by relative path
     dcd_rel = Path("replica_exchange") / "replica_00.dcd"
     # Symlink or copy

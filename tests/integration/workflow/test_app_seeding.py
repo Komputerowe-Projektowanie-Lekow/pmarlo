@@ -5,6 +5,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.mark.skipif(
     __import__("importlib.util").util.find_spec("openmm") is None,

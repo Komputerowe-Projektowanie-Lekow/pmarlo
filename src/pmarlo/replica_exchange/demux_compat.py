@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Mapping, Sequence
 
+from pmarlo.demultiplexing.exchange_validation import normalize_exchange_mapping
+
 
 @dataclass(frozen=True)
 class ExchangeRecord:
@@ -107,18 +109,15 @@ def _parse_mapping_value(line: Mapping[str, str | None], column: str) -> int:
 
 
 def _validate_exchange_rows(rows: Iterable[ExchangeRecord]) -> None:
+    expected_size: int | None = None
     for rec in rows:
-        replica_count = len(rec.temp_to_replica)
-        vals = rec.temp_to_replica
-        if not all(0 <= x < replica_count for x in vals):
-            raise ValueError(
-                f"replica index out of range in slice={rec.step_index}: {vals}"
-            )
-        if len(set(vals)) != replica_count:
-            raise ValueError(
-                "non-bijective assignment at slice="
-                f"{rec.step_index}; expected a permutation of 0..{replica_count - 1}, got {vals}"
-            )
+        if expected_size is None:
+            expected_size = len(rec.temp_to_replica)
+        normalize_exchange_mapping(
+            rec.temp_to_replica,
+            expected_size=expected_size,
+            context=f"slice={rec.step_index}",
+        )
 
 
 __all__ = ["ExchangeRecord", "parse_temperature_ladder", "parse_exchange_log"]

@@ -6,9 +6,6 @@ Scaled-time pair construction for Deep-TICA training.
 This module provides utilities to construct time-lagged index pairs using
 scaled time t' where delta t' = exp(beta * V(s_t)) * delta t with discrete
 delta t = 1 per frame (units assumed consistent with the provided bias).
-
-If no bias information is provided, the functions fall back to uniform-time
-pairs equivalent to VAC/VAMP on unbiased data.
 """
 
 from typing import Iterable, List
@@ -29,8 +26,9 @@ def scaled_time_pairs(
     length:
         Number of frames in the shard.
     logw:
-        Per-frame log-weights, log w_t = beta * V(s_t). If None or empty,
-        uses uniform time with integer lag round(tau_scaled).
+        Per-frame log-weights, log w_t = beta * V(s_t). When omitted, uniform
+        time increments are assumed and `tau_scaled` is rounded to the nearest
+        integer frame lag.
     tau_scaled:
         Target lag in scaled time units.
     jitter:
@@ -41,19 +39,29 @@ def scaled_time_pairs(
     if length <= 1:
         return np.array([], dtype=np.int64), np.array([], dtype=np.int64)
 
-    if logw is None or getattr(logw, "size", 0) == 0:
-        lag = max(1, int(round(float(tau_scaled))))
+    if logw is None:
+        lag = int(round(float(tau_scaled)))
+        if lag <= 0:
+            raise ValueError("tau_scaled must be positive when log weights are absent")
         if lag >= length:
             return np.array([], dtype=np.int64), np.array([], dtype=np.int64)
+
         i = np.arange(0, length - lag, dtype=np.int64)
         j = i + lag
         return i, j
 
+    if getattr(logw, "size", 0) == 0:
+        raise ValueError("Scaled-time pairing requires per-frame log weights")
+
     lw = np.asarray(logw, dtype=np.float64).reshape(-1)
     if lw.shape[0] != length:
         raise ValueError("logw length must match the number of frames")
-    # Avoid numerical overflow/underflow in exp
-    wt = np.exp(np.clip(lw, -80.0, 80.0))
+    if not np.all(np.isfinite(lw)):
+        raise ValueError("logw must contain finite values")
+    if np.any(lw > 700.0) or np.any(lw < -700.0):
+        raise OverflowError("logw values would overflow exp during scaling")
+
+    wt = np.exp(lw)
     st = np.cumsum(wt)
     targets = st + float(tau_scaled)
     j = np.searchsorted(st, targets, side="left")
@@ -77,7 +85,8 @@ def make_training_pairs_from_shards(
     ----------
     shard_records:
         Iterable of tuples (X, dtraj, bias_potential, temperature_K). Only X
-        and bias/temperature are used to build pairs.
+        and bias/temperature are used to build pairs. When either bias or
+        temperature is missing, uniform time spacing is assumed.
     tau_scaled:
         Target scaled-time lag passed to :func:`scaled_time_pairs`.
 
@@ -97,14 +106,13 @@ def make_training_pairs_from_shards(
         X = np.asarray(X, dtype=np.float64)
         n = int(X.shape[0])
         X_list.append(X)
-        # Compute log-weights if bias and temperature are available
-        logw = None
         if bias is not None and T is not None:
-            try:
-                beta = 1.0 / (0.008314462618 / float(T))  # kJ/mol/K to 1/kJ/mol
-                logw = beta * np.asarray(bias, dtype=np.float64)
-            except Exception:
-                logw = None
+            beta = 1.0 / (0.008314462618 * float(T))  # kJ/mol/K to 1/kJ/mol
+            logw = beta * np.asarray(bias, dtype=np.float64)
+            if logw.shape[0] != n:
+                raise ValueError("Bias potential must match number of frames")
+        else:
+            logw = None
 
         i, j = scaled_time_pairs(n, logw, tau_scaled)
         if len(i) > 0:

@@ -1,0 +1,42 @@
+common:
+  engine: kmeans
+  scaler: standard
+  random_state: 777
+  max_iter: 500
+  tol: 1.0e-4
+  n_init: 3
+  chunk_size: 10000
+
+experiments:
+  E0_same_temp:
+    n_clusters: 120
+    lag_steps: 6
+    guardrails:
+      min_scc_fraction: 0.9
+      max_empty_fraction: 0.3
+      max_diagonal_mass: 0.95
+    postprocess:
+      merge_small_clusters: true
+      min_cluster_population: 25
+
+  E1_mixed_ladders:
+    n_clusters: 140
+    lag_steps: 8
+    guardrails:
+      min_scc_fraction: 0.9
+      max_empty_fraction: 0.3
+      max_diagonal_mass: 0.95
+    postprocess:
+      merge_small_clusters: true
+      min_cluster_population: 30
+
+  E2_disjoint_ladders:
+    n_clusters: 140
+    lag_steps: 8
+    guardrails:
+      min_scc_fraction: 0.9
+      max_empty_fraction: 0.35
+      max_diagonal_mass: 0.95
+    postprocess:
+      merge_small_clusters: true
+      min_cluster_population: 30

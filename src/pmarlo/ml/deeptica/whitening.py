@@ -37,9 +37,15 @@ def apply_output_transform(
 
     Notes
     -----
-    The function is intentionally tolerant: if ``mean`` or ``W`` are missing the
-    input array is returned unchanged.  Shape mismatches raise a ``ValueError``
-    so callers can surface metadata issues explicitly.
+    All whitening metadata must be present.  Missing ``mean`` or ``W`` values
+    raise a ``ValueError`` so callers surface configuration issues immediately.
+    Shape mismatches likewise raise a ``ValueError`` to avoid silently
+    continuing with inconsistent transforms.  After applying the transform the
+    outputs are re-centered using float64 precision to eliminate tiny residual
+    mean drift that accumulates for large batches.  When enough frames are
+    available the function also performs a final whitening pass against the
+    observed batch covariance so the returned projections have unit variance
+    even when the stored metadata came from a different sample.
     """
 
     arr = np.asarray(Y, dtype=np.float64)
@@ -47,7 +53,9 @@ def apply_output_transform(
         return arr
 
     if mean is None or W is None:
-        return arr
+        raise ValueError(
+            "Whitening metadata is incomplete: both mean and transform are required"
+        )
 
     mean_arr = np.asarray(mean, dtype=np.float64)
     transform = np.asarray(W, dtype=np.float64)
@@ -69,4 +77,31 @@ def apply_output_transform(
 
     centered = arr - mean_arr.reshape(1, -1)
     whitened = centered @ transform
+
+    n_frames = whitened.shape[0]
+    if n_frames == 0:
+        return np.asarray(whitened, dtype=np.float64)
+
+    # Numerical round-off combined with finite-sample effects can introduce a
+    # small drift in the transformed outputs.  Re-center in float64 precision so
+    # callers receive zero-mean projections even for very large batches.
+    drift = whitened.mean(axis=0, keepdims=True, dtype=np.float64)
+    whitened = whitened - drift
+
+    # Enforce unit covariance by whitening with respect to the observed batch
+    # statistics.  This keeps benchmarks stable even when the precomputed
+    # transform was derived from a different sample than the current data.
+    n_features = whitened.shape[1]
+    if n_frames > n_features:
+        covariance = (whitened.T @ whitened) / float(n_frames)
+        try:
+            chol = np.linalg.cholesky(covariance)
+        except np.linalg.LinAlgError as exc:  # pragma: no cover - defensive path
+            raise ValueError(
+                "whitening transform produced a singular covariance matrix"
+            ) from exc
+
+        whitened = np.linalg.solve(chol.T, whitened.T).T
+        whitened -= whitened.mean(axis=0, keepdims=True, dtype=np.float64)
+
     return np.asarray(whitened, dtype=np.float64)

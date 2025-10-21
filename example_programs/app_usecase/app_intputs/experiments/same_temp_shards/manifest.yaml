@@ -1,0 +1,68 @@
+experiment: E0_same_temp
+reference_temperature_K: 300.0
+deep_tica:
+  lag_frames: 5
+  seed: 1138
+reweighting:
+  strategy: identity
+  expect_uniform_weights: true
+shards:
+- shard_id: T300K_seg0000_rep000
+  npz: T300K_seg0000_rep000.npz
+  json: T300K_seg0000_rep000.json
+  seed: 123456789
+  frames: 1000
+  dt_ps: 0.0179856
+  temperature_K: 300.0
+  beta: 0.40090785
+  replica_id: 0
+  segment_id: 0
+  exchange_window_id: 0
+- shard_id: T300K_seg0001_rep000
+  npz: T300K_seg0001_rep000.npz
+  json: T300K_seg0001_rep000.json
+  seed: 123456790
+  frames: 1000
+  dt_ps: 0.0179856
+  temperature_K: 300.0
+  beta: 0.40090785
+  replica_id: 0
+  segment_id: 1
+  exchange_window_id: 0
+- shard_id: T300K_seg0002_rep000
+  npz: T300K_seg0002_rep000.npz
+  json: T300K_seg0002_rep000.json
+  seed: 123456791
+  frames: 1000
+  dt_ps: 0.0179856
+  temperature_K: 300.0
+  beta: 0.40090785
+  replica_id: 0
+  segment_id: 2
+  exchange_window_id: 0
+- shard_id: T300K_seg0003_rep000
+  npz: T300K_seg0003_rep000.npz
+  json: T300K_seg0003_rep000.json
+  seed: 123456792
+  frames: 1000
+  dt_ps: 0.0179856
+  temperature_K: 300.0
+  beta: 0.40090785
+  replica_id: 0
+  segment_id: 3
+  exchange_window_id: 0
+- shard_id: T300K_seg0004_rep000
+  npz: T300K_seg0004_rep000.npz
+  json: T300K_seg0004_rep000.json
+  seed: 123456793
+  frames: 1000
+  dt_ps: 0.0179856
+  temperature_K: 300.0
+  beta: 0.40090785
+  replica_id: 0
+  segment_id: 4
+  exchange_window_id: 0
+notes:
+- Source: REMD run with ladder 300/320/340 K; demuxed 300 K track.
+- Saved-frame spacing dt_ps derived from demux metadata.
+- Uniform weights expected; no TRAM/MBAR for E0.

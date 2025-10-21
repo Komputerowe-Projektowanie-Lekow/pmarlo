@@ -1,80 +1,62 @@
 from __future__ import annotations
 
 import importlib
-import sys
-import types
 
-import numpy as np
 import pytest
 
+np = pytest.importorskip("numpy")
+pytest.importorskip("mlcolvar")
 torch = pytest.importorskip("torch")
 
 
-@pytest.fixture(autouse=True)
-def mlcolvar_stub(monkeypatch):
-    torch_nn = torch.nn
-
-    class DummyDeepTICA(torch_nn.Module):
-        def __init__(self, layers, n_cvs, activation, options):  # type: ignore[override]
-            super().__init__()
-            self.layers = list(layers)
-            self.n_cvs = int(n_cvs)
-            self.activation = activation
-            self.options = options
-            self.nn = torch_nn.Sequential(torch_nn.Linear(layers[0], layers[-1]))
-
-        def named_children(self):  # type: ignore[override]
-            return self.nn.named_children()
-
-    mlcolvar = types.ModuleType("mlcolvar")
-    cvs = types.ModuleType("mlcolvar.cvs")
-    cvs.DeepTICA = DummyDeepTICA
-    monkeypatch.setitem(sys.modules, "mlcolvar", mlcolvar)
-    monkeypatch.setitem(sys.modules, "mlcolvar.cvs", cvs)
-    yield
-    sys.modules.pop("mlcolvar", None)
-    sys.modules.pop("mlcolvar.cvs", None)
-    sys.modules.pop("pmarlo.features.deeptica.core.model", None)
-    sys.modules.pop("pmarlo.features.deeptica.core.trainer_api", None)
-    sys.modules.pop("pmarlo.features.deeptica", None)
-
-
-def test_train_deeptica_pipeline_runs_with_stub(monkeypatch, tmp_path):
-    trainer_stub = types.ModuleType("pmarlo.ml.deeptica.trainer")
-
-    class DummyCurriculumConfig:
-        def __init__(self, **kwargs):
-            checkpoint_dir = kwargs.pop("checkpoint_dir", None)
-            self.__dict__.update(kwargs)
-            self._checkpoint_dir = checkpoint_dir
-
-        @property
-        def checkpoint_dir(self):
-            return self._checkpoint_dir
-
-        @checkpoint_dir.setter
-        def checkpoint_dir(self, value):
-            self._checkpoint_dir = value
-
-    class DummyTrainer:
-        def __init__(self, net, cfg):
-            self.net = net
-            self.cfg = cfg
-
-        def fit(self, sequences):
-            assert sequences, "expected non-empty sequences"
-            return {
-                "loss_curve": [1.0, 0.5],
-                "grad_norm_curve": [0.2],
-            }
-
-    trainer_stub.CurriculumConfig = DummyCurriculumConfig
-    trainer_stub.DeepTICACurriculumTrainer = DummyTrainer
-    monkeypatch.setitem(sys.modules, "pmarlo.ml.deeptica.trainer", trainer_stub)
-
-    trainer_api = importlib.reload(
+def _reload_trainer_api():
+    return importlib.reload(
         importlib.import_module("pmarlo.features.deeptica.core.trainer_api")
     )
+
+
+def test_forward_to_tensor_preserves_device_and_dtype():
+    trainer_api = _reload_trainer_api()
+
+    class Identity(torch.nn.Module):
+        def forward(self, x):  # type: ignore[override]
+            return x
+
+    target_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    module = Identity().to(target_device)
+    data = np.arange(6, dtype=np.float32).reshape(3, 2)
+
+    tensor = trainer_api._forward_to_tensor(module, data)
+    assert isinstance(tensor, torch.Tensor)
+    assert tensor.device == target_device
+    assert tensor.dtype == torch.float32
+
+    array = trainer_api._forward_to_numpy(module, data)
+    assert isinstance(array, np.ndarray)
+    assert array.dtype == np.float64
+
+
+def test_compute_output_variance_torch_cpu_matches_torch():
+    trainer_api = _reload_trainer_api()
+    samples = torch.tensor([[1.0, 2.0, 3.0], [3.0, 6.0, 9.0]], dtype=torch.float32)
+
+    result = trainer_api._compute_output_variance(samples)
+    expected = samples.var(dim=0, unbiased=True).cpu().tolist()
+
+    assert result == pytest.approx(expected)
+
+
+def test_compute_output_variance_single_sample_uses_biased_estimate():
+    trainer_api = _reload_trainer_api()
+    single = torch.tensor([[5.0, -1.0, 0.5]], dtype=torch.float32)
+
+    result = trainer_api._compute_output_variance(single)
+
+    assert result == pytest.approx([0.0, 0.0, 0.0])
+
+
+def test_train_deeptica_pipeline_runs(tmp_path):
+    trainer_api = _reload_trainer_api()
     deeptica_module = importlib.reload(
         importlib.import_module("pmarlo.features.deeptica")
     )

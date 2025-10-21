@@ -3,6 +3,7 @@ from pathlib import Path
 import matplotlib
 import mdtraj as md
 import numpy as np
+import pytest
 
 from pmarlo.demultiplexing.demux_metadata import DemuxMetadata
 from pmarlo.markov_state_model.enhanced_msm import EnhancedMSM
@@ -10,6 +11,8 @@ from pmarlo.markov_state_model.results import ITSResult
 from pmarlo.replica_exchange.replica_exchange import ReplicaExchange
 
 matplotlib.use("Agg")
+
+pytestmark = pytest.mark.integration
 
 
 def _write_water_pdb(tmpdir: Path) -> Path:

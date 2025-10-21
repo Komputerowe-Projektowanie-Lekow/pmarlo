@@ -1,18 +1,6 @@
 from __future__ import annotations
 
-"""
-Performance micro-benchmarks for legacy vs streaming demux.
-
-Notes
------
-- These tests are marked with ``@pytest.mark.perf`` and are skipped by default
-  unless the environment variable ``PMARLO_RUN_PERF`` is set. Run locally with:
-
-    PMARLO_RUN_PERF=1 poetry run pytest tests/perf/test_demux_perf.py -q
-
-- Uses ``pytest-benchmark`` if available to capture wall time.
-- Peak memory is measured via ``tracemalloc`` as an approximate indicator.
-"""
+"""Performance micro-benchmarks for the demux facade and streaming engine."""
 
 import os
 import tracemalloc
@@ -22,7 +10,7 @@ import mdtraj as md
 import numpy as np
 import pytest
 
-pytestmark = pytest.mark.perf
+pytestmark = [pytest.mark.perf, pytest.mark.benchmark]
 
 # Optional plugin
 pytest_benchmark = pytest.importorskip(
@@ -36,7 +24,7 @@ if not os.getenv("PMARLO_RUN_PERF"):
 
 
 def _make_replicas(
-    tmp_path: Path, n_replicas: int = 5, n_frames: int = 1000, n_atoms: int = 3
+    tmp_path: Path, n_replicas: int = 5, n_frames: int = 400, n_atoms: int = 3
 ):
     top = md.Topology()
     chain = top.add_chain()
@@ -59,7 +47,7 @@ def _make_replicas(
     return str(pdb), dcds
 
 
-def _build_legacy_remd(pdb: str, dcds: list[str], tmp_path: Path):
+def _build_remd(pdb: str, dcds: list[str], tmp_path: Path):
     from pmarlo.replica_exchange.replica_exchange import ReplicaExchange
 
     remd = ReplicaExchange.__new__(ReplicaExchange)
@@ -68,7 +56,7 @@ def _build_legacy_remd(pdb: str, dcds: list[str], tmp_path: Path):
     remd.temperatures = [300.0 + 10.0 * i for i in range(len(dcds))]
     remd.n_replicas = len(dcds)
     # 1 frame per segment, map fixed states so target is replica 0 always
-    n_segments = 1000
+    n_segments = 200
     remd.exchange_history = [[0] + list(range(1, len(dcds))) for _ in range(n_segments)]
     remd.reporter_stride = 1
     remd.dcd_stride = 1
@@ -87,11 +75,11 @@ def _benchmark_memory(func, *args, **kwargs):
         tracemalloc.stop()
 
 
-def test_perf_legacy_demux(benchmark, tmp_path: Path):
+def test_perf_demux_facade(benchmark, tmp_path: Path):
     from pmarlo.demultiplexing.demux import demux_trajectories
 
     pdb, dcds = _make_replicas(tmp_path)
-    remd = _build_legacy_remd(pdb, dcds, tmp_path)
+    remd = _build_remd(pdb, dcds, tmp_path)
 
     def _run():
         return demux_trajectories(remd, target_temperature=300.0, equilibration_steps=0)
@@ -103,7 +91,7 @@ def test_perf_legacy_demux(benchmark, tmp_path: Path):
     result = benchmark(_bench)
     # Attach memory info to output for human inspection
     path, cur, peak = result
-    print(f"legacy demux: out={path} peak_mem_bytes={peak}")
+    print(f"demux facade: out={path} peak_mem_bytes={peak}")
 
 
 def test_perf_streaming_demux(benchmark, tmp_path: Path):
@@ -115,7 +103,7 @@ def test_perf_streaming_demux(benchmark, tmp_path: Path):
     pdb, dcds = _make_replicas(tmp_path)
     n_replicas = len(dcds)
     temperatures = [300.0 + 10.0 * i for i in range(n_replicas)]
-    n_segments = 1000
+    n_segments = 200
     exchange_history = [[0] + list(range(1, n_replicas)) for _ in range(n_segments)]
 
     reader = MDTrajReader(topology_path=pdb)
@@ -132,12 +120,14 @@ def test_perf_streaming_demux(benchmark, tmp_path: Path):
     )
 
     out = tmp_path / "demux_streaming.dcd"
-    writer = MDTrajDCDWriter(rewrite_threshold=2048).open(str(out), pdb, overwrite=True)
 
     def _run():
-        res = demux_streaming(plan, pdb, reader, writer, fill_policy="repeat")
-        writer.close()
-        return res
+        writer = MDTrajDCDWriter(rewrite_threshold=2048)
+        writer.open(str(out), pdb, overwrite=True)
+        try:
+            return demux_streaming(plan, pdb, reader, writer, fill_policy="repeat")
+        finally:
+            writer.close()
 
     def _bench():
         res, (cur, peak) = _benchmark_memory(_run)

@@ -5,12 +5,13 @@ from __future__ import annotations
 from typing import Any, Mapping, MutableMapping, Sequence
 
 import numpy as np
+from scipy import ndimage
+
+from pmarlo import constants as const
 
 from .project_cv import apply_whitening_from_metadata
 
 DatasetLike = MutableMapping[str, Any]
-
-_KB_KJ_PER_MOL = 0.00831446261815324
 
 
 def _normalise_weights(
@@ -77,9 +78,11 @@ def _compute_bandwidth(
         return value
 
     selector_norm = str(selector).lower()
-    mean = float(np.sum(weights * coord))
-    var = float(np.sum(weights * (coord - mean) ** 2))
-    std = np.sqrt(var) if var > 0 else 1.0
+    mean = float(np.average(coord, weights=weights))
+    var = float(np.average((coord - mean) ** 2, weights=weights))
+    if var <= 0.0:
+        raise ValueError("Coordinate variance must be positive to compute bandwidth")
+    std = np.sqrt(var)
     d = 2.0
     n_eff = max(ess, 1.0)
 
@@ -92,7 +95,7 @@ def _compute_bandwidth(
 
     bandwidth = std * factor
     if not np.isfinite(bandwidth) or bandwidth <= 0.0:
-        bandwidth = 1.0
+        raise ValueError("Computed bandwidth must be finite and positive")
     return float(bandwidth)
 
 
@@ -120,10 +123,15 @@ def _compute_kde_surface(
     y_min = float(np.min(coord_y)) - pad_y
     y_max = float(np.max(coord_y)) + pad_y
 
-    if not np.isfinite(x_min) or not np.isfinite(x_max) or x_min == x_max:
-        x_min, x_max = -1.0, 1.0
-    if not np.isfinite(y_min) or not np.isfinite(y_max) or y_min == y_max:
-        y_min, y_max = -1.0, 1.0
+    if (
+        not np.isfinite(x_min)
+        or not np.isfinite(x_max)
+        or x_min >= x_max
+        or not np.isfinite(y_min)
+        or not np.isfinite(y_max)
+        or y_min >= y_max
+    ):
+        raise ValueError("Coordinate range must be finite and strictly increasing")
 
     xedges = np.linspace(x_min, x_max, num=nx + 1, dtype=np.float64)
     yedges = np.linspace(y_min, y_max, num=ny + 1, dtype=np.float64)
@@ -190,22 +198,23 @@ def _smooth_sparse_bins(hist: np.ndarray, min_count: int) -> tuple[np.ndarray, i
     if not np.any(mask):
         return hist, 0
 
+    def _neighbor_mean(values: np.ndarray) -> float:
+        centre = values.size // 2
+        total = float(np.sum(values, dtype=np.float64)) - float(values[centre])
+        return total / float(values.size - 1)
+
+    neighbor_mean = ndimage.generic_filter(
+        hist,
+        _neighbor_mean,
+        size=3,
+        mode="nearest",
+    )
+
     smoothed = hist.copy()
-    padded = np.pad(hist, 1, mode="edge")
-    coords = np.argwhere(mask)
-    smoothed_bins = 0
-    for i, j in coords:
-        patch = padded[i : i + 3, j : j + 3]
-        neighborhood = patch.reshape(-1)
-        center_idx = neighborhood.size // 2
-        neighborhood = np.delete(neighborhood, center_idx)
-        neighbor_mean = float(np.mean(neighborhood)) if neighborhood.size else 0.0
-        if neighbor_mean <= 0.0:
-            continue
-        target = max(neighbor_mean, float(min_count))
-        if target > smoothed[i, j]:
-            smoothed[i, j] = target
-            smoothed_bins += 1
+    targets = np.maximum(neighbor_mean, float(min_count))
+    update_mask = mask & (neighbor_mean > 0.0) & (targets > smoothed)
+    smoothed[update_mask] = targets[update_mask]
+    smoothed_bins = int(np.count_nonzero(update_mask))
     return smoothed, smoothed_bins
 
 
@@ -213,25 +222,33 @@ def ensure_fes_inputs_whitened(dataset: DatasetLike | Mapping[str, Any]) -> bool
     """Apply whitening to the continuous CVs used for FES generation."""
 
     if not isinstance(dataset, (MutableMapping, dict)):
-        return False
+        raise TypeError("Dataset must be a mutable mapping to apply whitening")
 
-    X = dataset.get("X")  # type: ignore[assignment]
+    if "X" not in dataset:
+        raise KeyError("Dataset is missing 'X' array required for whitening")
+
+    X = dataset["X"]  # type: ignore[index]
     if X is None:
-        return False
+        raise ValueError("Dataset provides no coordinate array for whitening")
 
     artifacts = dataset.get("__artifacts__")  # type: ignore[assignment]
-    summary: Any | None = None
-    if isinstance(artifacts, Mapping):
-        summary = artifacts.get("mlcv_deeptica")
+    if not isinstance(artifacts, Mapping):
+        raise KeyError("Dataset artifacts are required for whitening metadata")
+
+    summary = artifacts.get("mlcv_deeptica")
     if not isinstance(summary, (MutableMapping, dict)):
-        return False
+        raise KeyError(
+            "Dataset artifacts must include 'mlcv_deeptica' whitening metadata"
+        )
 
     whitened, applied = apply_whitening_from_metadata(
         np.asarray(X, dtype=np.float64), summary
     )
-    if applied:
-        dataset["X"] = whitened  # type: ignore[index]
-    return applied
+    if not applied:
+        raise RuntimeError("Expected whitening metadata to be applied")
+
+    dataset["X"] = whitened  # type: ignore[index]
+    return True
 
 
 def _select_split(
@@ -317,10 +334,7 @@ def _prepare_fes_coordinates(
         raise ValueError("Dataset must be a mapping with 'splits'")
 
     if apply_whitening:
-        try:
-            ensure_fes_inputs_whitened(dataset)
-        except Exception:
-            pass  # Whitening is best-effort; fall back to raw data when missing
+        ensure_fes_inputs_whitened(dataset)
 
     split_name, split_data = _select_split(dataset, split)
     coords = _coerce_array(split_data, "X")
@@ -408,17 +422,24 @@ def _compute_fes_surface(
 def _finalize_free_energy(hist: np.ndarray, temperature_K: float) -> np.ndarray:
     """Convert histogram counts into a free-energy landscape."""
 
+    if not np.all(np.isfinite(hist)):
+        raise ValueError("Histogram must contain only finite values")
+
     total = float(np.sum(hist))
     if not np.isfinite(total) or total <= 0:
-        hist = np.ones_like(hist, dtype=np.float64)
-        total = float(np.sum(hist))
+        raise ValueError("Histogram total must be positive and finite")
 
-    with np.errstate(divide="ignore"):
-        prob = hist / total
-        free_energy = -(_KB_KJ_PER_MOL * float(temperature_K)) * np.log(prob + 1e-12)
+    if np.any(hist <= 0):
+        raise ValueError("Histogram entries must be strictly positive for FES")
 
-    finite = np.isfinite(free_energy)
-    if finite.any():
-        free_energy = free_energy - np.min(free_energy[finite])
+    prob = hist / total
+    free_energy = -(
+        const.BOLTZMANN_CONSTANT_KJ_PER_MOL * float(temperature_K)
+    ) * np.log(prob)
+
+    if not np.all(np.isfinite(free_energy)):
+        raise FloatingPointError("Free energy computation produced non-finite values")
+
+    free_energy = free_energy - np.min(free_energy)
 
     return free_energy

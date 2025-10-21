@@ -18,6 +18,8 @@ from rdkit import Chem
 from rdkit.Chem import Descriptors
 from rdkit.Chem.rdMolDescriptors import CalcExactMolWt
 
+from pmarlo.utils.path_utils import ensure_directory
+
 _STANDARD_RESIDUES = {
     "ALA",
     "ARG",
@@ -685,7 +687,7 @@ class Protein:
             output_file (str): Path for the output PDB file
         """
         output_path = Path(output_file)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_directory(output_path.parent)
 
         if not self.prepared:
             # If not prepared, copy the original file

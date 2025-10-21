@@ -9,6 +9,8 @@ import mdtraj as md
 import numpy as np
 import pandas as pd
 
+from pmarlo.utils.path_utils import ensure_directory
+
 logger = logging.getLogger("pmarlo")
 
 
@@ -40,6 +42,7 @@ class MSMBase:
         temperatures: Optional[List[float]] = None,
         output_dir: str = "output/msm_analysis",
         random_state: Optional[int] = 42,
+        ignore_trajectory_errors: bool = False,
     ) -> None:
         # IO and configuration
         self.trajectory_files: List[str] = (
@@ -51,7 +54,7 @@ class MSMBase:
         self.temperatures: List[float] = temperatures or [300.0]
         self.output_dir: Path = Path(output_dir)
         # Ensure parent directories exist to avoid FileNotFoundError on CI
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        ensure_directory(self.output_dir)
 
         # Trajectory and feature data
         self.trajectories: List[md.Trajectory] = []
@@ -82,6 +85,9 @@ class MSMBase:
         self.time_per_frame_ps: Optional[float] = None
         self.demux_metadata: Optional[Any] = None
         self.total_frames: Optional[int] = None
+
+        # IO behaviour controls
+        self.ignore_trajectory_errors: bool = bool(ignore_trajectory_errors)
 
         # Estimation controls
         self.estimator_backend: str = "deeptime"

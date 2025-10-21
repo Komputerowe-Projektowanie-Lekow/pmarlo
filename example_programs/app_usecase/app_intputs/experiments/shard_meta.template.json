@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0",
+  "shard_id": "shard_000",
+  "temperature_K": 300.0,
+  "beta": 0.4015,
+  "replica_id": 0,
+  "segment_id": 0,
+  "exchange_window_id": 0,
+  "n_frames": 5000,
+  "dt_ps": 0.02,
+  "feature_spec": {
+    "name": "deeptica_features",
+    "scaler": "standard",
+    "columns": [
+      "cv_0",
+      "cv_1",
+      "cv_2"
+    ]
+  },
+  "provenance": {
+    "generator": "app_usecase_simulator",
+    "generator_version": "0.1.0",
+    "rng_seed": 12000,
+    "temperature_ladder_K": [
+      294.0,
+      298.0,
+      302.0,
+      306.0
+    ],
+    "notes": "Update ladder list per shard manifest; include energies for reweighting when applicable."
+  }
+}

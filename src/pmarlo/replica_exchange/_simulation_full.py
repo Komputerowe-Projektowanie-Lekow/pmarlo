@@ -8,7 +8,10 @@ Provides molecular dynamics simulation capabilities with metadynamics and
 system preparation.
 """
 
+import logging
 from collections import defaultdict
+from contextlib import ExitStack
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 import mdtraj as md
@@ -18,16 +21,12 @@ import openmm.app as app
 import openmm.unit as unit
 from openmm.app.metadynamics import BiasVariable, Metadynamics
 
+if not hasattr(openmm.XmlSerializer, "load"):  # pragma: no cover - compatibility
+    openmm.XmlSerializer.load = staticmethod(openmm.XmlSerializer.deserialize)
+
 from pmarlo import api
 
 from .bias_hook import BiasHook
-
-# Compatibility shim for OpenMM XML deserialization API changes
-if not hasattr(openmm.XmlSerializer, "load"):
-    # Older OpenMM releases expose ``deserialize`` instead of ``load``.
-    # Provide a small alias so downstream code can rely on ``load``
-    # regardless of the installed OpenMM version.
-    openmm.XmlSerializer.load = openmm.XmlSerializer.deserialize  # type: ignore[attr-defined]
 
 # PDBFixer is optional - users can install with: pip install "pmarlo[fixer]"
 try:
@@ -56,6 +55,14 @@ class Simulation:
         Simulation pressure in bar (default: 1.0)
     platform : str, optional
         OpenMM platform to use ("CUDA", "OpenCL", "CPU", "Reference")
+    steps : int, optional
+        Default number of production steps when :meth:`run_production` is called
+        without an explicit value.  Defaults to 100000 for backwards compatibility.
+    use_metadynamics : bool, optional
+        Whether metadynamics biases should be configured during preparation
+        (default: True).
+    random_seed : int, optional
+        Seed forwarded to OpenMM components for deterministic trajectories.
     """
 
     def __init__(
@@ -65,18 +72,27 @@ class Simulation:
         temperature: float = 300.0,
         pressure: float = 1.0,
         platform: str = "CUDA",
+        *,
+        steps: int | None = None,
+        use_metadynamics: bool = True,
+        random_seed: int | None = None,
     ):
-        self.pdb_file = pdb_file
-        self.output_dir = output_dir
-        self.temperature = temperature * unit.kelvin
-        self.pressure = pressure * unit.bar
+        self.pdb_file = str(pdb_file)
+        self.output_dir = Path(output_dir or "output")
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.temperature = float(temperature)
+        self.pressure = float(pressure)
         self.platform_name = platform
+        self.steps = int(steps) if steps is not None else 100000
+        self.use_metadynamics = bool(use_metadynamics)
+        self.random_seed = random_seed
 
         # Initialize OpenMM objects
         self.pdb = None
         self.forcefield = None
         self.system = None
         self.simulation = None
+        self.openmm_simulation = None
         self.platform = None
 
         # Trajectory storage
@@ -87,6 +103,19 @@ class Simulation:
         self.metadynamics = None
         self.bias_variables: list[Any] = []
         self.bias_hook: Optional[BiasHook] = None
+        self.meta = None
+
+    @property
+    def temperature_quantity(self) -> unit.Quantity:
+        """OpenMM-compatible temperature quantity."""
+
+        return self.temperature * unit.kelvin
+
+    @property
+    def pressure_quantity(self) -> unit.Quantity:
+        """OpenMM-compatible pressure quantity."""
+
+        return self.pressure * unit.bar
 
     def prepare_system(self, forcefield_files=None, water_model="tip3p"):
         """
@@ -98,11 +127,10 @@ class Simulation:
             Force field XML files to use
         water_model : str, optional
             Water model to use (default: "tip3p")
-
         Returns
         -------
-        self : Simulation
-            Returns self for method chaining
+        tuple[app.Simulation, Metadynamics | None]
+            Prepared OpenMM simulation and optional metadynamics driver.
         """
         if forcefield_files is None:
             forcefield_files = ["amber14-all.xml", f"{water_model}.xml"]
@@ -126,13 +154,50 @@ class Simulation:
         )
 
         # Add barostat for NPT
-        barostat = openmm.MonteCarloBarostat(self.pressure, self.temperature)
+        barostat = openmm.MonteCarloBarostat(
+            self.pressure_quantity, self.temperature_quantity
+        )
+        if self.random_seed is not None:
+            barostat.setRandomNumberSeed(int(self.random_seed))
         self.system.addForce(barostat)
 
         # Set up platform
         self._setup_platform()
 
-        return self
+        integrator = openmm.LangevinMiddleIntegrator(
+            self.temperature_quantity, 1 / unit.picosecond, 0.002 * unit.picoseconds
+        )
+        if self.random_seed is not None:
+            integrator.setRandomNumberSeed(int(self.random_seed))
+
+        self.simulation = app.Simulation(
+            self.pdb.topology, self.system, integrator, self.platform
+        )
+        self.simulation.context.setPositions(self.pdb.positions)
+        if self.random_seed is not None:
+            self.simulation.context.setVelocitiesToTemperature(
+                self.temperature_quantity, self.random_seed
+            )
+
+        self.openmm_simulation = self.simulation
+
+        if self.use_metadynamics and self.bias_variables:
+            bias_dir = self.output_dir / "bias"
+            bias_dir.mkdir(parents=True, exist_ok=True)
+            self.metadynamics = Metadynamics(
+                self.system,
+                self.bias_variables,
+                self.temperature_quantity,
+                biasFactor=10,
+                height=1.0 * unit.kilojoules_per_mole,
+                frequency=500,
+                biasDir=str(bias_dir),
+            )
+        else:
+            self.metadynamics = None
+
+        self.meta = self.metadynamics
+        return self.openmm_simulation, self.meta
 
     def _fix_pdb_issues(self):
         """Fix common PDB issues using PDBFixer."""
@@ -153,15 +218,30 @@ class Simulation:
         self.pdb = fixer
 
     def _setup_platform(self):
-        """Set up the OpenMM platform."""
+        """Set up the OpenMM platform, preferring GPU when available."""
         try:
             self.platform = openmm.Platform.getPlatformByName(self.platform_name)
-            if self.platform_name == "CUDA":
-                self.platform.setPropertyDefaultValue("Precision", "mixed")
-        except Exception:
-            # Fall back to CPU if requested platform is not available
-            self.platform = openmm.Platform.getPlatformByName("CPU")
-            print(f"Warning: {self.platform_name} platform not available, using CPU")
+        except Exception as exc:
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                "Requested OpenMM platform '%s' unavailable (%s); falling back to CPU.",
+                self.platform_name,
+                exc,
+            )
+            fallback_order = [
+                name for name in ("CPU", "Reference") if name != self.platform_name
+            ]
+            for candidate in fallback_order:
+                try:
+                    self.platform = openmm.Platform.getPlatformByName(candidate)
+                    self.platform_name = candidate
+                    break
+                except Exception:
+                    continue
+            else:
+                raise
+        if self.platform_name == "CUDA":
+            self.platform.setPropertyDefaultValue("Precision", "mixed")
 
     def add_metadynamics(
         self, collective_variables, height=1.0, frequency=500, sigma=None
@@ -207,7 +287,7 @@ class Simulation:
         self.metadynamics = Metadynamics(
             self.system,
             self.bias_variables,
-            self.temperature,
+            self.temperature_quantity,
             biasFactor=10,
             height=height * unit.kilojoules_per_mole,
             frequency=frequency,
@@ -234,7 +314,7 @@ class Simulation:
 
         # Create integrator for minimization
         integrator = openmm.LangevinMiddleIntegrator(
-            self.temperature, 1 / unit.picosecond, 0.002 * unit.picoseconds
+            self.temperature_quantity, 1 / unit.picosecond, 0.002 * unit.picoseconds
         )
 
         # Create simulation object
@@ -296,46 +376,65 @@ class Simulation:
         print("Equilibration complete.")
         return self
 
-    def production_run(
+    def run_production(
         self,
-        steps=100000,
-        report_interval=1000,
-        save_trajectory=True,
+        steps: int | None = None,
+        report_interval: int | None = None,
+        *,
+        save_trajectory: bool = True,
         bias_hook: Optional[BiasHook] = None,
-    ):
-        """
-        Run production molecular dynamics simulation.
+    ) -> str:
+        """Run a short production simulation with deterministic defaults.
 
         Parameters
         ----------
-        steps : int, optional
-            Number of production steps (default: 100000)
-        report_interval : int, optional
-            Frequency of trajectory and energy reporting (default: 1000)
-        save_trajectory : bool, optional
-            Whether to save trajectory to file (default: True)
-        bias_hook : BiasHook | None, optional
-            If provided, bias_hook(cv_values) must return per-frame bias potentials in CV space.
+        steps:
+            Total number of integration steps.  If omitted, the value provided
+            at construction time is used.
+        report_interval:
+            Interval (in steps) for data reporters.  Defaults to the minimum of
+            ``1000`` and the requested number of steps, but never less than 1.
+        save_trajectory:
+            Whether to write a DCD trajectory during the run.
+        bias_hook:
+            Optional callable that injects bias energies per frame.  Reserved for
+            advanced workflows.
 
         Returns
         -------
-        self : Simulation
-            Returns self for method chaining
+        str
+            Path to the generated trajectory file.  The file is guaranteed to
+            exist if ``save_trajectory`` is ``True``.
         """
-        if self.simulation is None:
-            raise RuntimeError("System not equilibrated. Call equilibrate() first.")
 
-        print(f"Running production simulation for {steps} steps...")
-        self.bias_hook = bias_hook
+        if self.openmm_simulation is None:
+            raise RuntimeError("System not prepared. Call prepare_system() first.")
 
-        # Clear previous reporters
-        self.simulation.reporters.clear()
+        total_steps = int(steps if steps is not None else self.steps)
+        if total_steps <= 0:
+            raise ValueError("Production steps must be positive")
 
-        # Add energy reporter
-        self.simulation.reporters.append(
-            app.StateDataReporter(
-                f"{self.output_dir}/production.log",
-                report_interval,
+        stride = (
+            report_interval if report_interval is not None else min(1000, total_steps)
+        )
+        stride = max(1, int(stride))
+
+        simulation = self.openmm_simulation
+        simulation.reporters.clear()
+
+        trajectory_path = self.output_dir / "trajectory.dcd"
+        final_path = self.output_dir / "final.xml"
+
+        exit_stack = ExitStack()
+        new_reporters: list[Any] = []
+
+        try:
+            log_handle = exit_stack.enter_context(
+                open(self.output_dir / "production.log", "w", encoding="utf-8")
+            )
+            state_reporter = app.StateDataReporter(
+                log_handle,
+                stride,
                 step=True,
                 potentialEnergy=True,
                 kineticEnergy=True,
@@ -344,18 +443,46 @@ class Simulation:
                 volume=True,
                 density=True,
             )
-        )
+            new_reporters.append(state_reporter)
+            simulation.reporters.append(state_reporter)
 
-        # Add trajectory reporter if requested
-        if save_trajectory:
-            self.simulation.reporters.append(
-                app.DCDReporter(f"{self.output_dir}/trajectory.dcd", report_interval)
+            if save_trajectory:
+                dcd_reporter = app.DCDReporter(str(trajectory_path), stride)
+                new_reporters.append(dcd_reporter)
+                simulation.reporters.append(dcd_reporter)
+
+            self.bias_hook = bias_hook
+            simulation.step(total_steps)
+
+            final_state = simulation.context.getState(
+                getPositions=True, getVelocities=True, getEnergy=True
             )
+            with open(final_path, "w", encoding="utf-8") as fh:
+                fh.write(openmm.XmlSerializer.serialize(final_state))
+        finally:
+            for reporter in new_reporters:
+                if reporter in simulation.reporters:
+                    simulation.reporters.remove(reporter)
+                _close_reporter_file(reporter)
+            exit_stack.close()
 
-        # Run production
-        self.simulation.step(steps)
+        return str(trajectory_path if save_trajectory else final_path)
 
-        print("Production simulation complete.")
+    def production_run(
+        self,
+        steps=100000,
+        report_interval=1000,
+        save_trajectory=True,
+        bias_hook: Optional[BiasHook] = None,
+    ):
+        """Backward-compatible wrapper around :meth:`run_production`."""
+
+        self.run_production(
+            steps=steps,
+            report_interval=report_interval,
+            save_trajectory=save_trajectory,
+            bias_hook=bias_hook,
+        )
         return self
 
     def feature_extraction(self, feature_specs=None):
@@ -628,7 +755,7 @@ class Simulation:
         """
         summary = {
             "pdb_file": self.pdb_file,
-            "output_dir": self.output_dir,
+            "output_dir": str(self.output_dir),
             "temperature": self.temperature,
             "pressure": self.pressure,
             "platform": self.platform_name,
@@ -646,7 +773,12 @@ class Simulation:
 
 
 # Convenience functions for common workflows
-def prepare_system(pdb_file, forcefield_files=None, water_model="tip3p"):
+def prepare_system(
+    pdb_file,
+    forcefield_files=None,
+    water_model="tip3p",
+    pdb_file_name=None,
+):
     """
     Prepare a molecular system for simulation.
 
@@ -658,13 +790,19 @@ def prepare_system(pdb_file, forcefield_files=None, water_model="tip3p"):
         Force field XML files
     water_model : str, optional
         Water model to use
+    pdb_file_name : str, optional
+        Alternative path to the input PDB file; takes precedence when provided
 
     Returns
     -------
     Simulation
         Prepared simulation object
     """
-    sim = Simulation(pdb_file)
+    pdb_path = pdb_file_name or pdb_file
+    if pdb_path is None:
+        raise ValueError("pdb_file or pdb_file_name must be provided")
+
+    sim = Simulation(pdb_path)
     sim.prepare_system(forcefield_files, water_model)
     return sim
 
@@ -817,3 +955,28 @@ def plot_DG(features, save_path=None):
     except ImportError:
         print("Warning: matplotlib not available for plotting")
         return None
+
+
+logger = logging.getLogger(__name__)
+
+
+def _close_reporter_file(reporter: Any) -> None:
+    """Ensure OpenMM reporters release underlying file handles."""
+    try:
+        opened = getattr(reporter, "_openedFile")
+    except AttributeError:
+        opened = None
+    if opened is False:
+        return
+    handle = getattr(reporter, "_out", None)
+    if handle is None:
+        return
+    close = getattr(handle, "close", None)
+    if close is None:
+        return
+    try:
+        close()
+    except Exception:  # pragma: no cover - defensive logging
+        logger.warning(
+            "Failed to close OpenMM reporter %r cleanly", reporter, exc_info=True
+        )

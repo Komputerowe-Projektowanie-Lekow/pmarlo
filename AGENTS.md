@@ -9,6 +9,12 @@
 8. You can see all the information about the package and additional more devops things in the /mdfiles/ directory and the README.md file.
 9. Those are the commands that I used in the whole package creation, if you want you can inspire yourself in the /mdfiles/commands.md
 10. Remember that for the tests I run "{path}\pmarlo>poetry run pytest" in the CMD.
-11. For the tox I run "{path}}\pmarlo>poetry run tox" in the CMD.
+11. For the tox I run "{path}\pmarlo>poetry run tox" in the CMD.
 12. Everytime when you make a change and you finish doing what you have done i want you to do the
 - After you do any change use the changelog.d directory to use the scriv tool that enables to create continous changelog development. I don't want you to create the scriv nor collect them. I do all of that, but when there is a note in the changelog.d that is not AGENTS.md, append the updates, features, removals, deprecations and stuff like that.
+13. Do not create any fallbacks. All module should be there and if there isn't issue it as an error not a silent fallback.
+14. When you think of implementing some function think if its already implemented somwehre and could use the standard library for it, if so prefer the standard library which is already better tested than our implementation.
+15. Do not use the lazy import. Currently python is as fast as it is so we don't need that technique. Prefer the maintaiability.
+16. When you run the poetry run pytest or any pytest command, NEVER USE it with -noProfile.
+17. Whenever a test case is required, always use real data—never stubs or synthetically generated examples. For instance, consistently use the 3gd8-fixed PDB file rather than any other fabricated version.
+18. Whenever you can't run the poetry run pytest, try it with the 'POETRY_VIRTUALENVS_CREATE=true'.

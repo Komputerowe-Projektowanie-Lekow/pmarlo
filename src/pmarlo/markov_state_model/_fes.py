@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 import numpy as np
 
+from pmarlo import constants as const
+
 
 class _HasFESAttrs(Protocol):
     features: Optional[np.ndarray]
@@ -113,8 +115,19 @@ class FESMixin:
         return self.fes_data
 
     def _validate_fes_prerequisites(self: _HasFESAttrs) -> None:
+        if int(getattr(self, "n_states", 0)) <= 0:
+            raise ValueError(
+                "Cannot compute a free energy surface without defined microstates."
+            )
+
         if self.features is None or self.stationary_distribution is None:
             raise ValueError("Features and MSM must be computed first")
+
+        if np.asarray(self.stationary_distribution).size == 0:
+            raise ValueError(
+                "Stationary distribution is empty; MSM construction must succeed "
+                "before computing the free energy surface."
+            )
 
     def _map_stationary_to_frame_weights(self: _HasFESAttrs) -> np.ndarray:
         try:
@@ -234,7 +247,7 @@ class FESMixin:
 
         kT = constants.k * temperature * constants.Avogadro / 1000.0
         F = np.full_like(H, np.inf)
-        mask = H > 1e-12
+        mask = H > const.NUMERIC_MIN_POSITIVE
         if int(np.sum(mask)) == 0:
             raise ValueError(
                 "Histogram too sparse for free energy calculation. Try fewer bins or more data"

@@ -151,7 +151,13 @@ def _select_clustering_method(
         raise ValueError(f"Unsupported clustering method: {method}")
 
 
-def _auto_select_n_states(Y: np.ndarray, random_state: int | None) -> tuple[int, str]:
+def _auto_select_n_states(
+    Y: np.ndarray,
+    random_state: int | None,
+    *,
+    sample_size: int | None = None,
+    override_n_states: int | None = None,
+) -> tuple[int, str]:
     """Automatically select optimal number of states using silhouette score.
 
     Parameters
@@ -160,28 +166,67 @@ def _auto_select_n_states(Y: np.ndarray, random_state: int | None) -> tuple[int,
         Input feature matrix.
     random_state : int | None
         Random state for reproducible clustering.
+    sample_size : int | None, optional
+        Size of the random subset to use when computing silhouette scores.
+    override_n_states : int | None, optional
+        If provided, skip silhouette scoring and return this value directly.
 
     Returns
     -------
     tuple[int, str]
         Optimal number of states and rationale string with silhouette score.
     """
+    if override_n_states is not None:
+        if override_n_states <= 0:
+            raise ValueError(
+                "override_n_states must be a positive integer; "
+                f"received {override_n_states}."
+            )
+        rationale = f"auto-override={override_n_states}"
+        logger.info(
+            "Auto-selection overridden; using %d states without silhouette scoring",
+            override_n_states,
+        )
+        return override_n_states, rationale
+
+    if sample_size is not None:
+        if sample_size <= 1:
+            raise ValueError(
+                "sample_size must be greater than 1 when sampling for silhouette "
+                "scoring."
+            )
+        effective_sample = min(int(sample_size), int(Y.shape[0]))
+        if effective_sample < int(sample_size):
+            logger.debug(
+                "Requested sample_size %d exceeds dataset rows %d; using %d samples instead.",
+                sample_size,
+                Y.shape[0],
+                effective_sample,
+            )
+        rng = np.random.default_rng(random_state)
+        indices = rng.choice(Y.shape[0], size=effective_sample, replace=False)
+        Y_sample = Y[indices]
+        sample_note = f" sample={effective_sample}"
+    else:
+        Y_sample = Y
+        sample_note = ""
+
     candidates = range(4, 21)
     scores: list[tuple[int, float]] = []
 
     for n in candidates:
         km = KMeans(n_clusters=n, random_state=random_state, n_init=10)
-        labels = km.fit_predict(Y)
+        labels = km.fit_predict(Y_sample)
 
         if len(set(labels)) <= 1:
             score = -1.0
         else:
-            score = float(silhouette_score(Y, labels))
+            score = float(silhouette_score(Y_sample, labels))
 
         scores.append((n, score))
 
     chosen, best_score = max(scores, key=lambda x: x[1])
-    rationale = f"silhouette={best_score:.3f}"
+    rationale = f"silhouette={best_score:.3f}{sample_note}"
 
     logger.info(
         "Auto-selected %d states with silhouette score %.3f", chosen, best_score
@@ -229,6 +274,9 @@ def cluster_microstates(
     n_states: int | Literal["auto"] = "auto",
     random_state: int | None = 42,
     minibatch_threshold: int = 5_000_000,
+    *,
+    silhouette_sample_size: int | None = None,
+    auto_n_states_override: int | None = None,
     **kwargs,
 ) -> ClusteringResult:
     """Cluster reduced feature data into microstates for Markov state model analysis.
@@ -259,6 +307,16 @@ def cluster_microstates(
         Size threshold for automatic method selection. When the product of
         ``n_frames * n_features`` exceeds this value and ``method="auto"``,
         ``MiniBatchKMeans`` is used instead of ``KMeans``.
+    silhouette_sample_size : int | None, keyword-only, default=None
+        Number of samples to use when computing silhouette scores during
+        automatic state selection. When provided, a random subset of rows from
+        ``Y`` with this size is used instead of the full dataset. Sampling is
+        reproducible with ``random_state``. Values less than 2 are invalid.
+    auto_n_states_override : int | None, keyword-only, default=None
+        When ``n_states="auto"``, setting this parameter skips the silhouette
+        optimization loop and directly uses the provided number of states.
+        Useful when a pre-determined state count is known but the calling code
+        still expects automatic selection semantics.
     **kwargs
         Additional keyword arguments forwarded to the underlying scikit-learn
         clustering estimator (KMeans or MiniBatchKMeans).
@@ -320,7 +378,7 @@ def cluster_microstates(
     # Handle edge case of empty dataset
     if Y.shape[0] == 0:
         logger.info("Empty dataset provided, returning empty clustering result")
-        return ClusteringResult(labels=np.zeros((0,), dtype=int), n_states=0)
+        return ClusteringResult(labels=np.empty((0,), dtype=int), n_states=0)
 
     # Validate input dimensions and data
     _validate_clustering_inputs(Y)
@@ -331,9 +389,19 @@ def cluster_microstates(
 
     # Auto-select number of states if requested
     if isinstance(n_states, str) and n_states == "auto":
-        n_states, rationale = _auto_select_n_states(Y, random_state)
+        n_states, rationale = _auto_select_n_states(
+            Y,
+            random_state,
+            sample_size=silhouette_sample_size,
+            override_n_states=auto_n_states_override,
+        )
     else:
         n_states = int(n_states)
+
+    if n_states <= 0:
+        raise ValueError(
+            "Number of microstates must be a positive integer; " f"received {n_states}."
+        )
 
     # Select appropriate clustering algorithm
     chosen_method = _select_clustering_method(method, Y, minibatch_threshold)
@@ -354,6 +422,39 @@ def cluster_microstates(
 
     labels = cast(np.ndarray, estimator.fit_predict(Y).astype(int))
     centers = getattr(estimator, "cluster_centers_", None)
+
+    unique_labels = int(np.unique(labels).size)
+    if unique_labels == 0:
+        message = (
+            "Clustering produced zero unique microstates; verify input coverage "
+            "and CV preprocessing."
+        )
+        logger.error(message)
+        raise ValueError(message)
+    if unique_labels != n_states:
+        message = (
+            "Clustering produced {unique} unique microstates, expected {expected}. "
+            "Proceeding with the observed value; inspect CV spread or adjust "
+            "the requested microstate count."
+        ).format(unique=unique_labels, expected=n_states)
+        logger.warning(message)
+        n_states = unique_labels
+
+    if centers is not None:
+        try:
+            n_centers = int(getattr(centers, "shape", (0,))[0])
+        except Exception:
+            n_centers = n_states
+        if n_centers != n_states:
+            logger.warning(
+                "Clustering returned %s centers, expected %s; trimming metadata.",
+                n_centers,
+                n_states,
+            )
+            try:
+                centers = np.asarray(centers)[:n_states]
+            except Exception:
+                centers = None
 
     # Log completion with rationale if available
     logger.info(

@@ -9,8 +9,13 @@ These tests verify that different components work together correctly.
 
 import pytest
 
+pytest.importorskip("openmm")
+pytest.importorskip("mdtraj")
+
 from pmarlo import Pipeline, Protein
 from pmarlo.protein.protein import HAS_PDBFIXER
+
+pytestmark = pytest.mark.integration
 
 
 class TestPackageImports:
@@ -32,7 +37,6 @@ class TestPackageImports:
         assert callable(Simulation)
         assert callable(MarkovStateModel)
         assert callable(Pipeline)
-        # LegacyPipeline removed
 
     def test_convenience_function_import(self):
         """Test importing convenience functions."""
@@ -40,8 +44,8 @@ class TestPackageImports:
 
         assert callable(run_pmarlo)
 
-    def test_legacy_function_imports(self):
-        """Test importing legacy functions."""
+    def test_removed_function_imports(self):
+        """Test importing removed functions."""
         from pmarlo.replica_exchange.simulation import (
             build_transition_model,
             feature_extraction,

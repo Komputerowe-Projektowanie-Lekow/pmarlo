@@ -1,7 +1,11 @@
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import pytest
+
 from pmarlo.transform.pipeline import Pipeline
+
+pytestmark = pytest.mark.integration
 
 
 class TestReplicaExchangeIntegration:

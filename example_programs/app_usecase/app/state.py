@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from pmarlo.utils.path_utils import ensure_directory
+
 
 @dataclass
 class _StateData:
@@ -38,7 +40,7 @@ class StateManager:
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_directory(self.path.parent)
         self._data = _StateData()
         self._load()
 

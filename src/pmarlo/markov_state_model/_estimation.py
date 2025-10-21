@@ -6,6 +6,8 @@ from typing import List, Optional, Protocol, Tuple
 import numpy as np
 from scipy.sparse import csc_matrix, issparse, save_npz
 
+from pmarlo import constants as const
+
 from ._msm_utils import _row_normalize, _stationary_from_T, ensure_connected_counts
 
 
@@ -62,17 +64,20 @@ class EstimationMixin:
             f"Building MSM with lag time {lag_time} using {method} method..."
         )
 
+        if int(getattr(self, "n_states", 0)) <= 0:
+            raise ValueError(
+                "Cannot build a Markov state model without defined microstates; "
+                "ensure clustering produced at least one state."
+            )
+
         self.lag_time = lag_time
-        try:
-            if self.features is not None and not hasattr(self, "tica_components_"):
-                if self.features.shape[1] > 20:
-                    _logging.getLogger("pmarlo").info(
-                        "Applying default 3-component TICA prior to MSM to reduce noise"
-                    )
-                    # _maybe_apply_tica is provided by FeaturesMixin
-                    self._maybe_apply_tica(3, getattr(self, "tica_lag", 0) or lag_time)
-        except Exception:
-            pass
+        if self.features is not None and not hasattr(self, "tica_components_"):
+            if self.features.shape[1] > 20:
+                _logging.getLogger("pmarlo").info(
+                    "Applying default 3-component TICA prior to MSM to reduce noise"
+                )
+                # _maybe_apply_tica is provided by FeaturesMixin
+                self._maybe_apply_tica(3, getattr(self, "tica_lag", 0) or lag_time)
 
         if method == "standard":
             self._build_standard_msm(lag_time, count_mode=self.count_mode)
@@ -187,13 +192,10 @@ class EstimationMixin:
     def _should_use_deeptime(self: _HasEstimationAttrs) -> bool:
         if getattr(self, "estimator_backend", "deeptime") != "deeptime":
             return False
-        try:  # pragma: no cover
-            from deeptime.markov import TransitionCountEstimator  # type: ignore
+        from deeptime.markov import TransitionCountEstimator  # type: ignore
 
-            _ = TransitionCountEstimator
-            return True
-        except Exception:  # pragma: no cover
-            return False
+        _ = TransitionCountEstimator
+        return True
 
     def _compute_free_energies(self: _HasEstimationAttrs, temperature: float = 300.0):
         from scipy import constants
@@ -202,7 +204,7 @@ class EstimationMixin:
             raise ValueError("Stationary distribution must be computed first")
 
         kT = constants.k * temperature * constants.Avogadro / 1000.0  # kJ/mol
-        pi_safe = np.maximum(self.stationary_distribution, 1e-12)
+        pi_safe = np.maximum(self.stationary_distribution, const.NUMERIC_MIN_POSITIVE)
         self.free_energies = -kT * np.log(pi_safe)
         self.free_energies -= np.min(self.free_energies)
 

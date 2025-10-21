@@ -1,11 +1,13 @@
-import importlib
 import json
 import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, Optional, cast
+from typing import Dict, Optional
 
 import numpy as np
+
+from pmarlo import constants as const
+from pmarlo.pipeline import Pipeline
 
 from .benchmark_utils import (
     build_baseline_object,
@@ -32,72 +34,6 @@ from .utils import default_output_root, set_seed, timestamp_dir
 
 logger = logging.getLogger(__name__)
 
-if TYPE_CHECKING:
-    from pmarlo.transform.pipeline import Pipeline as PipelineType
-else:
-    PipelineType = object
-
-
-class _PipelineProxy:
-    """Lazy loader for :class:`pmarlo.transform.pipeline.Pipeline`.
-
-    The real Pipeline pulls in heavy scientific dependencies (OpenMM, scikit-
-    learn, etc.).  Importing it eagerly breaks lightweight environments used by
-    the unit test suite.  This proxy defers the import until the first
-    invocation, mirroring the lazy-loading shims added elsewhere in the
-    refactor.  When the import ultimately fails, we raise a helpful error that
-    points to the optional extra.
-    """
-
-    def __init__(self) -> None:
-        self._pipeline_cls: type[PipelineType] | None = None
-        self._import_error: Exception | None = None
-
-    def _load_pipeline(self) -> type[PipelineType]:
-        if self._pipeline_cls is not None:
-            return self._pipeline_cls
-        if self._import_error is not None:
-            raise self._import_error
-
-        try:
-            module = importlib.import_module("pmarlo.transform.pipeline")
-            pipeline_cls = cast(type[PipelineType], getattr(module, "Pipeline"))
-        except Exception as exc:  # pragma: no cover - optional dependency path
-            self._import_error = exc
-            raise
-
-        self._pipeline_cls = pipeline_cls
-        return pipeline_cls
-
-    def __call__(self, *args, **kwargs):  # noqa: D401 - behave like factory
-        try:
-            pipeline_cls = self._load_pipeline()
-        except Exception as exc:  # pragma: no cover - optional dependency path
-            raise ImportError(
-                "pmarlo Pipeline requires optional dependencies."
-                " Install with `pip install 'pmarlo[full]'` to enable it."
-            ) from exc
-        return cast(PipelineType, pipeline_cls(*args, **kwargs))
-
-    def __getattr__(self, name: str):
-        try:
-            pipeline_cls = self._load_pipeline()
-        except Exception as exc:  # pragma: no cover - optional dependency path
-            raise AttributeError(
-                "Pipeline attribute access requires optional dependencies."
-            ) from exc
-        return getattr(pipeline_cls, name)
-
-
-try:  # Prefer existing compatibility module if available
-    from ..pipeline import Pipeline as _Pipeline  # type: ignore[attr-defined]
-except ModuleNotFoundError:
-    Pipeline = _PipelineProxy()
-except ImportError:
-    Pipeline = _PipelineProxy()
-else:
-    Pipeline = _Pipeline
-
 
 @dataclass
 class SimulationConfig:
@@ -115,7 +51,7 @@ def _create_run_dir(output_root: str) -> Path:
     return timestamp_dir(output_root)
 
 
-def _configure_pipeline(config: SimulationConfig, run_dir: Path) -> "PipelineType":
+def _configure_pipeline(config: SimulationConfig, run_dir: Path) -> Pipeline:
     """Instantiate a single-temperature simulation pipeline."""
     return Pipeline(
         pdb_file=config.pdb_file,
@@ -132,16 +68,16 @@ def _configure_pipeline(config: SimulationConfig, run_dir: Path) -> "PipelineTyp
     )
 
 
-def _setup_protein_with_fallback(pipeline: "PipelineType", pdb_path: str) -> None:
+def _setup_protein_with_preparation_guard(pipeline: Pipeline, pdb_path: str) -> None:
     """
     Attempt protein preparation; if an ImportError occurs (e.g., missing
-    PDBFixer), fall back to using the provided PDB directly.
+    PDBFixer), use the provided PDB directly.
     """
     try:
         # Result is not used downstream; preparation sets pipeline.prepared_pdb
         pipeline.setup_protein()
     except ImportError:
-        # PDBFixer not available – fall back to using provided PDB directly
+        # PDBFixer not available – use provided PDB directly
         logger.warning(
             (
                 "PDBFixer not installed; skipping protein preparation and using "
@@ -153,7 +89,7 @@ def _setup_protein_with_fallback(pipeline: "PipelineType", pdb_path: str) -> Non
 
 
 def _run_simulation_and_extract_states(
-    pipeline: "PipelineType",
+    pipeline: Pipeline,
 ) -> tuple[list[int], str, float, float]:
     """
     Prepare the system, run production, and extract discrete states while
@@ -216,38 +152,40 @@ def _compute_transition_diagnostics(
     Construct a simple row-stochastic transition matrix at an adaptive lag and
     compute diagnostics. Returns (T, acc, mad, gap, entropy, db_mad, tau).
     """
-    T = None
-    acc = mad = gap = ent = db_mad = None
-    tau_used: Optional[int] = None
+    states_array = (
+        states if isinstance(states, np.ndarray) else np.asarray(states, dtype=int)
+    )
+    if states_array.size < 2:
+        return None, None, None, None, None, None, None
+
+    tau = max(1, min(20, int(states_array.size // 3)))
+    n_states = int(np.max(states_array) + 1)
+    counts = np.zeros((n_states, n_states), dtype=float)
+    for i in range(0, states_array.size - tau):
+        si = int(states_array[i])
+        sj = int(states_array[i + tau])
+        counts[si, sj] += 1.0
+    row_sums = counts.sum(axis=1)
+    row_sums[row_sums == 0] = 1.0
+    T = counts / row_sums[:, None]
+
+    acc = compute_transition_matrix_accuracy(T)
+    mad = compute_row_stochasticity_mad(T)
+    gap = compute_spectral_gap(T)
+
     try:
-        if isinstance(states, np.ndarray) and states.size >= 2:
-            tau = max(1, min(20, int(states.size // 3)))
-            n_states = int(np.max(states) + 1)
-            counts = np.zeros((n_states, n_states), dtype=float)
-            for i in range(0, max(0, len(states) - tau)):
-                si = int(states[i])
-                sj = int(states[i + tau])
-                counts[si, sj] += 1.0
-            row_sums = counts.sum(axis=1)
-            row_sums[row_sums == 0] = 1.0
-            T = counts / row_sums[:, None]
-            acc = compute_transition_matrix_accuracy(T)
-            mad = compute_row_stochasticity_mad(T)
-            gap = compute_spectral_gap(T)
-            # Stationary distribution derived from T^T eigenvector
-            try:
-                evals, evecs = np.linalg.eig(T.T)
-                idx = int(np.argmax(np.real(evals)))
-                pi = np.real(evecs[:, idx])
-                pi = np.abs(pi) / max(np.sum(np.abs(pi)), 1e-12)
-                ent = compute_stationary_entropy(pi)
-                db_mad = compute_detailed_balance_mad(T, pi)
-            except Exception:
-                ent = None
-                db_mad = None
-            tau_used = tau
-    except Exception:
-        acc = None
+        evals, evecs = np.linalg.eig(T.T)
+    except np.linalg.LinAlgError:
+        ent = None
+        db_mad = None
+    else:
+        idx = int(np.argmax(np.real(evals)))
+        pi = np.real(evecs[:, idx])
+        pi = np.abs(pi) / max(np.sum(np.abs(pi)), const.NUMERIC_MIN_POSITIVE)
+        ent = compute_stationary_entropy(pi)
+        db_mad = compute_detailed_balance_mad(T, pi)
+
+    tau_used: Optional[int] = tau
     return T, acc, mad, gap, ent, db_mad, tau_used
 
 
@@ -257,24 +195,25 @@ def _compute_ck_mse_factor2(
     """Compute CK test MSE at factor 2 between T^2 and empirical lag 2*tau."""
     if T is None or tau is None:
         return None
-    try:
-        T2_theory = T @ T
-        lag2 = 2 * tau
-        n_states = T.shape[0]
-        counts2 = np.zeros((n_states, n_states), dtype=float)
-        if len(states) > lag2:
-            for i in range(0, len(states) - lag2):
-                si = int(states[i])
-                sj = int(states[i + lag2])
-                counts2[si, sj] += 1.0
-            row2 = counts2.sum(axis=1)
-            row2[row2 == 0] = 1.0
-            T2_emp = counts2 / row2[:, None]
-            diff = T2_theory - T2_emp
-            return float(np.mean(diff * diff))
-    except Exception:
+    lag2 = 2 * tau
+    states_array = (
+        states if isinstance(states, np.ndarray) else np.asarray(states, dtype=int)
+    )
+    if states_array.size <= lag2:
         return None
-    return None
+
+    T2_theory = T @ T
+    n_states = T.shape[0]
+    counts2 = np.zeros((n_states, n_states), dtype=float)
+    for i in range(0, states_array.size - lag2):
+        si = int(states_array[i])
+        sj = int(states_array[i + lag2])
+        counts2[si, sj] += 1.0
+    row2 = counts2.sum(axis=1)
+    row2[row2 == 0] = 1.0
+    T2_emp = counts2 / row2[:, None]
+    diff = T2_theory - T2_emp
+    return float(np.mean(diff * diff))
 
 
 def _build_kpis(
@@ -353,20 +292,21 @@ def _update_baseline_and_trend(
 
 def _write_comparison_if_available(root_dir: Path, run_dir: Path) -> None:
     """Write comparison.json using the last two entries from trend.json if present."""
-    try:
-        trend_path = root_dir / "trend.json"
-        if trend_path.exists():
-            with open(trend_path, "r", encoding="utf-8") as tf:
-                trend = json.load(tf)
-            if isinstance(trend, list) and len(trend) >= 2:
-                prev = trend[-2]
-                curr = trend[-1]
-                comparison = compute_threshold_comparison(prev, curr)
-                with open(run_dir / "comparison.json", "w", encoding="utf-8") as cf:
-                    json.dump(comparison, cf, indent=2)
-    except Exception:
-        # Non-fatal for experiments
-        pass
+    trend_path = root_dir / "trend.json"
+    if not trend_path.exists():
+        return
+
+    with open(trend_path, "r", encoding="utf-8") as tf:
+        trend = json.load(tf)
+
+    if not isinstance(trend, list) or len(trend) < 2:
+        return
+
+    prev = trend[-2]
+    curr = trend[-1]
+    comparison = compute_threshold_comparison(prev, curr)
+    with open(run_dir / "comparison.json", "w", encoding="utf-8") as cf:
+        json.dump(comparison, cf, indent=2)
 
 
 def run_simulation_experiment(config: SimulationConfig) -> Dict:
@@ -378,7 +318,7 @@ def run_simulation_experiment(config: SimulationConfig) -> Dict:
     set_seed(config.seed)
     run_dir = _create_run_dir(config.output_dir)
     pipeline = _configure_pipeline(config, run_dir)
-    _setup_protein_with_fallback(pipeline, config.pdb_file)
+    _setup_protein_with_preparation_guard(pipeline, config.pdb_file)
     states, traj, runtime_seconds, memory_mb = _run_simulation_and_extract_states(
         pipeline
     )

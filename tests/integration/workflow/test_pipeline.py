@@ -14,6 +14,8 @@ from pmarlo.transform.pipeline import Pipeline, run_pmarlo
 # Evaluated by pytest.mark.skipif when using string condition
 skip_if_no_openmm = find_spec("openmm") is None
 
+pytestmark = pytest.mark.integration
+
 
 class TestPipeline:
     """Test cases for Pipeline class."""
@@ -94,8 +96,8 @@ class TestPipeline:
         pass
 
 
-class TestRemovedLegacyPipeline:
-    def test_legacy_pipeline_removed(self):
+class TestRemovedPipeline:
+    def test_pipeline_compat_shim_removed(self):
         import importlib
 
         with pytest.raises((ImportError, AttributeError)):

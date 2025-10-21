@@ -1,10 +1,27 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 
-from pmarlo import ShardMeta, read_shard, write_shard
+from pmarlo import read_shard, write_shard
+
+
+def _source(*, run: str, segment: int, replica: int, kind: str = "demux") -> dict:
+    return {
+        "created_at": "1970-01-01T00:00:00Z",
+        "kind": kind,
+        "run_id": run,
+        "segment_id": segment,
+        "replica_id": replica,
+        "exchange_window_id": 0,
+    }
+
+
+def _shard_id(temperature: float, segment: int, replica: int) -> str:
+    return f"T{int(round(temperature))}K_seg{segment:04d}_rep{replica:03d}"
 
 
 def test_shard_roundtrip(tmp_path: Path):
@@ -14,55 +31,80 @@ def test_shard_roundtrip(tmp_path: Path):
     }
     periodic = {"phi": True, "psi": False}
     dtraj = np.arange(50, dtype=np.int32) % 3
+    temperature = 300.0
+    segment = 0
+    replica = 0
+    shard_id = _shard_id(temperature, segment, replica)
     json_path = write_shard(
         out_dir=tmp_path,
-        shard_id="shard_000",
+        shard_id=shard_id,
         cvs=cvs,
         dtraj=dtraj,
         periodic=periodic,
         seed=123,
-        temperature=300.0,
-        source={"note": "unit-test"},
+        temperature=temperature,
+        source=_source(run="unit-test", segment=segment, replica=replica),
     )
 
-    meta, X, d2 = read_shard(json_path)
-    assert isinstance(meta, ShardMeta)
+    details, X, d2 = read_shard(json_path)
     assert X.shape == (50, 2)
-    assert X.dtype == np.float64
+    assert X.dtype == np.float32
     assert d2 is not None and d2.dtype == np.int32 and d2.shape == (50,)
-    assert meta.n_frames == 50
-    assert tuple(meta.cv_names) == ("phi", "psi")
-    assert tuple(meta.periodic) == (True, False)
+    assert details.meta.n_frames == 50
+    assert details.cv_names == ("phi", "psi")
+    assert details.periodic == (True, False)
+    assert details.temperature_K == pytest.approx(temperature)
 
-    # Recompute hash to confirm
-    from pmarlo.data.shard import _sha256_bytes
 
-    expected = _sha256_bytes(X, d2)
-    assert meta.arrays_hash == expected
+def test_read_shard_dtype_override(tmp_path: Path):
+    cvs = {
+        "phi": np.linspace(0.0, 1.0, 8, dtype=np.float64),
+        "psi": np.linspace(-1.0, 0.0, 8, dtype=np.float64),
+    }
+    periodic = {"phi": False, "psi": False}
+    shard_id = _shard_id(300.0, 0, 1)
+    json_path = write_shard(
+        out_dir=tmp_path,
+        shard_id=shard_id,
+        cvs=cvs,
+        dtraj=None,
+        periodic=periodic,
+        seed=0,
+        temperature=300.0,
+        source=_source(run="dtype", segment=0, replica=1),
+    )
+
+    _, X_default, _ = read_shard(json_path)
+    assert X_default.dtype == np.float32
+
+    _, X_float64, _ = read_shard(json_path, dtype=np.float64)
+    assert X_float64.dtype == np.float64
 
 
 def test_deterministic_json_bytes(tmp_path: Path):
     cvs = {"a": np.arange(10.0), "b": np.arange(10.0) * 2.0}
     periodic = {"a": False, "b": False}
+    temperature = 310.0
+    shard_id = _shard_id(temperature, 1, 0)
     p1 = write_shard(
         out_dir=tmp_path / "w1",
-        shard_id="s",
+        shard_id=shard_id,
         cvs=cvs,
         dtraj=None,
         periodic=periodic,
         seed=7,
-        temperature=310.0,
-        source={"note": "same"},
+        temperature=temperature,
+        source=_source(run="same", segment=1, replica=0),
     )
     p2 = write_shard(
         out_dir=tmp_path / "w2",
-        shard_id="s",
+        shard_id=shard_id,
         cvs=cvs,
         dtraj=None,
         periodic=periodic,
         seed=7,
-        temperature=310.0,
-        source={"note": "same"},
+        temperature=temperature,
+        source=_source(run="same", segment=1, replica=0),
     )
     assert p1.read_bytes() == p2.read_bytes()
 
@@ -70,25 +112,61 @@ def test_deterministic_json_bytes(tmp_path: Path):
 def test_hash_mismatch_raises(tmp_path: Path):
     cvs = {"x": np.arange(6.0), "y": np.arange(6.0) ** 2}
     periodic = {"x": False, "y": False}
+    shard_id = _shard_id(300.0, 2, 0)
     json_path = write_shard(
         out_dir=tmp_path,
-        shard_id="bad",
+        shard_id=shard_id,
         cvs=cvs,
         dtraj=None,
         periodic=periodic,
         seed=0,
         temperature=300.0,
-        source={},
+        source=_source(run="tamper", segment=2, replica=0),
     )
-    # Tamper with the NPZ to corrupt the hash
-    npz_path = json_path.with_name("bad.npz")
+    npz_path = json_path.with_suffix(".npz")
     with np.load(npz_path) as f:
         X = f["X"].copy()
-        d = f["dtraj"].copy()
+        data = {name: f[name] for name in f.files}
     X[0, 0] += 1.0
-    np.savez(npz_path, X=X, dtraj=d)
-
-    import pytest
+    data["X"] = X
+    np.savez(npz_path, **data)
 
     with pytest.raises(ValueError):
         read_shard(json_path)
+
+
+def test_validate_arrays_hash(tmp_path: Path):
+    cvs = {"x": np.arange(4.0), "y": np.arange(4.0) ** 2}
+    periodic = {"x": False, "y": False}
+    shard_id = _shard_id(295.0, 3, 0)
+    json_path = write_shard(
+        out_dir=tmp_path,
+        shard_id=shard_id,
+        cvs=cvs,
+        dtraj=np.arange(4, dtype=np.int32),
+        periodic=periodic,
+        seed=7,
+        temperature=295.0,
+        source=_source(run="hash", segment=3, replica=0),
+        compute_arrays_hash=True,
+    )
+
+    payload = json.loads(json_path.read_text())
+    assert "provenance" in payload and "arrays_hash" in payload["provenance"]
+    payload.pop("data_hash", None)
+    json_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+
+    _, X_ok, dtraj_ok = read_shard(json_path, validate_arrays_hash=True)
+    assert X_ok.dtype == np.float32
+    assert dtraj_ok is not None and dtraj_ok.dtype == np.int32
+
+    npz_path = json_path.with_suffix(".npz")
+    with np.load(npz_path) as data:
+        tampered = {name: data[name] for name in data.files}
+    tampered_X = tampered["X"].copy()
+    tampered_X[0, 0] += 5.0
+    tampered["X"] = tampered_X
+    np.savez(npz_path, **tampered)
+
+    with pytest.raises(ValueError):
+        read_shard(json_path, validate_arrays_hash=True)

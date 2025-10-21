@@ -4,38 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, List
 
-try:  # pragma: no cover - optional ML stack
-    from pmarlo.ml.deeptica.trainer import CurriculumConfig as _CurriculumConfig
-except Exception:  # pragma: no cover - torch/ML optional dependency
-    _CurriculumConfig = None  # type: ignore[assignment]
-
-
-class _FallbackCurriculumConfig:  # type: ignore[too-many-instance-attributes]
-    def __init__(self, tau_steps: Any = 1, **kwargs: Any) -> None:
-        schedule = kwargs.pop("tau_schedule", None)
-        if schedule is None:
-            if isinstance(tau_steps, Iterable) and not isinstance(
-                tau_steps, (str, bytes)
-            ):
-                schedule = tuple(int(x) for x in tau_steps)
-            else:
-                schedule = (int(tau_steps),)
-        else:
-            schedule = tuple(int(x) for x in schedule)
-        if not schedule:
-            schedule = (1,)
-        self.tau_schedule = schedule
-        self.tau_steps = schedule
-        for key, value in kwargs.items():
-            setattr(self, key, value)
-
-
-CurriculumConfig: type[Any]
-if _CurriculumConfig is not None:
-    CurriculumConfig = _CurriculumConfig
-else:
-    CurriculumConfig = _FallbackCurriculumConfig
-
+from pmarlo.ml.deeptica.trainer import CurriculumConfig
 
 __all__ = ["TrainerConfig", "resolve_curriculum"]
 
@@ -52,7 +21,7 @@ def _coerce_schedule(spec: Any) -> tuple[int, ...]:
 
 
 class TrainerConfig(CurriculumConfig):  # type: ignore[misc]
-    """Backwards-compatible wrapper accepting legacy ``tau_steps`` arg."""
+    """Wrapper accepting the historical ``tau_steps`` argument."""
 
     def __init__(self, tau_steps: Any = None, **kwargs: Any) -> None:
         schedule_input = kwargs.pop("tau_schedule", None)

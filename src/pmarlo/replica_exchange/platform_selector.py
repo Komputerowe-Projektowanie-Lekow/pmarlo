@@ -1,3 +1,5 @@
+"""Canonical OpenMM platform selection for replica-exchange simulations."""
+
 from __future__ import annotations
 
 import os
@@ -6,75 +8,80 @@ from typing import Dict, Tuple
 from openmm import Platform
 
 
-def select_platform_and_properties(  # noqa: C901 - small decision tree by platform
+def select_platform_and_properties(
     logger, prefer_deterministic: bool = False
 ) -> Tuple[Platform, Dict[str, str]]:
-    platform_properties: Dict[str, str] = {}
-    # Allow environment override to force a specific platform for troubleshooting
-    # or CI determinism. Recognizes OPENMM_PLATFORM or PMARLO_FORCE_PLATFORM.
+    """Return a deterministic OpenMM platform selection.
+
+    The resolution order is:
+
+    1. ``OPENMM_PLATFORM`` / ``PMARLO_FORCE_PLATFORM`` environment variables.
+    2. Auto-select fastest available platform (CUDA > CPU > Reference)
+    3. Enable deterministic flags if ``prefer_deterministic`` is ``True``.
+
+    Note: Reference platform is ONLY used when explicitly forced via environment
+    variable or when no other platform is available. It is 10-100x slower than
+    CPU and should never be used for production simulations.
+    """
+
     forced = os.getenv("OPENMM_PLATFORM") or os.getenv("PMARLO_FORCE_PLATFORM")
     if forced:
-        try:
-            platform = Platform.getPlatformByName(str(forced))
-            logger.info(f"Using forced platform: {forced}")
-            return platform, platform_properties
-        except Exception:
+        platform_name = forced
+        logger.info("Using forced OpenMM platform: %s", forced)
+    else:
+        # Auto-select fastest available platform
+        available_platforms = [
+            Platform.getPlatform(i).getName() for i in range(Platform.getNumPlatforms())
+        ]
+
+        # Prefer CUDA > CPU > Reference (Reference is VERY slow, avoid if possible)
+        if "CUDA" in available_platforms:
+            platform_name = "CUDA"
             logger.info(
-                f"Requested platform '{forced}' not available; falling back to auto-detect"
+                "Using CUDA platform%s",
+                " (deterministic mode)" if prefer_deterministic else "",
             )
-    try:
-        platform = Platform.getPlatformByName("CUDA")
-        platform_properties = {
+        elif "CPU" in available_platforms:
+            platform_name = "CPU"
+            logger.info(
+                "Using CPU platform%s",
+                " (deterministic mode)" if prefer_deterministic else "",
+            )
+        elif "Reference" in available_platforms:
+            platform_name = "Reference"
+            logger.warning(
+                "Using Reference platform - this is VERY slow (10-100x slower than CPU). "
+                "Install OpenMM with CPU support for better performance."
+            )
+        else:
+            # This should never happen but handle gracefully
+            platform_name = "CUDA"
+            logger.warning(
+                "No standard OpenMM platform found, attempting CUDA as fallback"
+            )
+
+    platform = Platform.getPlatformByName(platform_name)
+
+    properties: Dict[str, str] = {}
+    if platform_name == "CUDA":
+        properties = {
             "Precision": "single" if prefer_deterministic else "mixed",
-            # DeterministicForces and fast math settings influence reproducibility
             "UseFastMath": "false" if prefer_deterministic else "true",
             "DeterministicForces": "true" if prefer_deterministic else "false",
-            # Pin to a single device for stability in CI
-            "DeviceIndex": "0",
+            "DeviceIndex": os.getenv("PMARLO_CUDA_DEVICE", "0"),
         }
-        msg = (
-            "Using CUDA (mixed precision, deterministic forces)"
-            if prefer_deterministic
-            else "Using CUDA (mixed precision, fast math)"
-        )
-        logger.info(msg)
-    except Exception:
-        try:
-            try:
-                platform = Platform.getPlatformByName("HIP")
-                logger.info("Using HIP (AMD GPU)")
-            except Exception:
-                platform = Platform.getPlatformByName("OpenCL")
-                logger.info("Using OpenCL")
-        except Exception:
-            # Prefer Reference platform for determinism when available (slow but stable)
-            if prefer_deterministic:
-                try:
-                    platform = Platform.getPlatformByName("Reference")
-                    logger.info("Using Reference platform for deterministic run")
-                    return platform, {}
-                except Exception:
-                    pass
-            platform = Platform.getPlatformByName("CPU")
-            # Default to a single thread for deterministic tests; allow override via env
-            threads = os.getenv("PMARLO_CPU_THREADS") or (
-                "1" if prefer_deterministic else "0"
-            )
-            # Some OpenMM builds use either "Threads" or "CpuThreads"
-            logger.info(f"Using CPU with {threads or 'default'} thread(s)")
-            platform_properties = {
-                "Threads": threads,
-                "CpuThreads": threads,
-                # Ask for deterministic forces where available
-                "DeterministicForces": "true" if prefer_deterministic else "false",
-                # Be conservative on math optimizations where supported
-                "UseFastMath": "false" if prefer_deterministic else "true",
-            }
-    try:
-        supported = set(platform.getPropertyNames())
-        platform_properties = {
-            k: v for k, v in platform_properties.items() if k in supported
-        }
-    except Exception:
-        pass
-    return platform, platform_properties
+    elif platform_name == "CPU":
+        # CPU can be deterministic AND fast
+        threads = os.getenv("PMARLO_CPU_THREADS", "0")  # 0 = auto-detect
+        properties = {}
+        if threads and threads != "0":
+            properties["Threads"] = threads
+        if prefer_deterministic:
+            properties["DeterministicForces"] = "true"
+    elif platform_name == "Reference":
+        # Reference has no configurable properties
+        properties = {}
+
+    supported = set(platform.getPropertyNames())
+    filtered = {k: v for k, v in properties.items() if k in supported and v}
+    return platform, filtered

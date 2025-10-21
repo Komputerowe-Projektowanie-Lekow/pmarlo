@@ -76,7 +76,7 @@ class PhiPsiFeature:
     def is_periodic(self) -> np.ndarray:
         if self._periodic is None:
             # default unknown -> False length 0; caller should compute first
-            return np.zeros((0,), dtype=bool)
+            return np.empty((0,), dtype=bool)
         return self._periodic
 
 
@@ -148,27 +148,18 @@ class Chi1Feature:
             self.labels = []
             return np.zeros((traj.n_frames, 0), dtype=float)
         # wrap
-        chi1 = ((chi1_angles + np.pi) % (2 * np.pi)) - np.pi
+        chi1 = _wrap_to_minus_pi_pi(chi1_angles)
         if chi1.size == 0:
             self.labels = []
             return np.zeros((traj.n_frames, 0), dtype=float)
         self._periodic = np.ones((chi1.shape[1],), dtype=bool)
-        # residue-aware labels if possible (use second index like phi)
-        labels: list[str] = []
-        try:
-            top = traj.topology
-            for four in chi1_idx:
-                atom_index = int(four[1])
-                resid = int(top.atom(atom_index).residue.index)
-                labels.append(f"chi1:res{resid}")
-        except Exception:
-            labels = [f"chi1_{i}" for i in range(chi1.shape[1])]
-        self.labels = labels
+        labels = _labels_from_indices(traj, chi1_idx, "chi1", 1)
+        self.labels = labels if len(labels) == chi1.shape[1] else None
         return cast(np.ndarray, chi1)
 
     def is_periodic(self) -> np.ndarray:
         if self._periodic is None:
-            return np.zeros((0,), dtype=bool)
+            return np.empty((0,), dtype=bool)
         return self._periodic
 
 

@@ -1,6 +1,9 @@
 """Frame reweighting helpers for MSM and FES analysis.
 
-Reweighting helpers for downstream MSM/FES analysis.
+Reweighting helpers for downstream MSM/FES analysis with strict failure
+semantics: missing required thermodynamic data (energy) or invalid
+normalization (non-finite / non-positive sum) raises a :class:`ValueError`
+instead of substituting uniform weights.
 """
 
 from __future__ import annotations
@@ -11,8 +14,7 @@ from typing import Dict, Mapping, MutableMapping
 
 import numpy as np
 
-_KB_KJ_PER_MOL = 0.00831446261815324
-
+from pmarlo import constants as const
 
 AnalysisDataset = Mapping[str, object] | MutableMapping[str, object]
 
@@ -56,13 +58,21 @@ class _SplitThermo:
 
 
 class Reweighter:
-    """Compute per-frame analysis weights relative to a reference temperature."""
+    """Compute per-frame analysis weights relative to a reference temperature.
+
+    Fail-fast semantics:
+      * If a split lacks an energy array, reweighting aborts with ``ValueError``.
+      * If normalization produces a non-finite or non-positive sum, a ``ValueError`` is raised.
+      * Canonical output key: ``w_frame``.
+    """
 
     def __init__(self, temperature_ref_K: float) -> None:
         if not math.isfinite(temperature_ref_K) or temperature_ref_K <= 0:
             raise ValueError("temperature_ref_K must be a positive finite value")
         self.temperature_ref_K = float(temperature_ref_K)
-        self.beta_ref = 1.0 / (_KB_KJ_PER_MOL * self.temperature_ref_K)
+        self.beta_ref = 1.0 / (
+            const.BOLTZMANN_CONSTANT_KJ_PER_MOL * self.temperature_ref_K
+        )
         self._cache: Dict[str, np.ndarray] = {}
 
     # ------------------------------------------------------------------
@@ -76,8 +86,9 @@ class Reweighter:
     ) -> Dict[str, np.ndarray]:
         """Compute weights for each split and attach them to ``dataset``.
 
-        When thermodynamic information is not available the returned weights are
-        uniform for the respective split.
+        Raises:
+            ValueError: if required thermodynamic data are missing or
+                        normalization fails.
         """
 
         splits = self._extract_splits(dataset)
@@ -116,12 +127,19 @@ class Reweighter:
         splits: Dict[str, _SplitThermo] = {}
         for name, split in splits_raw.items():
             shard_id = self._coerce_shard_id(name, split)
+            base_w = self._coerce_optional_array(split, "w_frame")
+            if base_w is None:
+                if self._has_key(split, "weights"):
+                    raise ValueError(
+                        f"Split '{shard_id}' provides base weights under deprecated key "
+                        "'weights'; use 'w_frame' instead"
+                    )
             thermo = _SplitThermo(
                 shard_id=shard_id,
                 beta_sim=self._coerce_beta(split),
                 energy=self._coerce_optional_array(split, "energy"),
                 bias=self._coerce_optional_array(split, "bias"),
-                base_weights=self._coerce_optional_array(split, "weights"),
+                base_weights=base_w,
             )
             splits[str(name)] = thermo
         return splits
@@ -133,10 +151,17 @@ class Reweighter:
             val = getattr(split, key, None)
         if val is None:
             return None
-        arr = np.asarray(val, dtype=np.float64).reshape(-1)
+        arr = np.array(val, dtype=np.float64, copy=False, order="C")
+        if arr.ndim != 1:
+            arr = np.reshape(arr, (-1,), order="C")
         if arr.size == 0:
             return None
         return arr
+
+    def _has_key(self, split: object, key: str) -> bool:
+        if isinstance(split, Mapping):
+            return key in split
+        return hasattr(split, key)
 
     def _coerce_shard_id(self, name: str, split: object) -> str:
         candidate = None
@@ -152,8 +177,8 @@ class Reweighter:
         return str(candidate)
 
     def _coerce_beta(self, split: object) -> float:
-        beta = None
-        temp = None
+        beta: object | None = None
+        temp: object | None = None
         if isinstance(split, Mapping):
             beta = split.get("beta")
             temp = split.get("temperature_K")
@@ -161,42 +186,69 @@ class Reweighter:
             beta = getattr(split, "beta", None)
             temp = getattr(split, "temperature_K", None)
         if beta is not None:
-            beta_val = float(beta)
+            beta_val: float = float(beta)
             if beta_val > 0 and math.isfinite(beta_val):
-                return beta_val
+                return float(beta_val)
         if temp is not None:
-            T = float(temp)
+            T: float = float(temp)
             if T > 0 and math.isfinite(T):
-                return 1.0 / (_KB_KJ_PER_MOL * T)
+                return float(1.0 / (const.BOLTZMANN_CONSTANT_KJ_PER_MOL * T))
         raise ValueError("Each split must define beta or temperature_K for reweighting")
 
     def _compute_split_weights(self, thermo: _SplitThermo, mode: str) -> np.ndarray:
+        # Fail-fast: energy is required (bias alone insufficient for temperature reweighting)
+        if thermo.energy is None:
+            raise ValueError(
+                f"Split '{thermo.shard_id}' missing required 'energy' array for reweighting"
+            )
+
         n_frames = thermo.n_frames
         if n_frames <= 0:
-            return np.zeros((0,), dtype=np.float64)
+            raise ValueError(
+                f"Split '{thermo.shard_id}' is empty (no frames) and cannot be reweighted"
+            )
 
-        if thermo.energy is None:
-            base = np.ones(n_frames, dtype=np.float64)
-        else:
-            exponent = -(self.beta_ref - thermo.beta_sim) * thermo.energy
-            if thermo.bias is not None:
-                exponent -= self.beta_ref * thermo.bias
-            exponent = np.clip(exponent - np.max(exponent), -700.0, 700.0)
-            base = np.exp(exponent, dtype=np.float64)
+        energy = thermo.energy
+        assert energy is not None
+        delta_beta = self.beta_ref - thermo.beta_sim
+        base = np.empty_like(energy, dtype=np.float64)
+        np.multiply(energy, -delta_beta, out=base, casting="unsafe")
+        if thermo.bias is not None:
+            if thermo.bias.shape[0] != n_frames:
+                raise ValueError(
+                    f"Split '{thermo.shard_id}' bias length mismatch: "
+                    f"{thermo.bias.shape[0]} != {n_frames}"
+                )
+            np.subtract(base, self.beta_ref * thermo.bias, out=base)
+
+        max_exponent = float(np.max(base))
+        np.subtract(base, max_exponent, out=base)
+        np.clip(
+            base,
+            const.NUMERIC_EXP_CLIP_MIN,
+            const.NUMERIC_EXP_CLIP_MAX,
+            out=base,
+        )
+        np.exp(base, out=base)
 
         if thermo.base_weights is not None:
-            base = base * thermo.base_weights
+            if thermo.base_weights.shape[0] != n_frames:
+                raise ValueError(
+                    f"Split '{thermo.shard_id}' base_weights length mismatch: "
+                    f"{thermo.base_weights.shape[0]} != {n_frames}"
+                )
+            np.multiply(base, thermo.base_weights, out=base)
 
-        total = float(np.sum(base))
-        if not math.isfinite(total) or total <= 0:
-            base = np.ones(n_frames, dtype=np.float64)
-            total = float(n_frames)
-        weights = base / total
+        total = float(np.sum(base, dtype=np.float64))
+        if not math.isfinite(total) or total <= 0.0:
+            raise ValueError(
+                f"Split '{thermo.shard_id}' produced non-finite or non-positive weight sum ({total})"
+            )
+        np.divide(base, total, out=base)
+        weights = base
 
-        # ``TRAM`` currently shares the MBAR estimator until multi-ensemble data
-        # becomes available.  The explicit branch is kept to make the behaviour
-        # obvious during debugging and simplifies future upgrades.
-        if mode == AnalysisReweightMode.TRAM and thermo.energy is not None:
+        if mode == AnalysisReweightMode.TRAM:
+            # Placeholder: TRAM identical to MBAR single-ensemble for now.
             return weights.astype(np.float64, copy=False)
         return weights.astype(np.float64, copy=False)
 
@@ -213,7 +265,8 @@ class Reweighter:
         if isinstance(split_map, MutableMapping):
             split = split_map.get(split_name)
             if isinstance(split, MutableMapping):
-                split["weights"] = weights
+                # Write canonical key
+                split["w_frame"] = weights
         cache = dataset.setdefault("__weights__", {})
         if isinstance(cache, MutableMapping):
             cache[shard_id] = weights

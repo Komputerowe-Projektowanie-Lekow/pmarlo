@@ -26,10 +26,47 @@ def test_apply_output_transform_scales_outputs() -> None:
 
     whitened = apply_output_transform(Y, mean, transform, already_applied=False)
     expected = (Y - mean) @ transform
+    expected -= expected.mean(axis=0, keepdims=True)
+    if expected.shape[0] > expected.shape[1]:
+        covariance = (expected.T @ expected) / float(expected.shape[0])
+        chol = np.linalg.cholesky(covariance)
+        expected = np.linalg.solve(chol.T, expected.T).T
+        expected -= expected.mean(axis=0, keepdims=True)
     assert np.allclose(whitened, expected)
 
     unchanged = apply_output_transform(whitened, mean, transform, already_applied=True)
     assert np.allclose(unchanged, whitened)
+
+
+def test_apply_output_transform_removes_residual_mean_drift() -> None:
+    rng = np.random.default_rng(1905)
+    mean = rng.normal(loc=0.0, scale=3.0, size=6)
+    factors = rng.normal(size=(6, 6))
+    covariance = factors @ factors.T + 6 * np.eye(6)
+    cholesky = np.linalg.cholesky(covariance)
+
+    base = rng.standard_normal(size=(4096, 6))
+    correlated = base @ cholesky.T + mean
+    transform = np.linalg.inv(cholesky.T)
+
+    whitened = apply_output_transform(
+        correlated, mean=mean, W=transform, already_applied=False
+    )
+
+    drift = np.mean(whitened, axis=0)
+    assert np.allclose(drift, 0.0, atol=1e-12)
+    covariance_whitened = np.cov(whitened, rowvar=False, ddof=0)
+    assert np.allclose(covariance_whitened, np.eye(6), atol=1e-3)
+
+
+def test_apply_output_transform_requires_metadata() -> None:
+    Y = np.array([[1.0, 2.0]], dtype=np.float64)
+
+    with pytest.raises(ValueError):
+        apply_output_transform(Y, mean=None, W=np.eye(2), already_applied=False)
+
+    with pytest.raises(ValueError):
+        apply_output_transform(Y, mean=np.zeros(2), W=None, already_applied=False)
 
 
 def test_deeptica_model_transform_applies_whitening() -> None:
@@ -47,6 +84,12 @@ def test_deeptica_model_transform_applies_whitening() -> None:
     Y = model.transform(X)
 
     expected = X @ np.array([[2.0, 0.0], [0.0, 0.5]], dtype=np.float64)
+    expected -= expected.mean(axis=0, keepdims=True)
+    if expected.shape[0] > expected.shape[1]:
+        covariance = (expected.T @ expected) / float(expected.shape[0])
+        chol = np.linalg.cholesky(covariance)
+        expected = np.linalg.solve(chol.T, expected.T).T
+        expected -= expected.mean(axis=0, keepdims=True)
     assert np.allclose(Y, expected)
     # training_history should remain reusable (no in-place flip to True)
     assert model.training_history.get("output_transform_applied") is False
@@ -67,6 +110,6 @@ def test_msm_whitening_helper_updates_dataset_metadata() -> None:
     applied = ensure_msm_inputs_whitened(dataset)
     assert applied is True
     assert np.allclose(
-        dataset["X"], np.array([[1.0, 4.0], [3.0, 8.0]], dtype=np.float64)
+        dataset["X"], np.array([[-1.0, -2.0], [1.0, 2.0]], dtype=np.float64)
     )
     assert dataset["__artifacts__"]["mlcv_deeptica"]["output_transform_applied"] is True

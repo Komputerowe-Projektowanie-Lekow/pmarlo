@@ -15,14 +15,15 @@ from dataclasses import dataclass, replace
 from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, List, Mapping, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, List, Mapping, Optional, Sequence, cast
 
 import numpy as np
 
-from pmarlo.data.shard import read_shard
-from pmarlo.io.shard_id import parse_shard_id
+from pmarlo.data.shard import ShardDetails, read_shard
+from pmarlo.data.shard_schema import DemuxShard
 from pmarlo.transform.plan import TransformPlan
 from pmarlo.utils.errors import TemperatureConsistencyError
+from pmarlo.utils.path_utils import ensure_directory
 
 from .shard_io import load_shard_meta
 
@@ -55,47 +56,18 @@ def coerce_progress_callback(
     cb: Optional[Callable[[str, Mapping[str, Any]], None]] = None
     for key in _PROGRESS_ALIAS_KEYS:
         value = kwargs.get(key)
-        if value is not None:
-            cb = value
+        if value is not None and callable(value):
+            cb = cast(Callable[[str, Mapping[str, Any]], None], value)
             break
     if cb is not None:
         kwargs.setdefault("progress_callback", cb)
     return cb
 
 
-def _unique_shard_uid(meta, p: Path) -> str:
-    """Build a collision-resistant shard identity for aggregation.
+def _unique_shard_uid(details: ShardDetails) -> str:
+    """Return the canonical shard identifier."""
 
-    Uses canonical shard ID when possible, falls back to legacy format for compatibility.
-    """
-    try:
-        # Try to parse canonical ID from the source path
-        source_attr = getattr(meta, "source", {})
-        src = dict(source_attr) if isinstance(source_attr, dict) else {}
-        src_path_str = (
-            src.get("traj")
-            or src.get("path")
-            or src.get("file")
-            or src.get("source_path")
-            or str(Path(p).resolve())
-        )
-        src_path = Path(src_path_str)
-
-        # Attempt to parse canonical shard ID
-        try:
-            shard_id = parse_shard_id(src_path, require_exists=False)
-            canonical_id: str = shard_id.canonical()
-            return canonical_id
-        except Exception:
-            # Fall back to legacy format if parsing fails
-            pass
-
-        # Legacy format for backward compatibility
-        run_uid = src.get("run_uid") or src.get("run_id") or src.get("run_dir") or ""
-        return f"{run_uid}|{getattr(meta, 'shard_id', '')}|{src_path_str}"
-    except Exception:
-        # Ultimate fallback
-        return f"fallback|{getattr(meta, 'shard_id', '')}|{str(Path(p).resolve())}"
+    return str(details.shard_id)
 
 
 @dataclass(slots=True)
@@ -121,20 +93,15 @@ def _aggregate_shard_contents(shard_jsons: Sequence[Path]) -> AggregatedShards:
     temps: list[float] = []
 
     for path in paths:
-        meta2 = _safe_load_meta(path)
-        if meta2 is not None:
-            kinds.append(meta2.kind)
-            if meta2.kind == "demux":
-                temps.append(float(getattr(meta2, "temperature_K")))
+        meta_info = load_shard_meta(path)
+        kinds.append(meta_info.kind)
+        if isinstance(meta_info, DemuxShard):
+            temps.append(float(meta_info.temperature_K))
 
-        meta, X, dtraj = read_shard(path)
-        kinds.extend(_infer_shard_kind(meta))
-        maybe_temp = _maybe_temperature(meta)
-        if maybe_temp is not None:
-            temps.append(maybe_temp)
+        details, X, dtraj = read_shard(path)
 
         cv_names_ref, periodic_ref = _validate_or_set_refs(
-            meta,
+            details,
             cv_names_ref,
             periodic_ref,
         )
@@ -143,7 +110,7 @@ def _aggregate_shard_contents(shard_jsons: Sequence[Path]) -> AggregatedShards:
         X_parts.append(X_np)
         dtrajs.append(None if dtraj is None else np.asarray(dtraj, dtype=np.int32))
 
-        shard_info = _build_shard_info(meta, path, X_np, dtraj)
+        shard_info = _build_shard_info(details, path, X_np, dtraj)
         shards_info.append(shard_info)
 
     _validate_shard_safety(kinds, temps)
@@ -169,125 +136,112 @@ def _normalise_shard_paths(shard_jsons: Sequence[Path]) -> list[Path]:
     return [Path(p) for p in shard_jsons]
 
 
-def _safe_load_meta(path: Path) -> Any | None:
-    try:
-        return load_shard_meta(path)
-    except Exception:
-        return None
+def _compute_stride_metadata(
+    meta: Any,
+    frames_loaded: int,
+) -> tuple[int, int | None, float | None, bool]:
+    frames_declared = int(meta.n_frames)
+    stride_ratio = None
+    if frames_loaded > 0 and frames_declared > 0:
+        stride_ratio = float(frames_declared) / float(frames_loaded)
+    effective_stride = None
+    if stride_ratio is not None and stride_ratio > 0:
+        effective_stride = max(1, int(round(stride_ratio)))
+    preview_truncated = bool(frames_loaded > 0 and frames_declared > frames_loaded)
+    return frames_declared, effective_stride, stride_ratio, preview_truncated
 
 
-def _normalise_kind_value(value: Any) -> str | None:
-    if isinstance(value, str):
-        trimmed = value.strip().lower()
-        if trimmed in {"demux", "replica"}:
-            return trimmed
-    return None
+def _extract_time_metadata(
+    source_dict: Mapping[str, Any],
+) -> tuple[dict[str, Any], Any, Any]:
+    time_fields: dict[str, Any] = {}
+    first_ts = None
+    last_ts = None
+    for key, value in source_dict.items():
+        if not isinstance(key, str):
+            continue
+        key_lower = key.lower()
+        if "time" not in key_lower:
+            continue
+        time_fields[key] = value
+        if ("first" in key_lower or "start" in key_lower) and first_ts is None:
+            first_ts = value
+        if "last" in key_lower or "stop" in key_lower or "end" in key_lower:
+            last_ts = value
+    return time_fields, first_ts, last_ts
 
 
-def _maybe_kind_from_replica(replica_idx: Any) -> str | None:
-    if replica_idx is None:
-        return None
-    try:
-        if int(replica_idx) >= 0:
-            return "replica"
-    except (TypeError, ValueError):
-        return None
-    return None
-
-
-def _maybe_kind_from_temperature(temp: Any) -> str | None:
-    if temp is None:
-        return None
-    try:
-        temp_val = float(temp)
-    except (TypeError, ValueError):
-        return None
-    from math import isnan
-
-    if isnan(temp_val):
-        return None
-    return "demux"
-
-
-def _maybe_kind_from_source_path(source_info: Mapping[str, Any]) -> str | None:
-    raw_path = (
-        source_info.get("traj")
-        or source_info.get("path")
-        or source_info.get("file")
-        or source_info.get("source_path")
-        or ""
+def _augment_with_source_metadata(
+    info: dict[str, Any],
+    source_dict: Mapping[str, Any],
+    path: Path,
+    *,
+    effective_stride: int | None,
+    stride_ratio: float | None,
+) -> None:
+    source_path = Path(
+        source_dict.get("traj")
+        or source_dict.get("path")
+        or source_dict.get("file")
+        or path
+    ).resolve()
+    info["source_path"] = str(source_path)
+    info["run_uid"] = (
+        source_dict.get("run_uid")
+        or source_dict.get("run_id")
+        or source_dict.get("run_dir")
     )
-    lower = str(raw_path).lower()
-    if "demux" in lower:
-        return "demux"
-    if "replica" in lower:
-        return "replica"
-    return None
+    if effective_stride and effective_stride > 1:
+        info.setdefault("notes", {})["stride_ratio"] = (
+            stride_ratio if stride_ratio is not None else effective_stride
+        )
+    time_fields, first_ts, last_ts = _extract_time_metadata(source_dict)
+    if time_fields:
+        info["time_metadata"] = time_fields
+    if first_ts is not None:
+        info["first_timestamp"] = first_ts
+    if last_ts is not None:
+        info["last_timestamp"] = last_ts
 
 
-def _infer_shard_kind(meta: Any) -> list[str]:
-    kind = _normalise_kind_value(getattr(meta, "kind", None))
-    if kind:
-        return [kind]
-
-    source_info = getattr(meta, "source", {})
-    if not isinstance(source_info, dict):
-        return []
-
-    candidates = (
-        _normalise_kind_value(source_info.get("kind")),
-        _maybe_kind_from_replica(source_info.get("replica_index")),
-        _maybe_kind_from_temperature(source_info.get("temperature_K")),
-        _maybe_kind_from_source_path(source_info),
-    )
-    for candidate in candidates:
-        if candidate:
-            return [candidate]
-    return []
-
-
-def _maybe_temperature(meta: Any) -> float | None:
-    try:
-        return float(getattr(meta, "temperature"))
-    except Exception:
-        return None
-
-
-def _build_shard_info(meta: Any, path: Path, X_np: np.ndarray, dtraj: Any) -> dict:
-    bias_arr = _maybe_read_bias(path.with_name(f"{meta.shard_id}.npz"))
-    uid = _unique_shard_uid(meta, path)
+def _build_shard_info(
+    details: ShardDetails, path: Path, X_np: np.ndarray, dtraj: Any
+) -> dict:
+    bias_arr = _maybe_read_bias(path.with_name(f"{details.shard_id}.npz"))
+    uid = _unique_shard_uid(details)
     shard_dtraj = None if dtraj is None else np.asarray(dtraj, dtype=np.int32)
 
-    source_attr = getattr(meta, "source", {})
-    source_dict = dict(source_attr) if isinstance(source_attr, dict) else {}
+    source_dict = dict(details.source)
+
+    frames_loaded = int(X_np.shape[0])
+    (
+        frames_declared,
+        effective_stride,
+        stride_ratio,
+        preview_truncated,
+    ) = _compute_stride_metadata(details.meta, frames_loaded)
 
     info: dict[str, Any] = {
         "id": str(uid),
-        "legacy_id": str(getattr(meta, "shard_id", path.stem)),
         "start": 0,
-        "stop": int(X_np.shape[0]),
+        "stop": frames_loaded,
         "dtraj": shard_dtraj,
         "bias_potential": bias_arr,
-        "temperature": float(meta.temperature),
+        "temperature": float(details.temperature_K),
         "source": source_dict,
+        "frames_loaded": frames_loaded,
+        "frames_declared": frames_declared,
+        "effective_frame_stride": effective_stride,
+        "preview_truncated": preview_truncated,
     }
 
-    try:
-        info["source_path"] = str(
-            Path(
-                source_dict.get("traj")
-                or source_dict.get("path")
-                or source_dict.get("file")
-                or path
-            ).resolve()
-        )
-        info["run_uid"] = (
-            source_dict.get("run_uid")
-            or source_dict.get("run_id")
-            or source_dict.get("run_dir")
-        )
-    except Exception:
-        pass
+    _augment_with_source_metadata(
+        info,
+        source_dict,
+        path,
+        effective_stride=effective_stride,
+        stride_ratio=stride_ratio,
+    )
 
     return info
 
@@ -343,27 +297,29 @@ def load_shards_as_dataset(shard_jsons: Sequence[Path]) -> dict:
 
 
 def _validate_or_set_refs(
-    meta, cv_names_ref: tuple[str, ...] | None, periodic_ref: tuple[bool, ...] | None
+    details: ShardDetails,
+    cv_names_ref: tuple[str, ...] | None,
+    periodic_ref: tuple[bool, ...] | None,
 ) -> tuple[tuple[str, ...] | None, tuple[bool, ...] | None]:
+    cv_names = details.cv_names
+    periodic = details.periodic
     if cv_names_ref is None:
-        return meta.cv_names, meta.periodic
-    if meta.cv_names != cv_names_ref:
-        raise ValueError(f"Shard CV names mismatch: {meta.cv_names} != {cv_names_ref}")
-    if meta.periodic != periodic_ref:
-        raise ValueError(f"Shard periodic mismatch: {meta.periodic} != {periodic_ref}")
+        return cv_names, periodic
+    if cv_names != cv_names_ref:
+        raise ValueError(f"Shard CV names mismatch: {cv_names} != {cv_names_ref}")
+    if periodic != periodic_ref:
+        raise ValueError(f"Shard periodic mismatch: {periodic} != {periodic_ref}")
     return cv_names_ref, periodic_ref
 
 
 def _maybe_read_bias(npz_path: Path) -> np.ndarray | None:
-    try:
-        with np.load(npz_path) as f:
-            if "bias_potential" in getattr(f, "files", []):
-                b = np.asarray(f["bias_potential"], dtype=np.float64).reshape(-1)
-                if b.size > 0:
-                    return b
-    except Exception:
-        return None
-    return None
+    with np.load(npz_path) as f:
+        if "bias_potential" not in getattr(f, "files", []):
+            return None
+        b = np.asarray(f["bias_potential"], dtype=np.float64).reshape(-1)
+        if b.size == 0:
+            return None
+        return b
 
 
 def _dataset_hash(
@@ -447,6 +403,6 @@ def aggregate_and_build(
             pass
 
     out_bundle = Path(out_bundle)
-    out_bundle.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out_bundle.parent)
     out_bundle.write_text(res.to_json())
     return res, ds_hash

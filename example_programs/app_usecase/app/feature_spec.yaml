@@ -1,0 +1,27 @@
+use_pbc: true
+features:
+  - name: dist_N_CA
+    type: distance
+    atom_indices: [0, 1]
+    pbc: true
+    weight: 1.0
+  - name: dist_CA_C
+    type: distance
+    atom_indices: [1, 2]
+    pbc: true
+    weight: 1.0
+  - name: angle_N_CA_C
+    type: angle
+    atom_indices: [0, 1, 2]
+    pbc: true
+    weight: 1.0
+  - name: dihedral_N_CA_C_O
+    type: dihedral
+    atom_indices: [0, 1, 2, 3]
+    pbc: true
+    weight: 1.0
+  - name: dihedral_CA_C_CB_HB1
+    type: dihedral
+    atom_indices: [1, 2, 4, 7]
+    pbc: true
+    weight: 1.0

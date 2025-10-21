@@ -52,6 +52,7 @@ class MSMBuilder:
             concatenated,
             n_states=self.n_clusters,
             random_state=self.random_state,
+            n_init=50,
         )
 
         labels = clustering.labels

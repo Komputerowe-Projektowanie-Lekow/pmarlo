@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import numpy as np
+from deeptime.markov.tools.analysis import (
+    timescales_from_eigenvalues as _dt_timescales_from_eigenvalues,
+)
 from numpy.typing import NDArray
 
-EPS = 1e-12
+from pmarlo import constants as const
+
+EPS = const.NUMERIC_MIN_POSITIVE
 
 
 def safe_timescales(
@@ -29,15 +34,18 @@ def safe_timescales(
         ``(0, 1)`` yield ``np.nan`` timescales.
     """
     eig: NDArray[np.float64] = np.asarray(eigvals, dtype=np.float64)
+    if eig.size == 0:
+        return np.empty_like(eig, dtype=np.float64)
+
     clipped: NDArray[np.float64] = np.clip(eig, eps, 1 - eps).astype(
         np.float64, copy=False
     )
-    logs: NDArray[np.float64] = np.log(clipped).astype(np.float64, copy=False)
-    lag64 = np.float64(lag)
-    # Use out-parameter to avoid creating an Any-typed temporary
-    timescales: NDArray[np.float64] = np.empty_like(logs, dtype=np.float64)
-    np.divide(-lag64, logs, out=timescales)
-    invalid: NDArray[np.bool_] = (eig <= 0) | (eig >= 1)
+    flat_clipped = clipped.reshape(-1).astype(np.complex128, copy=False)
+    ts_flat = _dt_timescales_from_eigenvalues(flat_clipped, tau=float(lag))
+    timescales = np.asarray(ts_flat, dtype=np.float64).reshape(clipped.shape)
+
+    invalid: NDArray[np.bool_] = (~np.isfinite(eig)) | (eig <= 0) | (eig >= 1)
+    timescales = timescales.astype(np.float64, copy=False)
     timescales[invalid] = np.nan
     return timescales
 

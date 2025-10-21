@@ -53,20 +53,19 @@ class PruneReport:
 
 
 def _iter_runs(root: Path) -> Iterable[Path]:
-    """Yield run directories under a workspace root.
+    """Yield run directories under a workspace root."""
 
-    Recognizes app_usecase layout: ``root / sims / run-*``.
-    Falls back to any directory under ``root`` containing ``replica_exchange``.
-    """
     sims = root / "sims"
-    if sims.exists():
-        for p in sorted(sims.glob("run-*")):
-            if (p / "replica_exchange").exists():
-                yield p
-    else:
-        for p in sorted(root.iterdir()):
-            if p.is_dir() and (p / "replica_exchange").exists():
-                yield p
+    if not sims.exists():
+        raise FileNotFoundError(f"Expected workspace layout '{root / 'sims'}' to exist")
+
+    for run_dir in sorted(sims.glob("run-*")):
+        replica_exchange_dir = run_dir / "replica_exchange"
+        if not replica_exchange_dir.exists():
+            raise FileNotFoundError(
+                f"Missing replica_exchange directory in run '{run_dir}'"
+            )
+        yield run_dir
 
 
 def _collect_candidates(run_dir: Path, keep_demux_meta: bool = True) -> List[Path]:

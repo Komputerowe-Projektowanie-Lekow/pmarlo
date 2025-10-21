@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+from pmarlo import constants as const
 from pmarlo.shards.pair_builder import PairBuilder
 from pmarlo.shards.schema import Shard
 
@@ -119,7 +120,9 @@ class BalancedTempSampler:
             for idx, (i, _) in enumerate(pairs):
                 key = self._hash_embedding(embeddings[int(i)])
                 occ = occupancy.get(key, 0.0)
-                rare_component[idx] = (occ + 1e-6) ** (-self.rare_boost)
+                rare_component[idx] = (occ + const.NUMERIC_RARE_EVENT_EPSILON) ** (
+                    -self.rare_boost
+                )
 
         weights = base_weights
         if rare_component is not None:

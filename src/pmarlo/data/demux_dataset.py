@@ -16,6 +16,7 @@ from typing import Any, Callable, Iterable, List, Optional, Sequence
 
 import numpy as np
 
+from pmarlo import constants as const
 from pmarlo.features.pairs import scaled_time_pairs
 from pmarlo.utils.errors import TemperatureConsistencyError
 
@@ -33,38 +34,23 @@ class DemuxDataset:
 
 
 def _is_demux(shard: Any) -> bool:
-    kind = getattr(shard, "kind", None)
-    if kind is None and hasattr(shard, "source"):
-        try:
-            src = dict(getattr(shard, "source"))
-            kind = src.get("kind")
-        except Exception:
-            kind = None
-    return str(kind) == "demux"
+    return str(getattr(shard, "kind", "")) == "demux"
 
 
 def _temperature_of(shard: Any) -> Optional[float]:
-    # Prefer explicit temperature_K attribute (strict schema)
-    t = getattr(shard, "temperature_K", None)
-    if t is not None:
-        try:
-            return float(t)
-        except Exception:
-            return None
-    # Fallback to legacy top-level temperature
-    t2 = getattr(shard, "temperature", None)
-    try:
-        return None if t2 is None else float(t2)
-    except Exception:
+    if not _is_demux(shard):
         return None
+    temperature = getattr(shard, "temperature_K", None)
+    if temperature is None:
+        raise TemperatureConsistencyError("DEMUX shard missing temperature_K")
+    return float(temperature)
 
 
 def _dt_ps_of(shard: Any) -> Optional[float]:
     v = getattr(shard, "dt_ps", None)
-    try:
-        return None if v is None else float(v)
-    except Exception:
+    if v is None:
         return None
+    return float(v)
 
 
 def build_demux_dataset(
@@ -79,7 +65,7 @@ def build_demux_dataset(
     Parameters
     ----------
     shards
-        Collection of shard metadata objects (strict schema or legacy).
+        Collection of shard metadata objects parsed via :func:`load_shard_meta`.
     target_temperature_K
         Temperature to select. Only shards with exactly this temperature are used.
     lag_steps
@@ -130,7 +116,7 @@ def _select_target_shards(shards: Sequence[Any], target_K: float) -> list[Any]:
         temperature = _temperature_of(shard)
         if temperature is None:
             raise TemperatureConsistencyError("DEMUX shard missing temperature_K")
-        if abs(float(temperature) - target_K) <= 1e-6:
+        if abs(float(temperature) - target_K) <= const.NUMERIC_ABSOLUTE_TOLERANCE:
             chosen.append(shard)
 
     if not chosen:
@@ -182,11 +168,14 @@ def _assemble_pairs_and_weights(
             bias_to_weights_fn,
         )
 
-        idx_t, idx_tau = scaled_time_pairs(
-            int(X.shape[0]),
-            log_weights,
-            tau_scaled=float(lag_steps),
-        )
+        if log_weights is None:
+            idx_t, idx_tau = _integer_lag_pairs(int(X.shape[0]), int(lag_steps))
+        else:
+            idx_t, idx_tau = scaled_time_pairs(
+                int(X.shape[0]),
+                log_weights,
+                tau_scaled=float(lag_steps),
+            )
         if idx_t.size:
             idx_t_parts.append(offset + idx_t)
             idx_tau_parts.append(offset + idx_tau)
@@ -243,6 +232,18 @@ def _pair_weights(
     return np.sqrt(frame_weights[idx_t] * frame_weights[idx_tau]).astype(
         np.float64, copy=False
     )
+
+
+def _integer_lag_pairs(length: int, lag_steps: int) -> tuple[np.ndarray, np.ndarray]:
+    """Return deterministic integer-lag pairs when no bias weights are provided."""
+
+    if lag_steps < 0:
+        raise ValueError("lag_steps must be non-negative")
+    if lag_steps == 0 or length <= lag_steps:
+        return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64)
+    idx_t = np.arange(0, length - lag_steps, dtype=np.int64)
+    idx_tau = idx_t + int(lag_steps)
+    return idx_t, idx_tau
 
 
 def validate_demux_coverage(shards: Iterable[Any]) -> dict:

@@ -14,6 +14,7 @@ from typing import (
     Literal,
     Mapping,
     Optional,
+    Protocol,
     Sequence,
     Tuple,
 )
@@ -21,11 +22,12 @@ from typing import (
 import mdtraj as md  # type: ignore
 import numpy as np
 
-if TYPE_CHECKING:
-    from .io.trajectory_writer import MDTrajDCDWriter
+from pmarlo import constants as const
+from pmarlo.utils.path_utils import ensure_directory
 
 from .config import JOINT_USE_REWEIGHT
 from .data.aggregate import aggregate_and_build as _aggregate_and_build
+from .demultiplexing.exchange_validation import normalize_exchange_mapping
 from .features import get_feature
 from .features.base import parse_feature_spec
 from .markov_state_model._msm_utils import build_simple_msm as _build_simple_msm
@@ -40,6 +42,23 @@ from .markov_state_model._msm_utils import (
     lump_micro_to_macro_T as _lump_micro_to_macro_T,
 )
 from .markov_state_model._msm_utils import pcca_like_macrostates as _pcca_like
+from .shards.indexing import initialise_shard_indices
+from .utils.array import concatenate_or_empty
+from .utils.mdtraj import load_mdtraj_topology, resolve_atom_selection
+
+if TYPE_CHECKING:
+    from .io.trajectory_writer import MDTrajDCDWriter
+
+
+class ReplicaExchangeProtocol(Protocol):
+    cv_model_path: str | None
+    cv_scaler_mean: Any | None
+    cv_scaler_scale: Any | None
+    reporter_stride: int | None
+    dcd_stride: int | None
+
+    def restore_from_checkpoint(self, checkpoint: Any) -> None: ...
+
 
 _run_ck: Any = None
 try:  # pragma: no cover - optional plotting dependency
@@ -480,7 +499,7 @@ def _stack_and_build_periodic(
 
 
 def _empty_feature_matrix(traj: md.Trajectory) -> tuple[np.ndarray, np.ndarray]:
-    return np.zeros((traj.n_frames, 0), dtype=float), np.zeros((0,), dtype=bool)
+    return np.empty((traj.n_frames, 0), dtype=float), np.empty((0,), dtype=bool)
 
 
 def _resolve_cache_file(
@@ -494,7 +513,7 @@ def _resolve_cache_file(
         from pathlib import Path as _Path
 
         p = _Path(cache_path)
-        p.mkdir(parents=True, exist_ok=True)
+        ensure_directory(p)
         meta: Dict[str, Any] = {
             "n_frames": int(getattr(traj, "n_frames", 0) or 0),
             "n_atoms": int(getattr(traj, "n_atoms", 0) or 0),
@@ -953,6 +972,146 @@ def generate_fes_and_pick_minima(
 # ------------------------------ High-level wrappers ------------------------------
 
 
+def _resolve_simulation_seed(
+    random_seed: int | None,
+    random_state: int | None,
+) -> int | None:
+    """Resolve a deterministic simulation seed preferring ``random_state``."""
+
+    if random_state is not None:
+        return int(random_state)
+    if random_seed is not None:
+        return int(random_seed)
+    return None
+
+
+def _derive_run_plan(
+    total_steps: int,
+    quick_mode: bool,
+    exchange_override: int | None,
+) -> tuple[int, int, int]:
+    """Compute equilibration length, exchange frequency, and DCD stride.
+
+    Exchange frequency optimization based on benchmarks:
+    - Too frequent (10-50 steps): High overhead from exchange attempts
+    - Optimal range (100-200 steps): Best balance of exchange rate and throughput
+    - Too infrequent (500+ steps): Poor exchange statistics
+    """
+
+    total = int(total_steps)
+    equilibration = min(total // 10, 200 if total <= 2000 else 2000)
+    dcd_stride = max(1, total // 5000)
+    exchange_frequency = max(100, total // 20)
+
+    if quick_mode:
+        equilibration = min(total // 20, 100)
+        # Benchmark shows 100 steps is optimal, don't go lower even in quick mode
+        exchange_frequency = max(100, total // 40)  # Changed from 50 to 100
+        dcd_stride = max(1, total // 1000)
+
+    if exchange_override is not None:
+        override = int(exchange_override)
+        if override > 0:
+            exchange_frequency = override
+
+    return equilibration, exchange_frequency, dcd_stride
+
+
+def _emit_banner(
+    title: str,
+    lines: Iterable[str] | None = None,
+    *,
+    log_level: Literal["info", "warning"] = "info",
+) -> None:
+    """Emit a console/log banner with consistent formatting."""
+
+    border = "=" * 80
+    payload = list(lines or [])
+    block = [border, title, border, *payload, border]
+    print("\n" + "\n".join(block) + "\n", flush=True)
+    log_fn = getattr(logger, log_level)
+    for entry in block:
+        log_fn(entry)
+
+
+def _configure_cv_model(
+    remd: ReplicaExchangeProtocol,
+    cv_model_path: str | Path | None,
+    cv_scaler_mean: Any | None,
+    cv_scaler_scale: Any | None,
+) -> None:
+    """Attach optional CV model configuration to the REMD object."""
+
+    if cv_model_path is None:
+        return
+    remd.cv_model_path = str(cv_model_path)
+    if cv_scaler_mean is not None:
+        import numpy as _np
+
+        remd.cv_scaler_mean = _np.asarray(cv_scaler_mean, dtype=_np.float64)
+    if cv_scaler_scale is not None:
+        import numpy as _np
+
+        remd.cv_scaler_scale = _np.asarray(cv_scaler_scale, dtype=_np.float64)
+
+
+def _restore_from_checkpoint(
+    remd: ReplicaExchangeProtocol,
+    checkpoint_path: str | Path,
+) -> bool:
+    """Attempt to restore REMD state from ``checkpoint_path``."""
+
+    try:
+        import pickle as _pkl
+
+        with open(checkpoint_path, "rb") as fh:
+            ckpt = _pkl.load(fh)
+    except Exception as exc:
+        logger.warning(
+            "Failed to restore from checkpoint %s: %s",
+            str(checkpoint_path),
+            exc,
+        )
+        return False
+
+    remd.restore_from_checkpoint(ckpt)
+    return True
+
+
+def _evaluate_demux_result(
+    remd: ReplicaExchangeProtocol,
+    demuxed_path: str | Path | None,
+    total_steps: int,
+    equilibration_steps: int,
+    pdb_file: str | Path,
+) -> tuple[bool, int | None]:
+    """Return ``(accepted, frame_count)`` for a demultiplexed trajectory."""
+
+    if not demuxed_path:
+        return False, None
+
+    try:
+        from pmarlo.io.trajectory_reader import MDTrajReader as _MDTReader
+
+        reader = _MDTReader(topology_path=str(pdb_file))
+        nframes = reader.probe_length(str(demuxed_path))
+        reporter_stride = getattr(remd, "reporter_stride", None)
+        effective_stride = int(
+            reporter_stride
+            if reporter_stride
+            else max(1, getattr(remd, "dcd_stride", 1))
+        )
+        production_steps = max(0, int(total_steps) - int(equilibration_steps))
+        expected_frames = max(1, production_steps // effective_stride)
+        threshold = max(1, expected_frames // 5)
+        if int(nframes) >= threshold:
+            return True, int(nframes)
+    except Exception as exc:  # pragma: no cover - diagnostic aid
+        logger.debug("Demux evaluation failed: %s", exc, exc_info=True)
+
+    return False, None
+
+
 def run_replica_exchange(
     pdb_file: str | Path,
     output_dir: str | Path,
@@ -963,12 +1122,18 @@ def run_replica_exchange(
     random_state: int | None = None,
     start_from_checkpoint: str | Path | None = None,
     start_from_pdb: str | Path | None = None,
+    cv_model_path: str | Path | None = None,
+    cv_scaler_mean: Any | None = None,
+    cv_scaler_scale: Any | None = None,
     jitter_start: bool = False,
     jitter_sigma_A: float = 0.05,
     velocity_reseed: bool = False,
     exchange_frequency_steps: int | None = None,
     save_state_frequency: int | None = None,
     temperature_schedule_mode: str | None = None,
+    save_final_pdb: bool = False,
+    final_pdb_path: str | Path | None = None,
+    final_pdb_temperature: float | None = None,
     **kwargs: Any,
 ) -> Tuple[List[str], List[float]]:
     """Run REMD and return (trajectory_files, analysis_temperatures).
@@ -981,24 +1146,23 @@ def run_replica_exchange(
     """
     remd_out = Path(output_dir) / "replica_exchange"
 
-    equil = min(total_steps // 10, 200 if total_steps <= 2000 else 2000)
-    dcd_stride = max(1, int(total_steps // 5000))
-    exchange_frequency = max(100, total_steps // 20)
-    # Optional quick-run preset for interactive demos
-    if bool(kwargs.get("quick", False)):
-        equil = min(total_steps // 20, 100)
-        exchange_frequency = max(50, total_steps // 40)
-        dcd_stride = max(1, int(total_steps // 1000))
-    # Allow explicit override from caller
-    if exchange_frequency_steps is not None and int(exchange_frequency_steps) > 0:
-        exchange_frequency = int(exchange_frequency_steps)
-
-    # Prefer random_state when both provided for back-compat
-    _seed = (
-        int(random_state)
-        if random_state is not None
-        else (int(random_seed) if random_seed is not None else None)
+    quick_mode = bool(kwargs.get("quick", False))
+    equil, exchange_frequency, dcd_stride = _derive_run_plan(
+        total_steps, quick_mode, exchange_frequency_steps
     )
+    seed = _resolve_simulation_seed(random_seed, random_state)
+
+    _emit_banner(
+        "REPLICA EXCHANGE SIMULATION STARTING",
+        [
+            f"Number of replicas: {len(temperatures)}",
+            f"Temperature ladder: {temperatures}",
+            f"Total steps: {total_steps}",
+            f"Output directory: {remd_out}",
+            f"Random seed: {seed}",
+        ],
+    )
+
     remd = ReplicaExchange.from_config(
         RemdConfig(
             pdb_file=str(pdb_file),
@@ -1007,7 +1171,7 @@ def run_replica_exchange(
             exchange_frequency=exchange_frequency,
             auto_setup=False,
             dcd_stride=dcd_stride,
-            random_seed=_seed,
+            random_seed=seed,
             start_from_checkpoint=(
                 str(start_from_checkpoint) if start_from_checkpoint else None
             ),
@@ -1017,28 +1181,28 @@ def run_replica_exchange(
             temperature_schedule_mode=temperature_schedule_mode,
         )
     )
+    _configure_cv_model(remd, cv_model_path, cv_scaler_mean, cv_scaler_scale)
+
     remd.plan_reporter_stride(
         total_steps=int(total_steps), equilibration_steps=int(equil), target_frames=5000
     )
     remd.setup_replicas()
-    # Optional resume from checkpoint state
     if start_from_checkpoint:
-        try:
-            import pickle as _pkl
-
-            with open(start_from_checkpoint, "rb") as fh:
-                ckpt = _pkl.load(fh)
-            remd.restore_from_checkpoint(ckpt)
-            # Skip equilibration if resuming from a checkpoint
+        if _restore_from_checkpoint(remd, start_from_checkpoint):
             equil = 0
-        except Exception as exc:
-            logger.warning(
-                "Failed to restore from checkpoint %s: %s",
-                str(start_from_checkpoint),
-                exc,
-            )
-    # Optional unified progress callback (many alias names accepted)
+
     cb = coerce_progress_callback(kwargs)
+
+    _emit_banner(
+        "PHASE 1/2: RUNNING MD SIMULATION",
+        [
+            f"This will run {len(temperatures)} parallel replicas",
+            f"Each replica will run for {total_steps} MD steps",
+            f"Equilibration: {equil} steps",
+            "Press Ctrl+C to cancel the simulation",
+        ],
+    )
+
     remd.run_simulation(
         total_steps=int(total_steps),
         equilibration_steps=int(equil),
@@ -1047,31 +1211,70 @@ def run_replica_exchange(
         cancel_token=kwargs.get("cancel_token"),
     )
 
-    # Demultiplex best-effort
+    final_snapshot_written: Optional[Path] = None
+    if save_final_pdb or final_pdb_path is not None:
+        snapshot_target = (
+            Path(final_pdb_path)
+            if final_pdb_path is not None
+            else Path(remd.output_dir) / "restart_final_frame.pdb"
+        )
+        target_temperature = (
+            float(final_pdb_temperature)
+            if final_pdb_temperature is not None
+            else float(temperatures[0])
+        )
+        final_snapshot_written = remd.export_current_structure(
+            snapshot_target, temperature=target_temperature
+        )
+        _emit_banner(
+            "REPLICA EXCHANGE SNAPSHOT SAVED",
+            [f"Restart PDB written to {final_snapshot_written}"],
+        )
+
+    _emit_banner(
+        "PHASE 1/2: MD SIMULATION COMPLETE",
+        [f"Generated {len(remd.trajectory_files)} replica trajectories"],
+    )
+
+    _emit_banner(
+        "PHASE 2/2: DEMULTIPLEXING TRAJECTORIES",
+        [
+            "Extracting frames at target temperature (300K)",
+            "This creates a single trajectory from replica exchanges",
+            "WARNING: This phase cannot be cancelled with Ctrl+C (runs to completion)",
+        ],
+    )
+
     demuxed = remd.demux_trajectories(
         target_temperature=300.0, equilibration_steps=int(equil), progress_callback=cb
     )
-    if demuxed:
-        try:
-            from pmarlo.io.trajectory_reader import MDTrajReader as _MDTReader
 
-            nframes = _MDTReader(topology_path=str(pdb_file)).probe_length(str(demuxed))
-            reporter_stride = getattr(remd, "reporter_stride", None)
-            eff_stride = int(
-                reporter_stride
-                if reporter_stride
-                else max(1, getattr(remd, "dcd_stride", 1))
-            )
-            production_steps = max(0, int(total_steps) - int(equil))
-            expected = max(1, production_steps // eff_stride)
-            # Accept demux if it's close to expected or at least a safe fraction.
-            # Large runs may have minor segment repairs or stride mismatches.
-            threshold = max(1, expected // 5)  # 20% of expected frames
-            if int(nframes) >= threshold:
-                return [str(demuxed)], [300.0]
-        except Exception:
-            pass
+    _emit_banner("PHASE 2/2: DEMULTIPLEXING COMPLETE")
 
+    accepted, nframes = _evaluate_demux_result(
+        remd=remd,
+        demuxed_path=demuxed,
+        total_steps=total_steps,
+        equilibration_steps=equil,
+        pdb_file=pdb_file,
+    )
+    if accepted and demuxed:
+        _emit_banner(
+            "REPLICA EXCHANGE COMPLETE - SUCCESS",
+            [
+                f"Returning demultiplexed trajectory: {demuxed}",
+                f"Total frames in demuxed trajectory: {nframes}",
+            ],
+        )
+        return [str(demuxed)], [300.0]
+
+    _emit_banner(
+        "REPLICA EXCHANGE COMPLETE - FALLBACK TO PER-REPLICA TRAJECTORIES",
+        [
+            "Demultiplexing did not produce enough frames",
+            f"Returning {len(remd.trajectory_files)} per-replica trajectories instead",
+        ],
+    )
     traj_files = [str(f) for f in remd.trajectory_files]
     return traj_files, temperatures
 
@@ -1256,7 +1459,7 @@ def analyze_msm(  # noqa: C901
                 cache_dir = (
                     _Path(str(getattr(msm, "output_dir", output_dir))) / "feature_cache"
                 )
-                cache_dir.mkdir(parents=True, exist_ok=True)
+                ensure_directory(cache_dir)
                 Y2, _ = compute_universal_embedding(
                     traj_all,
                     feature_specs=None,
@@ -1359,11 +1562,8 @@ def find_conformations(  # noqa: C901
 
     atom_indices: Sequence[int] | None = None
     if atom_selection is not None:
-        topo = md.load_topology(str(topology_pdb))
-        if isinstance(atom_selection, str):
-            atom_indices = topo.select(atom_selection)
-        else:
-            atom_indices = list(atom_selection)
+        topo = load_mdtraj_topology(topology_pdb)
+        atom_indices = resolve_atom_selection(topo, atom_selection)
 
     logger.info(
         "Streaming trajectory %s with stride=%d, chunk=%d%s",
@@ -1395,7 +1595,7 @@ def find_conformations(  # noqa: C901
     from pathlib import Path as _Path
 
     cache_dir = _Path(str(out)) / "feature_cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(cache_dir)
     X, cols, periodic = compute_features(
         traj, feature_specs=specs, cache_path=str(cache_dir)
     )
@@ -1560,10 +1760,11 @@ def emit_shards_rg_rmsd_windowed(
 
     pdb_file = Path(pdb_file)
     out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out_dir)
 
     ref, ca_sel = _load_reference_and_selection(md, pdb_file, reference)
-    next_idx, start_idx, seed_base = _initialise_shard_indices(out_dir, seed_start)
+    shard_state = initialise_shard_indices(out_dir, seed_start)
+    next_idx = shard_state.next_index
     emit_progress = _make_emit_callback(ProgressReporter(progress_callback))
     shard_paths: list[Path] = []
     files = [Path(p) for p in traj_files]
@@ -1608,13 +1809,13 @@ def emit_shards_rg_rmsd_windowed(
             window,
             hop,
             next_idx,
-            start_idx,
-            seed_base,
+            shard_state.seed_for,
             out_dir,
             traj_path,
             write_shard,
             temperature,
-            provenance,
+            replica_id=index,
+            provenance=provenance,
         )
         shard_paths.extend(window_paths)
 
@@ -1656,25 +1857,6 @@ def _load_reference_and_selection(
     return ref, ca_sel if ca_sel.size else None
 
 
-def _initialise_shard_indices(
-    out_dir: Path,
-    seed_start: int,
-) -> tuple[int, int, int]:
-    """Determine the next shard index and corresponding RNG seed base."""
-
-    existing = []
-    for shard_file in sorted(out_dir.glob("shard_*.json")):
-        try:
-            existing.append(int(shard_file.stem.split("_")[1]))
-        except Exception:
-            continue
-
-    next_idx = (max(existing) + 1) if existing else 0
-    start_idx = next_idx
-    seed_base = int(seed_start) + start_idx
-    return next_idx, start_idx, seed_base
-
-
 def _make_emit_callback(reporter: Any) -> Callable[[str, dict], None]:
     """Wrap progress reporter emission with best-effort error handling."""
 
@@ -1701,6 +1883,8 @@ def _collect_rg_rmsd(
     rg_parts: list[np.ndarray] = []
     rmsd_parts: list[np.ndarray] = []
     total_frames = 0
+    raw_frames = 0
+    invalid_total = 0
     stride_val = int(max(1, stride))
     for chunk in iterload(
         str(traj_path),
@@ -1712,16 +1896,65 @@ def _collect_rg_rmsd(
             chunk = chunk.superpose(reference, atom_indices=ca_sel)
         except Exception:
             pass
-        rg_parts.append(md_module.compute_rg(chunk).astype(np.float64))
-        rmsd_parts.append(
-            md_module.rmsd(chunk, reference, atom_indices=ca_sel).astype(np.float64)
+        n_chunk = int(chunk.n_frames)
+        chunk_start = raw_frames
+        raw_frames += n_chunk
+        rg_chunk = md_module.compute_rg(chunk).astype(np.float64)
+        rmsd_chunk = md_module.rmsd(chunk, reference, atom_indices=ca_sel).astype(
+            np.float64
         )
-        total_frames += int(chunk.n_frames)
+        finite_mask = np.isfinite(rg_chunk) & np.isfinite(rmsd_chunk)
+        valid_count = int(np.count_nonzero(finite_mask))
+        invalid_count = int(finite_mask.size - valid_count)
+        if invalid_count:
+            invalid_total += invalid_count
+            bad_idx = np.where(~finite_mask)[0]
+            for rel_idx in bad_idx[:10]:
+                global_idx = chunk_start + int(rel_idx)
+                rg_val = rg_chunk[rel_idx]
+                rmsd_val = rmsd_chunk[rel_idx]
+                issues: list[str] = []
+                if not np.isfinite(rg_val):
+                    issues.append(
+                        "Rg="
+                        + (
+                            "NaN"
+                            if np.isnan(rg_val)
+                            else ("+inf" if rg_val > 0 else "-inf")
+                        )
+                    )
+                if not np.isfinite(rmsd_val):
+                    issues.append(
+                        "RMSD_ref="
+                        + (
+                            "NaN"
+                            if np.isnan(rmsd_val)
+                            else ("+inf" if rmsd_val > 0 else "-inf")
+                        )
+                    )
+                logger.warning(
+                    "Discarding frame %d from '%s' due to non-finite CVs (%s)",
+                    global_idx,
+                    traj_path,
+                    ", ".join(issues) if issues else "unknown issue",
+                )
+        if valid_count:
+            rg_parts.append(rg_chunk[finite_mask])
+            rmsd_parts.append(rmsd_chunk[finite_mask])
+            total_frames += valid_count
 
-    rg = np.concatenate(rg_parts) if rg_parts else np.zeros((0,), dtype=np.float64)
-    rmsd = (
-        np.concatenate(rmsd_parts) if rmsd_parts else np.zeros((0,), dtype=np.float64)
-    )
+    if invalid_total:
+        logger.warning(
+            "Discarded %d frames with invalid CV values while processing '%s'; "
+            "retained %d of %d frames.",
+            invalid_total,
+            traj_path,
+            total_frames,
+            raw_frames,
+        )
+
+    rg = concatenate_or_empty(rg_parts, dtype=np.float64, copy=False)
+    rmsd = concatenate_or_empty(rmsd_parts, dtype=np.float64, copy=False)
     return rg, rmsd, total_frames
 
 
@@ -1731,12 +1964,12 @@ def _emit_windows(
     window: int,
     hop: int,
     next_idx: int,
-    start_idx: int,
-    seed_base: int,
+    seed_for: Callable[[int], int],
     out_dir: Path,
     traj_path: Path,
     write_shard: Callable[..., Path],
     temperature: float,
+    replica_id: int,
     provenance: dict | None,
 ) -> tuple[list[Path], int]:
     """Write overlapping shards for the provided CV time-series."""
@@ -1746,31 +1979,45 @@ def _emit_windows(
     if n_frames <= 0:
         return shard_paths, next_idx
 
+    if provenance is None:
+        raise ValueError("provenance metadata is required for shard emission")
+
+    base_provenance = dict(provenance)
+    required_keys = ("created_at", "kind", "run_id")
+    missing = [key for key in required_keys if key not in base_provenance]
+    if missing:
+        keys = ", ".join(sorted(missing))
+        raise ValueError(f"provenance missing required keys: {keys}")
+
     eff_window = min(window, n_frames)
     eff_hop = min(hop, eff_window)
     for start in range(0, n_frames - eff_window + 1, eff_hop):
         stop = start + eff_window
-        shard_id = f"shard_{next_idx:04d}"
+        segment_id = int(next_idx)
+        shard_id = "T{temp}K_seg{segment:04d}_rep{replica:03d}".format(
+            temp=int(round(float(temperature))),
+            segment=segment_id,
+            replica=int(replica_id),
+        )
         cvs = {"Rg": rg[start:stop], "RMSD_ref": rmsd[start:stop]}
         source: dict[str, object] = {
             "traj": str(traj_path),
             "range": [int(start), int(stop)],
             "n_frames": int(stop - start),
+            "segment_id": segment_id,
+            "replica_id": int(replica_id),
+            "exchange_window_id": int(base_provenance.get("exchange_window_id", 0)),
         }
-        if provenance:
-            try:
-                merged = dict(provenance)
-                merged.update(source)
-                source = merged
-            except Exception:
-                pass
+        merged = dict(base_provenance)
+        merged.update(source)
+        source = merged
         shard_path = write_shard(
             out_dir=out_dir,
             shard_id=shard_id,
             cvs=cvs,
             dtraj=None,
             periodic={"Rg": False, "RMSD_ref": False},
-            seed=int(seed_base + (next_idx - start_idx)),
+            seed=int(seed_for(next_idx)),
             temperature=float(temperature),
             source=source,
         )
@@ -1805,7 +2052,7 @@ def emit_shards_rg_rmsd(
 
     pdb_file = Path(pdb_file)
     out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out_dir)
     top0 = md.load(str(pdb_file))
     ref = (
         md.load(str(reference), top=str(pdb_file))[0]
@@ -1836,12 +2083,12 @@ def emit_shards_rg_rmsd(
         rg = (
             _np.concatenate(rg_parts)
             if rg_parts
-            else _np.zeros((0,), dtype=_np.float64)
+            else _np.empty((0,), dtype=_np.float64)
         )
         rmsd = (
             _np.concatenate(rmsd_parts)
             if rmsd_parts
-            else _np.zeros((0,), dtype=_np.float64)
+            else _np.empty((0,), dtype=_np.float64)
         )
         base_src = {"traj": str(traj_path), "n_frames": int(n)}
         if provenance:
@@ -1883,12 +2130,14 @@ def build_from_shards(
     n_macrostates: int | None = None,
     notes: dict | None = None,
     progress_callback=None,
+    kmeans_kwargs: dict | None = None,
 ):
     """Aggregate shard JSONs and build a bundle with an app-friendly API.
 
     - Optional LEARN_CV(method="deeptica") is prepended to the plan when requested.
     - Adds SMOOTH_FES step to the plan by default.
     - Computes and records global bin edges into notes["cv_bin_edges"].
+    - Optional ``kmeans_kwargs`` are forwarded to the clustering step to tune K-means.
     - Returns (BuildResult, dataset_hash).
     """
     import numpy as _np
@@ -1902,7 +2151,7 @@ def build_from_shards(
 
     model_dir = _extract_model_dir(notes)
     plan = _build_transform_plan(learn_cv, deeptica_params, lag, model_dir)
-    opts = _build_opts(seed, temperature, lag)
+    opts = _build_opts(seed, temperature, lag, kmeans_kwargs)
     all_notes = _merge_notes_with_edges(notes, edges)
     n_states = _determine_macrostates(n_macrostates, deeptica_params)
     applied = _AppliedOpts(
@@ -1961,9 +2210,9 @@ def _compute_cv_edges(
         maxs[1] = max(maxs[1], float(np_module.nanmax(data[:, 1])))
 
     if not np_module.isfinite(mins[0]) or mins[0] == maxs[0]:
-        maxs[0] = mins[0] + 1e-8
+        maxs[0] = mins[0] + const.NUMERIC_RELATIVE_TOLERANCE
     if not np_module.isfinite(mins[1]) or mins[1] == maxs[1]:
-        maxs[1] = mins[1] + 1e-8
+        maxs[1] = mins[1] + const.NUMERIC_RELATIVE_TOLERANCE
 
     return {
         cv_pair[0]: np_module.linspace(
@@ -2010,13 +2259,19 @@ def _build_transform_plan(
     return _TransformPlan(steps=tuple(steps))
 
 
-def _build_opts(seed: int, temperature: float, lag: int) -> _BuildOpts:
+def _build_opts(
+    seed: int,
+    temperature: float,
+    lag: int,
+    kmeans_kwargs: dict | None = None,
+) -> _BuildOpts:
     """Create BuildOpts with a simple lag candidate ladder."""
 
     return _BuildOpts(
         seed=int(seed),
         temperature=float(temperature),
         lag_candidates=(int(lag), int(2 * lag), int(3 * lag)),
+        kmeans_kwargs=dict(kmeans_kwargs or {}),
     )
 
 
@@ -2128,7 +2383,7 @@ def _prepare_demux_paths(
     """Create output directory and normalise key input paths."""
 
     out_dir_path = Path(out_dir)
-    out_dir_path.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out_dir_path)
     topo_path = Path(topology_path)
     replica_paths = [Path(p) for p in replica_traj_paths]
     return out_dir_path, topo_path, replica_paths
@@ -2231,8 +2486,11 @@ def _demux_exchange_segments(
     segments_consumed = [0] * len(replica_frames)
 
     for seg_index, record in enumerate(exchange_records):
-        mapping = list(record.temp_to_replica)
-        _validate_exchange_mapping(mapping, len(replica_frames), seg_index)
+        mapping = normalize_exchange_mapping(
+            record.temp_to_replica,
+            expected_size=len(replica_frames),
+            context=f"segment {seg_index}",
+        )
         frame_index = seg_index // max(1, len(replica_frames))
 
         for temp_index, rep_idx in enumerate(mapping):
@@ -2266,22 +2524,6 @@ def _demux_exchange_segments(
             dst_positions[temp_index] += 1
 
     return segments_per_temp, dst_positions
-
-
-def _validate_exchange_mapping(
-    mapping: Sequence[int],
-    n_replicas: int,
-    seg_index: int,
-) -> None:
-    """Ensure each exchange row is a permutation of replica indices."""
-
-    if sorted(mapping) != list(range(n_replicas)):
-        raise ValueError("Exchange log rows must be permutations")
-    for rep_idx in mapping:
-        if rep_idx < 0 or rep_idx >= n_replicas:
-            raise ValueError(
-                f"Replica index {rep_idx} out of range for segment {seg_index}"
-            )
 
 
 def _close_demux_writers(writers: Sequence[MDTrajDCDWriter]) -> None:
@@ -2386,7 +2628,7 @@ def extract_last_frame_to_pdb(
         # MDTraj units are nm; 1 Å = 0.1 nm
         last.xyz = last.xyz + (noise * 0.1)
     out_p = Path(out_pdb)
-    out_p.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out_p.parent)
     last.save_pdb(str(out_p))
     return out_p
 
@@ -2445,7 +2687,7 @@ def extract_random_highT_frame_to_pdb(
         noise = _np.random.normal(0.0, float(jitter_sigma_A), size=frame.xyz.shape)
         frame.xyz = frame.xyz + (noise * 0.1)
     out_p = Path(out_pdb)
-    out_p.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out_p.parent)
     frame.save_pdb(str(out_p))
     return out_p
 
