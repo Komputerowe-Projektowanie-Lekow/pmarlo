@@ -1,3 +1,41 @@
+<a id='changelog-0.121.0'></a>
+# 0.121.0 — 2025-10-16
+
+### Changed
+
+Removed silent demultiplexing fallbacks by surfacing configuration and I/O errors instead of coercing defaults during streaming demux execution.
+
+Reimplemented sparse-bin smoothing with scipy.ndimage.generic_filter to compute neighbor averages without manual convolution bookkeeping.
+
+Replaced the custom Tarjan SCC solver with SciPy's strongly_connected_components routine to leverage optimized sparse graph utilities and simplify the transition analysis pipeline.
+
+
+### Removed
+
+Eliminated silent recovery logic in replica exchange velocity handling, heating steps, and energy caching so simulations now surface the underlying errors instead of masking them.
+
+### Fixed
+
+Re-centered DeepTICA whitening outputs and normalized batch covariance to keep benchmark projections numerically stable even on very large datasets.
+
+Updated DeepTICA whitening tests to cover the new normalization logic.
+
+Registered missing pytest markers (analysis, samplers, pdbfixer, tica) so the performance suite collects without errors.
+
+Converted the perf exchange algorithm benchmark banner into a comment to avoid syntax errors under strict collection.
+
+Added typing support for YAML configuration loading and tightened REMD helper utilities so mypy's type environment runs cleanly.
+
+Removed the duplicate RunningStats class and routed replica exchange probability logic through ExchangeEngine to keep acceptance calculations consistent.
+
+Simplified ensure_directory to rely on Path.mkdir's native race-safe handling instead of re-implementing fallbacks.
+
+Updated sampler import tests to target pmarlo.samplers so no internal references use the deprecated pmarlo.features.samplers module.
+
+Restored the tox -e lint workflow by reformatting the source tree, tightening replica-exchange CV monitoring utilities, and refactoring helpers with clearer responsibilities.
+
+Patched flaky tests and stubs so that undefined imports and configuration fixtures no longer derail linting.
+
 <a id='changelog-0.119.0'></a>
 # 0.119.0 — 2025-10-16
 

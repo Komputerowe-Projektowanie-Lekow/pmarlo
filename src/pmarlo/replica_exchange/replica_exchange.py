@@ -45,6 +45,7 @@ from .diagnostics import (
     compute_exchange_statistics,
     retune_temperature_ladder,
 )
+from .exchange_engine import ExchangeEngine
 from .platform_selector import select_platform_and_properties
 from .system_builder import (
     create_system,
@@ -91,39 +92,6 @@ class RunningStats:
         return self._mean.copy(), np.sqrt(variance)
 
 logger = logging.getLogger("pmarlo")
-
-
-class RunningStats:
-    """Online mean and standard deviation tracker for vector observations."""
-
-    def __init__(self, dim: int) -> None:
-        if dim <= 0:
-            raise ValueError("RunningStats requires a positive dimension")
-        self._dim = int(dim)
-        self._count = 0
-        self._mean = np.zeros(self._dim, dtype=float)
-        self._m2 = np.zeros(self._dim, dtype=float)
-
-    @property
-    def count(self) -> int:
-        return self._count
-
-    def update(self, values: np.ndarray | Sequence[float]) -> None:
-        array = np.asarray(values, dtype=float).reshape(-1)
-        if array.size != self._dim:
-            raise ValueError(f"Expected {self._dim} values but received {array.size}")
-        self._count += 1
-        delta = array - self._mean
-        self._mean += delta / self._count
-        delta2 = array - self._mean
-        self._m2 += delta * delta2
-
-    def summary(self) -> tuple[np.ndarray, np.ndarray]:
-        if self._count <= 1:
-            zero = np.zeros(self._dim, dtype=float)
-            return zero, zero
-        variance = np.maximum(self._m2 / (self._count - 1), 0.0)
-        return self._mean.copy(), np.sqrt(variance)
 
 
 class ReplicaExchange:
@@ -211,6 +179,8 @@ class ReplicaExchange:
 
         self.random_seed = seed
         self.rng = np.random.default_rng(seed)
+        self._exchange_engine: ExchangeEngine | None = None
+        self._sync_exchange_engine()
 
         # Resume / restart options
         self.resume_checkpoint: Optional[Path] = (
@@ -922,6 +892,14 @@ class ReplicaExchange:
             logger.info("Auto-setting up replicas...")
             self.setup_replicas(bias_variables=bias_variables)
 
+    def _sync_exchange_engine(self) -> ExchangeEngine:
+        if self._exchange_engine is None:
+            self._exchange_engine = ExchangeEngine(self.temperatures, self.rng)
+        else:
+            self._exchange_engine.temperatures = self.temperatures
+            self._exchange_engine.rng = self.rng
+        return self._exchange_engine
+
     def save_checkpoint_state(self) -> Dict[str, Any]:
         """
         Save the current state for checkpointing.
@@ -1009,6 +987,7 @@ class ReplicaExchange:
                 self.rng = np.random.default_rng(self.random_seed)
         else:
             self.rng = np.random.default_rng(self.random_seed)
+        self._sync_exchange_engine()
 
         # If replicas aren't set up, set them up first
         if not self.is_setup():
@@ -1082,19 +1061,9 @@ class ReplicaExchange:
         temp_i = self.temperatures[self.replica_states[replica_i]]
         temp_j = self.temperatures[self.replica_states[replica_j]]
 
-        # Calculate exchange probability using canonical Metropolis criterion
-        # delta = (beta_j - beta_i) * (U_i - U_j)
-        # where beta = 1 / (R T)
-        def safe_dimensionless(q):
-            if hasattr(q, "value_in_unit"):
-                return q.value_in_unit(unit.dimensionless)
-            return float(q)
-
-        beta_i = 1.0 / (unit.MOLAR_GAS_CONSTANT_R * temp_i * unit.kelvin)
-        beta_j = 1.0 / (unit.MOLAR_GAS_CONSTANT_R * temp_j * unit.kelvin)
-        # Correct Metropolis acceptance for temperature swap
-        delta = safe_dimensionless((beta_i - beta_j) * (energy_j - energy_i))
-        prob = min(1.0, np.exp(delta))
+        engine = self._sync_exchange_engine()
+        delta = engine.delta_from_values(temp_i, temp_j, energy_i, energy_j)
+        prob = engine.probability_from_delta(delta)
 
         # Debug logging for troubleshooting low acceptance rates
         logger.debug(
@@ -1141,7 +1110,8 @@ class ReplicaExchange:
         pair = (min(state_i_val, state_j_val), max(state_i_val, state_j_val))
         self.pair_attempt_counts[pair] = self.pair_attempt_counts.get(pair, 0) + 1
 
-        if self.rng.random() < prob:
+        engine = self._sync_exchange_engine()
+        if engine.accept(prob):
             self._perform_exchange(replica_i, replica_j)
             self.exchanges_accepted += 1
             self.pair_accept_counts[pair] = self.pair_accept_counts.get(pair, 0) + 1
@@ -1187,25 +1157,13 @@ class ReplicaExchange:
         replica_j: int,
         energies: List[openmm.unit.quantity.Quantity],
     ) -> float:
-        temp_i = self.temperatures[self.replica_states[replica_i]]
-        temp_j = self.temperatures[self.replica_states[replica_j]]
-
-        beta_i = 1.0 / (unit.MOLAR_GAS_CONSTANT_R * temp_i * unit.kelvin)
-        beta_j = 1.0 / (unit.MOLAR_GAS_CONSTANT_R * temp_j * unit.kelvin)
-
-        e_i = energies[replica_i]
-        e_j = energies[replica_j]
-        if not hasattr(e_i, "value_in_unit"):
-            e_i = float(e_i) * unit.kilojoules_per_mole
-        if not hasattr(e_j, "value_in_unit"):
-            e_j = float(e_j) * unit.kilojoules_per_mole
-
-        delta_q = (beta_i - beta_j) * (e_j - e_i)
-        try:
-            delta = delta_q.value_in_unit(unit.dimensionless)
-        except Exception:
-            delta = float(delta_q)
-        return float(min(1.0, np.exp(delta)))
+        engine = self._sync_exchange_engine()
+        return engine.calculate_probability(
+            self.replica_states,
+            energies,
+            replica_i,
+            replica_j,
+        )
 
     def _perform_exchange(self, replica_i: int, replica_j: int) -> None:
         if replica_i >= len(self.replica_states):
@@ -1267,19 +1225,10 @@ class ReplicaExchange:
                 )
             )
         )
-        try:
-            vi = self.contexts[replica_i].getState(getVelocities=True).getVelocities()
-            vj = self.contexts[replica_j].getState(getVelocities=True).getVelocities()
-            self.contexts[replica_i].setVelocities(vi * scale_ij)
-            self.contexts[replica_j].setVelocities(vj / scale_ij)
-        except Exception:
-            # Fallback to Maxwell draw if rescaling fails
-            self.contexts[replica_i].setVelocitiesToTemperature(
-                self.temperatures[old_state_j] * unit.kelvin
-            )
-            self.contexts[replica_j].setVelocitiesToTemperature(
-                self.temperatures[old_state_i] * unit.kelvin
-            )
+        vi = self.contexts[replica_i].getState(getVelocities=True).getVelocities()
+        vj = self.contexts[replica_j].getState(getVelocities=True).getVelocities()
+        self.contexts[replica_i].setVelocities(vi * scale_ij)
+        self.contexts[replica_j].setVelocities(vj / scale_ij)
 
     def run_simulation(
         self,
@@ -1638,32 +1587,7 @@ class ReplicaExchange:
     def _step_with_recovery(
         self, replica: Simulation, steps: int, replica_idx: int, temp_k: float
     ) -> None:
-        try:
-            replica.step(steps)
-        except Exception as exc:
-            if "nan" in str(exc).lower():
-                logger.warning(
-                    (
-                        f"   NaN detected in replica {replica_idx} during heating, "
-                        "attempting recovery..."
-                    )
-                )
-                replica.context.setVelocitiesToTemperature(temp_k * unit.kelvin)
-                small_steps = max(1, steps // 5)
-                for recovery_attempt in range(5):
-                    try:
-                        replica.step(small_steps)
-                        break
-                    except Exception:
-                        if recovery_attempt == 4:
-                            raise RuntimeError(
-                                f"Failed to recover from NaN in replica {replica_idx}"
-                            )
-                        replica.context.setVelocitiesToTemperature(
-                            temp_k * unit.kelvin * 0.9
-                        )
-            else:
-                raise
+        replica.step(steps)
 
     def _run_temperature_equilibration(
         self,
@@ -1987,13 +1911,8 @@ class ReplicaExchange:
     def _precompute_energies(self) -> List[Any]:
         energies: List[Any] = []
         for idx, ctx in enumerate(self.contexts):
-            try:
-                e_state = ctx.getState(getEnergy=True)
-                energies.append(e_state.getPotentialEnergy())
-            except Exception as exc:
-                logger.debug(f"Energy getState failed for replica {idx}: {exc}")
-                last = self.energies[idx] if idx < len(self.energies) else 0.0
-                energies.append(last)
+            e_state = ctx.getState(getEnergy=True)
+            energies.append(e_state.getPotentialEnergy())
         self.energies = energies
         return energies
 
@@ -2295,6 +2214,7 @@ class ReplicaExchange:
         )
         self.temperatures = stats["suggested_temperatures"]
         self.n_replicas = len(self.temperatures)
+        self._sync_exchange_engine()
         return self.temperatures
 
     def _compute_frames_per_replica(self) -> List[int]:
@@ -2578,22 +2498,22 @@ def run_remd_simulation(
             demux_traj = remd.demux_trajectories(
                 target_temperature=300.0, equilibration_steps=equilibration_steps
             )
-            if demux_traj:
-                logger.info(f"Demultiplexing successful: {demux_traj}")
-                if checkpoint_manager:
-                    checkpoint_manager.mark_step_completed(
-                        "trajectory_demux", {"demux_file": demux_traj}
-                    )
-            else:
-                logger.warning("Demultiplexing returned no trajectory")
-                if checkpoint_manager:
-                    checkpoint_manager.mark_step_failed(
-                        "trajectory_demux", "No frames found for demultiplexing"
-                    )
-        except Exception as e:
-            logger.warning(f"Demultiplexing failed: {e}")
+        except Exception as exc:  # noqa: BLE001
             if checkpoint_manager:
-                checkpoint_manager.mark_step_failed("trajectory_demux", str(e))
+                checkpoint_manager.mark_step_failed("trajectory_demux", str(exc))
+            raise
+        if demux_traj:
+            logger.info(f"Demultiplexing successful: {demux_traj}")
+            if checkpoint_manager:
+                checkpoint_manager.mark_step_completed(
+                    "trajectory_demux", {"demux_file": demux_traj}
+                )
+        else:
+            logger.warning("Demultiplexing returned no trajectory")
+            if checkpoint_manager:
+                checkpoint_manager.mark_step_failed(
+                    "trajectory_demux", "No frames found for demultiplexing"
+                )
 
         # Always log that the simulation itself was successful
         logger.info("REMD simulation completed successfully")

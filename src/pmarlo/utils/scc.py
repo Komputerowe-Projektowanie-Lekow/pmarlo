@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
 
 import numpy as np
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import strongly_connected_components
 
 __all__ = ["SCCSummary", "analyse_scc", "compute_component_coverage"]
 
@@ -64,54 +66,6 @@ class SCCSummary:
         return payload
 
 
-class _TarjanSCC:
-    """Tarjan strongly connected components solver."""
-
-    def __init__(self, adjacency: Sequence[Sequence[int]]) -> None:
-        self.adjacency = adjacency
-        self.n = len(adjacency)
-        self.index = 0
-        self.indices = np.full(self.n, -1, dtype=int)
-        self.lowlinks = np.zeros(self.n, dtype=int)
-        self.on_stack = np.zeros(self.n, dtype=bool)
-        self.stack: list[int] = []
-        self.components: list[list[int]] = []
-        self.labels = np.full(self.n, -1, dtype=int)
-
-    def run(self) -> tuple[list[list[int]], np.ndarray]:
-        for v in range(self.n):
-            if self.indices[v] == -1:
-                self._visit(v)
-        return self.components, self.labels
-
-    def _visit(self, v: int) -> None:
-        self.indices[v] = self.index
-        self.lowlinks[v] = self.index
-        self.index += 1
-        self.stack.append(v)
-        self.on_stack[v] = True
-
-        for w in self.adjacency[v]:
-            if self.indices[w] == -1:
-                self._visit(w)
-                self.lowlinks[v] = min(self.lowlinks[v], self.lowlinks[w])
-            elif self.on_stack[w]:
-                self.lowlinks[v] = min(self.lowlinks[v], self.indices[w])
-
-        if self.lowlinks[v] == self.indices[v]:
-            component: list[int] = []
-            while True:
-                w = self.stack.pop()
-                self.on_stack[w] = False
-                component.append(w)
-                if w == v:
-                    break
-            comp_idx = len(self.components)
-            for node in component:
-                self.labels[node] = comp_idx
-            self.components.append(component)
-
-
 def analyse_scc(
     counts: np.ndarray,
     *,
@@ -140,18 +94,18 @@ def analyse_scc(
             state_indices=empty,
         )
 
-    adjacency: list[list[int]] = [
-        np.where(counts[i] > 0.0)[0].astype(int).tolist() for i in range(n)
-    ]
-    solver = _TarjanSCC(adjacency)
-    components_raw, labels = solver.run()
+    adjacency_matrix = csr_matrix(counts > 0.0)
+    n_components, labels = strongly_connected_components(
+        csgraph=adjacency_matrix, directed=True, connection="strong"
+    )
 
     components: list[np.ndarray] = []
     component_sizes: list[int] = []
-    for comp in components_raw:
-        if not comp:
+    for comp_idx in range(n_components):
+        members = np.where(labels == comp_idx)[0]
+        if members.size == 0:
             continue
-        arr = np.array(sorted(comp), dtype=int)
+        arr = np.array(sorted(members), dtype=int)
         components.append(arr)
         component_sizes.append(int(arr.size))
 

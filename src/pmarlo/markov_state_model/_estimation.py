@@ -71,16 +71,13 @@ class EstimationMixin:
             )
 
         self.lag_time = lag_time
-        try:
-            if self.features is not None and not hasattr(self, "tica_components_"):
-                if self.features.shape[1] > 20:
-                    _logging.getLogger("pmarlo").info(
-                        "Applying default 3-component TICA prior to MSM to reduce noise"
-                    )
-                    # _maybe_apply_tica is provided by FeaturesMixin
-                    self._maybe_apply_tica(3, getattr(self, "tica_lag", 0) or lag_time)
-        except Exception:
-            pass
+        if self.features is not None and not hasattr(self, "tica_components_"):
+            if self.features.shape[1] > 20:
+                _logging.getLogger("pmarlo").info(
+                    "Applying default 3-component TICA prior to MSM to reduce noise"
+                )
+                # _maybe_apply_tica is provided by FeaturesMixin
+                self._maybe_apply_tica(3, getattr(self, "tica_lag", 0) or lag_time)
 
         if method == "standard":
             self._build_standard_msm(lag_time, count_mode=self.count_mode)
@@ -195,13 +192,10 @@ class EstimationMixin:
     def _should_use_deeptime(self: _HasEstimationAttrs) -> bool:
         if getattr(self, "estimator_backend", "deeptime") != "deeptime":
             return False
-        try:  # pragma: no cover
-            from deeptime.markov import TransitionCountEstimator  # type: ignore
+        from deeptime.markov import TransitionCountEstimator  # type: ignore
 
-            _ = TransitionCountEstimator
-            return True
-        except Exception:  # pragma: no cover
-            return False
+        _ = TransitionCountEstimator
+        return True
 
     def _compute_free_energies(self: _HasEstimationAttrs, temperature: float = 300.0):
         from scipy import constants
