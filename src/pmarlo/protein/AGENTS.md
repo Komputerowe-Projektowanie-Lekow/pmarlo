@@ -9,7 +9,9 @@ Reporting module:
 - maintenance and evolution
 
 # Unnegotiable
-
+- The protein should be done before the workflow. When it's not done the workflow cannot proceed.
+- When the protein PDBFixer or other modules doen't work the error is raised.
+- The protein preparation has all variables explicit not wierd like 7ph things done
 
 # Small explanation
 This module is the Protein prep step at the very front of your pipeline (before Transform Plan, REMD, DEMUX,  Shards , …). It prepares a PDB/CIF, validates coordinates, optionally solvates, and exposes quick analytical properties; it also lets you emit a prepared PDB and build an OpenMM System.

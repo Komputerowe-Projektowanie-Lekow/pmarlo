@@ -74,6 +74,14 @@ def test_deeptica_train_transform_export_and_snippet(tmp_path: Path):
     base = tmp_path / "deeptica"
     ts_path = model.to_torchscript(base)
     assert ts_path.exists()
+    scripted = torch.jit.load(str(ts_path))
+    scripted.eval()
+    tensor_input = torch.as_tensor(X_concat, dtype=torch.float32)
+    with torch.no_grad():
+        ref = model.net(tensor_input).detach().cpu().numpy()
+        scripted_out = scripted(tensor_input).detach().cpu().numpy()
+    assert scripted_out.shape == ref.shape
+    np.testing.assert_allclose(scripted_out, ref, rtol=1e-5, atol=1e-6)
     model.save(base)
     assert base.with_suffix(".json").exists()
     assert base.with_suffix(".pt").exists()

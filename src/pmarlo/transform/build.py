@@ -9,9 +9,25 @@ from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union, cast
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+    cast,
+)
 
 import numpy as np
+
+from pmarlo import constants as const
+from pmarlo.utils.json_io import load_json_file
+from pmarlo.utils.path_utils import ensure_directory
+from pmarlo.utils.temperature import collect_temperature_values
 
 from ..analysis import compute_diagnostics
 from ..analysis.fes import ensure_fes_inputs_whitened
@@ -55,7 +71,7 @@ def _load_or_train_model(
 @lru_cache(maxsize=512)
 def _load_shard_metadata_cached(path_str: str) -> Dict[str, Any]:
     try:
-        raw = json.loads(Path(path_str).read_text())
+        raw = load_json_file(path_str)
         return cast(Dict[str, Any], raw) if isinstance(raw, dict) else {}
     except Exception:
         return {}
@@ -68,13 +84,23 @@ def _get_shard_metadata(path: Path) -> Dict[str, Any]:
 def _is_demux_shard(path: Path, meta: Optional[Dict[str, Any]] = None) -> bool:
     data = meta if meta is not None else _get_shard_metadata(path)
     if isinstance(data, dict):
+        sources: list[Dict[str, Any]] = []
         source = data.get("source")
         if isinstance(source, dict):
-            kind = str(source.get("kind", "")).lower()
+            sources.append(source)
+        provenance = data.get("provenance")
+        if isinstance(provenance, dict):
+            sources.append(provenance)
+            inner_source = provenance.get("source")
+            if isinstance(inner_source, dict):
+                sources.append(inner_source)
+        for candidate in sources:
+            kind = str(candidate.get("kind", "")).lower()
             if kind:
-                return kind == "demux"
+                if kind == "demux":
+                    return True
             for key in ("traj", "path", "file", "source_path"):
-                raw = source.get(key)
+                raw = candidate.get(key)
                 if isinstance(raw, str) and "demux" in raw.lower():
                     return True
     return "demux" in path.stem.lower()
@@ -90,23 +116,12 @@ def _coerce_float(value: Any) -> Optional[float]:
     return val
 
 
-def _collect_demux_temperatures(meta: Dict[str, Any]) -> List[float]:
-    temps: List[float] = []
-    if not isinstance(meta, dict):
-        return temps
+def _collect_demux_temperatures(meta: Mapping[str, Any] | None) -> List[float]:
+    """Compatibility shim delegating to the shared temperature collector."""
 
-    candidates = [meta.get("temperature")]
-    source = meta.get("source")
-    if isinstance(source, dict):
-        candidates.extend([source.get("temperature_K"), source.get("temperature")])
-
-    for candidate in candidates:
-        coerced = _coerce_float(candidate)
-        if coerced is None:
-            continue
-        if all(abs(coerced - existing) > 1e-9 for existing in temps):
-            temps.append(coerced)
-    return temps
+    return list(
+        collect_temperature_values(meta, dedupe_tol=const.NUMERIC_PROGRESS_MIN_FRACTION)
+    )
 
 
 def _temperature_matches_target(
@@ -130,7 +145,9 @@ def _apply_demux_filter(
         if demux_temperature is None:
             filtered.append(shard_path)
             continue
-        temps = _collect_demux_temperatures(meta)
+        temps = collect_temperature_values(
+            meta, dedupe_tol=const.NUMERIC_PROGRESS_MIN_FRACTION
+        )
         if not temps:
             continue
         if _temperature_matches_target(temps, float(demux_temperature), tolerance):
@@ -199,7 +216,9 @@ def group_demux_shards_by_temperature(
         meta = _get_shard_metadata(shard_path)
         if not _is_demux_shard(shard_path, meta):
             continue
-        temps = _collect_demux_temperatures(meta)
+        temps = collect_temperature_values(
+            meta, dedupe_tol=const.NUMERIC_PROGRESS_MIN_FRACTION
+        )
         if not temps:
             continue
         temperature = temps[0]
@@ -298,6 +317,7 @@ class BuildOpts:
     chunk_size: int = 1000
     debug: bool = False
     verbose: bool = False
+    kmeans_kwargs: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.lag_candidates is not None:
@@ -682,8 +702,13 @@ def _build_msm_payload(
         return None, None, None
     logger.info("Building MSM...")
     msm_result = _build_msm(working_dataset, opts, applied)
-    if isinstance(msm_result, tuple) and len(msm_result) == 2:
-        return msm_result[0], msm_result[1], None
+    if isinstance(msm_result, tuple):
+        if len(msm_result) == 2:
+            # Old format: (T, pi)
+            return msm_result[0], msm_result[1], None
+        elif len(msm_result) == 3:
+            # New format: (T, pi, msm_data)
+            return msm_result[0], msm_result[1], msm_result[2]
     return None, None, msm_result
 
 
@@ -1017,6 +1042,204 @@ def _ensure_msm_whitened(dataset: Any) -> None:
         logger.debug("Failed to apply CV whitening before MSM build", exc_info=True)
 
 
+def _infer_cv_issue(cv_name: str, value: float) -> str:
+    name = (cv_name or "").lower()
+    if np.isnan(value):
+        root = "Value became NaN during preprocessing"
+    else:
+        root = "Value reached an infinite magnitude"
+    if "rmsd" in name:
+        return f"{root}; check reference alignment and atom selections."
+    if name in {"rg", "radius_of_gyration"}:
+        return f"{root}; verify that the structure has non-zero extent and no missing atoms."
+    return f"{root}; inspect upstream CV computation."
+
+
+def _locate_shard(
+    shards: Sequence[dict], frame_idx: int
+) -> tuple[dict | None, int | None]:
+    for shard in shards:
+        try:
+            start = int(shard.get("start", 0))
+            stop = int(shard.get("stop", start))
+        except Exception:
+            continue
+        if start <= frame_idx < stop:
+            return shard, frame_idx - start
+    return None, None
+
+
+def _resolve_diagnostics_dir(
+    dataset: Mapping[str, Any], opts: BuildOpts
+) -> Path | None:
+    candidates: list[Path] = []
+    custom_dir = getattr(opts, "diagnostics_dir", None)
+    if custom_dir:
+        try:
+            candidates.append(Path(custom_dir))
+        except Exception:
+            pass
+    shards = dataset.get("__shards__") if isinstance(dataset, Mapping) else None
+    if isinstance(shards, Sequence) and shards:
+        first = shards[0]
+        if isinstance(first, Mapping):
+            source_path = first.get("source_path")
+            if source_path:
+                try:
+                    candidates.append(Path(source_path).parent / "diagnostics")
+                except Exception:
+                    pass
+    candidates.append(Path.cwd() / "pmarlo_diagnostics")
+    for candidate in candidates:
+        try:
+            ensure_directory(candidate)
+            return candidate
+        except Exception:
+            continue
+    return None
+
+
+def _prepare_cv_names(dataset: Mapping[str, Any], X: np.ndarray) -> list[str]:
+    names = dataset.get("cv_names") if isinstance(dataset, Mapping) else None
+    if not isinstance(names, (list, tuple)):
+        names = tuple()
+    resolved = [
+        str(n) if isinstance(n, str) else f"cv{idx}"
+        for idx, n in enumerate(names or [])
+    ]
+    if len(resolved) < X.shape[1]:
+        resolved.extend(f"cv{idx}" for idx in range(len(resolved), X.shape[1]))
+    return resolved
+
+
+def _report_non_finite_cv_values(
+    dataset: Mapping[str, Any], names: Sequence[str], X: np.ndarray
+) -> None:
+    invalid_mask = ~np.isfinite(X)
+    if not invalid_mask.any():
+        return
+    counts = invalid_mask.sum(axis=0)
+    for idx, count in enumerate(counts):
+        if count:
+            logger.error(
+                "Detected %d non-finite values in CV '%s'",
+                int(count),
+                names[idx] if idx < len(names) else f"cv{idx}",
+            )
+    shards_meta = dataset.get("__shards__") if isinstance(dataset, Mapping) else None
+    shards_seq = shards_meta if isinstance(shards_meta, Sequence) else ()
+    bad_locations = np.argwhere(invalid_mask)
+    for frame_idx, cv_idx in bad_locations[:20]:
+        cv_name = names[cv_idx] if cv_idx < len(names) else f"cv{cv_idx}"
+        value = X[frame_idx, cv_idx]
+        shard_info, local_idx = _locate_shard(shards_seq, int(frame_idx))
+        shard_id = (
+            shard_info.get("id") if isinstance(shard_info, Mapping) else "unknown"
+        )
+        traj_path = (
+            shard_info.get("source_path") if isinstance(shard_info, Mapping) else None
+        )
+        cause = _infer_cv_issue(cv_name, value)
+        logger.error(
+            "Invalid %s detected for CV '%s' at global frame %d "
+            "(shard=%s, local_frame=%s, traj=%s). %s",
+            "NaN" if np.isnan(value) else "Infinity",
+            cv_name,
+            int(frame_idx),
+            shard_id,
+            "n/a" if local_idx is None else int(local_idx),
+            traj_path,
+            cause,
+        )
+
+
+def _log_cv_statistics(names: Sequence[str], X: np.ndarray) -> None:
+    for idx in range(X.shape[1]):
+        col = X[:, idx]
+        finite = col[np.isfinite(col)]
+        cv_name = names[idx] if idx < len(names) else f"cv{idx}"
+        if finite.size == 0:
+            logger.warning(
+                "CV '%s' contains no finite values across %d frames",
+                cv_name,
+                X.shape[0],
+            )
+            continue
+        logger.info(
+            "CV '%s' stats over %d finite frames: mean=%.6f std=%.6f "
+            "min=%.6f max=%.6f",
+            cv_name,
+            int(finite.size),
+            float(np.mean(finite)),
+            float(np.std(finite)),
+            float(np.min(finite)),
+            float(np.max(finite)),
+        )
+
+
+def _save_cv_distribution_plot(
+    dataset: Mapping[str, Any], opts: BuildOpts, names: Sequence[str], X: np.ndarray
+) -> None:
+    if X.shape[1] < 2:
+        return
+    finite_rows = np.all(np.isfinite(X[:, :2]), axis=1)
+    finite_vals = X[finite_rows, :2]
+    if not finite_vals.size:
+        logger.warning(
+            "Skipping CV distribution plot; insufficient finite values in first two CVs"
+        )
+        return
+    sample = finite_vals
+    max_points = 100000
+    if sample.shape[0] > max_points:
+        rng = np.random.default_rng(42)
+        idxs = rng.choice(sample.shape[0], size=max_points, replace=False)
+        sample = sample[idxs]
+    diagnostics_dir = _resolve_diagnostics_dir(dataset, opts)
+    if diagnostics_dir is None:
+        logger.warning("Unable to determine diagnostics directory for CV plot")
+        return
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg", force=True)
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots(figsize=(6, 5))
+        hb = ax.hist2d(
+            sample[:, 0],
+            sample[:, 1],
+            bins=64,
+            cmap="viridis",
+        )
+        fig.colorbar(hb[3], ax=ax, label="count")
+        ax.set_xlabel(names[0] if names else "cv0")
+        ax.set_ylabel(names[1] if len(names) > 1 else "cv1")
+        ax.set_title("CV Distribution (finite values)")
+        fig.tight_layout()
+        out_path = diagnostics_dir / "cv_distribution.png"
+        fig.savefig(out_path, dpi=200)
+        plt.close(fig)
+        logger.info("Saved CV distribution plot to '%s'", out_path)
+    except Exception as exc:
+        logger.warning("Failed to save CV distribution plot: %s", exc)
+
+
+def _diagnose_cv_matrix(
+    dataset: Mapping[str, Any], opts: BuildOpts, matrix: np.ndarray
+) -> None:
+    try:
+        X = np.asarray(matrix, dtype=np.float64)
+        if X.ndim != 2 or X.size == 0:
+            return
+        names = _prepare_cv_names(dataset, X)
+        _report_non_finite_cv_values(dataset, names, X)
+        _log_cv_statistics(names, X)
+        _save_cv_distribution_plot(dataset, opts, names, X)
+    except Exception:
+        logger.debug("CV diagnostics failed", exc_info=True)
+
+
 def _cluster_continuous_trajectories(
     dataset: Dict[str, Any], opts: BuildOpts
 ) -> Optional[List[np.ndarray]]:
@@ -1029,6 +1252,17 @@ def _cluster_continuous_trajectories(
     logger.info(
         "No discrete trajectories found, clustering continuous CV data for MSM..."
     )
+    n_samples = int(X.shape[0])
+    requested_clusters = int(max(1, opts.n_clusters))
+    if n_samples < requested_clusters:
+        logger.warning(
+            "Insufficient continuous samples (%d) for %d requested clusters; "
+            "skipping MSM clustering",
+            n_samples,
+            requested_clusters,
+        )
+        return None
+    _diagnose_cv_matrix(dataset, opts, X)
     from ..markov_state_model.clustering import cluster_microstates
 
     clustering = cluster_microstates(
@@ -1036,6 +1270,7 @@ def _cluster_continuous_trajectories(
         n_states=opts.n_states,
         method="kmeans",
         random_state=opts.seed,
+        **(opts.kmeans_kwargs or {}),
     )
     labels = clustering.labels
     if labels is None or labels.size == 0:
@@ -1089,45 +1324,90 @@ def _observed_state_count(dtrajs: Sequence[np.ndarray]) -> int:
     return len(observed)
 
 
-def _fallback_uniform_msm(
-    opts: BuildOpts, observed: int
-) -> Tuple[np.ndarray, np.ndarray]:
-    n_unique = observed if observed > 0 else int(max(1, opts.n_states or 1))
-    T = np.eye(n_unique, dtype=float)
-    pi = np.full(n_unique, 1.0 / n_unique, dtype=float)
-    return T, pi
+def _compute_msm_statistics(
+    dtrajs: Sequence[np.ndarray], n_states: int, lag_time: int
+) -> tuple[np.ndarray, int, np.ndarray]:
+    """Compute transition counts and state counts from discrete trajectories.
+
+    Returns:
+        (counts, total_pairs, state_counts)
+    """
+    counts = np.zeros((n_states, n_states), dtype=float)
+    state_counts = np.zeros((n_states,), dtype=float)
+    total_pairs = 0
+
+    for dtraj in dtrajs:
+        arr = np.asarray(dtraj, dtype=np.int32)
+
+        # Count state visits
+        for state in arr:
+            if 0 <= state < n_states:
+                state_counts[state] += 1.0
+
+        # Count transitions with sliding window
+        if arr.size > lag_time:
+            for i in range(0, arr.size - lag_time):
+                s_i = int(arr[i])
+                s_j = int(arr[i + lag_time])
+                if 0 <= s_i < n_states and 0 <= s_j < n_states:
+                    counts[s_i, s_j] += 1.0
+                    total_pairs += 1
+
+    return counts, total_pairs, state_counts
 
 
 def _build_msm(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
-    try:
-        _ensure_msm_whitened(dataset)
-        dtrajs = _prepare_dtrajs(dataset, opts)
-        if not dtrajs:
-            return None
-        clean = _clean_dtrajs(dtrajs)
-        if not clean:
-            return None
-        T, pi = build_simple_msm(
-            clean,
-            n_states=opts.n_states,
-            lag=opts.lag_time,
-            count_mode=str(opts.count_mode),
-        )
-        if pi.size == 0 or not np.isfinite(np.sum(pi)) or np.sum(pi) == 0.0:
-            observed = _observed_state_count(clean)
-            return _fallback_uniform_msm(opts, observed)
-        return T, pi
-    except Exception as e:
-        logger.warning("MSM build failed: %s", e)
+    _ensure_msm_whitened(dataset)
+    dtrajs = _prepare_dtrajs(dataset, opts)
+    if not dtrajs:
         return None
+    clean = _clean_dtrajs(dtrajs)
+    if not clean:
+        return None
+    lag_time = int(opts.lag_time)
+    applied_lag = getattr(applied, "lag", None) if applied is not None else None
+    if applied_lag is not None:
+        candidate = int(applied_lag)
+        if candidate <= 0:
+            raise ValueError("Applied MSM lag must be a positive integer")
+        lag_time = candidate
+    if not any(traj.size > lag_time for traj in clean):
+        max_length = max(traj.size for traj in clean)
+        raise ValueError(
+            f"MSM lag {lag_time} exceeds all trajectory lengths; "
+            f"longest trajectory length is {max_length}"
+        )
+    T, pi = build_simple_msm(
+        clean,
+        n_states=opts.n_states,
+        lag=lag_time,
+        count_mode=str(opts.count_mode),
+    )
+    if pi.size == 0 or not np.isfinite(np.sum(pi)) or np.sum(pi) == 0.0:
+        raise RuntimeError("Failed to compute a valid stationary distribution")
+
+    # Also compute and return detailed MSM statistics
+    n_states = T.shape[0]
+    counts, total_pairs, state_counts = _compute_msm_statistics(
+        clean, n_states, lag_time
+    )
+
+    msm_data = {
+        "transition_matrix": T,
+        "stationary_distribution": pi,
+        "counts": counts,
+        "state_counts": state_counts,
+        "counted_pairs": {"all": total_pairs},
+        "n_states": n_states,
+        "lag_time": lag_time,
+        "dtrajs": clean,  # Store for debugging
+    }
+
+    return T, pi, msm_data
 
 
 def _build_fes(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
-    try:
-        return default_fes_builder(dataset, opts, applied)
-    except Exception as e:
-        logger.warning("FES build failed: %s", e)
-        return None
+    return default_fes_builder(dataset, opts, applied)
 
 
 def _build_tram(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
@@ -1157,43 +1437,6 @@ def _coerce_cv_arrays(
     return a, b, None
 
 
-def _histogram_fes_fallback(
-    a: np.ndarray,
-    b: np.ndarray,
-    names: Tuple[str, str],
-    opts: BuildOpts,
-) -> Dict[str, Any]:
-    try:
-        hist, xedges, yedges = np.histogram2d(a, b, bins=32)
-    except Exception as exc2:
-        logger.warning("Histogram fallback failed: %s", exc2)
-        a_min, a_max = float(np.min(a)), float(np.max(a))
-        b_min, b_max = float(np.min(b)), float(np.max(b))
-        if not np.isfinite(a_min) or not np.isfinite(a_max):
-            a_min, a_max = -1.0, 1.0
-        if not np.isfinite(b_min) or not np.isfinite(b_max):
-            b_min, b_max = -1.0, 1.0
-        if a_max <= a_min:
-            a_max = a_min + 1.0
-        if b_max <= b_min:
-            b_max = b_min + 1.0
-        xedges = np.linspace(a_min, a_max, 33)
-        yedges = np.linspace(b_min, b_max, 33)
-        hist = np.ones((32, 32), dtype=np.float64)
-    hist = np.asarray(hist, dtype=np.float64)
-    with np.errstate(divide="ignore"):
-        F = -np.log(hist + 1e-12)
-    from pmarlo.markov_state_model.free_energy import FESResult
-
-    fallback = FESResult(
-        F=F,
-        xedges=xedges,
-        yedges=yedges,
-        metadata={"method": "histogram", "temperature": opts.temperature},
-    )
-    return {"result": fallback, "cv1_name": names[0], "cv2_name": names[1]}
-
-
 def _generate_fes(
     a: np.ndarray,
     b: np.ndarray,
@@ -1201,25 +1444,21 @@ def _generate_fes(
     periodic: Tuple[bool, bool],
     opts: BuildOpts,
 ) -> Dict[str, Any]:
-    try:
-        from pmarlo.markov_state_model.free_energy import generate_2d_fes
+    from pmarlo.markov_state_model.free_energy import generate_2d_fes
 
-        fes = generate_2d_fes(
-            a,
-            b,
-            temperature=opts.temperature,
-            periodic=periodic,
-        )
-        return {"result": fes, "cv1_name": names[0], "cv2_name": names[1]}
-    except Exception as exc:
-        logger.warning("FES generation failed: %s; using histogram fallback", exc)
-        return _histogram_fes_fallback(a, b, names, opts)
+    fes = generate_2d_fes(
+        a,
+        b,
+        temperature=opts.temperature,
+        periodic=periodic,
+    )
+    return {"result": fes, "cv1_name": names[0], "cv2_name": names[1]}
 
 
 def default_fes_builder(
     dataset: Any, opts: BuildOpts, applied: AppliedOpts
 ) -> Any | None:
-    """Build a simple free energy surface with histogram fallback."""
+    """Build a simple free energy surface."""
 
     if isinstance(dataset, dict):
         try:
@@ -1237,6 +1476,8 @@ def default_fes_builder(
         return {"skipped": True, "reason": error}
 
     assert a is not None and b is not None
+    if np.ptp(a) == 0.0 or np.ptp(b) == 0.0:
+        return {"skipped": True, "reason": "constant_cvs"}
     return _generate_fes(a, b, names, periodic, opts)
 
 

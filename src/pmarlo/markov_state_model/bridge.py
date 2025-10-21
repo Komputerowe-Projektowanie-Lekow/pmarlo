@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, List, Optional, Tuple, cast
+from typing import List, Optional, Tuple, cast
 
 import numpy as np
 
+from pmarlo import constants as const
+
 from ._msm_utils import (
+    _row_normalize,
+    _stationary_from_T,
     check_transition_matrix,
     ensure_connected_counts,
 )
@@ -22,21 +26,19 @@ def build_simple_msm(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Build MSM using deeptime estimators.
 
+    Requires deeptime library to be installed.
+
     Returns a pair (transition_matrix, stationary_distribution).
     """
     if not dtrajs:
         logger.error("build_simple_msm: No dtrajs provided")
-        return np.zeros((0, 0), dtype=float), np.zeros((0,), dtype=float)
+        return np.empty((0, 0), dtype=float), np.empty((0,), dtype=float)
 
     n_states = _infer_n_states(dtrajs, n_states)
     logger.info(f"build_simple_msm: Using {n_states} states")
 
-    # Deeptime-based estimation with fallback
-    try:
-        T, pi = _fit_msm_deeptime(dtrajs, n_states, lag, count_mode)
-    except Exception as exc:  # pragma: no cover - triggered without deeptime
-        logger.warning("Falling back to internal MSM estimator due to error: %s", exc)
-        T, pi = _fit_msm_fallback(dtrajs, n_states, lag, count_mode)
+    # Deeptime-based estimation (required dependency)
+    T, pi = _fit_msm_deeptime(dtrajs, n_states, lag, count_mode)
     logger.info(f"build_simple_msm: Transition matrix shape: {T.shape}")
     logger.info(f"build_simple_msm: Stationary distribution shape: {pi.shape}")
     check_transition_matrix(T, pi)
@@ -69,10 +71,26 @@ def _fit_msm_deeptime(
     lag: int,
     count_mode: str,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    This function is used to fit the MSM using the deeptime library.
-    It uses the TransitionCountEstimator to estimate the transition matrix,
-    and the MaximumLikelihoodMSM to fit the MSM.
+    """Fit MSM using deeptime library (required dependency).
+
+    Uses TransitionCountEstimator to estimate the transition matrix,
+    then normalizes and computes stationary distribution.
+
+    Parameters
+    ----------
+    dtrajs : List[np.ndarray]
+        Discrete trajectories (state sequences).
+    n_states : int
+        Total number of states in the model.
+    lag : int
+        Lag time for counting transitions.
+    count_mode : str
+        Counting mode ("sliding" or "strided").
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray]
+        (transition_matrix, stationary_distribution)
     """
     from deeptime.markov import TransitionCountEstimator  # type: ignore
 
@@ -85,34 +103,12 @@ def _fit_msm_deeptime(
     C_raw = np.asarray(count_model.count_matrix, dtype=float)
     res = ensure_connected_counts(C_raw)
     if res.counts.size == 0:
-        return _expand_results(n_states, res.active, np.zeros((0, 0)), np.zeros((0,)))
-    T_active = _row_normalize(res.counts)
-    pi_active = _stationary_from_T(T_active)
-    return _expand_results(n_states, res.active, T_active, pi_active)
-
-
-def _fit_msm_fallback(
-    dtrajs: List[np.ndarray], n_states: int, lag: int, count_mode: str
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    This function is used to fit the MSM using the fallback method.
-    It uses the Dirichlet-regularized ML counts to estimate the transition matrix,
-    and the stationary distribution is computed from the transition matrix.
-    """
-    counts = np.zeros((n_states, n_states), dtype=float)
-    step = lag if count_mode == "strided" else 1
-    for dtraj in dtrajs:
-        if dtraj.size <= lag:
-            continue
-        for i in range(0, dtraj.size - lag, step):
-            a = int(dtraj[i])
-            b = int(dtraj[i + lag])
-            if a < 0 or b < 0 or a >= n_states or b >= n_states:
-                continue
-            counts[a, b] += 1.0
-    res = ensure_connected_counts(counts)
-    if res.counts.size == 0:
-        return _expand_results(n_states, res.active, np.zeros((0, 0)), np.zeros((0,)))
+        return _expand_results(
+            n_states,
+            res.active,
+            np.empty((0, 0), dtype=float),
+            np.empty((0,), dtype=float),
+        )
     T_active = _row_normalize(res.counts)
     pi_active = _stationary_from_T(T_active)
     return _expand_results(n_states, res.active, T_active, pi_active)
@@ -130,69 +126,37 @@ def _expand_results(
     return T_full, pi_full
 
 
-def _row_normalize(C: np.ndarray) -> np.ndarray[Any, Any]:
-    rows = C.sum(axis=1)
-    rows[rows == 0] = 1.0
-    return cast(np.ndarray[Any, Any], C / rows[:, None])
-
-
-def _stationary_from_T(T: np.ndarray) -> np.ndarray:
-    evals, evecs = np.linalg.eig(T.T)
-    idx = int(np.argmax(np.real(evals)))
-    pi = np.real(evecs[:, idx])
-    pi = np.abs(pi)
-    s = float(np.sum(pi))
-    if s > 0:
-        pi /= s
-    return cast(np.ndarray, pi)
-
-
 def pcca_like_macrostates(
     T: np.ndarray, n_macrostates: int = 4, random_state: int | None = 42
 ) -> Optional[np.ndarray]:
-    """Compute metastable sets using PCCA+ with a k-means fallback.
-
-    Parameters
-    ----------
-    T:
-        Microstate transition matrix.
-    n_macrostates:
-        Desired number of macrostates.
-    random_state:
-        Seed for the k-means fallback. ``None`` uses NumPy's global state.
-
-    Returns
-    -------
-    Optional[np.ndarray]
-        Hard labels per microstate or ``None`` if the decomposition failed.
-    """
+    """Compute metastable sets using deeptime's PCCA+ implementation."""
     if T.size == 0 or T.shape[0] <= n_macrostates:
         return None
-    # Try deeptime PCCA+ on transition matrix
+    _ = random_state  # Preserved for API compatibility; no stochastic alternative path.
+    from deeptime.markov import pcca as _pcca  # type: ignore
+
+    P = np.asarray(T, dtype=float)
+    n_sets = int(n_macrostates)
+    pi = _stationary_from_T(P)
+    flux = pi[:, None] * P
+    flux_sym = 0.5 * (flux + flux.T)
+    row_sums = flux_sym.sum(axis=1, keepdims=True)
+    row_sums[row_sums <= const.NUMERIC_MIN_POSITIVE] = 1.0
+    P_reversible = flux_sym / row_sums
+    pi_reversible = np.asarray(row_sums[:, 0], dtype=float)
+    total_flux = float(np.sum(pi_reversible))
+    if total_flux > 0.0:
+        pi_reversible /= total_flux
+    else:
+        pi_reversible = _stationary_from_T(P_reversible)
     try:
-        from deeptime.markov import pcca as _pcca  # type: ignore
-
-        model = _pcca(np.asarray(T, dtype=float), n_metastable_sets=int(n_macrostates))
-        # Hard assignments from membership matrix
-        chi = np.asarray(model.memberships, dtype=float)
-        labels = np.argmax(chi, axis=1)
-        labels = _canonicalize_macro_labels(labels.astype(int), T)
-        return cast(np.ndarray, labels)
-    except Exception:
-        # Fallback: spectral embedding + k-means
-        eigvals, eigvecs = np.linalg.eig(T.T)
-        order = np.argsort(-np.real(eigvals))
-        k = max(2, min(n_macrostates, T.shape[0] - 1))
-        comps = np.real(eigvecs[:, order[1 : 1 + k]])
-        try:
-            from sklearn.cluster import MiniBatchKMeans
-
-            km = MiniBatchKMeans(n_clusters=n_macrostates, random_state=random_state)
-            labels = km.fit_predict(comps)
-            labels = _canonicalize_macro_labels(labels.astype(int), T)
-            return cast(np.ndarray, labels)
-        except Exception:
-            return None
+        model = _pcca(P_reversible, n_metastable_sets=n_sets, pi=pi_reversible)
+    except TypeError:
+        model = _pcca(P_reversible, n_sets, pi_reversible)
+    chi = np.asarray(model.memberships, dtype=float)
+    labels = np.argmax(chi, axis=1)
+    labels = _canonicalize_macro_labels(labels.astype(int), T)
+    return cast(np.ndarray, labels)
 
 
 def _canonicalize_macro_labels(labels: np.ndarray, T: np.ndarray) -> np.ndarray:

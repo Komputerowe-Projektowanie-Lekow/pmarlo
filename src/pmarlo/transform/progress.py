@@ -4,6 +4,8 @@ import sys
 import time
 from typing import IO, Any, Callable, Mapping, Optional, Tuple
 
+from pmarlo import constants as const
+
 ProgressCB = Callable[[str, Mapping[str, Any]], None]
 
 # Accepted kwarg aliases for progress callbacks in public APIs
@@ -64,7 +66,7 @@ class ProgressReporter:
 
         cur, tot = _extract_progress(payload)
         if cur is not None and tot and tot > 0 and cur <= tot:
-            frac = max(1e-9, min(1.0, cur / float(tot)))
+            frac = max(const.NUMERIC_PROGRESS_MIN_FRACTION, min(1.0, cur / float(tot)))
             eta = (now - self._t0) * (1.0 / frac - 1.0)
             payload["eta_s"] = round(eta, 3)
 
@@ -112,7 +114,8 @@ class ProgressPrinter:
         bar = "#" * filled + "-" * (self.bar_width - filled)
         elapsed = time.monotonic() - self.start_t
         eta = (
-            (elapsed / max(1e-9, current)) * (self.total - current)
+            (elapsed / max(const.NUMERIC_PROGRESS_MIN_FRACTION, current))
+            * (self.total - current)
             if current > 0
             else 0.0
         )

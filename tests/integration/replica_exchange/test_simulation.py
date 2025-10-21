@@ -11,11 +11,16 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+pytest.importorskip("openmm")
+pytest.importorskip("mdtraj")
+
 from pmarlo.replica_exchange.simulation import (
     Simulation,
     feature_extraction,
     prepare_system,
 )
+
+pytestmark = pytest.mark.integration
 
 
 class TestSimulation:

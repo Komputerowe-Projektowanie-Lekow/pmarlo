@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Mapping, MutableMapping
+from typing import Any, Dict, Mapping, MutableMapping, Sequence
 
 import numpy as np
 
 from ..analysis import (
+    compute_analysis_debug,
     compute_diagnostics,
     compute_weighted_fes,
     prepare_msm_discretization,
@@ -32,6 +33,19 @@ class AnalysisConfig:
     fes_bandwidth: str | float = "scott"
     fes_min_count_per_bin: int = 1
     apply_whitening: bool = True
+    collect_debug_data: bool = False
+
+
+def _format_debug_warning(entry: object) -> str:
+    """Canonicalise analysis debug warnings for reporting."""
+
+    if isinstance(entry, Mapping):
+        code = str(entry.get("code", "ANALYSIS_DEBUG_WARNING"))
+        message = entry.get("message")
+        if message:
+            return f"{code}: {message}"
+        return code
+    return str(entry)
 
 
 def _normalise_reweight_mode(mode: str | None) -> str:
@@ -52,14 +66,8 @@ def finalize_dataset(dataset: DatasetLike, cfg: AnalysisConfig) -> Dict[str, Any
 
     if reweight_mode != AnalysisReweightMode.NONE:
         reweighter = Reweighter(cfg.temperature_ref_K)
-        try:
-            weights = reweighter.apply(dataset, mode=reweight_mode)
-            effective_mode = reweight_mode
-        except Exception:
-            weights = None
-            effective_mode = AnalysisReweightMode.NONE
-    else:
-        effective_mode = AnalysisReweightMode.NONE
+        weights = reweighter.apply(dataset, mode=reweight_mode)
+        effective_mode = reweight_mode
 
     msm = prepare_msm_discretization(
         dataset,
@@ -110,4 +118,24 @@ def finalize_dataset(dataset: DatasetLike, cfg: AnalysisConfig) -> Dict[str, Any
         result["frame_weights"] = weights
     if diagnostics.get("warnings"):
         result["warnings"] = diagnostics["warnings"]
+
+    if cfg.collect_debug_data:
+        raw_dtrajs = dataset.get("dtrajs") if isinstance(dataset, Mapping) else None
+        if not isinstance(raw_dtrajs, Sequence) or not raw_dtrajs:
+            raise ValueError(
+                "collect_debug_data requires 'dtrajs' sequences in the dataset"
+            )
+        if not any(np.asarray(traj).size > int(cfg.lag_time) for traj in raw_dtrajs):
+            raise ValueError(
+                "collect_debug_data requires at least one trajectory longer than lag"
+            )
+
+        debug_data = compute_analysis_debug(dataset, lag=cfg.lag_time)
+        result["analysis_debug"] = debug_data
+
+        debug_warnings = debug_data.summary.get("warnings", [])
+        if debug_warnings:
+            formatted = [_format_debug_warning(item) for item in debug_warnings]
+            result.setdefault("warnings", [])
+            result["warnings"].extend(formatted)
     return result

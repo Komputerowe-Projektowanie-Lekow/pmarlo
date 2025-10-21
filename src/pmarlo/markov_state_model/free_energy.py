@@ -8,6 +8,11 @@ from typing import Any, ClassVar, Optional, Tuple
 import numpy as np
 from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter
+from scipy.stats import iqr
+from scipy.stats.mstats import mquantiles
+
+from pmarlo import constants as const
+from pmarlo.utils.thermodynamics import kT_kJ_per_mol
 
 
 @dataclass
@@ -117,7 +122,7 @@ class FESResult:
 
     @property
     def free_energy(self) -> NDArray[np.float64]:  # pragma: no cover - alias
-        """Alias for the free-energy surface array for legacy consumers."""
+        """Alias for the free-energy surface array for backward-compatible consumers."""
 
         return self.F
 
@@ -241,14 +246,68 @@ class FESResult:
         return restored
 
 
-def _kT_kJ_per_mol(temperature_kelvin: float) -> float:
-    from scipy import constants
+def free_energy_from_density(
+    density: NDArray[np.float64],
+    temperature: float,
+    *,
+    mask: NDArray[np.bool_] | None = None,
+    inpaint: bool = False,
+    tiny: float | None = None,
+) -> NDArray[np.float64]:
+    """Convert a normalised probability density into a free-energy surface.
 
-    # Cast to float because scipy.constants may be typed as Any
-    return float(constants.k * temperature_kelvin * constants.Avogadro / 1000.0)
+    Parameters
+    ----------
+    density
+        Array containing non-negative probability densities. The array is not
+        modified in-place.
+    temperature
+        Simulation temperature in Kelvin used to compute :math:`kT`.
+    mask
+        Optional boolean mask identifying bins that should be reported as NaN
+        (typically empty histogram bins). The mask is ignored when ``inpaint``
+        is ``True`` because callers have already filled those bins.
+    inpaint
+        If ``True`` skip applying ``mask`` so that bins filled via inpainting
+        remain finite.
+    tiny
+        Optional floor used to guard against ``log(0)``. Defaults to the
+        machine-dependent ``np.finfo(float).tiny``.
+    """
+
+    if temperature <= 0:
+        raise ValueError("temperature must be positive when computing free energy")
+
+    density_arr = np.array(density, dtype=np.float64, copy=False)
+    tiny_val = float(tiny if tiny is not None else np.finfo(np.float64).tiny)
+    kT = kT_kJ_per_mol(float(temperature))
+
+    # Avoid RuntimeWarning: divide by zero encountered in log by clipping first
+    # and only assigning +inf where true zeros occurred. Using errstate keeps
+    # logs clean without changing semantics.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        log_density = np.log(np.clip(density_arr, tiny_val, None))
+        free_energy = -kT * log_density
+
+    result = np.where(density_arr > tiny_val, free_energy, np.inf)
+    if mask is not None:
+        mask_arr = np.array(mask, dtype=bool, copy=False)
+        if not inpaint:
+            result = np.where(mask_arr, np.nan, result)
+
+    if np.any(np.isfinite(result)):
+        result = result - np.nanmin(result)
+
+    return result
 
 
 logger = logging.getLogger(__name__)
+
+
+def _wrap_periodic(angle: np.ndarray) -> np.ndarray:
+    """Wrap angular differences into ``[-pi, pi)`` for toroidal kernels."""
+
+    return ((angle + np.pi) % (2.0 * np.pi)) - np.pi
 
 
 def periodic_kde_2d(
@@ -257,17 +316,7 @@ def periodic_kde_2d(
     bw: Tuple[float, float] = (0.35, 0.35),
     gridsize: Tuple[int, int] = (42, 42),
 ) -> NDArray[np.float64]:
-    """Kernel density estimate on a 2D torus.
-
-    Parameters
-    ----------
-    theta_x, theta_y
-        Angles in radians of equal shape.
-    bw
-        Bandwidth (standard deviations) along x and y in radians.
-    gridsize
-        Number of grid points along x and y.
-    """
+    """Kernel density estimate on a 2D torus using a wrapped Gaussian mixture."""
 
     x: NDArray[np.float64] = np.asarray(theta_x, dtype=np.float64).reshape(-1)
     y: NDArray[np.float64] = np.asarray(theta_y, dtype=np.float64).reshape(-1)
@@ -290,21 +339,16 @@ def periodic_kde_2d(
         np.float64, copy=False
     )
     X, Y = np.meshgrid(x_grid, y_grid, indexing="ij")
-    X = X.astype(np.float64, copy=False)
-    Y = Y.astype(np.float64, copy=False)
-    density: NDArray[np.float64] = np.zeros_like(X, dtype=np.float64)
 
-    shifts = (-2 * np.pi, 0.0, 2 * np.pi)
-    for dx in shifts:
-        for dy in shifts:
-            diff_x = X[..., None] - (x + dx)[None, None, :]
-            diff_y = Y[..., None] - (y + dy)[None, None, :]
-            density += np.exp(-0.5 * ((diff_x / sx) ** 2 + (diff_y / sy) ** 2)).sum(
-                axis=-1
-            )
-
-    norm = 2 * np.pi * sx * sy * x.size
-    density /= norm
+    # Broadcast over samples (last axis) for vectorised Gaussian evaluation.
+    dx = _wrap_periodic(X[..., np.newaxis] - x[np.newaxis, np.newaxis, :])
+    dy = _wrap_periodic(Y[..., np.newaxis] - y[np.newaxis, np.newaxis, :])
+    inv_cov = (dx / sx) ** 2 + (dy / sy) ** 2
+    kernel = np.exp(-0.5 * inv_cov)
+    norm = float(x.size) * (2.0 * np.pi * sx * sy)
+    if norm <= 0.0:
+        raise ValueError("normalisation constant must be positive")
+    density = kernel.sum(axis=-1) / norm
     return density.astype(np.float64, copy=False)
 
 
@@ -356,12 +400,7 @@ def generate_1d_pmf(
         H = gaussian_filter(
             H, sigma=float(smoothing_sigma), mode="wrap" if periodic else "reflect"
         )
-    kT = _kT_kJ_per_mol(temperature)
-    tiny = np.finfo(float).tiny
-    H_clipped = np.clip(H, tiny, None)
-    F = np.where(H > 0, -kT * np.log(H_clipped), np.inf)
-    if np.any(np.isfinite(F)):
-        F -= np.nanmin(F)
+    F = free_energy_from_density(H, temperature)
     return PMFResult(
         F=F, edges=edges, counts=H, periodic=periodic, temperature=temperature
     )
@@ -378,7 +417,7 @@ def generate_2d_fes(  # noqa: C901
     inpaint: bool = False,
     min_count: int = 1,
     kde_bw_deg: Tuple[float, float] = (20.0, 20.0),
-    epsilon: float = 1e-6,
+    epsilon: float = const.NUMERIC_ABSOLUTE_TOLERANCE,
 ) -> FESResult:
     """Generate a two-dimensional free-energy surface (FES)."""
 
@@ -405,14 +444,16 @@ def generate_2d_fes(  # noqa: C901
         # Adaptive percentile clipping to reduce outlier-driven empty bins
         try:
             if not any(periodic):
-                x_p1, x_p99 = np.percentile(x, [1.0, 99.0])
-                y_p1, y_p99 = np.percentile(y, [1.0, 99.0])
-                if np.isfinite([x_p1, x_p99]).all() and x_p99 > x_p1:
-                    xr = (float(x_p1), float(x_p99))
+                x_quantiles = mquantiles(x, prob=[0.01, 0.99]).filled(np.nan)
+                y_quantiles = mquantiles(y, prob=[0.01, 0.99]).filled(np.nan)
+                x_q = np.asarray(x_quantiles, dtype=np.float64)
+                y_q = np.asarray(y_quantiles, dtype=np.float64)
+                if np.isfinite(x_q).all() and x_q[1] > x_q[0]:
+                    xr = (float(x_q[0]), float(x_q[1]))
                 else:
                     xr = (float(np.min(x)), float(np.max(x)))
-                if np.isfinite([y_p1, y_p99]).all() and y_p99 > y_p1:
-                    yr = (float(y_p1), float(y_p99))
+                if np.isfinite(y_q).all() and y_q[1] > y_q[0]:
+                    yr = (float(y_q[0]), float(y_q[1]))
                 else:
                     yr = (float(np.min(y)), float(np.max(y)))
                 # Clip samples into the selected range to keep edge bins populated
@@ -444,26 +485,27 @@ def generate_2d_fes(  # noqa: C901
     n_pts = int(x.shape[0])
     min_bins = 40
     max_bins = 512
+    eps = float(epsilon)
     # sqrt rule baseline
     sqrt_bins = max(min_bins, int(np.sqrt(max(1, n_pts))))
 
-    # Freedman–Diaconis per axis
-    def _fd_bins(arr: NDArray[np.float64], lo: float, hi: float) -> int:
-        try:
-            q75, q25 = np.percentile(arr, [75.0, 25.0])
-            iqr = float(q75 - q25)
-            if iqr <= 0:
-                return 0
-            h = 2.0 * iqr / (max(1.0, n_pts) ** (1.0 / 3.0))
-            if h <= 0:
-                return 0
-            nb = int((float(hi) - float(lo)) / float(h))
-            return int(np.clip(nb, min_bins, max_bins))
-        except Exception:
+    # Freedman–Diaconis per axis computed via SciPy helper to avoid custom logic
+    def _fd_bins(arr: NDArray[np.float64], value_range: Tuple[float, float]) -> int:
+        arr = np.asarray(arr, dtype=np.float64)
+        span = float(value_range[1] - value_range[0])
+        if arr.size <= 1 or not np.isfinite(span) or span <= 0:
             return 0
+        bandwidth = 2.0 * iqr(arr, rng=(25, 75), nan_policy="omit")
+        bandwidth /= np.cbrt(max(1, arr.size))
+        if not np.isfinite(bandwidth) or bandwidth <= eps:
+            return 0
+        nb = int(np.ceil(span / bandwidth))
+        if nb <= 0:
+            return 0
+        return int(np.clip(nb, min_bins, max_bins))
 
-    bx_fd = _fd_bins(x, xr[0], xr[1])
-    by_fd = _fd_bins(y, yr[0], yr[1])
+    bx_fd = _fd_bins(x, xr)
+    by_fd = _fd_bins(y, yr)
     # Choose the better of requested, FD, and sqrt rule
     bx = max(int(bx_req), int(bx_fd or 0), int(sqrt_bins))
     by = max(int(by_req), int(by_fd or 0), int(sqrt_bins))
@@ -547,18 +589,13 @@ def generate_2d_fes(  # noqa: C901
         final_mask: NDArray[np.bool_] = np.zeros_like(mask, dtype=bool)
     else:
         final_mask = mask
-    kT = _kT_kJ_per_mol(temperature)
-    tiny = np.finfo(float).tiny
-    # Avoid RuntimeWarning: divide by zero encountered in log by clipping first
-    # and only assigning +inf where true zeros occurred. Using errstate keeps
-    # logs clean without changing semantics.
-    with np.errstate(divide="ignore", invalid="ignore"):
-        F_safe = -kT * np.log(np.clip(density, tiny, None))
-    F: NDArray[np.float64] = np.where(density > tiny, F_safe, np.inf)
-    if not inpaint:
-        F = np.where(final_mask, np.nan, F)
-    if np.any(np.isfinite(F)):
-        F -= np.nanmin(F)
+
+    F: NDArray[np.float64] = free_energy_from_density(
+        density,
+        temperature,
+        mask=final_mask,
+        inpaint=inpaint_flag,
+    )
     # Fraction of empty (below min_count) bins
     empty_bins_fraction = float(np.count_nonzero(final_mask)) / np.prod(H_density.shape)
     metadata = {

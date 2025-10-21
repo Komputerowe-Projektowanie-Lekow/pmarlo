@@ -1,0 +1,46 @@
+common:
+  estimator: bayesian
+  enforce_reversibility: true
+  confidence_level: 0.95
+  n_timescales: 6
+  implied_timescale_lags: [2, 4, 6, 8, 10, 12]
+  seeds:
+    bootstrap: 1337
+    validation: 1441
+
+experiments:
+  E0_same_temp:
+    lag_steps: 6
+    count_threshold: 5
+    guardrails:
+      min_scc_fraction: 0.9
+      max_empty_fraction: 0.3
+      max_diagonal_mass: 0.95
+    acceptance_checks:
+      js_stationary_max: 0.02
+      fes_rmse_max_kbt: 0.2
+      deeptica_pairs_min: 2500
+
+  E1_mixed_ladders:
+    lag_steps: 8
+    count_threshold: 8
+    guardrails:
+      min_scc_fraction: 0.9
+      max_empty_fraction: 0.3
+      max_diagonal_mass: 0.95
+    acceptance_checks:
+      js_stationary_max: 0.05
+      fes_rmse_max_kbt: 0.4
+      deeptica_pairs_min: 3500
+      ess_fraction_min: 0.3
+
+  E2_disjoint_ladders:
+    lag_steps: 8
+    count_threshold: 8
+    guardrails:
+      min_scc_fraction: 0.9
+      max_empty_fraction: 0.35
+      max_diagonal_mass: 0.95
+    acceptance_checks:
+      expect_failure: true
+      failure_reason: "Insufficient thermodynamic overlap; TRAM/MBAR should abort or report ESS ≈ 0."

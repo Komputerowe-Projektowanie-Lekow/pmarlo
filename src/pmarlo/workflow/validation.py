@@ -7,7 +7,6 @@ consistency, shard usage, and analysis quality across the PMARLO workflow.
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -17,8 +16,6 @@ from pmarlo.io.catalog import (
     ShardCatalog,
     build_catalog_from_paths,
 )
-
-logger = logging.getLogger(__name__)
 
 
 def validate_build_result(
@@ -70,77 +67,71 @@ def validate_build_result(
         "summary": {},
     }
 
-    try:
-        # Extract used canonical IDs from build result
-        used_ids = _extract_used_canonical_ids(build_result)
-        validation_results["summary"]["used_shard_count"] = len(used_ids)
+    # Extract used canonical IDs from build result
+    used_ids = _extract_used_canonical_ids(build_result)
+    validation_results["summary"]["used_shard_count"] = len(used_ids)
 
-        # Build catalog from available paths
-        catalog = build_catalog_from_paths(available_shard_paths, dataset_hash)
-        validation_results["summary"]["available_shard_count"] = len(catalog.shards)
+    # Build catalog from available paths
+    catalog = build_catalog_from_paths(available_shard_paths, dataset_hash)
+    validation_results["summary"]["available_shard_count"] = len(catalog.shards)
 
-        # Validate usage consistency
-        usage_validation = catalog.validate_against_used(used_ids)
+    # Validate usage consistency
+    usage_validation = catalog.validate_against_used(used_ids)
 
-        # Process missing shards
-        if usage_validation["missing"]:
-            validation_results["warnings"].append(
-                f"Missing shards in build: {len(usage_validation['missing'])} shards not used"
-            )
-            for missing_id in usage_validation["missing"]:
-                validation_results["warnings"].append(f"  - {missing_id}")
+    # Process missing shards
+    if usage_validation["missing"]:
+        validation_results["warnings"].append(
+            f"Missing shards in build: {len(usage_validation['missing'])} shards not used"
+        )
+        for missing_id in usage_validation["missing"]:
+            validation_results["warnings"].append(f"  - {missing_id}")
 
-        # Process extra shards
-        if usage_validation["extra"]:
-            validation_results["warnings"].append(
-                f"Extra shards in build: {len(usage_validation['extra'])} shards used but not found"
-            )
-            for extra_id in usage_validation["extra"]:
-                validation_results["warnings"].append(f"  - {extra_id}")
+    # Process extra shards
+    if usage_validation["extra"]:
+        validation_results["warnings"].append(
+            f"Extra shards in build: {len(usage_validation['extra'])} shards used but not found"
+        )
+        for extra_id in usage_validation["extra"]:
+            validation_results["warnings"].append(f"  - {extra_id}")
 
-        # Add catalog warnings
-        validation_results["warnings"].extend(usage_validation["warnings"])
+    # Add catalog warnings
+    validation_results["warnings"].extend(usage_validation["warnings"])
 
-        # Generate shard information table
-        validation_results["shard_table"] = catalog.get_shard_info_table()
+    # Generate shard information table
+    validation_results["shard_table"] = catalog.get_shard_info_table()
 
-        # Generate summary messages
-        total_available = len(catalog.shards)
-        total_used = len(used_ids)
+    # Generate summary messages
+    total_available = len(catalog.shards)
+    total_used = len(used_ids)
 
-        if (
-            total_used == total_available
-            and not usage_validation["missing"]
-            and not usage_validation["extra"]
-        ):
-            validation_results["messages"].append(
-                f"Build used all {total_used} available shards"
-            )
-        elif total_used < total_available:
-            usage_ratio = total_used / total_available if total_available > 0 else 0
-            validation_results["messages"].append(
-                f"Build used {total_used}/{total_available} available shards ({usage_ratio:.1%})"
-            )
-        else:
-            validation_results["messages"].append(
-                f"Build used {total_used} shards ({total_available} available)"
-            )
+    if (
+        total_used == total_available
+        and not usage_validation["missing"]
+        and not usage_validation["extra"]
+    ):
+        validation_results["messages"].append(
+            f"Build used all {total_used} available shards"
+        )
+    elif total_used < total_available:
+        usage_ratio = total_used / total_available if total_available > 0 else 0
+        validation_results["messages"].append(
+            f"Build used {total_used}/{total_available} available shards ({usage_ratio:.1%})"
+        )
+    else:
+        validation_results["messages"].append(
+            f"Build used {total_used} shards ({total_available} available)"
+        )
 
-        # Mark as invalid if there are critical issues
-        if usage_validation["extra"]:
-            validation_results["is_valid"] = False
-            validation_results["errors"].append(
-                "Build references shards not present in available data"
-            )
-
-        # Additional quality checks
-        quality_issues = _check_data_quality(build_result, catalog)
-        validation_results["warnings"].extend(quality_issues)
-
-    except Exception as e:
+    # Mark as invalid if there are critical issues
+    if usage_validation["extra"]:
         validation_results["is_valid"] = False
-        validation_results["errors"].append(f"Validation failed: {e}")
-        logger.exception("Build result validation failed")
+        validation_results["errors"].append(
+            "Build references shards not present in available data"
+        )
+
+    # Additional quality checks
+    quality_issues = _check_data_quality(build_result, catalog)
+    validation_results["warnings"].extend(quality_issues)
 
     return validation_results
 
@@ -176,21 +167,17 @@ def validate_fes_quality(
 
     try:
         fes_array = _extract_fes_array(fes_data)
-        _evaluate_nan_metrics(fes_array, validation_results)
-        _evaluate_empty_bins(fes_array, validation_results)
-        _assess_fes_range(fes_array, validation_results)
-
-        # Overall assessment
-        validation_results["messages"].append("FES quality validation completed")
-
     except ValueError as e:
         validation_results["is_valid"] = False
         validation_results["errors"].append(str(e))
         return validation_results
-    except Exception as e:
-        validation_results["is_valid"] = False
-        validation_results["errors"].append(f"FES validation failed: {e}")
-        logger.exception("FES quality validation failed")
+
+    _evaluate_nan_metrics(fes_array, validation_results)
+    _evaluate_empty_bins(fes_array, validation_results)
+    _assess_fes_range(fes_array, validation_results)
+
+    # Overall assessment
+    validation_results["messages"].append("FES quality validation completed")
 
     return validation_results
 
@@ -284,8 +271,9 @@ def _extract_used_canonical_ids(build_result: Dict[str, Any]) -> Set[str]:
             if ":" in shard_id and len(shard_id.split(":")) == 4:
                 used_ids.add(shard_id)
             else:
-                # Legacy short ID - this should be migrated to canonical
-                logger.warning(f"Legacy shard ID detected: {shard_id}")
+                raise ValueError(
+                    f"Non-canonical shard identifier encountered: {shard_id}"
+                )
 
     return used_ids
 

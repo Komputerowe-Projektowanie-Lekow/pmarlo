@@ -1,51 +1,12 @@
 import copy
-import importlib
-import pathlib
-import sys
-import types
 
 import numpy as np
+import pytest
 
 _KB_KJ_PER_MOL = 0.00831446261815324
 
-
-def _prepare_modules():
-    for name in list(sys.modules):
-        if name.startswith("pmarlo.workflow.finalize"):
-            sys.modules.pop(name)
-        if name.startswith("pmarlo.reweight"):
-            sys.modules.pop(name)
-        if name == "pmarlo.analysis" or name.startswith("pmarlo.analysis."):
-            sys.modules.pop(name)
-
-    base = pathlib.Path("src/pmarlo")
-    pmarlo_pkg = types.ModuleType("pmarlo")
-    pmarlo_pkg.__path__ = [str(base)]
-    sys.modules["pmarlo"] = pmarlo_pkg
-
-    ml_pkg = sys.modules.setdefault("pmarlo.ml", types.ModuleType("pmarlo.ml"))
-    if not hasattr(ml_pkg, "__path__"):
-        ml_pkg.__path__ = []
-
-    deeptica_pkg = types.ModuleType("pmarlo.ml.deeptica")
-    deeptica_pkg.__path__ = []
-    sys.modules["pmarlo.ml.deeptica"] = deeptica_pkg
-
-    whitening_mod = types.ModuleType("pmarlo.ml.deeptica.whitening")
-
-    def _identity_transform(Y, mean, W, already_applied):
-        return np.asarray(Y, dtype=np.float64)
-
-    whitening_mod.apply_output_transform = _identity_transform
-    sys.modules["pmarlo.ml.deeptica.whitening"] = whitening_mod
-    deeptica_pkg.apply_output_transform = _identity_transform
-
-    finalize_mod = importlib.import_module("pmarlo.workflow.finalize")
-    reweight_mod = importlib.import_module("pmarlo.reweight")
-    AnalysisConfig = finalize_mod.AnalysisConfig
-    finalize_dataset = finalize_mod.finalize_dataset
-    AnalysisReweightMode = reweight_mod.AnalysisReweightMode
-    return AnalysisConfig, finalize_dataset, AnalysisReweightMode
+from pmarlo.reweight import AnalysisReweightMode
+from pmarlo.workflow.finalize import AnalysisConfig, finalize_dataset
 
 
 def _biased_dataset(seed: int = 0) -> dict:
@@ -61,6 +22,17 @@ def _biased_dataset(seed: int = 0) -> dict:
     )
     bias = np.zeros_like(energy)
     beta = 1.0 / (_KB_KJ_PER_MOL * 450.0)
+    feature_schema = {
+        "n_features": X.shape[1],
+        "names": ["feature_0", "feature_1"],
+    }
+    whitening_meta = {
+        "shard_id": "demo-train",
+        "feature_schema": feature_schema,
+        "output_mean": np.zeros(X.shape[1], dtype=np.float64).tolist(),
+        "output_transform": np.eye(X.shape[1], dtype=np.float64).tolist(),
+        "output_transform_applied": False,
+    }
     dataset = {
         "splits": {
             "train": {
@@ -68,7 +40,8 @@ def _biased_dataset(seed: int = 0) -> dict:
                 "energy": energy,
                 "bias": bias,
                 "beta": beta,
-                "meta": {"shard_id": "demo-train"},
+                "feature_schema": feature_schema,
+                "meta": whitening_meta,
             }
         }
     }
@@ -76,7 +49,6 @@ def _biased_dataset(seed: int = 0) -> dict:
 
 
 def test_finalize_reweight_changes_stationary_and_fes():
-    AnalysisConfig, finalize_dataset, AnalysisReweightMode = _prepare_modules()
     dataset = _biased_dataset()
 
     cfg_none = AnalysisConfig(
@@ -119,8 +91,7 @@ def test_finalize_reweight_changes_stationary_and_fes():
     assert "diagnostics" in result_weighted
 
 
-def test_finalize_falls_back_without_thermo_information():
-    AnalysisConfig, finalize_dataset, AnalysisReweightMode = _prepare_modules()
+def test_finalize_requires_thermo_information():
     dataset = {
         "splits": {
             "train": {
@@ -130,7 +101,53 @@ def test_finalize_falls_back_without_thermo_information():
         }
     }
     cfg = AnalysisConfig(reweight=AnalysisReweightMode.MBAR, n_microstates=3)
-    result = finalize_dataset(dataset, cfg)
+    with pytest.raises(ValueError):
+        finalize_dataset(dataset, cfg)
 
-    assert result["reweight_mode"] == AnalysisReweightMode.NONE
-    assert "frame_weights" not in result
+
+def _short_trajectory_dataset(frames: int = 200) -> dict:
+    rng = np.random.default_rng(7)
+    X = rng.normal(loc=0.0, scale=1.0, size=(frames, 2)).astype(np.float64)
+    dtraj = np.mod(np.arange(frames, dtype=int), 5)
+    feature_schema = {"n_features": 2, "names": ["cv0", "cv1"]}
+    whitening_meta = {
+        "shard_id": "short",
+        "feature_schema": feature_schema,
+        "output_mean": np.zeros(2, dtype=np.float64).tolist(),
+        "output_transform": np.eye(2, dtype=np.float64).tolist(),
+        "output_transform_applied": False,
+    }
+    dataset = {
+        "splits": {
+            "train": {"X": X, "feature_schema": feature_schema, "meta": whitening_meta}
+        },
+        "__shards__": [{"id": "short", "start": 0, "stop": frames}],
+        "dtrajs": [dtraj],
+    }
+    return dataset
+
+
+def test_finalize_collects_debug_warning_for_short_dataset():
+    dataset = _short_trajectory_dataset(frames=200)
+    cfg = AnalysisConfig(
+        temperature_ref_K=300.0,
+        lag_time=10,
+        n_microstates=5,
+        cluster_mode="kmeans",
+        collect_debug_data=True,
+        fes_bins=16,
+        reweight=AnalysisReweightMode.NONE,
+    )
+
+    result = finalize_dataset(copy.deepcopy(dataset), cfg)
+
+    assert "analysis_debug" in result
+    debug_data = result["analysis_debug"]
+    assert debug_data.summary["tau_frames"] == cfg.lag_time
+    assert 0 < debug_data.summary["total_pairs"] < 5000
+
+    warnings = result.get("warnings", [])
+    assert any("TOTAL_PAIRS_LT_5000" in warning for warning in warnings)
+
+    fes = result["fes"]
+    assert fes["free_energy"].ndim == 2

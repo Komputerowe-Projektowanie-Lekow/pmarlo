@@ -12,14 +12,92 @@ The function writes shard_{i:04d}.npz/.json under an output directory with
 canonical JSON and integrity hashes suitable for reproducible map→reduce.
 """
 
+import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 import numpy as np
 
+from pmarlo.shards.indexing import initialise_shard_indices
+from pmarlo.utils.path_utils import ensure_directory
+
 from .shard import write_shard
 
 ProgressCB = Callable[[str, Mapping[str, Any]], None]
+
+
+_RUN_PATTERN = re.compile(r"run[-_]?[\w\d]+", re.IGNORECASE)
+_SEGMENT_PATTERN = re.compile(r"(?:segment|seg|part)[-_]?(\d+)", re.IGNORECASE)
+_REPLICA_PATTERN = re.compile(r"rep(?:lica)?[-_]?(\d+)", re.IGNORECASE)
+
+
+def _infer_run_id(path: Path) -> str:
+    for parent in path.parents:
+        match = _RUN_PATTERN.search(parent.name)
+        if match:
+            return parent.name
+    return path.parent.name or "run"
+
+
+def _infer_segment_id(path: Path) -> int:
+    stem = path.stem
+    match = _SEGMENT_PATTERN.search(stem)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            pass
+    return 0
+
+
+def _infer_replica_id(path: Path, kind: str) -> int:
+    stem = path.stem
+    match = _REPLICA_PATTERN.search(stem)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            pass
+    if kind == "replica":
+        raise ValueError(f"Unable to infer replica id from path '{path}'")
+    return 0
+
+
+def _normalise_source_metadata(path: Path, source: Mapping[str, Any]) -> Dict[str, Any]:
+    data = dict(source) if source is not None else {}
+    data.setdefault("traj", str(path))
+    if "created_at" not in data:
+        data["created_at"] = (
+            datetime.now(timezone.utc)
+            .isoformat(timespec="seconds")
+            .replace("+00:00", "Z")
+        )
+
+    kind = str(data.get("kind", "")).lower()
+    if not kind:
+        stem = path.stem.lower()
+        if "replica" in stem:
+            kind = "replica"
+        else:
+            kind = "demux"
+    if kind not in {"demux", "replica"}:
+        raise ValueError(f"Unsupported shard kind '{kind}' for path '{path}'")
+    data["kind"] = kind
+
+    if "run_id" not in data or not str(data["run_id"]).strip():
+        data["run_id"] = _infer_run_id(path)
+
+    if "segment_id" not in data:
+        data["segment_id"] = _infer_segment_id(path)
+
+    if "replica_id" not in data:
+        data["replica_id"] = _infer_replica_id(path, kind)
+
+    if "exchange_window_id" not in data:
+        data["exchange_window_id"] = 0
+
+    return data
 
 
 class ProgressReporter:
@@ -91,20 +169,13 @@ def emit_shards_from_trajectories(
     """
 
     out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out_dir)
     paths = [Path(p) for p in traj_files]
     paths.sort()
 
     # Determine next shard index to avoid overwriting existing outputs
-    existing_indices: List[int] = []
-    for existing_json in sorted(out_dir.glob("shard_*.json")):
-        stem = existing_json.stem
-        try:
-            existing_indices.append(int(stem.split("_")[1]))
-        except (IndexError, ValueError):
-            continue
-    start_index = max(existing_indices) + 1 if existing_indices else 0
-    seed_offset = int(seed_start) + start_index
+    shard_state = initialise_shard_indices(out_dir, seed_start)
+    start_index = shard_state.start_index
 
     json_paths: List[Path] = []
 
@@ -141,20 +212,47 @@ def emit_shards_from_trajectories(
             },
         )
         cvs, dtraj, source_info = extract_cvs(traj)
-        names, _ = _validate_cvs(cvs)
-        periodic = {
+        names, n_frames = _validate_cvs(cvs)
+        column_order = tuple(cvs.keys())
+        periodic_flags = {
             name: bool((periodic_by_cv or {}).get(name, False)) for name in names
         }
-        shard_id = f"shard_{shard_index:04d}"
+        seed = shard_state.seed_for(shard_index)
+        source = _normalise_source_metadata(traj, source_info)
+        required_keys = {"kind", "run_id", "segment_id", "replica_id"}
+        missing_keys = required_keys - set(source)
+        if missing_keys:
+            raise ValueError(
+                f"extract_cvs must provide source metadata keys: {sorted(missing_keys)}"
+            )
+        replica_id = int(source["replica_id"])
+        segment_id = int(source["segment_id"])
+        exchange_window_id = int(source.get("exchange_window_id", 0))
+        source["replica_id"] = replica_id
+        source["segment_id"] = segment_id
+        source["exchange_window_id"] = exchange_window_id
+        source["seed"] = int(seed)
+        source["n_frames"] = n_frames
+        ordered_periodic = [
+            bool(periodic_flags.get(name, False)) for name in column_order
+        ]
+        source["periodic"] = ordered_periodic
+        t_kelvin = int(round(float(temperature)))
+        # Include kind in shard_id to prevent collisions
+        kind = str(source.get("kind", "demux")).lower()
+        if kind == "replica":
+            shard_id = f"replica_T{t_kelvin}K_seg{segment_id:04d}_rep{replica_id:03d}"
+        else:
+            shard_id = f"T{t_kelvin}K_seg{segment_id:04d}_rep{replica_id:03d}"
         json_path = write_shard(
             out_dir=out_dir,
             shard_id=shard_id,
             cvs=cvs,
             dtraj=dtraj,
-            periodic=periodic,
-            seed=int(seed_offset + i),
+            periodic=periodic_flags,
+            seed=seed,
             temperature=float(temperature),
-            source=dict(source_info),
+            source=source,
         )
         json_paths.append(json_path.resolve())
         _emit(
@@ -165,9 +263,7 @@ def emit_shards_from_trajectories(
                 "shard": shard_id,
                 # Frames processed in this input if extractor provided it
                 "frames": int(
-                    source_info.get("n_frames", 0)
-                    if isinstance(source_info, dict)
-                    else 0
+                    source.get("n_frames", 0) if isinstance(source, dict) else 0
                 ),
                 # Keep progress fields consistent for ETA
                 "current": int(i + 1),

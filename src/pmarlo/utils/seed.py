@@ -10,52 +10,29 @@ entrypoints to standardize determinism across runs and processes.
 import logging
 import os
 import random
-from typing import Callable, Optional
+from typing import Optional
+
+import numpy as np
+import torch
 
 
 def set_global_seed(seed: Optional[int]) -> None:
     """Set global RNG seeds for reproducibility.
 
-    Applies to Python's `random`, NumPy, and PyTorch (if available). Also sets
+    Applies to Python's `random`, NumPy, and PyTorch. Also sets
     `PYTHONHASHSEED` to stabilize hash‑based ordering in the current process.
-    Silently ignores libraries that are not installed.
     """
     if seed is None:
         return
+
     s = int(seed) & 0xFFFFFFFF
-    _safe(lambda: os.environ.__setitem__("PYTHONHASHSEED", str(s)))
-    _safe(lambda: random.seed(s))
-    _safe(_seed_numpy(s))
-    _safe(_seed_torch(s))
-
-
-def _safe(callback: Callable[[], None]) -> None:
-    try:
-        callback()
-    except Exception:
-        pass
-
-
-def _seed_numpy(seed: int) -> Callable[[], None]:
-    def _inner() -> None:
-        import numpy as _np  # type: ignore
-
-        _np.random.seed(seed)
-
-    return _inner
-
-
-def _seed_torch(seed: int) -> Callable[[], None]:
-    def _inner() -> None:
-        import torch as _torch  # type: ignore
-
-        _torch.manual_seed(seed)
-        try:
-            _torch.use_deterministic_algorithms(True)  # type: ignore[attr-defined]
-        except Exception:
-            pass
-
-    return _inner
+    os.environ["PYTHONHASHSEED"] = str(s)
+    random.seed(s)
+    np.random.seed(s)
+    torch.manual_seed(s)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(s)
+    torch.use_deterministic_algorithms(True)  # type: ignore[attr-defined]
 
 
 def quiet_external_loggers(level: int = logging.WARNING) -> None:
@@ -71,9 +48,6 @@ def quiet_external_loggers(level: int = logging.WARNING) -> None:
         "torch",
     ]
     for name in noisy:
-        try:
-            lg = logging.getLogger(name)
-            lg.setLevel(level)
-            lg.propagate = False
-        except Exception:
-            continue
+        lg = logging.getLogger(name)
+        lg.setLevel(level)
+        lg.propagate = False

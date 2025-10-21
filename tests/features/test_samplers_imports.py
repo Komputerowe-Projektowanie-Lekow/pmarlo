@@ -1,25 +1,8 @@
 from __future__ import annotations
 
 import importlib
-import sys
-import types
 
 import numpy as np
-import pytest
-
-# Provide lightweight stubs for optional mlcolvar dependency
-if "mlcolvar" not in sys.modules:
-    mlcolvar = types.ModuleType("mlcolvar")
-    sys.modules["mlcolvar"] = mlcolvar
-    cvs = types.ModuleType("mlcolvar.cvs")
-    cvs.DeepTICA = object  # type: ignore[attr-defined]
-    sys.modules["mlcolvar.cvs"] = cvs
-    utils = types.ModuleType("mlcolvar.utils.timelagged")
-    utils.create_timelagged_dataset = lambda *a, **k: None
-    sys.modules["mlcolvar.utils.timelagged"] = utils
-
-if "mdtraj" not in sys.modules:
-    sys.modules["mdtraj"] = types.ModuleType("mdtraj")
 
 from pmarlo.samplers import BalancedTempSampler
 from pmarlo.shards.pair_builder import PairBuilder
@@ -76,8 +59,6 @@ def test_weights_and_rare_regions_interact():
     assert weights[pairs[:, 0] >= 2].mean() > weights[pairs[:, 0] < 2].mean()
 
 
-def test_legacy_import_emits_deprecation():
-    with pytest.deprecated_call():
-        module = importlib.import_module("pmarlo.features.samplers")
-        cls = getattr(module, "BalancedTempSampler")
-        assert cls is BalancedTempSampler
+def test_sampler_module_is_importable():
+    module = importlib.import_module("pmarlo.samplers")
+    assert hasattr(module, "BalancedTempSampler")

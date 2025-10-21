@@ -14,26 +14,38 @@ import os
 import pickle
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import openmm
 from openmm import Platform, unit
 from openmm.app import PDBFile, Simulation
 
+from pmarlo import constants as const
+from pmarlo.features.deeptica.export import load_cv_model_info
 from pmarlo.transform.progress import ProgressCB, ProgressPrinter, ProgressReporter
+from pmarlo.utils.logging_utils import (
+    announce_stage_cancelled,
+    announce_stage_complete,
+    announce_stage_failed,
+    announce_stage_start,
+    format_duration,
+)
+from pmarlo.utils.path_utils import ensure_directory
 
 from ..demultiplexing.demux import demux_trajectories as _demux_trajectories
 from ..markov_state_model.results import REMDResult
 from ..utils.integrator import create_langevin_integrator
 from ..utils.naming import base_shape_str, permutation_name
 from ..utils.replica_utils import exponential_temperature_ladder
+from ..utils.validation import all_finite
 from .config import RemdConfig
 from .diagnostics import (
     compute_diffusion_metrics,
     compute_exchange_statistics,
     retune_temperature_ladder,
 )
+from .exchange_engine import ExchangeEngine
 from .platform_selector import select_platform_and_properties
 from .system_builder import (
     create_system,
@@ -42,6 +54,43 @@ from .system_builder import (
     setup_metadynamics,
 )
 from .trajectory import ClosableDCDReporter
+
+
+class RunningStats:
+    """Track running mean and standard deviation for vector inputs."""
+
+    def __init__(self, dim: int) -> None:
+        if dim <= 0:
+            raise ValueError("dim must be a positive integer")
+        self._dim = int(dim)
+        self._count = 0
+        self._mean = np.zeros(self._dim, dtype=float)
+        self._m2 = np.zeros(self._dim, dtype=float)
+
+    @property
+    def count(self) -> int:
+        return self._count
+
+    def update(self, values: Sequence[float] | np.ndarray) -> None:
+        arr = np.asarray(values, dtype=float).reshape(-1)
+        if arr.size != self._dim:
+            raise ValueError(
+                f"Expected values of length {self._dim}, received {arr.size}"
+            )
+        self._count += 1
+        delta = arr - self._mean
+        self._mean += delta / self._count
+        self._m2 += delta * (arr - self._mean)
+
+    def summary(self) -> Tuple[np.ndarray, np.ndarray]:
+        if self._count == 0:
+            return self._mean.copy(), np.zeros(self._dim, dtype=float)
+        if self._count == 1:
+            return self._mean.copy(), np.zeros(self._dim, dtype=float)
+        variance = self._m2 / max(1, self._count - 1)
+        variance = np.clip(variance, a_min=0.0, a_max=None)
+        return self._mean.copy(), np.sqrt(variance)
+
 
 logger = logging.getLogger("pmarlo")
 
@@ -97,7 +146,7 @@ class ReplicaExchange:
         # Validate temperature ladder when explicitly provided or generated
         self._validate_temperature_ladder(self.temperatures)
 
-        self.output_dir = Path(output_dir)
+        self.output_dir: Path = ensure_directory(Path(output_dir))
         self.exchange_frequency = exchange_frequency
         self.dcd_stride = dcd_stride
         self.target_accept = target_accept
@@ -105,8 +154,7 @@ class ReplicaExchange:
         self._replica_reporter_stride: List[int] = []
         self.frames_per_replica_target: Optional[int] = None
 
-        # Create output directory
-        self.output_dir.mkdir(exist_ok=True)
+        # Output directory is guaranteed to exist (parents included)
 
         # Reproducibility: RNG seeding
         if (
@@ -131,6 +179,8 @@ class ReplicaExchange:
 
         self.random_seed = seed
         self.rng = np.random.default_rng(seed)
+        self._exchange_engine: ExchangeEngine | None = None
+        self._sync_exchange_engine()
 
         # Resume / restart options
         self.resume_checkpoint: Optional[Path] = (
@@ -186,6 +236,14 @@ class ReplicaExchange:
         # Diagnostics accumulation
         self.acceptance_matrix: Optional[np.ndarray] = None
         self.replica_visit_counts: Optional[np.ndarray] = None
+
+        # CV bias monitoring (see Prompt 3: periodic logging every 1000 steps)
+        self._bias_log_interval: int = 1000
+        self._cv_monitor_module: Any | None = None
+        self._bias_energy_stats: RunningStats | None = None
+        self._bias_cv_stats: RunningStats | None = None
+        self._bias_steps_completed = 0
+        self._bias_next_log = 0
 
         logger.info(f"Initialized REMD with {self.n_replicas} replicas")
         logger.info(
@@ -333,6 +391,85 @@ class ReplicaExchange:
         """
         return exponential_temperature_ladder(min_temp, max_temp, n_replicas)
 
+    def _temperature_index(self, target: float) -> int:
+        if not self.temperatures:
+            raise ValueError("Temperature ladder is empty; call setup before export.")
+        target = float(target)
+        return min(
+            range(len(self.temperatures)),
+            key=lambda idx: abs(float(self.temperatures[idx]) - target),
+        )
+
+    def _replica_index_for_temperature(self, target: float) -> int:
+        temperature_index = self._temperature_index(target)
+        if temperature_index >= len(self.state_replicas):
+            raise IndexError(
+                "Replica mapping unavailable; ensure simulation has been executed."
+            )
+        replica_index = int(self.state_replicas[temperature_index])
+        if not (0 <= replica_index < len(self.replicas)):
+            raise IndexError(
+                f"Resolved replica index {replica_index} is outside the valid range."
+            )
+        return replica_index
+
+    def export_current_structure(
+        self,
+        destination: str | Path,
+        *,
+        temperature: float | None = None,
+        replica_index: int | None = None,
+        keep_atom_ids: bool = True,
+    ) -> Path:
+        """Write the current structure for a replica to a PDB file.
+
+        Parameters
+        ----------
+        destination:
+            Output PDB filepath.
+        temperature:
+            Target temperature (Kelvin) whose replica coordinates should be
+            exported. Mutually exclusive with ``replica_index``.
+        replica_index:
+            Explicit replica index to export. Overrides ``temperature``.
+        keep_atom_ids:
+            Whether to preserve atom serial numbers in the output PDB.
+
+        Returns
+        -------
+        Path
+            Resolved path to the written PDB file.
+        """
+        if temperature is not None and replica_index is not None:
+            raise ValueError("Specify either temperature or replica_index, not both.")
+
+        dest = Path(destination)
+        ensure_directory(dest.parent)
+
+        if replica_index is None:
+            target_temp = (
+                float(temperature)
+                if temperature is not None
+                else float(self.temperatures[0])
+            )
+            replica_index = self._replica_index_for_temperature(target_temp)
+        elif not (0 <= replica_index < len(self.replicas)):
+            raise IndexError(
+                f"Replica index {replica_index} is outside the valid range."
+            )
+
+        simulation = self.replicas[replica_index]
+        state = simulation.context.getState(getPositions=True, enforcePeriodicBox=True)
+        positions = state.getPositions()
+        with dest.open("w", encoding="utf-8") as handle:
+            PDBFile.writeFile(
+                simulation.topology,
+                positions,
+                handle,
+                keepIds=bool(keep_atom_ids),
+            )
+        return dest.resolve()
+
     def setup_replicas(self, bias_variables: Optional[List] = None):
         """
         Set up all replica simulations with different temperatures.
@@ -382,11 +519,53 @@ class ReplicaExchange:
                     "Failed to load resume PDB %s: %s", str(self.resume_pdb), exc
                 )
                 resume_positions = None
-        system = create_system(pdb, forcefield)
+        # Pass CV model info if available
+        cv_model_path = getattr(self, "cv_model_path", None)
+        cv_scaler_mean = getattr(self, "cv_scaler_mean", None)
+        cv_scaler_scale = getattr(self, "cv_scaler_scale", None)
+
+        system = create_system(
+            pdb,
+            forcefield,
+            cv_model_path=cv_model_path,
+            cv_scaler_mean=cv_scaler_mean,
+            cv_scaler_scale=cv_scaler_scale,
+        )
         log_system_info(system, logger)
         self.metadynamics = setup_metadynamics(
             system, bias_variables, self.temperatures[0], self.output_dir
         )
+
+        # Initialize CV monitoring if model path provided
+        if cv_model_path is not None:
+            try:
+                import torch
+
+                info = load_cv_model_info(
+                    Path(cv_model_path).parent, Path(cv_model_path).stem
+                )
+                cv_dim = int(info.get("config", {}).get("cv_dim", 0))
+                if cv_dim <= 0:
+                    raise ValueError("cv_dim metadata missing from CV model config.")
+                self._cv_monitor_module = torch.jit.load(
+                    str(cv_model_path), map_location="cpu"
+                )
+                self._cv_monitor_module.eval()
+                self._bias_energy_stats = RunningStats(dim=1)
+                self._bias_cv_stats = RunningStats(dim=cv_dim)
+                self._bias_steps_completed = 0
+                self._bias_next_log = self._bias_log_interval
+                logger.info(
+                    "CV monitoring initialized (logging interval: %d steps)",
+                    self._bias_log_interval,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Unable to initialise CV monitoring for logging: %s", exc
+                )
+                self._cv_monitor_module = None
+                self._bias_energy_stats = None
+                self._bias_cv_stats = None
         platform, platform_properties = select_platform_and_properties(
             logger, prefer_deterministic=True if self.random_seed is not None else False
         )
@@ -505,7 +684,7 @@ class ReplicaExchange:
                 f"  Initial energy for replica {replica_index}: {initial_energy}"
             )
             energy_val = initial_energy.value_in_unit(unit.kilojoules_per_mole)
-            if abs(energy_val) > 1e6:
+            if abs(energy_val) > const.NUMERIC_HARD_ENERGY_LIMIT:
                 logger.warning(
                     (
                         "  Very high initial energy ("
@@ -592,8 +771,8 @@ class ReplicaExchange:
         )
 
     def _validate_energy(self, energy, replica_index: int) -> None:
-        energy_str = str(energy).lower()
-        if "nan" in energy_str or "inf" in energy_str:
+        energy_val = float(energy.value_in_unit(unit.kilojoules_per_mole))
+        if not all_finite(energy_val):
             raise ValueError(
                 (
                     "Invalid energy ("
@@ -601,8 +780,7 @@ class ReplicaExchange:
                     f"{replica_index}"
                 )
             )
-        energy_val = energy.value_in_unit(unit.kilojoules_per_mole)
-        if abs(energy_val) > 1e5:
+        if abs(energy_val) > const.NUMERIC_SOFT_ENERGY_LIMIT:
             logger.warning(
                 (
                     f"  High final energy ({energy_val:.2e} kJ/mol) for "
@@ -612,7 +790,7 @@ class ReplicaExchange:
 
     def _validate_positions(self, positions, replica_index: int) -> None:
         pos_array = positions.value_in_unit(unit.nanometer)
-        if np.any(np.isnan(pos_array)) or np.any(np.isinf(pos_array)):
+        if not all_finite(pos_array):
             raise ValueError(
                 (
                     "Invalid positions detected after minimization for "
@@ -714,6 +892,14 @@ class ReplicaExchange:
             logger.info("Auto-setting up replicas...")
             self.setup_replicas(bias_variables=bias_variables)
 
+    def _sync_exchange_engine(self) -> ExchangeEngine:
+        if self._exchange_engine is None:
+            self._exchange_engine = ExchangeEngine(self.temperatures, self.rng)
+        else:
+            self._exchange_engine.temperatures = self.temperatures
+            self._exchange_engine.rng = self.rng
+        return self._exchange_engine
+
     def save_checkpoint_state(self) -> Dict[str, Any]:
         """
         Save the current state for checkpointing.
@@ -801,6 +987,7 @@ class ReplicaExchange:
                 self.rng = np.random.default_rng(self.random_seed)
         else:
             self.rng = np.random.default_rng(self.random_seed)
+        self._sync_exchange_engine()
 
         # If replicas aren't set up, set them up first
         if not self.is_setup():
@@ -874,19 +1061,9 @@ class ReplicaExchange:
         temp_i = self.temperatures[self.replica_states[replica_i]]
         temp_j = self.temperatures[self.replica_states[replica_j]]
 
-        # Calculate exchange probability using canonical Metropolis criterion
-        # delta = (beta_j - beta_i) * (U_i - U_j)
-        # where beta = 1 / (R T)
-        def safe_dimensionless(q):
-            if hasattr(q, "value_in_unit"):
-                return q.value_in_unit(unit.dimensionless)
-            return float(q)
-
-        beta_i = 1.0 / (unit.MOLAR_GAS_CONSTANT_R * temp_i * unit.kelvin)
-        beta_j = 1.0 / (unit.MOLAR_GAS_CONSTANT_R * temp_j * unit.kelvin)
-        # Correct Metropolis acceptance for temperature swap
-        delta = safe_dimensionless((beta_i - beta_j) * (energy_j - energy_i))
-        prob = min(1.0, np.exp(delta))
+        engine = self._sync_exchange_engine()
+        delta = engine.delta_from_values(temp_i, temp_j, energy_i, energy_j)
+        prob = engine.probability_from_delta(delta)
 
         # Debug logging for troubleshooting low acceptance rates
         logger.debug(
@@ -933,7 +1110,8 @@ class ReplicaExchange:
         pair = (min(state_i_val, state_j_val), max(state_i_val, state_j_val))
         self.pair_attempt_counts[pair] = self.pair_attempt_counts.get(pair, 0) + 1
 
-        if self.rng.random() < prob:
+        engine = self._sync_exchange_engine()
+        if engine.accept(prob):
             self._perform_exchange(replica_i, replica_j)
             self.exchanges_accepted += 1
             self.pair_accept_counts[pair] = self.pair_accept_counts.get(pair, 0) + 1
@@ -979,25 +1157,13 @@ class ReplicaExchange:
         replica_j: int,
         energies: List[openmm.unit.quantity.Quantity],
     ) -> float:
-        temp_i = self.temperatures[self.replica_states[replica_i]]
-        temp_j = self.temperatures[self.replica_states[replica_j]]
-
-        beta_i = 1.0 / (unit.MOLAR_GAS_CONSTANT_R * temp_i * unit.kelvin)
-        beta_j = 1.0 / (unit.MOLAR_GAS_CONSTANT_R * temp_j * unit.kelvin)
-
-        e_i = energies[replica_i]
-        e_j = energies[replica_j]
-        if not hasattr(e_i, "value_in_unit"):
-            e_i = float(e_i) * unit.kilojoules_per_mole
-        if not hasattr(e_j, "value_in_unit"):
-            e_j = float(e_j) * unit.kilojoules_per_mole
-
-        delta_q = (beta_i - beta_j) * (e_j - e_i)
-        try:
-            delta = delta_q.value_in_unit(unit.dimensionless)
-        except Exception:
-            delta = float(delta_q)
-        return float(min(1.0, np.exp(delta)))
+        engine = self._sync_exchange_engine()
+        return engine.calculate_probability(
+            self.replica_states,
+            energies,
+            replica_i,
+            replica_j,
+        )
 
     def _perform_exchange(self, replica_i: int, replica_j: int) -> None:
         if replica_i >= len(self.replica_states):
@@ -1051,20 +1217,18 @@ class ReplicaExchange:
         # Rescale velocities deterministically instead of redrawing
         Ti = self.temperatures[old_state_i]
         Tj = self.temperatures[old_state_j]
-        scale_ij = float(np.sqrt(max(1e-12, Tj / max(1e-12, Ti))))
-        try:
-            vi = self.contexts[replica_i].getState(getVelocities=True).getVelocities()
-            vj = self.contexts[replica_j].getState(getVelocities=True).getVelocities()
-            self.contexts[replica_i].setVelocities(vi * scale_ij)
-            self.contexts[replica_j].setVelocities(vj / scale_ij)
-        except Exception:
-            # Fallback to Maxwell draw if rescaling fails
-            self.contexts[replica_i].setVelocitiesToTemperature(
-                self.temperatures[old_state_j] * unit.kelvin
+        scale_ij = float(
+            np.sqrt(
+                max(
+                    const.NUMERIC_MIN_POSITIVE,
+                    Tj / max(const.NUMERIC_MIN_POSITIVE, Ti),
+                )
             )
-            self.contexts[replica_j].setVelocitiesToTemperature(
-                self.temperatures[old_state_i] * unit.kelvin
-            )
+        )
+        vi = self.contexts[replica_i].getState(getVelocities=True).getVelocities()
+        vj = self.contexts[replica_j].getState(getVelocities=True).getVelocities()
+        self.contexts[replica_i].setVelocities(vi * scale_ij)
+        self.contexts[replica_j].setVelocities(vj / scale_ij)
 
     def run_simulation(
         self,
@@ -1089,6 +1253,7 @@ class ReplicaExchange:
         reporter = ProgressReporter(progress_callback)
         reporter.emit("setup", {"message": "initializing"})
         self._log_run_start(total_steps)
+        simulation_start = time.perf_counter()
         # Decide reporter stride BEFORE production; do not mutate during run
         if self.reporter_stride is None:
             stride = self.plan_reporter_stride(
@@ -1103,16 +1268,90 @@ class ReplicaExchange:
                 return False
 
         cancelled = False
+        equilibration_elapsed = 0.0
         if equilibration_steps > 0:
+            # Console output
+            print("\n" + "=" * 80, flush=True)
+            print(
+                f"SIMULATION STAGE 1: EQUILIBRATION ({equilibration_steps} steps)",
+                flush=True,
+            )
+            print("=" * 80, flush=True)
+            print(f"Running {self.n_replicas} replicas in parallel", flush=True)
+            print(
+                f"Temperature range: {min(self.temperatures):.1f}K - {max(self.temperatures):.1f}K",
+                flush=True,
+            )
+            print("=" * 80 + "\n", flush=True)
+
+            # Also log
+            logger.info("=" * 80)
+            logger.info(
+                f"SIMULATION STAGE 1: EQUILIBRATION ({equilibration_steps} steps)"
+            )
+            logger.info("=" * 80)
+            logger.info(f"Running {self.n_replicas} replicas in parallel")
+            logger.info(
+                f"Temperature range: {min(self.temperatures):.1f}K - {max(self.temperatures):.1f}K"
+            )
+            logger.info("=" * 80)
+
+            equilibration_start = time.perf_counter()
             cancelled = self._run_equilibration_phase(
                 equilibration_steps, checkpoint_manager, reporter, _should_cancel
             )
+            equilibration_elapsed = time.perf_counter() - equilibration_start
             if cancelled:
+                # Console output
+                print("\n" + "=" * 80, flush=True)
+                print("SIMULATION CANCELLED DURING EQUILIBRATION", flush=True)
+                print("=" * 80 + "\n", flush=True)
+
+                # Also log
+                logger.warning("=" * 80)
+                logger.warning("SIMULATION CANCELLED DURING EQUILIBRATION")
+                logger.warning("=" * 80)
                 reporter.emit("finished", {"status": "cancelled"})
                 return []
+
+            # Console output
+            print("\n" + "=" * 80, flush=True)
+            print("EQUILIBRATION COMPLETE", flush=True)
+            print("=" * 80 + "\n", flush=True)
+            if equilibration_elapsed > 0.0:
+                equil_summary = (
+                    f"Equilibration duration: {format_duration(equilibration_elapsed)}"
+                )
+                print(equil_summary, flush=True)
+                logger.info(equil_summary)
+
+            # Also log
+            logger.info("=" * 80)
+            logger.info("EQUILIBRATION COMPLETE")
+            logger.info("=" * 80)
         if self._skip_production_if_completed(checkpoint_manager):
             return [str(f) for f in self.trajectory_files]
         self._mark_production_started(checkpoint_manager)
+
+        production_steps = total_steps - equilibration_steps
+
+        # Console output
+        print("\n" + "=" * 80, flush=True)
+        print(f"SIMULATION STAGE 2: PRODUCTION ({production_steps} steps)", flush=True)
+        print("=" * 80, flush=True)
+        print(f"Running {self.n_replicas} replicas in parallel", flush=True)
+        print(f"Exchange attempts every {self.exchange_frequency} steps", flush=True)
+        print("=" * 80 + "\n", flush=True)
+
+        # Also log
+        logger.info("=" * 80)
+        logger.info(f"SIMULATION STAGE 2: PRODUCTION ({production_steps} steps)")
+        logger.info("=" * 80)
+        logger.info(f"Running {self.n_replicas} replicas in parallel")
+        logger.info(f"Exchange attempts every {self.exchange_frequency} steps")
+        logger.info("=" * 80)
+
+        production_start = time.perf_counter()
         cancelled = self._run_production_phase(
             total_steps,
             equilibration_steps,
@@ -1121,9 +1360,42 @@ class ReplicaExchange:
             reporter,
             _should_cancel,
         )
+        production_elapsed = time.perf_counter() - production_start
         if cancelled:
+            # Console output
+            print("\n" + "=" * 80, flush=True)
+            print("SIMULATION CANCELLED DURING PRODUCTION", flush=True)
+            print("=" * 80, flush=True)
+            print("Partial trajectories have been saved", flush=True)
+            print("=" * 80 + "\n", flush=True)
+
+            # Also log
+            logger.warning("=" * 80)
+            logger.warning("SIMULATION CANCELLED DURING PRODUCTION")
+            logger.warning("=" * 80)
+            logger.warning("Partial trajectories have been saved")
+            logger.warning("=" * 80)
             reporter.emit("finished", {"status": "cancelled"})
             return []
+
+        # Console output
+        print("\n" + "=" * 80, flush=True)
+        print("PRODUCTION COMPLETE", flush=True)
+        print("=" * 80, flush=True)
+        print("Finalizing trajectories and saving statistics...", flush=True)
+        print("=" * 80 + "\n", flush=True)
+        if production_elapsed > 0.0:
+            prod_summary = f"Production duration: {format_duration(production_elapsed)}"
+            print(prod_summary, flush=True)
+            logger.info(prod_summary)
+
+        # Also log
+        logger.info("=" * 80)
+        logger.info("PRODUCTION COMPLETE")
+        logger.info("=" * 80)
+        logger.info("Finalizing trajectories and saving statistics...")
+        logger.info("=" * 80)
+
         self._mark_production_completed(
             total_steps, equilibration_steps, checkpoint_manager
         )
@@ -1138,6 +1410,15 @@ class ReplicaExchange:
         reporter.emit("write_output", {"artifacts": artifacts})
         self.save_results()
         reporter.emit("finished", {"status": "ok"})
+
+        simulation_total_elapsed = time.perf_counter() - simulation_start
+        if simulation_total_elapsed > 0.0:
+            total_msg = (
+                f"Simulation runtime: {format_duration(simulation_total_elapsed)}"
+            )
+            print(total_msg, flush=True)
+            logger.info(total_msg)
+
         return [str(f) for f in self.trajectory_files]
 
     # --- Helpers for run_simulation ---
@@ -1178,7 +1459,7 @@ class ReplicaExchange:
         if checkpoint_manager and checkpoint_manager.is_step_completed(
             "gradual_heating"
         ):
-            logger.info("Gradual heating already completed ✓")
+            logger.info("Gradual heating already completed OK")
         else:
             cancelled = self._run_gradual_heating(
                 equilibration_steps, checkpoint_manager, reporter, should_cancel
@@ -1187,7 +1468,7 @@ class ReplicaExchange:
                 return True
 
         if checkpoint_manager and checkpoint_manager.is_step_completed("equilibration"):
-            logger.info("Temperature equilibration already completed ✓")
+            logger.info("Temperature equilibration already completed OK")
         else:
             cancelled = self._run_temperature_equilibration(
                 equilibration_steps, checkpoint_manager, reporter, should_cancel
@@ -1205,16 +1486,33 @@ class ReplicaExchange:
     ) -> bool:
         if checkpoint_manager:
             checkpoint_manager.mark_step_started("gradual_heating")
-        logger.info(f"Equilibration with gradual heating: {equilibration_steps} steps")
         heating_steps = max(100, equilibration_steps * 40 // 100)
-        logger.info(f"   Phase 1: Gradual heating over {heating_steps} steps")
+        temp_min = min(self.temperatures) if self.temperatures else 0.0
+        temp_max = max(self.temperatures) if self.temperatures else 0.0
+        phase_start = time.perf_counter()
+        announce_stage_start(
+            "REMD Sub-stage: Gradual Heating",
+            logger=logger,
+            details=[
+                f"Gradual heating span: {heating_steps} steps",
+                f"Replica count: {self.n_replicas}",
+                f"Temperature ladder: {temp_min:.1f}K -> {temp_max:.1f}K",
+            ],
+        )
         heat_progress = ProgressPrinter(heating_steps)
         heating_chunk_size = max(10, heating_steps // 20)
+        milestones_logged: set[int] = set()
         for heat_step in range(0, heating_steps, heating_chunk_size):
             if should_cancel is not None and should_cancel():
+                announce_stage_cancelled(
+                    "REMD Sub-stage: Gradual Heating",
+                    logger=logger,
+                    details=["Cancellation requested during heating ramp."],
+                )
                 return True
             current_steps = min(heating_chunk_size, heating_steps - heat_step)
             progress_fraction = (heat_step + current_steps) / heating_steps
+            progress_fraction = min(max(progress_fraction, 0.0), 1.0)
             for replica_idx, replica in enumerate(self.replicas):
                 target_temp = self.temperatures[self.replica_states[replica_idx]]
                 current_temp = 50.0 + (target_temp - 50.0) * progress_fraction
@@ -1225,6 +1523,16 @@ class ReplicaExchange:
             progress = min(40, (heat_step + current_steps) * 40 // heating_steps)
             heat_progress.draw(heat_step + current_steps)
             heat_progress.newline_if_active()
+            progress_percent = int(round(progress_fraction * 100))
+            for threshold in (25, 50, 75, 100):
+                if progress_percent >= threshold and threshold not in milestones_logged:
+                    milestone_message = (
+                        f"Gradual heating progress {threshold}% "
+                        f"({heat_step + current_steps}/{heating_steps} steps)"
+                    )
+                    print(milestone_message, flush=True)
+                    logger.info(milestone_message)
+                    milestones_logged.add(threshold)
             # Report unified equilibrate progress as fraction of total equilibration
             if reporter is not None:
                 cur = min(equilibration_steps, heat_step + current_steps)
@@ -1241,7 +1549,19 @@ class ReplicaExchange:
                 f"   Heating Progress: {progress}% - Current temps: {temps_preview}"
             )
         heat_progress.close()
+        elapsed = time.perf_counter() - phase_start
+        if 100 not in milestones_logged:
+            milestone_message = (
+                f"Gradual heating progress 100% ({heating_steps}/{heating_steps} steps)"
+            )
+            print(milestone_message, flush=True)
+            logger.info(milestone_message)
         if should_cancel is not None and should_cancel():
+            announce_stage_cancelled(
+                "REMD Sub-stage: Gradual Heating",
+                logger=logger,
+                details=["Cancellation requested during heating wrap-up."],
+            )
             return True
         if checkpoint_manager:
             checkpoint_manager.mark_step_completed(
@@ -1253,38 +1573,21 @@ class ReplicaExchange:
                     ],
                 },
             )
+        announce_stage_complete(
+            "REMD Sub-stage: Gradual Heating",
+            logger=logger,
+            details=[
+                f"Executed {heating_steps} heating steps.",
+                f"Duration: {format_duration(elapsed)}",
+            ],
+        )
         # Completed without cancellation
         return False
 
     def _step_with_recovery(
         self, replica: Simulation, steps: int, replica_idx: int, temp_k: float
     ) -> None:
-        try:
-            replica.step(steps)
-        except Exception as exc:
-            if "nan" in str(exc).lower():
-                logger.warning(
-                    (
-                        f"   NaN detected in replica {replica_idx} during heating, "
-                        "attempting recovery..."
-                    )
-                )
-                replica.context.setVelocitiesToTemperature(temp_k * unit.kelvin)
-                small_steps = max(1, steps // 5)
-                for recovery_attempt in range(5):
-                    try:
-                        replica.step(small_steps)
-                        break
-                    except Exception:
-                        if recovery_attempt == 4:
-                            raise RuntimeError(
-                                f"Failed to recover from NaN in replica {replica_idx}"
-                            )
-                        replica.context.setVelocitiesToTemperature(
-                            temp_k * unit.kelvin * 0.9
-                        )
-            else:
-                raise
+        replica.step(steps)
 
     def _run_temperature_equilibration(
         self,
@@ -1296,11 +1599,15 @@ class ReplicaExchange:
         if checkpoint_manager:
             checkpoint_manager.mark_step_started("equilibration")
         temp_equil_steps = max(100, equilibration_steps * 60 // 100)
-        logger.info(
-            (
-                "   Phase 2: Temperature equilibration at target temperatures over "
-                f"{temp_equil_steps} steps"
-            )
+        phase_start = time.perf_counter()
+        announce_stage_start(
+            "REMD Sub-stage: Temperature Equilibration",
+            logger=logger,
+            details=[
+                f"Equilibration span: {temp_equil_steps} steps",
+                f"Replica count: {self.n_replicas}",
+                "Integrators set to target temperatures for all replicas.",
+            ],
         )
         for replica_idx, replica in enumerate(self.replicas):
             target_temp = self.temperatures[self.replica_states[replica_idx]]
@@ -1311,6 +1618,7 @@ class ReplicaExchange:
             # replica.context.setVelocitiesToTemperature(target_temp * unit.kelvin)
         equil_chunk_size = max(1, temp_equil_steps // 10)
         temp_progress = ProgressPrinter(temp_equil_steps)
+        milestones_logged: set[int] = set()
         for i in range(0, temp_equil_steps, equil_chunk_size):
             if should_cancel is not None and should_cancel():
                 return True
@@ -1330,6 +1638,14 @@ class ReplicaExchange:
                             checkpoint_manager.mark_step_failed(
                                 "equilibration", str(exc)
                             )
+                        announce_stage_failed(
+                            "REMD Sub-stage: Temperature Equilibration",
+                            logger=logger,
+                            details=[
+                                f"Replica {replica_idx} encountered non-finite state.",
+                                "Halting equilibration phase.",
+                            ],
+                        )
                         raise RuntimeError(
                             (
                                 "Simulation became unstable for replica "
@@ -1342,6 +1658,19 @@ class ReplicaExchange:
             progress = min(100, 40 + (i + current_steps) * 60 // temp_equil_steps)
             temp_progress.draw(i + current_steps)
             temp_progress.newline_if_active()
+            progress_fraction = min(
+                max((i + current_steps) / max(1, temp_equil_steps), 0.0), 1.0
+            )
+            progress_percent = int(round(progress_fraction * 100))
+            for threshold in (25, 50, 75, 100):
+                if progress_percent >= threshold and threshold not in milestones_logged:
+                    milestone_message = (
+                        f"Temperature equilibration progress {threshold}% "
+                        f"({i + current_steps}/{temp_equil_steps} steps)"
+                    )
+                    print(milestone_message, flush=True)
+                    logger.info(milestone_message)
+                    milestones_logged.add(threshold)
             if reporter is not None:
                 heating_steps = max(100, equilibration_steps * 40 // 100)
                 cur = min(equilibration_steps, heating_steps + i + current_steps)
@@ -1357,7 +1686,20 @@ class ReplicaExchange:
                 )
             )
         temp_progress.close()
+        elapsed = time.perf_counter() - phase_start
+        if 100 not in milestones_logged:
+            milestone_message = (
+                f"Temperature equilibration progress 100% "
+                f"({temp_equil_steps}/{temp_equil_steps} steps)"
+            )
+            print(milestone_message, flush=True)
+            logger.info(milestone_message)
         if should_cancel is not None and should_cancel():
+            announce_stage_cancelled(
+                "REMD Sub-stage: Temperature Equilibration",
+                logger=logger,
+                details=["Cancellation requested during temperature equilibration."],
+            )
             return True
         if checkpoint_manager:
             checkpoint_manager.mark_step_completed(
@@ -1367,14 +1709,21 @@ class ReplicaExchange:
                     "total_equilibration": equilibration_steps,
                 },
             )
-        logger.info("   Equilibration Complete ✓")
+        announce_stage_complete(
+            "REMD Sub-stage: Temperature Equilibration",
+            logger=logger,
+            details=[
+                f"Executed {temp_equil_steps} temperature-hold steps.",
+                f"Duration: {format_duration(elapsed)}",
+            ],
+        )
         return False
 
     def _skip_production_if_completed(self, checkpoint_manager) -> bool:
         if checkpoint_manager and checkpoint_manager.is_step_completed(
             "production_simulation"
         ):
-            logger.info("Production simulation already completed ✓")
+            logger.info("Production simulation already completed OK")
             return True
         return False
 
@@ -1411,6 +1760,7 @@ class ReplicaExchange:
             ProgressPrinter(max(1, exchange_steps)) if exchange_steps > 0 else None
         )
         last_t = time.time()
+        prod_milestones: set[int] = set()
         for step in range(exchange_steps):
             if should_cancel is not None and should_cancel():
                 return True
@@ -1423,7 +1773,11 @@ class ReplicaExchange:
                 if self.replica_visit_counts is not None:
                     self.replica_visit_counts[r, s] += 1
             self._log_production_progress(
-                step, exchange_steps, total_steps, equilibration_steps
+                step,
+                exchange_steps,
+                total_steps,
+                equilibration_steps,
+                prod_milestones,
             )
             # Unified reporter events
             if reporter is not None:
@@ -1506,17 +1860,59 @@ class ReplicaExchange:
                     )
                 else:
                     raise
+        self._update_bias_monitor()
+
+    def _update_bias_monitor(self) -> None:
+        if (
+            self._cv_monitor_module is None
+            or self._bias_energy_stats is None
+            or self._bias_cv_stats is None
+        ):
+            return
+        import torch
+
+        for replica in self.replicas:
+            state = replica.context.getState(
+                getPositions=True, getEnergy=True, groups={1}
+            )
+            energy = state.getPotentialEnergy().value_in_unit(unit.kilojoules_per_mole)
+            self._bias_energy_stats.update(np.array([energy]))
+            positions = np.array(
+                state.getPositions(asNumpy=True).value_in_unit(unit.nanometer)
+            )
+            pos_tensor = torch.tensor(positions, dtype=torch.float32)
+            try:
+                box_vectors = state.getPeriodicBoxVectors(asNumpy=True)
+                box = torch.tensor(box_vectors, dtype=torch.float32)
+            except Exception:
+                box = torch.eye(3, dtype=torch.float32)
+            with torch.inference_mode():
+                cvs = self._cv_monitor_module.compute_cvs(pos_tensor, box)
+            cv_values = cvs.detach().cpu().numpy()
+            if cv_values.ndim > 1:
+                cv_vector = cv_values.mean(axis=0)
+            else:
+                cv_vector = cv_values
+            self._bias_cv_stats.update(cv_vector)
+        self._bias_steps_completed += self.exchange_frequency
+        if self._bias_steps_completed >= self._bias_next_log:
+            mean_e, std_e = self._bias_energy_stats.summary()
+            mean_cv, std_cv = self._bias_cv_stats.summary()
+            logger.info(
+                "Bias stats after %d steps: energy mean=%.6f std=%.6f; CV mean=%s std=%s",
+                self._bias_steps_completed,
+                float(mean_e[0]),
+                float(std_e[0]),
+                np.array2string(mean_cv, precision=4),
+                np.array2string(std_cv, precision=4),
+            )
+            self._bias_next_log += self._bias_log_interval
 
     def _precompute_energies(self) -> List[Any]:
         energies: List[Any] = []
         for idx, ctx in enumerate(self.contexts):
-            try:
-                e_state = ctx.getState(getEnergy=True)
-                energies.append(e_state.getPotentialEnergy())
-            except Exception as exc:
-                logger.debug(f"Energy getState failed for replica {idx}: {exc}")
-                last = self.energies[idx] if idx < len(self.energies) else 0.0
-                energies.append(last)
+            e_state = ctx.getState(getEnergy=True)
+            energies.append(e_state.getPotentialEnergy())
         self.energies = energies
         return energies
 
@@ -1555,9 +1951,17 @@ class ReplicaExchange:
                 )
 
     def _log_production_progress(
-        self, step: int, exchange_steps: int, total_steps: int, equilibration_steps: int
+        self,
+        step: int,
+        exchange_steps: int,
+        total_steps: int,
+        equilibration_steps: int,
+        milestones_logged: set[int],
     ) -> None:
-        progress_percent = (step + 1) * 100 // exchange_steps
+        if exchange_steps <= 0:
+            progress_percent = 100
+        else:
+            progress_percent = min(100, (step + 1) * 100 // exchange_steps)
         acceptance_rate = self.exchanges_accepted / max(1, self.exchange_attempts)
         completed_steps = (step + 1) * self.exchange_frequency + equilibration_steps
         logger.debug(
@@ -1568,6 +1972,16 @@ class ReplicaExchange:
                 f"| Acceptance: {acceptance_rate:.3f}"
             )
         )
+        for threshold in (25, 50, 75, 100):
+            if progress_percent >= threshold and threshold not in milestones_logged:
+                milestone_message = (
+                    f"Production progress {threshold}% "
+                    f"({completed_steps}/{total_steps} steps, "
+                    f"acceptance {acceptance_rate*100:.1f}%)"
+                )
+                print(milestone_message, flush=True)
+                logger.info(milestone_message)
+                milestones_logged.add(threshold)
 
     def _mark_production_completed(
         self, total_steps: int, equilibration_steps: int, checkpoint_manager
@@ -1593,6 +2007,12 @@ class ReplicaExchange:
         logger.info(f"Total exchanges attempted: {self.exchange_attempts}")
         logger.info(f"Total exchanges accepted: {self.exchanges_accepted}")
         logger.info("=" * 60)
+        console_acceptance = (
+            f"Final exchange acceptance: {final_acceptance:.3f} "
+            f"({final_acceptance * 100:.1f}%)"
+        )
+        print(console_acceptance, flush=True)
+
         # Warn on poor acceptance
         if final_acceptance < 0.15 or final_acceptance > 0.6:
             logger.warning(
@@ -1601,6 +2021,13 @@ class ReplicaExchange:
                     "Consider increasing number of replicas or widening temperature range."
                 ),
                 final_acceptance,
+            )
+            print(
+                (
+                    "WARNING: Exchange acceptance outside recommended range "
+                    f"(observed {final_acceptance:.2f})."
+                ),
+                flush=True,
             )
 
         # Diffusion diagnostics
@@ -1615,6 +2042,13 @@ class ReplicaExchange:
                         "Consider wider T-range or more replicas."
                     ),
                     diff.get("mean_abs_disp_per_10k_steps", 0.0),
+                )
+                print(
+                    (
+                        "WARNING: Replica diffusion low "
+                        f"({diff.get('mean_abs_disp_per_10k_steps', 0.0):.2f} per 10k steps)."
+                    ),
+                    flush=True,
                 )
         except Exception:
             pass
@@ -1780,6 +2214,7 @@ class ReplicaExchange:
         )
         self.temperatures = stats["suggested_temperatures"]
         self.n_replicas = len(self.temperatures)
+        self._sync_exchange_engine()
         return self.temperatures
 
     def _compute_frames_per_replica(self) -> List[int]:
@@ -2017,7 +2452,7 @@ def run_remd_simulation(
                 remd.tune_temperature_ladder()
                 remd.setup_replicas(bias_variables=bias_variables)
     else:
-        # Non-checkpoint mode (legacy)
+        # Non-checkpoint mode
         bias_variables = setup_bias_variables(pdb_file) if use_metadynamics else None
         remd = ReplicaExchange(
             pdb_file=pdb_file,
@@ -2063,22 +2498,22 @@ def run_remd_simulation(
             demux_traj = remd.demux_trajectories(
                 target_temperature=300.0, equilibration_steps=equilibration_steps
             )
-            if demux_traj:
-                logger.info(f"Demultiplexing successful: {demux_traj}")
-                if checkpoint_manager:
-                    checkpoint_manager.mark_step_completed(
-                        "trajectory_demux", {"demux_file": demux_traj}
-                    )
-            else:
-                logger.warning("Demultiplexing returned no trajectory")
-                if checkpoint_manager:
-                    checkpoint_manager.mark_step_failed(
-                        "trajectory_demux", "No frames found for demultiplexing"
-                    )
-        except Exception as e:
-            logger.warning(f"Demultiplexing failed: {e}")
+        except Exception as exc:  # noqa: BLE001
             if checkpoint_manager:
-                checkpoint_manager.mark_step_failed("trajectory_demux", str(e))
+                checkpoint_manager.mark_step_failed("trajectory_demux", str(exc))
+            raise
+        if demux_traj:
+            logger.info(f"Demultiplexing successful: {demux_traj}")
+            if checkpoint_manager:
+                checkpoint_manager.mark_step_completed(
+                    "trajectory_demux", {"demux_file": demux_traj}
+                )
+        else:
+            logger.warning("Demultiplexing returned no trajectory")
+            if checkpoint_manager:
+                checkpoint_manager.mark_step_failed(
+                    "trajectory_demux", "No frames found for demultiplexing"
+                )
 
         # Always log that the simulation itself was successful
         logger.info("REMD simulation completed successfully")

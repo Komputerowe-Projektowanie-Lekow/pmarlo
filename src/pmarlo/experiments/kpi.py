@@ -1,5 +1,4 @@
-"""
-KPI utilities for PMARLO experiments.
+"""KPI utilities for PMARLO experiments.
 
 This module defines domain-specific KPIs and helpers to compute and persist
 benchmark JSON files for experiments. The JSON layout is fixed-order to ensure
@@ -14,6 +13,13 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
+
+import numpy as np
+from deeptime.markov.tools import analysis as dt_analysis
+from scipy import stats as scipy_stats
+
+from pmarlo import constants as const
+from pmarlo.utils.path_utils import ensure_directory
 
 
 def _ordered(obj: Dict[str, Any]) -> "OrderedDict[str, Any]":
@@ -75,7 +81,7 @@ def write_benchmark_json(
     Persist a benchmark record to benchmark.json under the run directory.
     """
     out_dir = Path(output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(out_dir)
     out_path = out_dir / "benchmark.json"
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(record, f, indent=2)
@@ -110,9 +116,6 @@ def compute_transition_matrix_accuracy(transition_matrix: Any) -> Optional[float
     Returns value in [0, 1], or None if matrix is unavailable.
     """
     try:
-        # Local import to avoid hard dependency at module import time
-        import numpy as np
-
         if transition_matrix is None:
             return None
         mat = np.asarray(transition_matrix, dtype=float)
@@ -220,8 +223,6 @@ def _finite_or_none(x: Optional[float]) -> Optional[float]:
 def compute_row_stochasticity_mad(transition_matrix: Any) -> Optional[float]:
     """Mean absolute deviation of row sums from 1.0 (lower is better)."""
     try:
-        import numpy as np
-
         if transition_matrix is None:
             return None
         mat = np.asarray(transition_matrix, dtype=float)
@@ -235,44 +236,46 @@ def compute_row_stochasticity_mad(transition_matrix: Any) -> Optional[float]:
 
 
 def compute_spectral_gap(transition_matrix: Any) -> Optional[float]:
-    """
-    Spectral gap 1 - lambda_2 for transition matrix (higher often indicates
-    faster mixing / clearer metastability separation). Returns None if not computable.
-    """
-    try:
-        import numpy as np
+    """Spectral gap ``1 - |lambda_2|`` for the supplied transition matrix."""
 
+    try:
         if transition_matrix is None:
             return None
         mat = np.asarray(transition_matrix, dtype=float)
         if mat.ndim != 2 or mat.shape[0] == 0:
             return None
-        eigenvals = np.linalg.eigvals(mat)
-        eigenvals = np.real(eigenvals)
-        eigenvals.sort()
-        # For stochastic matrices, the largest eigenvalue is ~1.0
-        # lambda_2 is the second largest eigenvalue
-        lam2 = eigenvals[-2] if len(eigenvals) >= 2 else np.nan
-        if np.isnan(lam2):
+        # ``deeptime`` already returns eigenvalues ordered by magnitude; requesting
+        # only the leading pair avoids unnecessary work while taking advantage of
+        # the library's numerical safeguards and sparse support.
+        k = min(2, mat.shape[0])
+        eigenvals = dt_analysis.eigenvalues(mat, k=k)
+        if eigenvals.size < 2:
             return None
-        return float(max(0.0, 1.0 - lam2))
+        lam2 = complex(eigenvals[1])
+        lam2_abs = float(np.abs(lam2))
+        if not np.isfinite(lam2_abs):
+            return None
+        return float(max(0.0, 1.0 - lam2_abs))
     except Exception:
         return None
 
 
 def compute_stationary_entropy(stationary_distribution: Any) -> Optional[float]:
-    """Shannon entropy of stationary distribution in nats (higher → more spread)."""
-    try:
-        import numpy as np
+    """Shannon entropy of stationary distribution in nats (higher -> more spread)."""
 
+    try:
         if stationary_distribution is None:
             return None
         pi = np.asarray(stationary_distribution, dtype=float)
         if pi.ndim != 1 or pi.size == 0:
             return None
-        pi_safe = pi / max(np.sum(pi), 1e-12)
-        pi_safe = np.clip(pi_safe, 1e-12, 1.0)
-        return float(-np.sum(pi_safe * np.log(pi_safe)))
+        if not np.all(np.isfinite(pi)):
+            return None
+        if np.any(pi < 0):
+            return None
+        if float(np.sum(pi)) <= 0.0:
+            return None
+        return float(scipy_stats.entropy(pi))
     except Exception:
         return None
 
@@ -310,7 +313,12 @@ def compute_detailed_balance_mad(
     Lower is better; 0 implies perfect reversibility under pi.
     """
     try:
-        import numpy as np
+        from deeptime.markov.tools.analysis import (
+            expected_counts_stationary,
+            is_reversible,
+            is_transition_matrix,
+        )
+        from sklearn.metrics import mean_absolute_error
 
         if transition_matrix is None or stationary_distribution is None:
             return None
@@ -325,14 +333,24 @@ def compute_detailed_balance_mad(
         if pi_sum <= 0:
             return None
         pi = pi / pi_sum
-        # Flow matrices
-        F = pi[:, None] * T
-        diff = np.abs(F - F.T)
-        # Normalize by total flow to make scale-independent
-        denom = float(np.sum(F))
+
+        if not is_transition_matrix(T, tol=const.NUMERIC_RELATIVE_TOLERANCE):
+            return None
+        if is_reversible(T, mu=pi):
+            return 0.0
+
+        # Use deeptime to obtain the stationary flow matrix instead of manual
+        flows = expected_counts_stationary(T, 1, mu=pi)
+        if flows is None:
+            return None
+        flows = np.asarray(flows, dtype=float)
+
+        denom = float(np.sum(flows))
         if denom <= 0:
             return None
-        return float(np.mean(diff) / denom)
+
+        mad = mean_absolute_error(flows.ravel(), flows.T.ravel())
+        return float(mad / denom)
     except Exception:
         return None
 
@@ -346,8 +364,6 @@ def compute_its_convergence_score(
     across available non-NaN points for the first few timescales.
     """
     try:
-        import numpy as np
-
         if not isinstance(implied_timescales, dict):
             return None
         lag_times = np.array(implied_timescales.get("lag_times"))
@@ -363,11 +379,19 @@ def compute_its_convergence_score(
                 continue
             x = lag_times[mask].astype(float)
             y = y[mask].astype(float)
-            # Fit simple line y = a x + b
-            A = np.vstack([x, np.ones_like(x)]).T
-            a, b = np.linalg.lstsq(A, y, rcond=None)[0]
+            # Use scipy's linregress for robust regression diagnostics.
+            try:
+                regression = scipy_stats.linregress(x, y)
+            except ValueError:
+                # Raised when the inputs are constant or otherwise ill-conditioned.
+                continue
+
+            slope = float(regression.slope)
+            if not np.isfinite(slope):
+                continue
+
             mean_y = float(np.mean(np.abs(y))) or 1.0
-            rel_slope = float(abs(a)) / mean_y
+            rel_slope = float(abs(slope)) / mean_y
             scores.append(rel_slope)
         if not scores:
             return None

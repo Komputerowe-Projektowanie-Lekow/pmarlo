@@ -4,6 +4,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List
 
+import numpy as np
+
 from ..markov_state_model.enhanced_msm import run_complete_msm_analysis
 from .benchmark_utils import (
     build_msm_baseline_object,
@@ -92,21 +94,17 @@ def _write_input_description(config: MSMConfig, run_dir: Path) -> None:
 
 def _extract_dtrajs_and_frame_count(msm) -> tuple[list[int], int]:
     """Flatten discrete trajectories if available and count total frames."""
-    try:
-        dtrajs: list[int] = []
-        total_frames = 0
-        if hasattr(msm, "dtrajs") and msm.dtrajs:
-            for arr in msm.dtrajs:
-                try:
-                    seq = list(arr)
-                    dtrajs.extend(seq)
-                    total_frames += len(seq)
-                except Exception:
-                    # Ignore non-iterable or malformed arrays
-                    pass
-    except Exception:
-        dtrajs = []
-        total_frames = 0
+    dtrajs: list[int] = []
+    total_frames = 0
+    dtrajs_attr = getattr(msm, "dtrajs", None)
+    if not dtrajs_attr:
+        return dtrajs, total_frames
+
+    for arr in dtrajs_attr:
+        seq = list(arr)
+        dtrajs.extend(int(x) for x in seq)
+        total_frames += len(seq)
+
     return dtrajs, total_frames
 
 
@@ -142,11 +140,11 @@ def _compute_msm_diagnostics(msm) -> Dict:
         getattr(msm, "implied_timescales", None)
     )
     # Macrostate CK test (factors 2,3) if available
-    ck_macro = None
-    try:
-        ck_macro = msm.compute_ck_test_macrostates(n_macrostates=3, factors=[2, 3])
-    except Exception:
-        ck_macro = None
+    ck_macro = (
+        msm.compute_ck_test_macrostates(n_macrostates=3, factors=[2, 3])
+        if hasattr(msm, "compute_ck_test_macrostates")
+        else None
+    )
     return {
         "spectral_gap": spectral_gap,
         "stationary_entropy": stationary_entropy,
@@ -162,44 +160,38 @@ def _compute_ck_test_mse(msm) -> float | None:
     Compute CK test MSE at factor 2 by comparing T^2 with the empirical
     transition matrix at 2*lag.
     """
-    try:
-        import numpy as np
+    T = getattr(msm, "transition_matrix", None)
+    dtrajs_local = getattr(msm, "dtrajs", None)
+    n_states_local = getattr(msm, "n_states", None)
+    lag_local = getattr(msm, "lag_time", None)
 
-        T = getattr(msm, "transition_matrix", None)
-        dtrajs_local = getattr(msm, "dtrajs", None)
-        n_states_local = getattr(msm, "n_states", None)
-        lag_local = getattr(msm, "lag_time", None)
-        if (
-            T is not None
-            and dtrajs_local
-            and isinstance(n_states_local, int)
-            and isinstance(lag_local, int)
-            and n_states_local > 0
-        ):
-            T_array = np.asarray(T, dtype=float)
-            T2_theory = T_array @ T_array
-
-            lag2 = 2 * int(lag_local)
-            counts = np.zeros((n_states_local, n_states_local), dtype=float)
-            for arr in dtrajs_local:
-                try:
-                    seq = list(arr)
-                except Exception:
-                    seq = []
-                for i in range(0, max(0, len(seq) - lag2)):
-                    si = int(seq[i])
-                    sj = int(seq[i + lag2])
-                    if 0 <= si < n_states_local and 0 <= sj < n_states_local:
-                        counts[si, sj] += 1.0
-            row_sums = counts.sum(axis=1)
-            row_sums[row_sums == 0] = 1.0
-            T2_emp = counts / row_sums[:, None]
-
-            diff = T2_theory - T2_emp
-            return float(np.mean(diff * diff))
-    except Exception:
+    if (
+        T is None
+        or not dtrajs_local
+        or not isinstance(n_states_local, int)
+        or not isinstance(lag_local, int)
+        or n_states_local <= 0
+    ):
         return None
-    return None
+
+    T_array = np.asarray(T, dtype=float)
+    T2_theory = T_array @ T_array
+
+    lag2 = 2 * int(lag_local)
+    counts = np.zeros((n_states_local, n_states_local), dtype=float)
+    for arr in dtrajs_local:
+        seq = list(arr)
+        for i in range(0, max(0, len(seq) - lag2)):
+            si = int(seq[i])
+            sj = int(seq[i + lag2])
+            if 0 <= si < n_states_local and 0 <= sj < n_states_local:
+                counts[si, sj] += 1.0
+    row_sums = counts.sum(axis=1)
+    row_sums[row_sums == 0] = 1.0
+    T2_emp = counts / row_sums[:, None]
+
+    diff = T2_theory - T2_emp
+    return float(np.mean(diff * diff))
 
 
 def _build_enriched_input(
@@ -262,20 +254,21 @@ def _update_baseline_and_trend(
 
 def _compare_with_previous_trend_entry(root_dir: Path, run_dir: Path) -> None:
     """Compare the latest trend entry with the previous one and persist diff."""
-    try:
-        trend_path = root_dir / "trend.json"
-        if trend_path.exists():
-            with open(trend_path, "r", encoding="utf-8") as tf:
-                trend = json.load(tf)
-            if isinstance(trend, list) and len(trend) >= 2:
-                prev = trend[-2]
-                curr = trend[-1]
-                comparison = compute_threshold_comparison(prev, curr)
-                with open(run_dir / "comparison.json", "w", encoding="utf-8") as cf:
-                    json.dump(comparison, cf, indent=2)
-    except Exception:
-        # Comparison is best-effort; ignore failures
-        pass
+    trend_path = root_dir / "trend.json"
+    if not trend_path.exists():
+        return
+
+    with open(trend_path, "r", encoding="utf-8") as tf:
+        trend = json.load(tf)
+
+    if not isinstance(trend, list) or len(trend) < 2:
+        return
+
+    prev = trend[-2]
+    curr = trend[-1]
+    comparison = compute_threshold_comparison(prev, curr)
+    with open(run_dir / "comparison.json", "w", encoding="utf-8") as cf:
+        json.dump(comparison, cf, indent=2)
 
 
 def run_msm_experiment(config: MSMConfig) -> Dict:

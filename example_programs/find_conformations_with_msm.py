@@ -6,6 +6,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from _example_support import assets_path, ensure_src_on_path
+
+ensure_src_on_path()
+
 import mdtraj as md
 import numpy as np
 
@@ -14,16 +18,16 @@ from pmarlo.reporting.export import write_conformations_csv_json
 from pmarlo.reporting.plots import save_fes_contour, save_transition_matrix_heatmap
 from pmarlo.transform.build import AppliedOpts, BuildOpts, build_result
 from pmarlo.transform.plan import TransformPlan, TransformStep
+from pmarlo.utils.path_utils import ensure_directory
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-TESTS_DIR = BASE_DIR / "tests" / "data"
-PDB_PATH = TESTS_DIR / "3gd8-fixed.pdb"
-DCD_PATH = TESTS_DIR / "traj.dcd"
+ASSETS_DIR = assets_path()
+PDB_PATH = ASSETS_DIR / "3gd8-fixed.pdb"
+DCD_PATH = ASSETS_DIR / "traj.dcd"
 
 OUT_DIR = (
     Path(__file__).resolve().parent / "programs_outputs" / "find_conformations_with_msm"
 )
-OUT_DIR.mkdir(parents=True, exist_ok=True)
+ensure_directory(OUT_DIR)
 
 
 def run_conformation_finder(
@@ -36,7 +40,9 @@ def run_conformation_finder(
     specs = feature_specs or ["phi_psi"]
     X, cols, periodic = api.compute_features(traj, feature_specs=specs)
     Y = api.reduce_features(X, method="vamp", lag=lag, n_components=3)
-    labels = api.cluster_microstates(Y, method="minibatchkmeans", n_states=20)
+    labels = api.cluster_microstates(
+        Y, method="minibatchkmeans", n_states=20, n_init=50
+    )
     n_states = int(np.max(labels) + 1)
     # Prepare dataset for provenance-first builder
     # Map requested FES pair to named CVs if provided; else pick first two
@@ -104,7 +110,7 @@ def run_conformation_finder(
                 }
             )
 
-    # Use builder-produced FES if available; fallback to API helper
+    # Use builder-produced FES if available; otherwise call the API helper
     if result.fes is not None:
         F = result.fes
         fes_names = tuple(result.metadata.fes.get("names", ("cv0", "cv1")))  # type: ignore[assignment]

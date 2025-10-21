@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from pmarlo.utils.path_utils import ensure_directory
+
 from .apply import apply_transform_plan
 from .plan import TransformPlan, TransformStep
 from .plan import to_text as plan_to_text
@@ -38,7 +40,7 @@ class TransformManifest:
 
     def save(self):
         """Save manifest to file."""
-        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        ensure_directory(self.checkpoint_dir)
         try:
             with open(self.manifest_file, "w") as f:
                 json.dump(self.data, f, indent=2, default=str)

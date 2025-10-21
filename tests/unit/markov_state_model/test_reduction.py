@@ -1,9 +1,11 @@
-import sys
-
 import numpy as np
 import pytest
 
-from pmarlo.markov_state_model.reduction import pca_reduce, tica_reduce
+from pmarlo.markov_state_model.reduction import (
+    pca_reduce,
+    tica_reduce,
+    vamp_reduce,
+)
 
 
 def test_pca_reduce_matches_sklearn():
@@ -58,11 +60,21 @@ def test_tica_reduce_matches_deeptime():
     assert np.allclose(ours, ref, atol=1e-6)
 
 
-def test_tica_reduce_nan_handling(monkeypatch):
+def test_tica_reduce_nan_handling():
+    """Test that TICA handles NaN values through preprocessing."""
     rng = np.random.default_rng(3)
     X = rng.normal(size=(500, 6))
     X[10, 0] = np.nan
-    # force fallback implementation
-    monkeypatch.setitem(sys.modules, "deeptime", None)
     result = tica_reduce(X, lag=3, n_components=2, scale=True)
     assert np.isfinite(result).all()
+    assert result.shape == (500, 2)
+
+
+def test_vamp_reduce_nan_handling():
+    """Test that VAMP handles NaN values through preprocessing."""
+    rng = np.random.default_rng(6)
+    X = rng.normal(size=(400, 5))
+    X[5, 2] = np.nan
+    result = vamp_reduce(X, lag=4, n_components=2, scale=True)
+    assert np.isfinite(result).all()
+    assert result.shape == (400, 2)

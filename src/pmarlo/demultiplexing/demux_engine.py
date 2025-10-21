@@ -76,13 +76,13 @@ class _DemuxState:
 def _repeat_frames(frame: np.ndarray, count: int) -> np.ndarray:
     # frame: (n_atoms, 3) -> (count, n_atoms, 3)
     if count <= 0:
-        return np.zeros((0,) + frame.shape, dtype=frame.dtype)
-    return np.broadcast_to(frame, (count,) + frame.shape).copy()
+        return np.empty((0,) + frame.shape, dtype=frame.dtype)
+    return np.repeat(frame[np.newaxis, ...], count, axis=0)
 
 
 def _interpolate_frames(last: np.ndarray, nxt: np.ndarray, count: int) -> np.ndarray:
     if count <= 0:
-        return np.zeros((0,) + last.shape, dtype=last.dtype)
+        return np.empty((0,) + last.shape, dtype=last.dtype)
     # create linear interpolation excluding endpoints
     # t in (1/(count+1), ..., count/(count+1))
     t_vals = (np.arange(1, count + 1, dtype=np.float32) / float(count + 1)).reshape(
@@ -104,17 +104,14 @@ def _peek_next_first_frame(
         or not nxt.source_path
     ):
         return None
-    try:
-        it = reader.iter_frames(
-            nxt.source_path,
-            start=int(nxt.start_frame),
-            stop=int(nxt.start_frame + 1),
-            stride=1,
-        )
-        for f in it:
-            return f
-    except Exception:
-        return None
+    it = reader.iter_frames(
+        nxt.source_path,
+        start=int(nxt.start_frame),
+        stop=int(nxt.start_frame + 1),
+        stride=1,
+    )
+    for f in it:
+        return f
     return None
 
 
@@ -138,7 +135,7 @@ def _read_segment_frames_worker(
         acc.append(_np.asarray(xyz))
     if acc:
         return _np.stack(acc, axis=0)
-    return _np.zeros((0, 0, 3), dtype=_np.float32)
+    return _np.empty((0, 0, 3), dtype=_np.float32)
 
 
 def _canonical_topology_path(requested: str | None, plan: DemuxPlan) -> str | None:
@@ -152,16 +149,13 @@ def _canonical_topology_path(requested: str | None, plan: DemuxPlan) -> str | No
     if requested:
         return requested
     candidates: list[str] = []
-    try:
-        for s in plan.segments:
-            p = Path(getattr(s, "source_path", ""))
-            if not str(p):
-                continue
-            cand = p.with_suffix(".pdb")
-            if cand.exists():
-                candidates.append(str(cand))
-    except Exception:
-        return requested
+    for s in plan.segments:
+        source_path = s.source_path
+        if not source_path:
+            continue
+        cand = Path(source_path).with_suffix(".pdb")
+        if cand.exists():
+            candidates.append(str(cand))
     return min(candidates) if candidates else requested
 
 
@@ -345,17 +339,7 @@ class _ParallelDemuxer:
     def _resolve_future_result(
         self, seg_idx: int, future: Future[np.ndarray | None]
     ) -> Optional[np.ndarray]:
-        try:
-            arr = future.result()
-        except Exception as exc:  # noqa: BLE001
-            segment = self.plan.segments[seg_idx]
-            msg = (
-                f"Segment {seg_idx} parallel read error for replica={segment.replica_index} "
-                f"path={segment.source_path} window=[{segment.start_frame},{segment.stop_frame})]: {exc}"
-            )
-            logger.warning(msg)
-            self.state.warnings.append(msg)
-            return None
+        arr = future.result()
         return arr if isinstance(arr, np.ndarray) else None
 
     def _drain_ready(self) -> None:
@@ -381,10 +365,7 @@ class _ParallelDemuxer:
 
 
 def _finalize_demux(context: _DemuxContext, state: _DemuxState) -> None:
-    try:
-        context.writer.flush()
-    except Exception:
-        pass
+    context.writer.flush()
     total_segments = len(context.plan.segments)
     context.reporter.emit(
         "demux_end",
@@ -412,7 +393,7 @@ def _handle_missing_source_segment(
     ):
         return None
     if planned <= 0:
-        return None
+        return 0
     if context.fill_policy == "skip":
         msg = (
             f"Segment {index} has no source frames; skipping {planned} planned frame(s)"
@@ -420,13 +401,13 @@ def _handle_missing_source_segment(
         logger.warning(msg)
         state.warnings.append(msg)
         state.skipped_segments.append(index)
-        return None
+        return 0
     if state.last_written_frame is None:
         msg = f"Segment {index} lacks source and no previous frame to repeat; skipping {planned} frame(s)"
         logger.warning(msg)
         state.warnings.append(msg)
         state.skipped_segments.append(index)
-        return None
+        return 0
 
     fill, warning = _build_fill_frames(
         context,
@@ -463,16 +444,10 @@ def _emit_segment_progress(context: _DemuxContext, index: int, frames: int) -> N
 
 def _flush_after_segment(context: _DemuxContext, index: int) -> None:
     if context.flush_between_segments:
-        try:
-            context.writer.flush()
-        except Exception:
-            pass
+        context.writer.flush()
     checkpoint = context.checkpoint_interval_segments
     if checkpoint and (index + 1) % int(checkpoint) == 0:
-        try:
-            context.writer.flush()
-        except Exception:
-            pass
+        context.writer.flush()
 
 
 def _stream_segment_frames(
@@ -482,6 +457,8 @@ def _stream_segment_frames(
     segment: DemuxSegmentPlan,
     write_chunk: int,
 ) -> int:
+    if not segment.source_path:
+        return 0
     acc: List[np.ndarray] = []
     got = 0
     try:
@@ -504,13 +481,6 @@ def _stream_segment_frames(
                 )
             state.last_written_frame = np.array(arr, copy=True)
     except TrajectoryIOError as exc:
-        msg = (
-            f"Segment {index} read error for replica={segment.replica_index} path={segment.source_path} "
-            f"window=[{segment.start_frame},{segment.stop_frame}): {exc}; will fill remaining if policy allows"
-        )
-        logger.warning(msg)
-        state.warnings.append(msg)
-    finally:
         state.total_written += _flush_batch(
             context,
             state,
@@ -518,6 +488,17 @@ def _stream_segment_frames(
             index,
             "flushing batch",
         )
+        message = f"Segment {index} reader failed after {got} frame(s): {exc}"
+        logger.warning(message)
+        state.warnings.append(message)
+        return got
+    state.total_written += _flush_batch(
+        context,
+        state,
+        acc,
+        index,
+        "flushing batch",
+    )
     return got
 
 

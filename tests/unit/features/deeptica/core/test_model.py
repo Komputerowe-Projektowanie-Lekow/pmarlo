@@ -16,12 +16,17 @@ def mlcolvar_stub(monkeypatch):
     torch_nn = torch.nn
 
     class DummyDeepTICA(torch_nn.Module):
-        def __init__(self, layers, n_cvs, activation, options):  # type: ignore[override]
+        def __init__(self, layers, n_cvs=None, options=None, **kwargs):  # type: ignore[override]
             super().__init__()
             self.layers = list(layers)
-            self.n_cvs = int(n_cvs)
-            self.activation = activation
-            self.options = options
+            self.n_cvs = int(n_cvs) if n_cvs is not None else layers[-1]
+            self.options = options or {}
+            # Extract activation from options['nn'] if present
+            self.activation = (
+                self.options.get("nn", {}).get("activation", "relu")
+                if isinstance(self.options.get("nn"), dict)
+                else "relu"
+            )
             self.nn = torch_nn.Sequential(torch_nn.Linear(layers[0], layers[-1]))
 
         def named_children(self):  # type: ignore[override]
@@ -74,6 +79,30 @@ def test_resolve_helpers_work_with_stubbed_mlcolvar():
         pytest.skip(f"DeepTICA extras unavailable: {exc}")
     assert isinstance(wrapped, torch.nn.Module)
     assert "output_variance" in info
+
+
+def test_constructed_core_is_callable():
+    model = _import_model()
+
+    class Cfg:
+        hidden = (16,)
+        n_out = 2
+        activation = "relu"
+        linear_head = False
+        layer_norm_hidden = False
+
+    class Scaler:
+        mean_ = np.zeros(4, dtype=np.float64)
+
+    cfg = Cfg()
+    core, layers = model.construct_deeptica_core(cfg, Scaler())
+    tensor = torch.zeros((3, layers[0]), dtype=torch.float32)
+    try:
+        outputs = core(tensor)
+    except NotImplementedError as exc:
+        pytest.fail(f"core forward() should be callable: {exc!s}")
+    assert isinstance(outputs, torch.Tensor)
+    assert outputs.shape == (3, cfg.n_out)
 
 
 def test_strip_batch_norm_removes_layers():

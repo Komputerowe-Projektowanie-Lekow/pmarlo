@@ -1,8 +1,7 @@
-"""Enhanced MSM workflow orchestrator with optional lightweight fallback."""
+"""Enhanced MSM workflow orchestrator using the canonical implementation."""
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -25,6 +24,7 @@ class EnhancedMSMProtocol(Protocol):
         topology_file: str | None = ...,
         temperatures: Sequence[float] | None = ...,
         output_dir: str | None = ...,
+        ignore_trajectory_errors: bool = ...,
         **kwargs: object,
     ) -> None: ...
 
@@ -84,22 +84,12 @@ class EnhancedMSMProtocol(Protocol):
     ) -> Optional[Path]: ...
 
 
-_SKLEARN_SPEC = importlib.util.find_spec("sklearn")
-
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ._enhanced_impl import EnhancedMSM as _EnhancedMSMImpl
     from ._enhanced_impl import run_complete_msm_analysis as _run_complete_msm_analysis
 else:
-    if _SKLEARN_SPEC is None:  # pragma: no cover - exercised in minimal test envs
-        from ._enhanced_stub import EnhancedMSMStub as _EnhancedMSMImpl
-        from ._enhanced_stub import (
-            run_complete_msm_analysis as _run_complete_msm_analysis,
-        )
-    else:  # pragma: no cover - relies on optional ML stack
-        from ._enhanced_impl import EnhancedMSM as _EnhancedMSMImpl
-        from ._enhanced_impl import (
-            run_complete_msm_analysis as _run_complete_msm_analysis,
-        )
+    from ._enhanced_impl import EnhancedMSM as _EnhancedMSMImpl
+    from ._enhanced_impl import run_complete_msm_analysis as _run_complete_msm_analysis
 
 
 class _RunAnalysisProto(Protocol):
@@ -115,6 +105,7 @@ class _RunAnalysisProto(Protocol):
         stride: int = ...,
         atom_selection: str | Sequence[int] | None = ...,
         chunk_size: int = ...,
+        ignore_trajectory_errors: bool = ...,
     ) -> EnhancedMSMProtocol: ...
 
 

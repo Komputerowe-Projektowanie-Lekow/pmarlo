@@ -9,17 +9,170 @@ import numbers
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterator, List, Mapping, Optional, Sequence, TypedDict, cast
+from typing import (
+    Dict,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    Protocol,
+    Sequence,
+    TypedDict,
+    cast,
+)
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
+from pmarlo import constants as const
 from pmarlo.features.deeptica.losses import VAMP2Loss
+from pmarlo.utils.path_utils import ensure_directory
 
 logger = logging.getLogger(__name__)
 
 MetricMapping = Mapping[str, object]
+
+
+def prepare_batch(
+    batch: Sequence[tuple[np.ndarray, np.ndarray, np.ndarray | None]],
+    *,
+    device: torch.device | str = "cpu",
+    use_weights: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    """Convert a batch of NumPy arrays into tensors on the requested device."""
+
+    if not batch:
+        raise ValueError("empty batch provided to prepare_batch")
+
+    dev = torch.device(device) if not isinstance(device, torch.device) else device
+    x_t_list: list[torch.Tensor] = []
+    x_tau_list: list[torch.Tensor] = []
+    weight_list: list[torch.Tensor] = []
+
+    for item in batch:
+        if len(item) != 3:
+            raise ValueError("batch elements must be 3-tuples (x_t, x_tau, weights)")
+        xt_arr, xtau_arr, weights = item
+        xt_tensor = torch.as_tensor(np.asarray(xt_arr, dtype=np.float32), device=dev)
+        xtau_tensor = torch.as_tensor(
+            np.asarray(xtau_arr, dtype=np.float32), device=dev
+        )
+        x_t_list.append(xt_tensor)
+        x_tau_list.append(xtau_tensor)
+        if use_weights and weights is not None:
+            weight_tensor = torch.as_tensor(
+                np.asarray(weights, dtype=np.float32), device=dev
+            ).reshape(-1)
+            weight_list.append(weight_tensor)
+
+    x_t = torch.cat(x_t_list, dim=0) if len(x_t_list) > 1 else x_t_list[0]
+    x_tau = torch.cat(x_tau_list, dim=0) if len(x_tau_list) > 1 else x_tau_list[0]
+
+    total_frames = x_t.shape[0]
+    if not use_weights:
+        weights_tensor: torch.Tensor | None = None
+    elif weight_list:
+        weights_tensor = (
+            torch.cat(weight_list, dim=0) if len(weight_list) > 1 else weight_list[0]
+        )
+        if weights_tensor.numel() != total_frames:
+            raise ValueError("weights length does not match batch size")
+    else:
+        weights_tensor = torch.full(
+            (total_frames,), 1.0 / float(max(1, total_frames)), device=dev
+        )
+
+    return x_t, x_tau, weights_tensor
+
+
+def compute_loss_and_score(
+    model: torch.nn.Module,
+    loss_module: _LossModule,
+    x_t: torch.Tensor,
+    x_tau: torch.Tensor,
+    weights: torch.Tensor | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Forward pass helper returning the loss/score pair."""
+
+    z_t = model(x_t)
+    z_tau = model(x_tau)
+    loss, score = loss_module(z_t, z_tau, weights)
+    return loss, score
+
+
+def compute_grad_norm(parameters: Sequence[torch.nn.Parameter]) -> float:
+    """Compute the L2 norm of gradients across the provided parameters."""
+
+    total = 0.0
+    for param in parameters:
+        if param.grad is None:
+            continue
+        grad = param.grad.detach()
+        total += float(torch.sum(grad * grad).item())
+    return float(math.sqrt(total)) if total > 0.0 else 0.0
+
+
+def make_metrics(
+    *,
+    loss: torch.Tensor,
+    score: torch.Tensor,
+    tau: int,
+    optimizer: torch.optim.Optimizer,
+    grad_norm: float,
+) -> dict[str, float]:
+    """Package scalar training metrics into a serialisable mapping."""
+
+    lr = 0.0
+    if optimizer.param_groups:
+        lr = float(optimizer.param_groups[0].get("lr", 0.0))
+
+    return {
+        "loss": float(loss.detach().cpu().item()),
+        "vamp2": float(score.detach().cpu().item()),
+        "tau": float(int(tau)),
+        "learning_rate": lr,
+        "grad_norm": float(grad_norm),
+    }
+
+
+def record_metrics(
+    history: list[dict[str, float]],
+    metrics: dict[str, float],
+    *,
+    model: torch.nn.Module | None = None,
+) -> None:
+    """Append metrics to the in-memory history and model hook if provided."""
+
+    history.append(dict(metrics))
+    if model is None:
+        return
+    steps = getattr(model, "training_history", None)
+    if not isinstance(steps, dict):
+        steps = {}
+    step_list = list(steps.get("steps", []))
+    step_list.append(dict(metrics))
+    steps["steps"] = step_list
+    setattr(model, "training_history", steps)
+
+
+def checkpoint_if_better(
+    *,
+    model_net: torch.nn.Module,
+    checkpoint_path: Path | str,
+    metrics: Mapping[str, float],
+    metric_name: str,
+    best_score: float,
+) -> float:
+    """Persist model weights when the tracked metric improves."""
+
+    score = float(metrics.get(metric_name, float("-inf")))
+    if score <= best_score:
+        return best_score
+    path = Path(checkpoint_path)
+    ensure_directory(path.parent)
+    torch.save(model_net.state_dict(), path)
+    return score
 
 
 def _metric_scalar(metrics: MetricMapping, key: str, default: float = 0.0) -> float:
@@ -82,6 +235,7 @@ class _BatchOutcome:
     score: float
     batch_size: int
     grad_norm: float
+    grad_norm_preclip: float  # Add pre-clip gradient norm
     metrics: Dict[str, object]
 
 
@@ -93,6 +247,7 @@ class _EpochAccumulator:
     total_score: float = 0.0
     total_weight: int = 0
     grad_norms: List[float] = field(default_factory=list)
+    grad_norms_preclip: List[float] = field(default_factory=list)  # Add pre-clip norms
     cond_c00_sum: float = 0.0
     cond_ctt_sum: float = 0.0
     cond_weight: float = 0.0
@@ -110,6 +265,7 @@ class _EpochAccumulator:
         self.total_score += outcome.score * outcome.batch_size
         self.total_weight += outcome.batch_size
         self.grad_norms.append(outcome.grad_norm)
+        self.grad_norms_preclip.append(outcome.grad_norm_preclip)  # Track pre-clip
         self._update_condition_metrics(outcome)
 
     def finalize(self) -> Dict[str, float | List[float]]:
@@ -128,19 +284,32 @@ class _EpochAccumulator:
             "grad_norm_max": 0.0,
         }
 
-    def _grad_norm_stats(self) -> tuple[float, float]:
+    def _grad_norm_stats(self) -> tuple[float, float, float, float]:
+        """Return (postclip_mean, postclip_max, preclip_mean, preclip_max)."""
         if not self.grad_norms:
-            return 0.0, 0.0
-        return float(np.mean(self.grad_norms)), float(np.max(self.grad_norms))
+            return 0.0, 0.0, 0.0, 0.0
+        postclip_mean = float(np.mean(self.grad_norms))
+        postclip_max = float(np.max(self.grad_norms))
+        preclip_mean = (
+            float(np.mean(self.grad_norms_preclip)) if self.grad_norms_preclip else 0.0
+        )
+        preclip_max = (
+            float(np.max(self.grad_norms_preclip)) if self.grad_norms_preclip else 0.0
+        )
+        return postclip_mean, postclip_max, preclip_mean, preclip_max
 
     def _base_epoch_metrics(self) -> Dict[str, float | List[float]]:
-        grad_mean, grad_max = self._grad_norm_stats()
+        grad_mean, grad_max, grad_preclip_mean, grad_preclip_max = (
+            self._grad_norm_stats()
+        )
         total_weight = float(self.total_weight)
         return {
             "loss": self.total_loss / total_weight,
             "score": self.total_score / total_weight,
             "grad_norm_mean": grad_mean,
             "grad_norm_max": grad_max,
+            "grad_norm_preclip_mean": grad_preclip_mean,  # Add pre-clip stats
+            "grad_norm_preclip_max": grad_preclip_max,
         }
 
     def _append_condition_metrics_summary(
@@ -372,8 +541,8 @@ class CurriculumConfig:
     epochs_per_tau: int = 15
     warmup_epochs: int = 5
     batch_size: int = 256
-    learning_rate: float = 3e-4
-    weight_decay: float = 1e-4
+    learning_rate: float = const.DEEPTICA_DEFAULT_LEARNING_RATE
+    weight_decay: float = const.DEEPTICA_DEFAULT_WEIGHT_DECAY
     val_fraction: float = 0.2
     shuffle: bool = True
     num_workers: int = 0
@@ -381,10 +550,10 @@ class CurriculumConfig:
     grad_clip_norm: Optional[float] = 1.0
     log_every: int = 1
     checkpoint_dir: Optional[Path] = None
-    vamp_eps: float = 1e-3
-    vamp_eps_abs: float = 1e-6
+    vamp_eps: float = const.DEEPTICA_DEFAULT_VAMP_EPS
+    vamp_eps_abs: float = const.DEEPTICA_DEFAULT_VAMP_EPS_ABS
     vamp_alpha: float = 0.15
-    vamp_cond_reg: float = 1e-4
+    vamp_cond_reg: float = const.DEEPTICA_DEFAULT_VAMP_COND_REG
     seed: Optional[int] = None
     max_batches_per_epoch: Optional[int] = None
 
@@ -404,7 +573,10 @@ class CurriculumConfig:
         object.__setattr__(self, "warmup_epochs", warmup)
         frac = float(self.val_fraction)
         if not 0.0 < frac < 1.0:
-            frac = min(max(frac, 1e-3), 0.9)
+            frac = min(
+                max(frac, const.DEEPTICA_MIN_BATCH_FRACTION),
+                const.DEEPTICA_MAX_BATCH_FRACTION,
+            )
             object.__setattr__(self, "val_fraction", frac)
         if float(self.learning_rate) <= 0:
             raise ValueError("learning_rate must be positive")
@@ -426,7 +598,7 @@ class DeepTICACurriculumTrainer:
             torch.manual_seed(int(cfg.seed))
             np.random.seed(int(cfg.seed))
         self.loss_fn = VAMP2Loss(
-            eps=float(max(cfg.vamp_eps, 1e-9)),
+            eps=float(max(cfg.vamp_eps, const.DEEPTICA_MIN_VAMP_EPS)),
             eps_abs=float(max(cfg.vamp_eps_abs, 0.0)),
             alpha=float(min(max(cfg.vamp_alpha, 0.0), 1.0)),
             cond_reg=float(max(cfg.vamp_cond_reg, 0.0)),
@@ -492,6 +664,9 @@ class DeepTICACurriculumTrainer:
             history["metrics_csv"] = str(csv_path)
         if self._best_checkpoint_path is not None:
             history["best_checkpoint"] = str(self._best_checkpoint_path)
+
+        # Mark training as complete in the progress file
+        self._finalize_realtime_metrics(history)
 
         self.history = history
         self._attach_history_to_model(history)
@@ -585,6 +760,10 @@ class DeepTICACurriculumTrainer:
             self._maybe_log_tau_progress(
                 tau, epoch_idx, current_lr, train_metrics, val_metrics
             )
+            # Write real-time progress metrics after each epoch
+            self._write_realtime_metrics(
+                overall_epoch, tau, train_metrics, val_metrics, current_lr
+            )
 
     def _record_condition_metrics(self, train_metrics: MetricMapping) -> None:
         cond_c00 = _metric_scalar(train_metrics, "cond_c00")
@@ -603,12 +782,12 @@ class DeepTICACurriculumTrainer:
         self.var_zt_curve.append(_metric_vector(train_metrics, "var_zt"))
         self.mean_z0_curve.append(_metric_vector(train_metrics, "mean_z0"))
         self.mean_zt_curve.append(_metric_vector(train_metrics, "mean_zt"))
-        if cond_c00 > 1e6:
+        if cond_c00 > const.DEEPTICA_CONDITION_NUMBER_WARN:
             logger.warning(
                 "Condition number cond(C00)=%.3e exceeds stability threshold",
                 cond_c00,
             )
-        if cond_ctt > 1e6:
+        if cond_ctt > const.DEEPTICA_CONDITION_NUMBER_WARN:
             logger.warning(
                 "Condition number cond(Ctt)=%.3e exceeds stability threshold",
                 cond_ctt,
@@ -629,11 +808,20 @@ class DeepTICACurriculumTrainer:
         epoch_num = epoch_idx + 1
         if epoch_num % log_every != 0 and epoch_num != epochs_per_tau:
             return
+        # Enhanced logging with pre-clip gradient norms
+        grad_preclip_mean = _metric_scalar(train_metrics, "grad_norm_preclip_mean", 0.0)
+        grad_preclip_max = _metric_scalar(train_metrics, "grad_norm_preclip_max", 0.0)
+        clip_threshold = (
+            self.cfg.grad_clip_norm
+            if self.cfg.grad_clip_norm is not None
+            else float("inf")
+        )
+
         logger.info(
             (
                 "tau=%d val_tau=%d epoch=%d/%d lr=%.6e "
                 "train_loss=%.6f val_score=%.6f "
-                "grad_norm_mean=%.6f grad_norm_max=%.6f"
+                "grad_preclip=(%.3f/%.3f) grad_postclip=(%.3f/%.3f) clip_at=%.1f"
             ),
             tau,
             self.cfg.val_tau,
@@ -642,8 +830,11 @@ class DeepTICACurriculumTrainer:
             current_lr,
             _metric_scalar(train_metrics, "loss"),
             _metric_scalar(val_metrics, "score"),
+            grad_preclip_mean,
+            grad_preclip_max,
             _metric_scalar(train_metrics, "grad_norm_mean"),
             _metric_scalar(train_metrics, "grad_norm_max"),
+            clip_threshold,
         )
 
     def _build_history(
@@ -800,11 +991,19 @@ class DeepTICACurriculumTrainer:
             out_tau = self.module(x_tau)
             loss, score = self.loss_fn(out_t, out_tau, weights)
             loss.backward()
+
+            # Compute gradient norm BEFORE clipping to get true gradient magnitude
+            grad_norm_preclip = self._grad_norm(self._trainable_parameters)
+
+            # Apply gradient clipping if configured
             if self.cfg.grad_clip_norm is not None and self._trainable_parameters:
                 torch.nn.utils.clip_grad_norm_(
                     self._trainable_parameters, float(self.cfg.grad_clip_norm)
                 )
+
+            # Compute gradient norm AFTER clipping (for diagnostics)
             grad_norm = self._grad_norm(self._trainable_parameters)
+
             self.optimizer.step()
             metrics_obj = getattr(self.loss_fn, "latest_metrics", {})
             metrics = metrics_obj if isinstance(metrics_obj, dict) else {}
@@ -813,6 +1012,7 @@ class DeepTICACurriculumTrainer:
                 score=float(score.item()),
                 batch_size=batch_size,
                 grad_norm=grad_norm,
+                grad_norm_preclip=grad_norm_preclip,
                 metrics=cast(Dict[str, object], metrics),
             )
 
@@ -889,7 +1089,7 @@ class DeepTICACurriculumTrainer:
         self._best_state = _clone_state_dict(self.module)
         if self.cfg.checkpoint_dir is not None:
             ckpt_dir = Path(self.cfg.checkpoint_dir)
-            ckpt_dir.mkdir(parents=True, exist_ok=True)
+            ensure_directory(ckpt_dir)
             path = ckpt_dir / "best_val_tau.pt"
             torch.save(
                 {
@@ -902,11 +1102,103 @@ class DeepTICACurriculumTrainer:
             )
             self._best_checkpoint_path = path
 
+    def _write_realtime_metrics(
+        self,
+        epoch: int,
+        tau: int,
+        train_metrics: MetricMapping,
+        val_metrics: MetricMapping,
+        lr: float,
+    ) -> None:
+        """Write real-time training progress to JSON file for live monitoring."""
+        if self.cfg.checkpoint_dir is None:
+            return
+
+        import json
+
+        ckpt_dir = Path(self.cfg.checkpoint_dir)
+        ensure_directory(ckpt_dir)
+        progress_path = ckpt_dir / "training_progress.json"
+
+        # Build current epoch data
+        epoch_data = {
+            "epoch": int(epoch),
+            "tau": int(tau),
+            "val_tau": int(self.cfg.val_tau),
+            "train_loss": float(_metric_scalar(train_metrics, "loss")),
+            "train_score": float(_metric_scalar(train_metrics, "score")),
+            "val_loss": float(_metric_scalar(val_metrics, "loss")),
+            "val_score": float(_metric_scalar(val_metrics, "score")),
+            "learning_rate": float(lr),
+            "grad_norm_mean": float(_metric_scalar(train_metrics, "grad_norm_mean")),
+            "grad_norm_max": float(_metric_scalar(train_metrics, "grad_norm_max")),
+            "best_val_score": (
+                float(self._best_score) if self._best_score > float("-inf") else 0.0
+            ),
+            "best_epoch": int(self._best_epoch) if self._best_epoch >= 0 else None,
+        }
+
+        # Read existing data if available
+        history_data = []
+        if progress_path.exists():
+            try:
+                with progress_path.open("r") as f:
+                    content = json.load(f)
+                    if isinstance(content, dict) and "epochs" in content:
+                        history_data = content["epochs"]
+                    elif isinstance(content, list):
+                        history_data = content
+            except Exception:
+                history_data = []
+
+        # Append current epoch
+        history_data.append(epoch_data)
+
+        # Write updated progress
+        progress = {
+            "status": "training",
+            "current_epoch": int(epoch),
+            "total_epochs_planned": int(self._scheduler_total_epochs),
+            "epochs": history_data,
+        }
+
+        with progress_path.open("w") as f:
+            json.dump(progress, f, indent=2)
+
+    def _finalize_realtime_metrics(self, history: Dict[str, object]) -> None:
+        """Mark training as complete with final summary in progress file."""
+        if self.cfg.checkpoint_dir is None:
+            return
+
+        import json
+
+        ckpt_dir = Path(self.cfg.checkpoint_dir)
+        progress_path = ckpt_dir / "training_progress.json"
+
+        if not progress_path.exists():
+            return
+
+        try:
+            with progress_path.open("r") as f:
+                progress = json.load(f)
+        except Exception:
+            return
+
+        # Update status to complete
+        progress["status"] = "completed"
+        progress["wall_time_s"] = _coerce_float(history.get("wall_time_s", 0.0))
+        progress["best_val_score"] = _coerce_float(history.get("best_val_score", 0.0))
+        progress["best_epoch"] = history.get("best_epoch")
+        progress["best_tau"] = history.get("best_tau")
+
+        with progress_path.open("w") as f:
+            json.dump(progress, f, indent=2)
+
     def _write_metrics_csv(self, history: Dict[str, object]) -> Optional[Path]:
         if self.cfg.checkpoint_dir is None:
             return None
         ckpt_dir = Path(self.cfg.checkpoint_dir)
-        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        ensure_directory(ckpt_dir)
         csv_path = ckpt_dir / "curriculum_metrics.csv"
         with csv_path.open("w", newline="") as handle:
             writer = csv.writer(handle)
@@ -972,6 +1264,33 @@ class DeepTICACurriculumTrainer:
 
     @staticmethod
     def _resolve_device(spec: str) -> str:
-        if spec.lower() == "auto":
-            return "cuda" if torch.cuda.is_available() else "cpu"
-        return spec
+        resolved = spec.strip()
+        if resolved.lower() == "auto":
+            raise ValueError(
+                "Automatic device selection is no longer supported; specify an explicit device"
+            )
+        if resolved.startswith("cuda") and not torch.cuda.is_available():
+            raise RuntimeError(
+                "CUDA device requested but torch reports no available CUDA runtime"
+            )
+        return resolved
+
+
+class _LossModule(Protocol):
+    def __call__(
+        self,
+        z_t: torch.Tensor,
+        z_tau: torch.Tensor,
+        weights: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor]: ...
+
+
+def _coerce_float(value: object, default: float = 0.0) -> float:
+    if isinstance(value, numbers.Real):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return default
+    return default

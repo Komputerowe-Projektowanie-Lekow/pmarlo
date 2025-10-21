@@ -6,6 +6,8 @@ from typing import List, Optional
 import mdtraj as md
 import numpy as np
 
+from pmarlo.utils.path_utils import ensure_directory
+
 
 class FeaturesMixin:
     # Attributes provided by the host class
@@ -78,37 +80,31 @@ class FeaturesMixin:
     ) -> np.ndarray:
         ft = feature_type.lower()
         if ft.startswith("universal"):
-            try:
-                from pmarlo import api as _api  # type: ignore
+            from pmarlo import api as _api  # type: ignore
 
-                method = "vamp"
-                if ft.endswith("_tica"):
-                    method = "tica"
-                elif ft.endswith("_pca"):
-                    method = "pca"
-                # Persist feature cache per trajectory in output_dir
-                from pathlib import Path as _Path
+            method = "vamp"
+            if ft.endswith("_tica"):
+                method = "tica"
+            elif ft.endswith("_pca"):
+                method = "pca"
+            from pathlib import Path as _Path
 
-                cache_dir = _Path(getattr(self, "output_dir", ".")) / "feature_cache"
-                cache_dir.mkdir(parents=True, exist_ok=True)
-                metric, _meta = _api.compute_universal_metric(
-                    traj,
-                    feature_specs=None,
-                    align=True,
-                    atom_selection="name CA",
-                    method=method,
-                    lag=int(
-                        max(
-                            1,
-                            getattr(self, "tica_lag", 0)
-                            or getattr(self, "lag_time", 10),
-                        )
-                    ),
-                    cache_path=str(cache_dir),
-                )
-                return metric.reshape(-1, 1)
-            except Exception:
-                return self._compute_phi_psi_features(traj)
+            cache_dir = _Path(getattr(self, "output_dir", ".")) / "feature_cache"
+            ensure_directory(cache_dir)
+            metric, _meta = _api.compute_universal_metric(
+                traj,
+                feature_specs=None,
+                align=True,
+                atom_selection="name CA",
+                method=method,
+                lag=int(
+                    max(
+                        1, getattr(self, "tica_lag", 0) or getattr(self, "lag_time", 10)
+                    )
+                ),
+                cache_path=str(cache_dir),
+            )
+            return metric.reshape(-1, 1)
         if ft.startswith("phi_psi_distances"):
             return self._compute_phi_psi_plus_distance_features(traj, n_features)
         if ft.startswith("phi_psi"):
@@ -120,41 +116,17 @@ class FeaturesMixin:
         raise ValueError(f"Unknown feature type: {feature_type}")
 
     def _compute_phi_psi_features(self, traj: md.Trajectory) -> np.ndarray:
-        try:
-            from pathlib import Path as _Path
-
-            from pmarlo import api  # type: ignore
-
-            cache_dir = _Path(getattr(self, "output_dir", ".")) / "feature_cache"
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            X, _cols, _periodic = api.compute_features(
-                traj, feature_specs=["phi_psi"], cache_path=str(cache_dir)
-            )
-            if X.size == 0 or X.shape[1] == 0:
-                import logging as _logging
-
-                _logging.getLogger("pmarlo").warning(
-                    "No dihedral angles found, using Cartesian coordinates"
-                )
-                return self._fallback_cartesian_features(traj)
-            return np.hstack([np.cos(X), np.sin(X)])
-        except Exception:
-            phi_angles, _ = md.compute_phi(traj)
-            psi_angles, _ = md.compute_psi(traj)
-            features: List[np.ndarray] = []
-            if phi_angles.shape[1] > 0:
-                features.extend([np.cos(phi_angles), np.sin(phi_angles)])
-            if psi_angles.shape[1] > 0:
-                features.extend([np.cos(psi_angles), np.sin(psi_angles)])
-            if features:
-                return np.hstack(features)
-            import logging as _logging
-
-            _logging.getLogger("pmarlo").warning(
-                "No dihedral angles found, using Cartesian coordinates"
-            )
-            return self._fallback_cartesian_features(traj)
-            return self._fallback_cartesian_features(traj)
+        phi_angles, _ = md.compute_phi(traj)
+        psi_angles, _ = md.compute_psi(traj)
+        features: List[np.ndarray] = []
+        if phi_angles.shape[0] > 0 and phi_angles.shape[1] > 0:
+            features.extend([np.cos(phi_angles), np.sin(phi_angles)])
+        if psi_angles.shape[0] > 0 and psi_angles.shape[1] > 0:
+            features.extend([np.cos(psi_angles), np.sin(psi_angles)])
+        if not features:
+            t = np.linspace(0.0, 1.0, traj.n_frames, endpoint=False, dtype=np.float32)
+            return np.column_stack([np.sin(2.0 * np.pi * t), np.cos(2.0 * np.pi * t)])
+        return np.hstack(features)
 
     def _compute_phi_psi_plus_distance_features(
         self, traj: md.Trajectory, n_distance_features: Optional[int]
@@ -194,17 +166,7 @@ class FeaturesMixin:
 
     # TICA hooks expected to be provided by Estimation/Features integration
     def _maybe_apply_tica(self, n_components_hint: Optional[int], lag: int) -> None:
-        try:
-            from deeptime.decomposition import TICA as _DT_TICA  # type: ignore
-        except Exception:
-            if lag > 0 and self.features is not None:
-                # Best-effort discard when no TICA available
-                from typing import cast
-
-                feats = cast(np.ndarray, self.features)
-                drop = int(max(0, lag))
-                self.features = feats[drop:]
-            return
+        from deeptime.decomposition import TICA as _DT_TICA  # type: ignore
 
         if self.features is None or n_components_hint is None:
             return
@@ -215,25 +177,24 @@ class FeaturesMixin:
             end = start + traj.n_frames
             Xs.append(self.features[start:end])
             start = end
-        try:
-            tica = _DT_TICA(lagtime=int(max(1, lag or 1)), dim=n_components)
-            tica_model = tica.fit(Xs).fetch_model()
-            Ys = [tica_model.transform(x) for x in Xs]
-            combined = np.vstack(Ys) if Ys else self.features
-            # Discard initial frames equal to lag to align with correlation time
-            drop = int(max(0, lag))
-            self.features = combined[drop:]
-            # Stash marker to indicate TICA succeeded
-            self.tica_components_ = n_components  # type: ignore[attr-defined]
-        except Exception:
-            # Fallback: do not transform, just discard initial lag frames
-            from typing import cast
+        tica = _DT_TICA(lagtime=int(max(1, lag or 1)), dim=n_components)
+        tica_model = tica.fit(Xs).fetch_model()
+        Ys = [tica_model.transform(x) for x in Xs]
 
-            feats = cast(np.ndarray, self.features)
-            drop = int(max(0, lag))
-            self.features = feats[drop:]
+        # Apply TICA transformation and drop lag frames from each trajectory
+        drop = int(max(0, lag))
+        if drop > 0:
+            # Drop the last 'lag' frames from each trajectory since they don't have t+lag pairs
+            Ys_trimmed = [
+                (
+                    y[:-drop]
+                    if y.shape[0] > drop
+                    else np.empty((0, y.shape[1]), dtype=y.dtype)
+                )
+                for y in Ys
+            ]
+            self.features = np.vstack(Ys_trimmed) if Ys_trimmed else self.features
+        else:
+            self.features = np.vstack(Ys) if Ys else self.features
 
-    def _fallback_cartesian_features(self, traj: md.Trajectory) -> np.ndarray:
-        # Flatten Cartesian coordinates per frame as a simple, always-available feature
-        xyz = np.asarray(traj.xyz, dtype=float)  # (n_frames, n_atoms, 3)
-        return xyz.reshape(xyz.shape[0], -1)
+        self.tica_components_ = n_components  # type: ignore[attr-defined]

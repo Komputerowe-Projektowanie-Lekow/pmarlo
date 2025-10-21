@@ -7,18 +7,20 @@ from typing import Optional, Tuple
 import torch
 from torch import Tensor, nn
 
+from pmarlo import constants as const
+
 
 class VAMP2Loss(nn.Module):
     """Compute a scale-invariant, regularised VAMP-2 score."""
 
     def __init__(
         self,
-        eps: float = 1e-3,
+        eps: float = const.DEEPTICA_DEFAULT_VAMP_EPS,
         *,
-        eps_abs: float = 1e-6,
+        eps_abs: float = const.DEEPTICA_DEFAULT_VAMP_EPS_ABS,
         alpha: float = 0.15,
-        cond_reg: float = 1e-4,
-        jitter: float = 1e-8,
+        cond_reg: float = const.DEEPTICA_DEFAULT_VAMP_COND_REG,
+        jitter: float = const.DEEPTICA_DEFAULT_JITTER,
         max_cholesky_retries: int = 5,
         jitter_growth: float = 10.0,
         dtype: torch.dtype = torch.float64,
@@ -55,29 +57,33 @@ class VAMP2Loss(nn.Module):
 
         if weights is None:
             w = torch.full(
-                (z0.shape[0], 1), 1.0 / float(z0.shape[0]), device=device, dtype=dtype
+                (z0.shape[0],), 1.0 / float(z0.shape[0]), device=device, dtype=dtype
             )
         else:
-            w = weights.reshape(-1, 1).to(device=device, dtype=dtype)
+            w = weights.reshape(-1).to(device=device, dtype=dtype)
             w = torch.clamp(w, min=0.0)
-            total = torch.clamp(w.sum(), min=1e-12)
+            total = torch.clamp(w.sum(), min=const.NUMERIC_MIN_POSITIVE)
             w = w / total
 
-        mean0 = torch.sum(z0 * w, dim=0, keepdim=True)
-        meant = torch.sum(zt * w, dim=0, keepdim=True)
-        z0_c = z0 - mean0
-        zt_c = zt - meant
+        w_col = w.reshape(-1, 1)
+        mean0 = torch.sum(z0 * w_col, dim=0, keepdim=True)
+        meant = torch.sum(zt * w_col, dim=0, keepdim=True)
 
-        C00 = z0_c.T @ (z0_c * w)
-        Ctt = zt_c.T @ (zt_c * w)
-        C0t = z0_c.T @ (zt_c * w)
+        stacked = torch.cat((z0, zt), dim=1)
+        cov = torch.cov(stacked.T, correction=0, aweights=w)
+        dim = z0.shape[-1]
+        C00 = cov[:dim, :dim]
+        Ctt = cov[dim:, dim:]
+        C0t = cov[:dim, dim:]
 
         diag_c00 = torch.diagonal(C00, dim1=-2, dim2=-1)
         diag_ctt = torch.diagonal(Ctt, dim1=-2, dim2=-1)
 
         eye = self._identity_like(C00, device)
         dim = C00.shape[-1]
-        trace_floor = torch.tensor(1e-12, device=device, dtype=dtype)
+        trace_floor = torch.tensor(
+            const.NUMERIC_MIN_POSITIVE, device=device, dtype=dtype
+        )
         tr0 = torch.clamp(torch.trace(C00), min=trace_floor)
         trt = torch.clamp(torch.trace(Ctt), min=trace_floor)
         mu0 = tr0 / float(max(1, dim))
@@ -109,14 +115,8 @@ class VAMP2Loss(nn.Module):
         L0, C00 = self._stable_cholesky(C00, eye)
         Lt, Ctt = self._stable_cholesky(Ctt, eye)
 
-        try:
-            left = torch.linalg.solve_triangular(L0, C0t, upper=False)
-            right = torch.linalg.solve_triangular(
-                Lt, left.transpose(-1, -2), upper=False
-            )
-        except AttributeError:  # pragma: no cover - legacy torch fallback
-            left = torch.triangular_solve(C0t, L0, upper=False)[0]
-            right = torch.triangular_solve(left.transpose(-1, -2), Lt, upper=False)[0]
+        left = torch.linalg.solve_triangular(L0, C0t, upper=False)
+        right = torch.linalg.solve_triangular(Lt, left.transpose(-1, -2), upper=False)
         K = right.transpose(-1, -2)
 
         score = torch.sum(K * K)
@@ -158,15 +158,31 @@ class VAMP2Loss(nn.Module):
     def _stable_cholesky(self, mat: Tensor, eye: Tensor) -> Tuple[Tensor, Tensor]:
         """Compute a Cholesky factor with adaptive jitter for stability."""
 
-        updated = mat
+        base = mat
+        total_jitter = 0.0
         jitter = self.jitter
+
         for attempt in range(self.max_cholesky_retries):
-            try:
-                return torch.linalg.cholesky(updated, upper=False), updated
-            except RuntimeError:
-                if attempt + 1 >= self.max_cholesky_retries:
-                    raise
-                jitter = jitter if jitter > 0.0 else 1e-12
-                updated = updated + eye * jitter
-                jitter *= self.jitter_growth
+            if total_jitter > 0.0:
+                updated = base + eye * total_jitter
+            else:
+                updated = base
+
+            chol, info = torch.linalg.cholesky_ex(updated, upper=False)
+
+            if info.ndim == 0:
+                success = int(info.item()) == 0
+            else:
+                success = not torch.any(info > 0)
+
+            if success:
+                return chol, updated
+
+            if attempt + 1 >= self.max_cholesky_retries:
+                break
+
+            step = jitter if jitter > 0.0 else const.NUMERIC_MIN_POSITIVE
+            total_jitter += step
+            jitter = max(jitter, const.NUMERIC_MIN_POSITIVE) * self.jitter_growth
+
         raise RuntimeError("Cholesky decomposition failed after retries")

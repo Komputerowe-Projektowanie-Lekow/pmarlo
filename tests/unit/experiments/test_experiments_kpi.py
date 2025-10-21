@@ -3,6 +3,10 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pytest
+from deeptime.markov.tools.analysis import expected_counts_stationary
+
+from pmarlo.utils.path_utils import ensure_directory
 
 
 def _read_json(path: Path) -> dict:
@@ -57,9 +61,9 @@ def test_simulation_experiment_benchmark(tmp_path: Path):
             return object(), None
 
         def run_production(self, *_args, **_kwargs):
-            out_dir.mkdir(parents=True, exist_ok=True)
+            ensure_directory(out_dir)
             p = out_dir / "simulation" / "traj.dcd"
-            p.parent.mkdir(parents=True, exist_ok=True)
+            ensure_directory(p.parent)
             p.write_bytes(b"")
             return str(p)
 
@@ -94,6 +98,9 @@ def test_simulation_experiment_benchmark(tmp_path: Path):
 
 
 def test_replica_exchange_experiment_benchmark(tmp_path: Path):
+    """Test replica exchange experiment benchmark output structure."""
+    pytest.importorskip("openmm")
+
     out_dir = tmp_path / "experiments_output" / "replica_exchange"
 
     from pmarlo.experiments.replica_exchange import (
@@ -138,6 +145,9 @@ def test_replica_exchange_experiment_benchmark(tmp_path: Path):
 
 
 def test_msm_experiment_benchmark(tmp_path: Path):
+    """Test MSM experiment benchmark output structure."""
+    pytest.importorskip("mdtraj")
+
     out_dir = tmp_path / "experiments_output" / "msm"
 
     from pmarlo.experiments.msm import MSMConfig, run_msm_experiment
@@ -158,7 +168,7 @@ def test_msm_experiment_benchmark(tmp_path: Path):
 
     def dummy_run_complete(*_args, **_kwargs):
         # Create output directory tree
-        (out_dir / "msm").mkdir(parents=True, exist_ok=True)
+        ensure_directory(out_dir / "msm")
         return DummyMSMObj()
 
     with patch("pmarlo.experiments.msm.run_complete_msm_analysis", dummy_run_complete):
@@ -176,3 +186,50 @@ def test_msm_experiment_benchmark(tmp_path: Path):
     _assert_benchmark_schema(bench)
     assert bench["algorithm"] == "msm"
     assert bench["kpi_metrics"]["transition_matrix_accuracy"] is not None
+
+
+def test_compute_detailed_balance_mad_uses_deeptime_flows():
+    from pmarlo.experiments.kpi import compute_detailed_balance_mad
+
+    transition_matrix = np.array([[0.8, 0.2], [0.3, 0.7]], dtype=float)
+    stationary = np.array([3.0, 2.0], dtype=float)
+
+    score = compute_detailed_balance_mad(transition_matrix, stationary)
+
+    assert score is not None
+
+    normalized = stationary / stationary.sum()
+    flows = expected_counts_stationary(transition_matrix, 1, mu=normalized)
+    manual = np.mean(np.abs(flows - flows.T)) / np.sum(flows)
+
+    assert score == pytest.approx(manual)
+
+
+def test_compute_spectral_gap():
+    """Test spectral gap computation with a simple 2-state system."""
+    from pmarlo.experiments.kpi import compute_spectral_gap
+
+    # Simple 2-state system with known eigenvalues
+    mat = np.array([[0.9, 0.1], [0.2, 0.8]], dtype=float)
+    gap = compute_spectral_gap(mat)
+
+    # For this system, eigenvalues are 1.0 and 0.7
+    # Spectral gap = 1.0 - 0.7 = 0.3
+    assert 0.25 < gap < 0.35  # Allow some numerical tolerance
+
+
+def test_compute_stationary_entropy():
+    """Test stationary entropy computation."""
+    from pmarlo.experiments.kpi import compute_stationary_entropy
+
+    # Uniform distribution has maximum entropy
+    pi_uniform = np.array([0.25, 0.25, 0.25, 0.25], dtype=float)
+    entropy_uniform = compute_stationary_entropy(pi_uniform)
+
+    # Entropy of uniform distribution over 4 states = log2(4) ≈ 1.386 nats
+    assert 1.35 < entropy_uniform < 1.40
+
+    # Delta distribution (all mass on one state) has zero entropy
+    pi_delta = np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
+    entropy_delta = compute_stationary_entropy(pi_delta)
+    assert entropy_delta == pytest.approx(0.0, abs=1e-10)

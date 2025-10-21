@@ -1,5 +1,6 @@
 import functools
 import logging
+import math
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -7,6 +8,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Tuple, cast
 
 import numpy as np
+
+from pmarlo.utils.path_utils import ensure_directory
 
 from ..experiments.benchmark_utils import get_environment_info
 from .plan import TransformPlan
@@ -45,13 +48,9 @@ class _LearnCVAbort(RuntimeError):
 
 
 def _capture_env_payload() -> Dict[str, Any]:
-    """Return environment metadata with defensive fallbacks."""
+    """Return environment metadata collected from the runtime."""
 
-    try:
-        info = dict(get_environment_info())
-    except Exception as exc:  # pragma: no cover - defensive fallback
-        logger.debug("Failed to capture environment info: %s", exc)
-        info = {}
+    info = dict(get_environment_info())
     info.setdefault("python_exe", sys.executable)
     return info
 
@@ -67,7 +66,7 @@ def _extract_missing_modules(exc: BaseException) -> List[str]:
         if key in seen:
             return
         seen.add(key)
-        if isinstance(err, ModuleNotFoundError):
+        if isinstance(err, (ModuleNotFoundError, ImportError)):
             name = getattr(err, "name", None)
             if name:
                 names.add(str(name).split(".")[0])
@@ -92,22 +91,6 @@ def _extract_missing_modules(exc: BaseException) -> List[str]:
 def _format_missing_reason(mods: Sequence[str]) -> str:
     payload = ",".join(sorted(set(mods))) if mods else "unknown"
     return f"missing_dependency:{payload}"
-
-
-def _probe_optional_modules(names: Sequence[str]) -> List[str]:
-    import importlib
-
-    discovered: List[str] = []
-    for module_name in names:
-        try:
-            importlib.import_module(module_name)
-        except Exception as exc:
-            extracted = _extract_missing_modules(exc)
-            if extracted:
-                discovered.extend(extracted)
-            else:
-                discovered.append(module_name)
-    return sorted({str(name).split(".")[0] for name in discovered})
 
 
 def _compute_pairs_metadata(
@@ -186,28 +169,6 @@ def _finalize_learn_cv_context(
     return context
 
 
-def _make_dependency_outcome(
-    *,
-    lag_value: int,
-    missing: Sequence[str],
-    warnings: List[str],
-    per_shard: List[Dict[str, Any]],
-    pairs_total: int,
-) -> _LearnCVOutcome:
-    reason = _format_missing_reason(missing)
-    summary = {
-        "applied": False,
-        "skipped": True,
-        "reason": reason,
-        "lag": int(lag_value),
-        "lag_used": None,
-        "n_out": 0,
-        "missing": list(missing),
-    }
-    all_warnings = list(warnings) + ["missing_dependencies"]
-    return _LearnCVOutcome(summary, per_shard, all_warnings, pairs_total)
-
-
 def _extract_learn_cv_dataset(context: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
     dataset: Optional[Dict[str, Any]] = None
     uses_data_key = False
@@ -266,24 +227,10 @@ def _collect_lag_candidates(params: Dict[str, Any], tau_requested: int) -> List[
             return None
         return coerced if coerced > 0 else None
 
-    candidates: List[int] = []
     primary = _coerce_one(params.get("lag", tau_requested))
-    candidates.append(primary or tau_requested)
-
-    fallback = params.get("lag_fallback")
-    if isinstance(fallback, (list, tuple)):
-        for entry in fallback:
-            coerced = _coerce_one(entry)
-            if coerced is not None:
-                candidates.append(coerced)
-    elif fallback is not None:
-        coerced = _coerce_one(fallback)
-        if coerced is not None:
-            candidates.append(coerced)
-
-    if not candidates:
-        candidates = [tau_requested]
-    return candidates
+    if primary is None:
+        raise ValueError("LEARN_CV requires a positive integer lag value")
+    return [primary]
 
 
 @dataclass
@@ -382,7 +329,6 @@ def _build_no_pairs_outcome(
         "lag_used": None,
         "n_out": 0,
         "lag_candidates": [int(v) for v in selection.seen_lags],
-        "lag_fallback": [int(v) for v in selection.seen_lags],
         "attempts": selection.attempt_details,
     }
     return _LearnCVOutcome(
@@ -451,6 +397,11 @@ def _classify_training_failure(exc: BaseException) -> Tuple[str, Dict[str, Any]]
         payload["missing"] = missing
         return _format_missing_reason(missing), payload
     name = exc.__class__.__name__
+    message = str(exc)
+    if "DeviceDtypeModuleMixin" in message or "DeviceDtypeModuleMixin" in name:
+        mods = missing or ["lightning"]
+        payload["missing"] = mods
+        return _format_missing_reason(mods), payload
     if "PmarloApiIncompatibilityError" in name:
         return "api_incompatibility", payload
     return "exception", payload
@@ -484,6 +435,35 @@ def _make_training_failure_outcome(
     )
 
 
+def _build_missing_dependency_outcome(
+    *,
+    lag: int,
+    per_shard_info: List[Dict[str, Any]],
+    warnings: List[str],
+    pairs_estimate: int,
+    exc: BaseException,
+) -> _LearnCVOutcome:
+    missing = _extract_missing_modules(exc)
+    reason = _format_missing_reason(missing)
+    summary = {
+        "applied": False,
+        "skipped": True,
+        "reason": reason,
+        "lag": int(lag),
+        "lag_used": None,
+        "n_out": 0,
+        "pairs_total": max(0, int(pairs_estimate)),
+        "lag_candidates": [int(lag)],
+        "attempts": [],
+        "error": str(exc),
+    }
+    if missing:
+        summary["missing"] = missing
+    warning_list = list(warnings)
+    warning_list.append(reason)
+    return _LearnCVOutcome(summary, per_shard_info, warning_list, pairs_estimate)
+
+
 def _convert_history_array(value: Any) -> Any:
     if value is None:
         return None
@@ -493,86 +473,86 @@ def _convert_history_array(value: Any) -> Any:
         return value
 
 
+def _history_map(history: Dict[str, Any] | Any) -> Dict[str, Any]:
+    return history if isinstance(history, dict) else {}
+
+
+def _coerce_optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        result = float(value)
+    except Exception:
+        return None
+    return result if math.isfinite(result) else None
+
+
+def _curve_last(
+    history_map: Dict[str, Any],
+    key: str,
+    *,
+    converter: Callable[[Any], Any] | None = None,
+) -> Any:
+    sequence = history_map.get(key)
+    if not isinstance(sequence, list) or not sequence:
+        return None
+    value = sequence[-1]
+    if converter is None:
+        return value
+    try:
+        return converter(value)
+    except Exception:
+        return None
+
+
+def _maybe_attach_curve(
+    history_map: Dict[str, Any], summary: Dict[str, Any], key: str
+) -> None:
+    sequence = history_map.get(key)
+    if isinstance(sequence, list) and sequence:
+        summary[key] = sequence
+
+
+def _coerce_nonnegative_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        coerced = int(value)
+    except Exception:
+        return None
+    return coerced if coerced >= 0 else None
+
+
 def _collect_history_metrics(history: Dict[str, Any]) -> Dict[str, Any]:
-    output_mean = history.get("output_mean") if isinstance(history, dict) else None
-    output_transform = (
-        history.get("output_transform") if isinstance(history, dict) else None
-    )
-    history_flag = (
-        bool(history.get("output_transform_applied"))
-        if isinstance(history, dict)
-        else False
-    )
-    export_transform_applied = bool(
+    history_map = _history_map(history)
+    output_mean = history_map.get("output_mean")
+    output_transform = history_map.get("output_transform")
+    transform_applied_flag = bool(history_map.get("output_transform_applied")) or (
         output_mean is not None and output_transform is not None
     )
-    transform_applied_flag = history_flag or export_transform_applied
-    initial_objective_value = history.get("initial_objective")
-    initial_objective_float = (
-        0.0 if initial_objective_value is None else float(initial_objective_value)
-    )
 
-    summary = {
-        "wall_time_s": float(history.get("wall_time_s", 0.0)),
-        "initial_objective": (
-            initial_objective_float if initial_objective_value is not None else None
+    summary: Dict[str, Any] = {
+        "wall_time_s": float(history_map.get("wall_time_s", 0.0)),
+        "initial_objective": _coerce_optional_float(
+            history_map.get("initial_objective")
         ),
-        "output_variance": history.get("output_variance"),
-        "loss_curve_last": (
-            float(history["loss_curve"][-1])
-            if isinstance(history.get("loss_curve"), list) and history.get("loss_curve")
-            else None
-        ),
-        "objective_last": (
-            float(history["objective_curve"][-1])
-            if isinstance(history.get("objective_curve"), list)
-            and history.get("objective_curve")
-            else None
-        ),
-        "val_score_last": (
-            float(history["val_score_curve"][-1])
-            if isinstance(history.get("val_score_curve"), list)
-            and history.get("val_score_curve")
-            else None
-        ),
-        "var_z0_last": (
-            history.get("var_z0_curve", [None])[-1]
-            if isinstance(history.get("var_z0_curve"), list)
-            and history.get("var_z0_curve")
-            else None
-        ),
-        "var_zt_last": (
-            history.get("var_zt_curve", [None])[-1]
-            if isinstance(history.get("var_zt_curve"), list)
-            and history.get("var_zt_curve")
-            else None
-        ),
-        "cond_c00_last": (
-            float(history.get("cond_c00_curve", [None])[-1])
-            if isinstance(history.get("cond_c00_curve"), list)
-            and history.get("cond_c00_curve")
-            else None
-        ),
-        "cond_ctt_last": (
-            float(history.get("cond_ctt_curve", [None])[-1])
-            if isinstance(history.get("cond_ctt_curve"), list)
-            and history.get("cond_ctt_curve")
-            else None
-        ),
-        "grad_norm_last": (
-            float(history.get("grad_norm_curve", [None])[-1])
-            if isinstance(history.get("grad_norm_curve"), list)
-            and history.get("grad_norm_curve")
-            else None
-        ),
+        "output_variance": history_map.get("output_variance"),
+        "loss_curve_last": _curve_last(history_map, "loss_curve", converter=float),
+        "objective_last": _curve_last(history_map, "objective_curve", converter=float),
+        "val_score_last": _curve_last(history_map, "val_score_curve", converter=float),
+        "var_z0_last": _curve_last(history_map, "var_z0_curve"),
+        "var_zt_last": _curve_last(history_map, "var_zt_curve"),
+        "cond_c00_last": _curve_last(history_map, "cond_c00_curve", converter=float),
+        "cond_ctt_last": _curve_last(history_map, "cond_ctt_curve", converter=float),
+        "grad_norm_last": _curve_last(history_map, "grad_norm_curve", converter=float),
         "output_mean": output_mean,
         "output_transform": output_transform,
         "output_transform_applied": transform_applied_flag,
     }
 
-    if summary.get("output_mean") is not None:
+    if summary["output_mean"] is not None:
         summary["output_mean"] = _convert_history_array(summary["output_mean"])
-    if summary.get("output_transform") is not None:
+    if summary["output_transform"] is not None:
         summary["output_transform"] = _convert_history_array(
             summary["output_transform"]
         )
@@ -588,8 +568,13 @@ def _collect_history_metrics(history: Dict[str, Any]) -> Dict[str, Any]:
         "grad_norm_curve",
         "val_score",
     ):
-        if isinstance(history.get(key), list) and history.get(key):
-            summary[key] = history[key]
+        _maybe_attach_curve(history_map, summary, key)
+
+    summary["best_val_score"] = _coerce_optional_float(
+        history_map.get("best_val_score")
+    )
+    summary["best_epoch"] = _coerce_nonnegative_int(history_map.get("best_epoch"))
+    summary["best_tau"] = _coerce_nonnegative_int(history_map.get("best_tau"))
 
     return summary
 
@@ -605,7 +590,7 @@ def _save_trained_model(
     if model_dir:
         try:
             base_dir = Path(model_dir)
-            base_dir.mkdir(parents=True, exist_ok=True)
+            ensure_directory(base_dir)
             stem = (
                 params.get("model_prefix")
                 or f"deeptica-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
@@ -636,39 +621,25 @@ def _ensure_deeptica_module(
     warnings: List[str],
     pairs_estimate: int,
 ) -> Any:
-    try:
-        import pmarlo.features.deeptica as deeptica_mod
-    except ImportError as exc:
-        outcome = _make_dependency_outcome(
-            lag_value=tau_requested,
-            missing=_extract_missing_modules(exc),
-            warnings=warnings,
-            per_shard=per_shard_info,
-            pairs_total=pairs_estimate,
-        )
-        raise _LearnCVAbort(outcome) from exc
+    import pmarlo.features.deeptica as deeptica_mod
 
     missing_exc = getattr(deeptica_mod, "_IMPORT_ERROR", None)
     if missing_exc is not None:
-        outcome = _make_dependency_outcome(
-            lag_value=tau_requested,
-            missing=_extract_missing_modules(missing_exc),
-            warnings=warnings,
-            per_shard=per_shard_info,
-            pairs_total=pairs_estimate,
-        )
-        raise _LearnCVAbort(outcome)
+        raise ImportError("DeepTICA extras unavailable") from missing_exc
+    import importlib
 
-    probe_missing = _probe_optional_modules(["lightning", "pytorch_lightning"])
-    if probe_missing:
-        outcome = _make_dependency_outcome(
-            lag_value=tau_requested,
-            missing=probe_missing,
-            warnings=warnings,
-            per_shard=per_shard_info,
-            pairs_total=pairs_estimate,
-        )
-        raise _LearnCVAbort(outcome)
+    missing: list[tuple[str, BaseException]] = []
+    for name in ("mlcolvar", "lightning", "pytorch_lightning"):
+        try:
+            importlib.import_module(name)
+        except Exception as exc:
+            missing.append((name, exc))
+    if missing:
+        primary = missing[0][1]
+        missing_names = ", ".join(sorted({entry[0] for entry in missing}))
+        raise ImportError(
+            f"DeepTICA extras unavailable: missing {missing_names}"
+        ) from primary
 
     return deeptica_mod
 
@@ -702,6 +673,15 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
             warnings=warnings,
             pairs_estimate=pairs_estimate,
         )
+    except ImportError as exc:
+        outcome = _build_missing_dependency_outcome(
+            lag=tau_requested,
+            per_shard_info=per_shard_info,
+            warnings=warnings,
+            pairs_estimate=pairs_estimate,
+            exc=exc,
+        )
+        return finalize(outcome)
     except _LearnCVAbort as abort:
         return finalize(abort.outcome)
 
@@ -778,8 +758,6 @@ def _require_deeptica_method(params: Dict[str, Any]) -> None:
 
 def _prepare_selection_warnings(selection: _LagSelection, lag_value: int) -> List[str]:
     warnings_list = list(selection.warnings)
-    if selection.seen_lags and lag_value != int(selection.seen_lags[0]):
-        warnings_list.append(f"lag_fallback_used:{lag_value}")
     selection.warnings = warnings_list
     return warnings_list
 
@@ -856,7 +834,6 @@ def _build_success_summary(
         "n_out": n_out,
         "pairs_total": int(pair_indices[0].shape[0]),
         "lag_candidates": [int(v) for v in selection.seen_lags],
-        "lag_fallback": [int(v) for v in selection.seen_lags],
         "attempts": selection.attempt_details,
     }
     summary.update(metrics)

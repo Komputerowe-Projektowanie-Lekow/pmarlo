@@ -74,30 +74,21 @@ def __getattr__(name: str) -> Any:
         module_name, attr_name = _EXPORTS[name]
     except KeyError:  # pragma: no cover - defensive guard
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+
     try:
         module = import_module(module_name)
-    except Exception as exc:
-        value: Any
-        if name == "run_ck":  # pragma: no cover - executed without matplotlib
+    except Exception as exc:  # pragma: no cover - defensive guard
+        raise ImportError(
+            f"Failed to import {module_name!r} required for {name!r}: {exc}"
+        ) from exc
 
-            def _missing_run_ck(
-                *_args: object, original_exc=exc, **_kwargs: object
-            ) -> None:
-                raise ImportError(
-                    "run_ck requires matplotlib. Install with `pip install 'pmarlo[analysis]'`."
-                ) from original_exc
-
-            value = _missing_run_ck
-        elif name == "CKRunResult":  # pragma: no cover - executed without matplotlib
-
-            class _CKRunResult:  # type: ignore[override]
-                pass
-
-            value = _CKRunResult
-        else:  # pragma: no cover - defensive guard for other optional exports
-            raise
-    else:
+    try:
         value = getattr(module, attr_name)
+    except AttributeError as exc:  # pragma: no cover - defensive guard
+        raise ImportError(
+            f"Module {module_name!r} does not expose attribute {attr_name!r}"
+        ) from exc
+
     globals()[name] = value
     return value
 

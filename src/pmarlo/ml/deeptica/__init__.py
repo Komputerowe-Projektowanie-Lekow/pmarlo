@@ -1,19 +1,13 @@
-"""Curriculum-based DeepTICA training utilities.
-
-This subpackage exposes both lightweight whitening helpers and the
-curriculum trainer implementation.  The trainer has a hard dependency on
-PyTorch which is not required for many workflows (including the unit
-tests in this repository).  Importing the trainer lazily keeps the base
-``pmarlo`` package importable in minimal environments while preserving
-the public API surface for downstream users that rely on it.
-"""
+"""Curriculum-based DeepTICA training utilities."""
 
 from __future__ import annotations
 
-from importlib import import_module
-from typing import Any
+from typing import TYPE_CHECKING
 
 from .whitening import apply_output_transform
+
+if TYPE_CHECKING:
+    from .trainer import CurriculumConfig, DeepTICACurriculumTrainer
 
 __all__ = [
     "apply_output_transform",
@@ -22,23 +16,20 @@ __all__ = [
 ]
 
 
-def __getattr__(name: str) -> Any:
-    """Lazily import trainer components when requested.
-
-    The trainer depends on PyTorch.  Delaying the import until attribute
-    access avoids importing torch during ``import pmarlo`` in lightweight
-    test environments that do not ship GPU-enabled dependencies.
-    """
-
-    if name in {"CurriculumConfig", "DeepTICACurriculumTrainer"}:
-        module = import_module(".trainer", __name__)
-        value = getattr(module, name)
-        globals()[name] = value
-        return value
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
 def __dir__() -> list[str]:
-    """Provide ``dir(pmarlo.ml.deeptica)`` results consistent with ``__all__``."""
+    """Expose exported names for interactive tooling."""
 
     return sorted(set(__all__))
+
+
+def __getattr__(name: str):
+    """Lazy-load torch-dependent trainer classes on first access."""
+    if name == "CurriculumConfig":
+        from .trainer import CurriculumConfig
+
+        return CurriculumConfig
+    if name == "DeepTICACurriculumTrainer":
+        from .trainer import DeepTICACurriculumTrainer
+
+        return DeepTICACurriculumTrainer
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

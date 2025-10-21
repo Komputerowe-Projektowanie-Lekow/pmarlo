@@ -31,17 +31,31 @@ class ClusteringMixin:
             "Clustering features using %s: requested=%s", algorithm, n_states
         )
 
-        method_choice = (
-            algorithm if algorithm in ["kmeans", "minibatchkmeans"] else "kmeans"
-        )
-        result: ClusteringResult = cluster_microstates(
-            self.features,
-            method=method_choice,  # type: ignore[arg-type]
-            n_states=n_states,
-            random_state=rng,
-        )
+        if algorithm not in ["kmeans", "minibatchkmeans"]:
+            raise ValueError(
+                "Unsupported clustering algorithm provided; choose 'kmeans' or 'minibatchkmeans'"
+            )
+        method_choice = algorithm
+        try:
+            result: ClusteringResult = cluster_microstates(
+                self.features,
+                method=method_choice,  # type: ignore[arg-type]
+                n_states=n_states,
+                random_state=rng,
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "Clustering failed to define any microstates; check the requested "
+                "state count and feature coverage."
+            ) from exc
         labels = result.labels
         self.cluster_centers = result.centers
+
+        if labels.size == 0 or int(result.n_states) <= 0:
+            raise ValueError(
+                "Clustering produced no valid microstates; cannot proceed with MSM "
+                "analysis."
+            )
 
         # Split labels back into trajectories
         self.dtrajs = []

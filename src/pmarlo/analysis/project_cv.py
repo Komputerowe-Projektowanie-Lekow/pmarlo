@@ -7,8 +7,6 @@ from typing import Any, Mapping, MutableMapping, Tuple
 import numpy as np
 from numpy.typing import NDArray
 
-from pmarlo.ml.deeptica.whitening import apply_output_transform
-
 MetadataLike = Mapping[str, Any] | MutableMapping[str, Any]
 
 
@@ -29,31 +27,51 @@ def apply_whitening_from_metadata(
     -------
     tuple
         A pair ``(whitened, applied)`` where ``whitened`` is the transformed
-        array (or the original values when metadata is missing) and ``applied``
-        indicates whether whitening metadata was available.
+        array and ``applied`` indicates whether the whitening transform was
+        executed for the provided values.
     """
 
     arr = np.asarray(values, dtype=np.float64)
     if metadata is None:
-        return arr, False
+        raise ValueError("Whitening metadata is required to transform outputs")
+    if not isinstance(metadata, Mapping):
+        raise TypeError(
+            "Whitening metadata must be a mapping with DeepTICA output fields"
+        )
 
-    getter = getattr(metadata, "get", None)
-    if getter is None:
-        return arr, False
+    mean = metadata.get("output_mean")
+    transform = metadata.get("output_transform")
+    already_flag = metadata.get("output_transform_applied")
+    if mean is None or transform is None:
+        raise ValueError(
+            "Whitening metadata must include 'output_mean' and 'output_transform'"
+        )
 
-    mean = getter("output_mean")
-    transform = getter("output_transform")
-    already_flag = getter("output_transform_applied")
+    mean_arr = np.asarray(mean, dtype=np.float64)
+    transform_arr = np.asarray(transform, dtype=np.float64)
 
-    applied = bool(mean is not None and transform is not None)
-    try:
-        whitened = apply_output_transform(arr, mean, transform, already_flag)
-    except Exception:
-        return arr, False
+    if mean_arr.ndim != 1:
+        raise ValueError("output mean must be a 1D array")
+    if transform_arr.ndim != 2:
+        raise ValueError("output transform must be a 2D matrix")
+    if transform_arr.shape[0] != mean_arr.shape[0]:
+        raise ValueError(
+            "output mean and transform dimension mismatch: "
+            f"{mean_arr.shape[0]} vs {transform_arr.shape[0]}"
+        )
+    if arr.ndim != 2 or arr.shape[1] != mean_arr.shape[0]:
+        raise ValueError(
+            "projection has incompatible shape for whitening: "
+            f"expected (..., {mean_arr.shape[0]}), got {arr.shape}"
+        )
 
-    if applied:
-        try:
-            metadata["output_transform_applied"] = True  # type: ignore[index]
-        except Exception:
-            pass
-    return np.asarray(whitened, dtype=np.float64), applied
+    if bool(already_flag):
+        return np.asarray(arr, dtype=np.float64), False
+
+    centered = arr - mean_arr.reshape(1, -1)
+    whitened = centered @ transform_arr
+
+    if isinstance(metadata, MutableMapping):
+        metadata["output_transform_applied"] = True  # type: ignore[index]
+
+    return np.asarray(whitened, dtype=np.float64), True

@@ -1,19 +1,20 @@
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
+np = pytest.importorskip("numpy")
 torch = pytest.importorskip("torch")
 
-from pmarlo.features.deeptica.core.utils import safe_float, set_all_seeds
+from pmarlo.features.deeptica.core.utils import safe_float
+from pmarlo.utils.seed import set_global_seed
 
 
-def test_set_all_seeds_makes_rngs_reproducible():
-    set_all_seeds(1234)
+def test_set_global_seed_makes_rngs_reproducible():
+    set_global_seed(1234)
     np_first = np.random.rand(3)
     torch_first = torch.rand(3)
 
-    set_all_seeds(1234)
+    set_global_seed(1234)
     np_second = np.random.rand(3)
     torch_second = torch.rand(3)
 

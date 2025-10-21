@@ -7,6 +7,8 @@ from typing import Sequence, Tuple
 
 import numpy as np
 
+from pmarlo.utils.array import concatenate_or_empty
+
 
 @dataclass(slots=True)
 class PairInfo:
@@ -44,11 +46,11 @@ def _derive_pairs(
     schedule: tuple[int, ...],
     pairs: Tuple[np.ndarray, np.ndarray] | None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    if pairs is not None and pairs[0].size and pairs[1].size:
-        idx_t = np.asarray(pairs[0], dtype=np.int64)
-        idx_tau = np.asarray(pairs[1], dtype=np.int64)
-        if not _pairs_need_repair(idx_t, idx_tau):
-            return idx_t, idx_tau
+    if pairs is not None:
+        idx_t = np.asarray(pairs[0], dtype=np.int64).reshape(-1)
+        idx_tau = np.asarray(pairs[1], dtype=np.int64).reshape(-1)
+        _validate_pairs(idx_t, idx_tau)
+        return idx_t, idx_tau
 
     if len(schedule) > 1:
         idx_t, idx_tau = _concatenate_pairs(shards, schedule)
@@ -79,7 +81,18 @@ def _compute_diagnostics(
     lengths = [int(np.asarray(block).shape[0]) for block in shards]
     max_tau = int(max(schedule))
     short_shards = [i for i, length in enumerate(lengths) if length <= max_tau]
-    total_possible = sum(max(0, length - max_tau) for length in lengths)
+
+    # Fix: When using multiple taus (curriculum), total_possible should count pairs for ALL taus
+    # not just the max tau, otherwise coverage can exceed 100%
+    if len(schedule) > 1:
+        # Count possible pairs for each tau in the schedule and sum them
+        total_possible = sum(
+            sum(max(0, length - tau) for length in lengths) for tau in schedule
+        )
+    else:
+        # Single tau: count pairs for that tau only
+        total_possible = sum(max(0, length - max_tau) for length in lengths)
+
     usable_pairs = int(min(idx_t.size, idx_tau.size))
     coverage = float(usable_pairs / total_possible) if total_possible else 0.0
     offsets = np.cumsum([0, *lengths])
@@ -94,6 +107,10 @@ def _compute_diagnostics(
         "short_shards": short_shards,
         "pairs_by_shard": pairs_by_shard,
         "lag_used": max_tau,
+        "expected_pairs": int(
+            total_possible
+        ),  # Add explicit expected count for logging
+        "tau_schedule_used": list(schedule),  # Track which taus were used
     }
 
 
@@ -107,19 +124,18 @@ def _concatenate_pairs(
         if i.size and j.size:
             idx_parts.append(i)
             tau_parts.append(j)
-    if not idx_parts:
-        return np.asarray([], dtype=np.int64), np.asarray([], dtype=np.int64)
-    return (
-        np.concatenate(idx_parts).astype(np.int64, copy=False),
-        np.concatenate(tau_parts).astype(np.int64, copy=False),
-    )
+    idx = concatenate_or_empty(idx_parts, dtype=np.int64, copy=False)
+    tau = concatenate_or_empty(tau_parts, dtype=np.int64, copy=False)
+    return idx, tau
 
 
 def _build_uniform_pairs(
     shards: Sequence[np.ndarray],
     lag: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    lag = max(1, int(lag))
+    lag = int(lag)
+    if lag < 1:
+        raise ValueError("Lag must be a positive integer")
     idx_parts: list[np.ndarray] = []
     tau_parts: list[np.ndarray] = []
     offset = 0
@@ -131,19 +147,18 @@ def _build_uniform_pairs(
             idx_parts.append(offset + i)
             tau_parts.append(offset + j)
         offset += n
-    if not idx_parts:
-        return np.asarray([], dtype=np.int64), np.asarray([], dtype=np.int64)
-    return (
-        np.concatenate(idx_parts).astype(np.int64, copy=False),
-        np.concatenate(tau_parts).astype(np.int64, copy=False),
-    )
+    idx = concatenate_or_empty(idx_parts, dtype=np.int64, shape=(0,), copy=False)
+    tau = concatenate_or_empty(tau_parts, dtype=np.int64, shape=(0,), copy=False)
+    return idx, tau
 
 
-def _pairs_need_repair(i: np.ndarray, j: np.ndarray) -> bool:
-    if i.size == 0 or j.size == 0:
-        return True
-    try:
-        shift = np.asarray(j, dtype=np.int64) - np.asarray(i, dtype=np.int64)
-        return shift.size == 0 or bool(np.min(shift) <= 0)
-    except Exception:
-        return True
+def _validate_pairs(idx_t: np.ndarray, idx_tau: np.ndarray) -> None:
+    if idx_t.shape != idx_tau.shape:
+        raise ValueError("Pair index arrays must have the same shape")
+    if idx_t.ndim != 1 or idx_tau.ndim != 1:
+        raise ValueError("Pair index arrays must be one-dimensional")
+    if idx_t.size == 0:
+        return
+    shift = idx_tau - idx_t
+    if np.min(shift) <= 0:
+        raise ValueError("Pair indices must represent positive time lags")

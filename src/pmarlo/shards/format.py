@@ -9,6 +9,9 @@ from typing import Tuple
 
 import numpy as np
 
+from pmarlo.utils.json_io import load_json_file
+from pmarlo.utils.path_utils import ensure_directory
+
 from .schema import FeatureSpec, Shard, ShardMeta, validate_invariants
 
 __all__ = [
@@ -27,19 +30,33 @@ def write_shard_npz_json(
 
     npz_path = Path(npz_path)
     json_path = Path(json_path)
-    npz_path.parent.mkdir(parents=True, exist_ok=True)
-    json_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(npz_path.parent)
+    ensure_directory(json_path.parent)
 
     validate_invariants(shard)
 
+    X_array = _coerce_array(shard.X, np.float32, ndim=2)
+    t_index_array = _coerce_array(shard.t_index, np.int64, ndim=1)
+    dt_ps_array = np.array(shard.dt_ps, dtype=np.float32)
+    energy_array = _optional_array(shard.energy, np.float32)
+    bias_array = _optional_array(shard.bias, np.float32)
+    bias_potential_array = _optional_array(shard.bias, np.float32)
+    w_frame_array = _optional_array(shard.w_frame, np.float32)
+
     np.savez_compressed(
         npz_path,
-        X=_coerce_array(shard.X, np.float32, ndim=2),
-        t_index=_coerce_array(shard.t_index, np.int64, ndim=1),
-        dt_ps=np.array(shard.dt_ps, dtype=np.float32),
-        energy=_optional_array(shard.energy, np.float32),
-        bias=_optional_array(shard.bias, np.float32),
-        w_frame=_optional_array(shard.w_frame, np.float32),
+        X=X_array,
+        t_index=t_index_array,
+        dt_ps=dt_ps_array,
+        energy=energy_array,
+        bias=bias_array,
+        bias_potential=bias_potential_array,
+        w_frame=w_frame_array,
+    )
+
+    # Compute hash of the arrays for integrity validation
+    data_hash = hash_shard_arrays(
+        X_array, t_index_array, dt_ps_array, energy_array, bias_array, w_frame_array
     )
 
     meta = shard.meta
@@ -59,6 +76,7 @@ def write_shard_npz_json(
             "columns": list(meta.feature_spec.columns),
         },
         "provenance": meta.provenance,
+        "data_hash": data_hash,
     }
     json_path.write_text(json.dumps(payload, indent=2, sort_keys=False))
     return npz_path, json_path
@@ -67,7 +85,7 @@ def write_shard_npz_json(
 def read_shard_npz_json(npz_path: Path, json_path: Path) -> Shard:
     """Load shard arrays/metadata from canonical NPZ+JSON files."""
 
-    json_payload = json.loads(Path(json_path).read_text())
+    json_payload = load_json_file(json_path)
     feature_spec = FeatureSpec(
         name=str(json_payload["feature_spec"]["name"]),
         scaler=str(json_payload["feature_spec"]["scaler"]),
@@ -88,14 +106,45 @@ def read_shard_npz_json(npz_path: Path, json_path: Path) -> Shard:
     )
 
     npz = np.load(Path(npz_path))
+    X_loaded = _coerce_array(npz["X"], np.float32, ndim=2)
+    t_index_loaded = _coerce_array(npz["t_index"], np.int64, ndim=1)
+    dt_ps_loaded = np.array(npz["dt_ps"], dtype=np.float32)
+    energy_loaded = _optional_loaded(npz, "energy")
+    bias_loaded = _optional_loaded(npz, "bias")
+    w_frame_loaded = _optional_loaded(npz, "w_frame")
+
+    # Validate data integrity if hash is present
+    if "data_hash" in json_payload:
+        expected_hash = str(json_payload["data_hash"])
+
+        # Convert optional arrays to the same format used during write
+        energy_for_hash = _optional_array(energy_loaded, np.float32)
+        bias_for_hash = _optional_array(bias_loaded, np.float32)
+        w_frame_for_hash = _optional_array(w_frame_loaded, np.float32)
+
+        actual_hash = hash_shard_arrays(
+            X_loaded,
+            t_index_loaded,
+            dt_ps_loaded,
+            energy_for_hash,
+            bias_for_hash,
+            w_frame_for_hash,
+        )
+
+        if actual_hash != expected_hash:
+            raise ValueError(
+                f"Shard data integrity check failed for {npz_path.name}: "
+                f"hash mismatch (expected {expected_hash[:8]}..., got {actual_hash[:8]}...)"
+            )
+
     shard = Shard(
         meta=meta,
-        X=_coerce_array(npz["X"], np.float32, ndim=2),
-        t_index=_coerce_array(npz["t_index"], np.int64, ndim=1),
-        dt_ps=float(np.array(npz["dt_ps"]).item()),
-        energy=_optional_loaded(npz, "energy"),
-        bias=_optional_loaded(npz, "bias"),
-        w_frame=_optional_loaded(npz, "w_frame"),
+        X=X_loaded,
+        t_index=t_index_loaded,
+        dt_ps=float(dt_ps_loaded.item()),
+        energy=energy_loaded,
+        bias=bias_loaded,
+        w_frame=w_frame_loaded,
     )
     validate_invariants(shard)
     return shard

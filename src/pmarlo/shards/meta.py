@@ -2,8 +2,9 @@ from __future__ import annotations
 
 """Strict JSON metadata loading for shards."""
 
-import json
 from pathlib import Path
+
+from pmarlo.utils.json_io import load_json_file
 
 from .schema import FeatureSpec, ShardMeta
 
@@ -15,7 +16,7 @@ __all__ = ["load_shard_meta"]
 def load_shard_meta(json_path: Path) -> ShardMeta:
     """Load shard metadata strictly with no filename heuristics."""
 
-    payload = json.loads(Path(json_path).read_text())
+    payload = load_json_file(json_path)
     feature_spec = FeatureSpec(
         name=str(payload["feature_spec"]["name"]),
         scaler=str(payload["feature_spec"]["scaler"]),

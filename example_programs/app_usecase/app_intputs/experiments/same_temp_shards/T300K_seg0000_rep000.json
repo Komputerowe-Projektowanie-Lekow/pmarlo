@@ -1,0 +1,73 @@
+{
+  "schema_version": "2.0",
+  "shard_id": "T300K_seg0000_rep000",
+  "temperature_K": 300.0,
+  "beta": 0.40090785,
+  "replica_id": 0,
+  "segment_id": 0,
+  "exchange_window_id": 0,
+  "n_frames": 1000,
+  "dt_ps": 0.017985599115490913,
+  "feature_spec": {
+    "name": "app_usecase_features",
+    "scaler": "identity",
+    "columns": [
+      "Rg",
+      "RMSD_ref"
+    ]
+  },
+  "provenance": {
+    "seed": 123456789,
+    "manifest_notes": [
+      {
+        "Source": "REMD run with ladder 300/320/340 K; demuxed 300 K track."
+      },
+      "Saved-frame spacing dt_ps derived from demux metadata.",
+      "Uniform weights expected; no TRAM/MBAR for E0."
+    ],
+    "source": {
+      "kind": "demux",
+      "run_id": "E0_same_temp_synthetic",
+      "temperature_K": 300.0,
+      "traj": "T300K_seg0000_rep000.npz",
+      "topology": "../../3gd8-fixed.pdb",
+      "segment_id": 0,
+      "replica_id": 0,
+      "range": [
+        0,
+        1000
+      ],
+      "n_frames": 1000,
+      "exchange_window_id": 0
+    },
+    "created_at": "2024-01-01T00:00:00Z",
+    "kind": "demux",
+    "run_id": "E0_same_temp_synthetic",
+    "replica_id": 0,
+    "segment_id": 0,
+    "exchange_window_id": 0,
+    "n_frames": 1000,
+    "periodic": [
+      false,
+      false
+    ],
+    "temperature_K": 300.0,
+    "beta": 0.40090785,
+    "dt_ps": 0.017985599115490913,
+    "topology": "../../3gd8-fixed.pdb",
+    "traj": "T300K_seg0000_rep000.npz",
+    "traj_files": [
+      "T300K_seg0000_rep000.npz"
+    ],
+    "range": [
+      0,
+      1000
+    ],
+    "analysis_temperatures": [
+      300.0
+    ],
+    "feature_spec_name": "app_usecase_features",
+    "feature_scaler": "identity",
+    "temperature_schedule_mode": null
+  }
+}

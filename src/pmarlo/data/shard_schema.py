@@ -1,25 +1,14 @@
 from __future__ import annotations
 
-"""
-Versioned, strict shard JSON schema for PMARLO datasets.
-
-This module defines minimal dataclasses for shard metadata that are
-temperature-aware and explicitly distinguish DEMUX vs REPLICA provenance.
-
-Key rules:
-- schema_version "2.0" is the current version.
-- kind: "demux" requires temperature_K (float) and forbids replica_index.
-- kind: "replica" requires replica_index (int >= 0) and forbids temperature_K.
-
-These models intentionally do not depend on filename patterns for critical
-fields. When migrating from legacy shards (v1), use shard_io to perform a
-compatibility parse from stored metadata with strict checks.
-"""
+"""Versioned, strict shard JSON schema for PMARLO datasets."""
 
 from dataclasses import dataclass
 from typing import Any, Dict, Literal, Optional
 
-SCHEMA_VERSION = "2.0"
+from pmarlo import constants as const
+from pmarlo.utils.validation import require
+
+SCHEMA_VERSION = const.SHARD_SCHEMA_VERSION
 
 
 @dataclass(frozen=True)
@@ -34,13 +23,14 @@ class BaseShard:
     schema_version: str
 
     # Identity & provenance
-    id: str  # normalized ID (e.g., canonical or legacy-fallback)
+    id: str  # normalized ID derived from canonical rules
     kind: Literal["demux", "replica"]
     run_id: str
+    json_path: str
 
     # Data description
     n_frames: int
-    dt_ps: Optional[float]
+    dt_ps: float | None
     cv_names: tuple[str, ...]
     periodic: tuple[bool, ...]
 
@@ -53,8 +43,8 @@ class BaseShard:
     bias_info: Dict[str, Any] | None
     created_at: str
 
-    # Extra for legacy carry-over
-    legacy: Dict[str, Any] | None
+    # Raw provenance payload for downstream consumers
+    raw: Dict[str, Any] | None
 
 
 @dataclass(frozen=True)
@@ -69,23 +59,18 @@ class ReplicaShard(BaseShard):
     temperature_K: None = None
 
 
-def _require(cond: bool, msg: str) -> None:
-    if not cond:
-        raise ValueError(msg)
-
-
 def validate_fields(
     kind: str, temperature_K: Optional[float], replica_index: Optional[int]
 ) -> None:
     """Validate mutual exclusion/requirement between temperature and replica index."""
     if kind == "demux":
-        _require(temperature_K is not None, "demux shard requires temperature_K")
-        _require(replica_index is None, "demux shard forbids replica_index")
+        require(temperature_K is not None, "demux shard requires temperature_K")
+        require(replica_index is None, "demux shard forbids replica_index")
     elif kind == "replica":
-        _require(
+        require(
             replica_index is not None and int(replica_index) >= 0,
             "replica shard requires non-negative replica_index",
         )
-        _require(temperature_K is None, "replica shard forbids temperature_K")
+        require(temperature_K is None, "replica shard forbids temperature_K")
     else:
         raise ValueError(f"invalid shard kind: {kind}")
