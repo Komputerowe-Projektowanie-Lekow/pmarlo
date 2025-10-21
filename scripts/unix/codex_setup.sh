@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euxo pipefail
 
+#ONLY AS A LEGACY SCRIPT. CURRENTLY NOT USED, VERSION 2 IS USED INSTEAD.
+
 echo "=========================================="
 echo "PMARLO Codex Environment Setup"
 echo "=========================================="

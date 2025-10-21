@@ -168,11 +168,14 @@ def _assemble_pairs_and_weights(
             bias_to_weights_fn,
         )
 
-        idx_t, idx_tau = scaled_time_pairs(
-            int(X.shape[0]),
-            log_weights,
-            tau_scaled=float(lag_steps),
-        )
+        if log_weights is None:
+            idx_t, idx_tau = _integer_lag_pairs(int(X.shape[0]), int(lag_steps))
+        else:
+            idx_t, idx_tau = scaled_time_pairs(
+                int(X.shape[0]),
+                log_weights,
+                tau_scaled=float(lag_steps),
+            )
         if idx_t.size:
             idx_t_parts.append(offset + idx_t)
             idx_tau_parts.append(offset + idx_tau)
@@ -229,6 +232,18 @@ def _pair_weights(
     return np.sqrt(frame_weights[idx_t] * frame_weights[idx_tau]).astype(
         np.float64, copy=False
     )
+
+
+def _integer_lag_pairs(length: int, lag_steps: int) -> tuple[np.ndarray, np.ndarray]:
+    """Return deterministic integer-lag pairs when no bias weights are provided."""
+
+    if lag_steps < 0:
+        raise ValueError("lag_steps must be non-negative")
+    if lag_steps == 0 or length <= lag_steps:
+        return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64)
+    idx_t = np.arange(0, length - lag_steps, dtype=np.int64)
+    idx_tau = idx_t + int(lag_steps)
+    return idx_t, idx_tau
 
 
 def validate_demux_coverage(shards: Iterable[Any]) -> dict:
