@@ -21,8 +21,6 @@ final.xml
 
 
 # Build and distribution files
-/build/
-/dist/
 /experiments_output/msm/*
 /experiments_output/replica_exchange/*
 /experiments_output/simulation/*
@@ -44,8 +42,6 @@ __pycache__/
 *$py.class
 *.so
 .pytest_cache/
-build/
-dist/
 *.egg-info/
 
 ## cache directories

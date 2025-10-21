@@ -1,0 +1,5 @@
+enable_cv_bias: false
+bias_mode: harmonic
+torch_threads: 4
+precision: single
+feature_spec_path: feature_spec.yaml
