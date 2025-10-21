@@ -18,7 +18,7 @@ from typing import Any, Dict, Literal, Mapping, Optional, cast
 import numpy as np
 from openmm import unit  # type: ignore
 
-from pmarlo.io.trajectory_reader import get_reader
+from pmarlo.io.trajectory_reader import TrajectoryIOError, get_reader
 from pmarlo.io.trajectory_writer import get_writer
 from pmarlo.transform.progress import ProgressCB
 from pmarlo.utils.logging_utils import (
@@ -194,7 +194,22 @@ def _run_streaming_demux(
 
     backend = _resolve_backend(remd)
     reader = _configure_reader(backend, remd, warn_label="DEMUX chunk size")
-    replica_paths, replica_frames = _probe_replica_info(remd, reader)
+    replica_paths, replica_frames, had_reader_error = _probe_replica_info(
+        remd, reader
+    )
+    if not replica_paths:
+        logger.warning("No replica trajectories provided; skipping demultiplexing")
+        return None
+    if not any(count > 0 for count in replica_frames):
+        if had_reader_error:
+            logger.warning(
+                "No readable replica trajectories were found; skipping demultiplexing"
+            )
+        else:
+            logger.warning(
+                "Replica trajectories reported zero frames; skipping demultiplexing"
+            )
+        return None
     replica_strides = _resolve_replica_strides(remd)
 
     plan = build_demux_plan(
@@ -388,19 +403,48 @@ def _configure_reader(backend: str, remd: Any, *, warn_label: str) -> Any:
     return reader
 
 
-def _probe_replica_info(remd: Any, reader: Any) -> tuple[list[str], list[int]]:
+def _probe_replica_info(
+    remd: Any, reader: Any
+) -> tuple[list[str], list[int], bool]:
     replica_paths: list[str] = []
     replica_frames: list[int] = []
+    had_reader_error = False
     for path in remd.trajectory_files:
-        replica_paths.append(str(path))
+        str_path = str(path)
+        replica_paths.append(str_path)
         try:
-            frame_count = reader.probe_length(str(path))
-        except Exception as exc:  # noqa: BLE001
+            frame_count = reader.probe_length(str_path)
+        except FileNotFoundError:
+            logger.warning(
+                "Replica trajectory %s is missing; treating as zero available frames",
+                str_path,
+            )
+            replica_frames.append(0)
+            continue
+        except TrajectoryIOError as exc:
+            if _missing_file_error(exc):
+                logger.warning(
+                    "Replica trajectory %s is missing; treating as zero available frames",
+                    str_path,
+                )
+                replica_frames.append(0)
+                continue
             raise RuntimeError(
-                f"Failed to probe frame count for replica trajectory {path}"
+                f"Failed to probe frame count for replica trajectory {str_path}"
             ) from exc
         replica_frames.append(int(frame_count))
-    return replica_paths, replica_frames
+    return replica_paths, replica_frames, had_reader_error
+
+
+def _missing_file_error(exc: BaseException) -> bool:
+    current: BaseException | None = exc
+    while current is not None:
+        if isinstance(current, FileNotFoundError):
+            return True
+        cause = current.__cause__
+        context = current.__context__ if cause is None else None
+        current = cause if cause is not None else context
+    return False
 
 
 def _resolve_replica_strides(remd: Any) -> list[int] | None:
