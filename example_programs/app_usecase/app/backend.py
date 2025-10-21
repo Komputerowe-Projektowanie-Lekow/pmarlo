@@ -1061,6 +1061,115 @@ class WorkflowBackend:
         )
         return result
 
+    def _extract_debug_data_from_build_result(
+        self,
+        br: Any,
+        dataset: Mapping[str, Any],
+        lag: int,
+        stride_values: list[int],
+        stride_map: dict,
+        preview_truncated: list,
+    ) -> Any:
+        """Extract debug data from the build result after discretization."""
+        import numpy as np
+        from pmarlo.analysis.debug_export import AnalysisDebugData
+        
+        # Extract MSM data from build result
+        msm_obj = getattr(br, "msm", None)
+        
+        if msm_obj is None or not isinstance(msm_obj, Mapping):
+            # No MSM data available
+            shards_meta = dataset.get("__shards__", [])
+            n_frames = sum(int(s.get("length", 0)) for s in shards_meta if isinstance(s, Mapping))
+            return AnalysisDebugData(
+                summary={
+                    "tau_frames": int(lag),
+                    "count_mode": "sliding",
+                    "total_frames_declared": n_frames,
+                    "total_frames_with_states": 0,
+                    "total_pairs": 0,
+                    "counts_shape": [0, 0],
+                    "zero_rows": 0,
+                    "states_observed": 0,
+                    "effective_stride_max": max(stride_values) if stride_values else 1,
+                    "warnings": [],
+                },
+                counts=np.zeros((0, 0), dtype=float),
+                state_counts=np.zeros((0,), dtype=float),
+                component_labels=np.zeros((0,), dtype=int),
+            )
+        
+        # Extract counts and state_counts from MSM dict
+        counts = np.asarray(msm_obj.get("counts", np.zeros((0, 0), dtype=float)), dtype=float)
+        state_counts = np.asarray(msm_obj.get("state_counts", np.zeros((0,), dtype=float)), dtype=float)
+        counted_pairs_dict = msm_obj.get("counted_pairs", {})
+        total_pairs = sum(int(v) for v in counted_pairs_dict.values() if v is not None)
+        
+        # Extract shard metadata
+        shards_meta = dataset.get("__shards__", [])
+        n_frames = sum(int(s.get("length", 0)) for s in shards_meta if isinstance(s, Mapping))
+        n_frames_with_states = int(state_counts.sum())
+        
+        # Compute zero rows
+        zero_rows = int(np.count_nonzero(counts.sum(axis=1) == 0)) if counts.size > 0 else 0
+        
+        # Compute connected components
+        from pmarlo.analysis.debug_export import _strongly_connected_components, _coverage_fraction
+        components, component_labels = _strongly_connected_components(counts)
+        largest_size = max((len(comp) for comp in components), default=0)
+        largest_indices = max(components, key=len) if components else []
+        largest_cover = _coverage_fraction(state_counts, largest_indices)
+        
+        # Compute diagonal mass
+        from pmarlo.analysis.debug_export import _transition_diag_mass
+        diag_mass_val = _transition_diag_mass(counts)
+        
+        # Build summary
+        stride_max = max(stride_values) if stride_values else 1
+        effective_tau_frames = int(lag * stride_max) if lag > 0 else 0
+        
+        warnings: list[dict[str, Any]] = []
+        if total_pairs < 5000:
+            warnings.append({
+                "code": "TOTAL_PAIRS_LT_5000",
+                "message": f"Too few (t, t+tau) pairs for reliable MSM (observed {total_pairs}, requires >=5000)."
+            })
+        if zero_rows > 0:
+            warnings.append({
+                "code": "ZERO_ROW_STATES_PRESENT",
+                "message": "States with zero outgoing counts detected before regularisation."
+            })
+        
+        summary = {
+            "tau_frames": int(lag),
+            "count_mode": "sliding",
+            "total_frames_declared": int(n_frames),
+            "total_frames_with_states": int(n_frames_with_states),
+            "total_pairs": int(total_pairs),
+            "counts_shape": [int(counts.shape[0]), int(counts.shape[1])],
+            "zero_rows": int(zero_rows),
+            "states_observed": int(np.count_nonzero(state_counts)),
+            "largest_scc_size": int(largest_size),
+            "largest_scc_frame_fraction": float(largest_cover) if largest_cover is not None else None,
+            "component_sizes": [int(len(comp)) for comp in components],
+            "expected_pairs": 0,  # Not available in this context
+            "counted_pairs": int(total_pairs),
+            "effective_stride_max": int(stride_max),
+            "effective_strides": stride_values,
+            "effective_stride_map": stride_map,
+            "preview_truncated": preview_truncated,
+            "effective_tau_frames": effective_tau_frames,
+            "diag_mass": float(diag_mass_val),
+            "warnings": warnings,
+        }
+        
+        return AnalysisDebugData(
+            summary=summary,
+            counts=counts,
+            state_counts=state_counts,
+            component_labels=component_labels,
+        )
+
     def build_analysis(
         self,
         shard_jsons: Sequence[Path],
@@ -1076,22 +1185,8 @@ class WorkflowBackend:
             stamp = _timestamp()
             bundle_path = self.layout.bundles_dir / f"bundle-{stamp}.pbz"
             dataset = load_shards_as_dataset(shards)
-            debug_data = compute_analysis_debug(
-                dataset,
-                lag=int(config.lag),
-                count_mode="sliding",
-            )
-
-            summary_map: Mapping[str, Any] = (
-                debug_data.summary if isinstance(debug_data.summary, Mapping) else {}
-            )
-
-            def _coerce_int(value: Any) -> int | None:
-                try:
-                    return int(value)
-                except (TypeError, ValueError):
-                    return None
-
+            
+            # Log basic dataset info before building
             dataset_frames: int | None = None
             dataset_shard_count: int | None = None
             if isinstance(dataset, Mapping):
@@ -1101,13 +1196,6 @@ class WorkflowBackend:
                         dataset_frames = int(len(dataset["X"]))
                     except TypeError:
                         dataset_frames = None
-            else:
-                frames_attr = getattr(dataset, "n_frames", None)
-                if frames_attr is not None:
-                    dataset_frames = _coerce_int(frames_attr)
-                shards_attr = getattr(dataset, "shards", None)
-                if isinstance(shards_attr, Sequence):
-                    dataset_shard_count = len(shards_attr)
 
             logger.info(
                 "[ANALYSIS_DEBUG] Pre-build config: lag=%d shard_count=%d dataset_frames=%s dataset_shards=%s",
@@ -1115,15 +1203,6 @@ class WorkflowBackend:
                 len(shards),
                 dataset_frames if dataset_frames is not None else "unknown",
                 dataset_shard_count if dataset_shard_count is not None else "unknown",
-            )
-            logger.info(
-                "[ANALYSIS_DEBUG] Debug summary: total_pairs=%s effective_tau_frames=%s "
-                "effective_stride_max=%s zero_rows=%s warnings=%s",
-                summary_map.get("total_pairs"),
-                summary_map.get("effective_tau_frames"),
-                summary_map.get("effective_stride_max"),
-                summary_map.get("zero_rows"),
-                summary_map.get("warnings"),
             )
 
             config_payload = asdict(config)
@@ -1160,18 +1239,6 @@ class WorkflowBackend:
                 )
             analysis_notes["discretizer_fingerprint_requested"] = requested_fingerprint
             analysis_notes["analysis_tau_requested"] = int(config.lag)
-            analysis_notes["debug_summary"] = _sanitize_artifacts(debug_data.summary)
-            logger.info(
-                (
-                    "Analysis debug summary: frames=%d states=%d pairs=%d zero_rows=%d "
-                    "warnings=%d"
-                ),
-                int(debug_data.summary.get("total_frames_with_states", 0)),
-                int(debug_data.counts.shape[0]),
-                int(debug_data.summary.get("total_pairs", 0)),
-                int(debug_data.summary.get("zero_rows", 0)),
-                len(debug_data.summary.get("warnings", [])),
-            )
 
             br, ds_hash = build_from_shards(
                 shard_jsons=shards,
@@ -1186,8 +1253,6 @@ class WorkflowBackend:
                 kmeans_kwargs=dict(config.kmeans_kwargs),
             )
 
-            summary = debug_data.summary
-
             def _safe_int(value: Any, default: int) -> int:
                 try:
                     return int(value)
@@ -1200,36 +1265,37 @@ class WorkflowBackend:
                 except (TypeError, ValueError):
                     return default
 
-            tau_frames = _safe_int(summary.get("tau_frames"), int(config.lag))
-            stride_max = max(1, _safe_int(summary.get("effective_stride_max"), 1))
-            effective_tau_frames = _safe_int(
-                summary.get("effective_tau_frames"), tau_frames
-            )
-            raw_stride_values = summary.get("effective_strides") or []
+            # Extract metadata from the dataset shards (not from discretization yet)
+            shards_meta = dataset.get("__shards__", []) if isinstance(dataset, Mapping) else []
             stride_values = []
-            for value in raw_stride_values:
-                try:
-                    stride_values.append(int(value))
-                except (TypeError, ValueError):
+            stride_map = {}
+            preview_truncated = []
+            for idx, shard_entry in enumerate(shards_meta):
+                if not isinstance(shard_entry, Mapping):
                     continue
-            stride_map = summary.get("effective_stride_map") or {}
-            preview_truncated = summary.get("preview_truncated") or []
-
-            # NOTE: Don't use pre-clustering debug data for pair counts, as clustering hasn't happened yet
-            # Extract actual statistics from the MSM build result
-            total_pairs_val = 0  # Will be updated from MSM diagnostics below
-            zero_rows_val = 0    # Will be updated from MSM diagnostics below
-            largest_cover_raw = summary.get("largest_scc_frame_fraction")
-            try:
-                largest_cover = (
-                    float(largest_cover_raw)
-                    if largest_cover_raw is not None
-                    else None
-                )
-            except (TypeError, ValueError):
-                largest_cover = None
-            diag_mass_val = _safe_float(summary.get("diag_mass"))
-            expected_effective_tau = tau_frames * stride_max if tau_frames > 0 else 0
+                eff_stride = shard_entry.get("effective_frame_stride")
+                if eff_stride is not None and eff_stride > 0:
+                    stride_values.append(int(eff_stride))
+                    shard_id = shard_entry.get("id", str(idx))
+                    stride_map[str(shard_id)] = int(eff_stride)
+                if shard_entry.get("preview_truncated"):
+                    preview_truncated.append(str(shard_entry.get("id", idx)))
+            
+            stride_max = max(stride_values) if stride_values else 1
+            tau_frames = int(config.lag)
+            effective_tau_frames = tau_frames * stride_max if tau_frames > 0 else 0
+            expected_effective_tau = effective_tau_frames  # Expected based on stride
+            
+            # Now that discretization is complete, compute debug data from the build result
+            debug_data = self._extract_debug_data_from_build_result(
+                br, dataset, config.lag, stride_values, stride_map, preview_truncated
+            )
+            
+            # Extract actual statistics from the MSM build result (post-clustering)
+            total_pairs_val = 0
+            zero_rows_val = 0
+            largest_cover = None
+            diag_mass_val = float("nan")
 
             actual_seed = int(config.seed)
             if getattr(br.metadata, "seed", None) is not None:
@@ -1297,7 +1363,6 @@ class WorkflowBackend:
                 "analysis_healthy": analysis_healthy,
                 "discretizer_fingerprint_changed": bool(fingerprint_changed),
             }
-            summary.update(summary_overrides)
 
             debug_dir = (self.layout.analysis_debug_dir / f"analysis-{stamp}").resolve()
             export_info = export_analysis_debug(
@@ -1310,7 +1375,7 @@ class WorkflowBackend:
                 fingerprint=fingerprint,
             )
 
-            for idx, shard in enumerate(summary.get("shards", [])):
+            for idx, shard in enumerate(debug_data.summary.get("shards", [])):
                 shard_id = shard.get("id", f"shard-{idx}")
                 frames_loaded = shard.get("frames_loaded", shard.get("length"))
                 frames_declared = shard.get("frames_declared", shard.get("length"))
