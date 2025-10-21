@@ -146,7 +146,7 @@ class ReplicaExchange:
         # Validate temperature ladder when explicitly provided or generated
         self._validate_temperature_ladder(self.temperatures)
 
-        self.output_dir = Path(output_dir)
+        self.output_dir = ensure_directory(Path(output_dir))
         self.exchange_frequency = exchange_frequency
         self.dcd_stride = dcd_stride
         self.target_accept = target_accept
@@ -154,8 +154,7 @@ class ReplicaExchange:
         self._replica_reporter_stride: List[int] = []
         self.frames_per_replica_target: Optional[int] = None
 
-        # Create output directory
-        self.output_dir.mkdir(exist_ok=True)
+        # Output directory is guaranteed to exist (parents included)
 
         # Reproducibility: RNG seeding
         if (

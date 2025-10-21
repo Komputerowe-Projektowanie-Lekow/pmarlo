@@ -60,6 +60,22 @@ class TestReplicaExchangeInitialization:
             )
             remd.setup_replicas()
 
+    def test_output_directory_created_with_parents(
+        self, test_pdb_file, temp_output_dir
+    ):
+        """Initialization should create nested output directories deterministically."""
+        nested_dir = temp_output_dir / "nested" / "replica_exchange"
+
+        remd = ReplicaExchange(
+            pdb_file=str(test_pdb_file),
+            temperatures=[300, 310, 320],
+            output_dir=str(nested_dir),
+            auto_setup=False,
+        )
+
+        assert remd.output_dir == nested_dir
+        assert nested_dir.exists()
+
 
 class TestReplicaExchangeValidation:
     """Test validation and error handling."""
