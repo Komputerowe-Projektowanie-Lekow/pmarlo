@@ -482,62 +482,59 @@ class WorkflowBackend:
         use_stub = bool(config.stub_result)
         if config.cv_model_bundle:
             use_stub = False
-            import logging
-            logger = logging.getLogger(__name__)
 
             logger.info("=" * 60)
             logger.info("CV-INFORMED SAMPLING ENABLED")
             logger.info("=" * 60)
+
+            from pmarlo.features.deeptica import (
+                check_openmm_torch_available,
+                load_cv_model_info,
+            )
+
+            if not check_openmm_torch_available():
+                raise RuntimeError(
+                    "CV-informed sampling requested but openmm-torch is not installed."
+                )
+
             try:
-                from pmarlo.features.deeptica import load_cv_model_info, check_openmm_torch_available
+                import torch
+            except ImportError as exc:  # pragma: no cover - optional dependency
+                raise RuntimeError(
+                    "CV-informed sampling requires PyTorch to be installed."
+                ) from exc
 
-                # Check for openmm-torch
-                if not check_openmm_torch_available():
-                    logger.error(
-                        "CV model selected but openmm-torch is NOT installed!\n"
-                        "Install with: conda install -c conda-forge openmm-torch\n"
-                        "CV-biased sampling will be SKIPPED."
-                    )
-                    logger.warning("Running simulation WITHOUT CV biasing")
-                else:
-                    # Warn about CPU-only PyTorch performance
-                    import torch
-                    if not torch.cuda.is_available():
-                        logger.warning(
-                            "⚠️  PyTorch is running on CPU only!\n"
-                            "CV-biased simulations will be ~10-20x slower than unbiased.\n"
-                            "For production use, install CUDA-enabled PyTorch:\n"
-                            "https://pytorch.org/get-started/locally/\n"
-                        )
+            if not torch.cuda.is_available():  # pragma: no cover - hardware dependent
+                logger.warning(
+                    "⚠️  PyTorch is running on CPU only!\n"
+                    "CV-biased simulations will be ~10-20x slower than unbiased.\n"
+                    "For production use, install CUDA-enabled PyTorch:\n"
+                    "https://pytorch.org/get-started/locally/\n"
+                )
 
-                    # Load CV model info
-                    cv_info = load_cv_model_info(config.cv_model_bundle, model_name="deeptica_cv_model")
-                    cv_kwargs["cv_model_path"] = cv_info["model_path"]
-                    cv_kwargs["cv_scaler_mean"] = cv_info["scaler_params"]["mean"]
-                    cv_kwargs["cv_scaler_scale"] = cv_info["scaler_params"]["scale"]
+            bundle_path = Path(config.cv_model_bundle)
+            if not bundle_path.exists():
+                raise FileNotFoundError(
+                    f"CV model bundle {bundle_path} does not exist."
+                )
 
-                    logger.info("✓ CV bias potential loaded successfully")
-                    logger.info(f"  Model path: {cv_info['model_path']}")
-                    logger.info(f"  CV dimensions: {cv_info['config']['cv_dim']}")
-                    logger.info(f"  Bias type: {cv_info['config'].get('bias_type', 'harmonic_expansion')}")
-                    logger.info(f"  Bias strength: {cv_info['config'].get('bias_strength', 10.0):.1f} kJ/mol")
-                    logger.info("\nBias physics:")
-                    logger.info("  E_bias = k * sum(cv_i^2)")
-                    logger.info("  Forces: F = -∇E_bias (computed by OpenMM)")
-                    logger.info("  Purpose: Repulsive bias → explore diverse conformations")
-                    logger.info("\n⚠️  IMPORTANT: The model expects MOLECULAR FEATURES as input")
-                    logger.info("  (distances, angles, dihedrals), not raw atomic positions.")
-                    logger.info("  Feature extraction must be configured in OpenMM system.")
+            cv_info = load_cv_model_info(bundle_path, model_name="deeptica_cv_model")
+            cv_kwargs["cv_model_path"] = cv_info["model_path"]
+            cv_kwargs["cv_scaler_mean"] = cv_info["scaler_params"]["mean"]
+            cv_kwargs["cv_scaler_scale"] = cv_info["scaler_params"]["scale"]
 
-            except ImportError as exc:
-                logger.error(f"Could not import CV modules: {exc}")
-                logger.warning("Running simulation WITHOUT CV biasing")
-            except FileNotFoundError as exc:
-                logger.error(f"CV model files not found: {exc}")
-                logger.warning("Running simulation WITHOUT CV biasing")
-            except Exception as exc:
-                logger.error(f"Could not load CV model: {exc}", exc_info=True)
-                logger.warning("Running simulation WITHOUT CV biasing")
+            logger.info("✓ CV bias potential loaded successfully")
+            logger.info(f"  Model path: {cv_info['model_path']}")
+            logger.info(f"  CV dimensions: {cv_info['config']['cv_dim']}")
+            logger.info(f"  Bias type: {cv_info['config'].get('bias_type', 'harmonic_expansion')}")
+            logger.info(f"  Bias strength: {cv_info['config'].get('bias_strength', 10.0):.1f} kJ/mol")
+            logger.info("\nBias physics:")
+            logger.info("  E_bias = k * sum(cv_i^2)")
+            logger.info("  Forces: F = -∇E_bias (computed by OpenMM)")
+            logger.info("  Purpose: Repulsive bias → explore diverse conformations")
+            logger.info("\n⚠️  IMPORTANT: The model expects MOLECULAR FEATURES as input")
+            logger.info("  (distances, angles, dihedrals), not raw atomic positions.")
+            logger.info("  Feature extraction must be configured in OpenMM system.")
         run_label = base_label
         if config.random_seed is not None:
             run_label = f"{base_label}-seed-{int(config.random_seed)}"
