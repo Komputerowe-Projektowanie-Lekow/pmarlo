@@ -192,4 +192,3 @@ script:
 | `tox` | Quality gate | Slow |
 
 **Remember:** Always use `python -m pytest`, not `poetry run pytest` in Codex! 🎯
-

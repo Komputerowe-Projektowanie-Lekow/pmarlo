@@ -7,30 +7,30 @@ Your Codex environment scripts are now **fully functional** and ready to deploy!
 ## What Was Fixed
 
 ### 1. Network Connectivity Issues ✅
-**Problem:** Poetry couldn't connect to PyPI in Codex environment  
+**Problem:** Poetry couldn't connect to PyPI in Codex environment
 **Solution:** Switched from Poetry to pip for dependency installation
 - pip is more network-resilient
 - pip works directly with `pyproject.toml` (PEP 517/518)
 - Poetry still installed for local development
 
 ### 2. Lightning Installation Error ✅
-**Problem:** Lightning package not available in PyTorch CPU index  
+**Problem:** Lightning package not available in PyTorch CPU index
 **Solution:** Install torch from CPU index, lightning from PyPI via pip
 
 ### 3. Black/Ruff Missing on Python 3.12+ ✅
-**Problem:** Fixer extra being skipped to avoid pdbfixer incompatibility  
+**Problem:** Fixer extra being skipped to avoid pdbfixer incompatibility
 **Solution:** Always install fixer extra; pip respects markers automatically
 
 ### 4. Python 3.13 Support ✅
-**Problem:** `pyproject.toml` constrained to Python < 3.13  
+**Problem:** `pyproject.toml` constrained to Python < 3.13
 **Solution:** Updated to `>=3.10,<3.14`
 
 ### 5. Ruff Version Check ✅
-**Problem:** `AttributeError: module 'ruff' has no attribute '__version__'`  
+**Problem:** `AttributeError: module 'ruff' has no attribute '__version__'`
 **Solution:** Use subprocess to call `ruff --version` instead
 
 ### 6. Filelock Dependency Conflict ✅
-**Problem:** tox requires `filelock>=3.20`, but got 3.19.1  
+**Problem:** tox requires `filelock>=3.20`, but got 3.19.1
 **Solution:** Explicitly install `filelock>=3.20` in dev dependencies
 
 ## Installation Strategy
@@ -222,4 +222,3 @@ After this fix:
 - ✅ OpenMM tests can run
 
 🎉 **You're all set!** 🎉
-

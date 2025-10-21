@@ -264,7 +264,7 @@ features:
   ```bash
   # CPU-only (for testing)
   pip install torch
-  
+
   # CUDA version (for production; check your CUDA version first)
   pip install torch --index-url https://download.pytorch.org/whl/cu118
   ```

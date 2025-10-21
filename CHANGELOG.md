@@ -1,3 +1,30 @@
+<a id='changelog-1.0.0'></a>
+# 0.121.0 — 2025-10-16
+
+### Added
+- Logged discrete trajectory shape and unique-state counts after MSM discretization to aid debugging missing transition pairs.
+- Added debug print statements and error diagnostics around `WorkflowBackend.build_analysis` to expose analysis failures in the example app.
+- Added pre-build analysis debug logging in the app use case backend to expose dataset statistics and debug summary metrics before MSM construction.
+
+### Fixed
+- Corrected `total_pairs_from_shards` to reuse `expected_pairs` so strided counting tallies every valid transition pair in debug summaries.
+- Added regression coverage verifying strided pair predictions align with the counting algorithm.
+- Taught `compute_analysis_debug` to accept discrete trajectories supplied as mapping values so lagged pair detection no longer drops split-labelled datasets.
+- **MSM data storage**: Fixed fundamental issue where detailed MSM statistics (counts, state_counts, transition pairs) were computed during build but immediately discarded. Modified `_build_msm` to return a 3-tuple `(T, pi, msm_data)` containing the full MSM payload including counts, state_counts, counted_pairs, and dtrajs. Updated `_build_msm_payload` to handle both legacy 2-tuple and new 3-tuple formats for backward compatibility.
+- **Analysis debug timing**: Fixed critical ordering issue where `compute_analysis_debug` was called BEFORE discretization, causing "transition counts array is empty" errors. The function now explicitly requires dtrajs and raises clear errors when missing (no silent fallbacks). The backend extracts debug data AFTER build completion when MSM data is available.
+- **Build result MSM attribute**: The `BuildResult.msm` attribute now contains a complete dict with `transition_matrix`, `stationary_distribution`, `counts`, `state_counts`, `counted_pairs`, `n_states`, `lag_time`, and `dtrajs` instead of being None. This enables proper post-build analysis and debugging.
+- **Streamlit app analysis**: Fixed completely broken analysis workflow in the app that was failing with "transition counts array is empty". The app now successfully builds MSMs with proper statistics (tested with 3000 frames → 50 states → 2997 transition pairs).
+- Ensured the KDE neighbour smoothing helper returns precise floats, eliminating ``Any`` propagation that broke strict typing.
+- Taught `_coerce_dtrajs` to accept mapping inputs without type ambiguity so ``tox -e type`` passes on analysis debug exports.
+- Fixed the demultiplexing engine to skip streaming from source-less segments before attempting I/O and correctly report progress.
+- Updated `safe_float` to gracefully return the provided default when conversion fails.
+- Restored DEMUX dataset construction without bias weights by generating deterministic integer-lag pairs when scaled-time weights
+  are unavailable.
+- Handled trajectory reader failures during demultiplexing by recording a warning and continuing with the remaining segments.
+- Applied DeepTICA whitening metadata directly without additional drift corrections so downstream analysis sees the stored transform.
+
+
+
 <a id='changelog-0.121.0'></a>
 # 0.121.0 — 2025-10-16
 

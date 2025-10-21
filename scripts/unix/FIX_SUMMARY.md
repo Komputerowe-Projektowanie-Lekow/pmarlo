@@ -162,4 +162,3 @@ If you encounter any issues:
 3. Re-run setup: `bash codex_setup.sh` (it's idempotent)
 4. Check Poetry config: `poetry config --list`
 5. Manual verification: `poetry install --extras "fixer" --verbose`
-

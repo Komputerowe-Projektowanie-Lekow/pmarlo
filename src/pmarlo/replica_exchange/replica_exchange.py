@@ -146,7 +146,7 @@ class ReplicaExchange:
         # Validate temperature ladder when explicitly provided or generated
         self._validate_temperature_ladder(self.temperatures)
 
-        self.output_dir = ensure_directory(Path(output_dir))
+        self.output_dir: Path = ensure_directory(Path(output_dir))
         self.exchange_frequency = exchange_frequency
         self.dcd_stride = dcd_stride
         self.target_accept = target_accept

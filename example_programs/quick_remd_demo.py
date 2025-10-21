@@ -6,7 +6,7 @@ Reference platform bug that was causing 6x slowdown.
 
 Usage:
     python quick_remd_demo.py
-    
+
 Expected runtime on CPU: ~2-3 minutes for 1000 steps
 """
 
@@ -28,7 +28,7 @@ def main():
     print()
     print("=" * 80)
     input("Press Enter to start...")
-    
+
     # Find test PDB
     pdb_candidates = [
         Path(__file__).parent.parent / "tests" / "_assets" / "3gd8-fixed.pdb",
@@ -39,34 +39,34 @@ def main():
         if candidate.exists():
             pdb_file = candidate
             break
-    
+
     if not pdb_file:
         print("ERROR: No test PDB file found!")
         return
-    
+
     print(f"\nUsing PDB: {pdb_file}")
     print()
-    
+
     # Import PMARLO API
     from pmarlo.api import run_replica_exchange
-    
+
     # Setup
     output_dir = Path("tmp_quick_demo")
     temperatures = [300.0, 310.0, 320.0, 330.0]
     total_steps = 1000
-    
+
     print(f"Configuration:")
     print(f"  PDB: {pdb_file.name}")
     print(f"  Temperatures: {temperatures}")
     print(f"  Total steps: {total_steps}")
     print(f"  Output: {output_dir}")
     print()
-    
+
     # Run
     print("Starting REMD simulation...")
     print("-" * 80)
     start_time = time.time()
-    
+
     try:
         traj_files, temps = run_replica_exchange(
             pdb_file=str(pdb_file),
@@ -76,9 +76,9 @@ def main():
             quick=True,
             random_seed=42,
         )
-        
+
         elapsed = time.time() - start_time
-        
+
         print("-" * 80)
         print()
         print("=" * 80)
@@ -91,10 +91,10 @@ def main():
         for traj in traj_files:
             print(f"  - {Path(traj).name}")
         print()
-        
+
         # Performance assessment
         steps_per_sec = total_steps * len(temperatures) / elapsed
-        
+
         if steps_per_sec > 20:
             print("✅ PERFORMANCE: GOOD")
             print(f"   Throughput ({steps_per_sec:.1f} steps/s) is within expected range.")
@@ -108,21 +108,21 @@ def main():
             print(f"   Throughput ({steps_per_sec:.1f} steps/s) is very slow.")
             print("   The Reference platform bug may still be present!")
             print("   Check logs for 'Using Reference platform' message.")
-        
+
         print()
         print("Cleanup:")
         import shutil
         if output_dir.exists():
             shutil.rmtree(output_dir)
             print(f"  Removed {output_dir}")
-        
+
     except KeyboardInterrupt:
         print("\n\nSimulation cancelled by user")
     except Exception as e:
         print(f"\n\nERROR: {e}")
         import traceback
         traceback.print_exc()
-    
+
     print()
     print("=" * 80)
     print("Demo complete!")
@@ -130,4 +130,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

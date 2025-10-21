@@ -194,9 +194,7 @@ def _run_streaming_demux(
 
     backend = _resolve_backend(remd)
     reader = _configure_reader(backend, remd, warn_label="DEMUX chunk size")
-    replica_paths, replica_frames, had_reader_error = _probe_replica_info(
-        remd, reader
-    )
+    replica_paths, replica_frames, had_reader_error = _probe_replica_info(remd, reader)
     if not replica_paths:
         logger.warning("No replica trajectories provided; skipping demultiplexing")
         return None
@@ -403,9 +401,7 @@ def _configure_reader(backend: str, remd: Any, *, warn_label: str) -> Any:
     return reader
 
 
-def _probe_replica_info(
-    remd: Any, reader: Any
-) -> tuple[list[str], list[int], bool]:
+def _probe_replica_info(remd: Any, reader: Any) -> tuple[list[str], list[int], bool]:
     replica_paths: list[str] = []
     replica_frames: list[int] = []
     had_reader_error = False

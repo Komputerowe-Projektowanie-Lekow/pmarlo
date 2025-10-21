@@ -13,7 +13,8 @@ def safe_float(value: Any, default: float = 0.0) -> float:
     except Exception:
         try:
             return float(default)
-        except Exception as exc:  # pragma: no cover - default conversion errors are rare
+        except Exception as exc:  # pragma: no cover
+            # default conversion errors are rare
             raise ValueError(
                 f"Cannot convert {value!r} to float and default {default!r} is invalid"
             ) from exc

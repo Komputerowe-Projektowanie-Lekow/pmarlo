@@ -488,9 +488,7 @@ def _stream_segment_frames(
             index,
             "flushing batch",
         )
-        message = (
-            f"Segment {index} reader failed after {got} frame(s): {exc}"
-        )
+        message = f"Segment {index} reader failed after {got} frame(s): {exc}"
         logger.warning(message)
         state.warnings.append(message)
         return got
