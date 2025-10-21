@@ -1328,22 +1328,22 @@ def _compute_msm_statistics(
     dtrajs: Sequence[np.ndarray], n_states: int, lag_time: int
 ) -> tuple[np.ndarray, int, np.ndarray]:
     """Compute transition counts and state counts from discrete trajectories.
-    
+
     Returns:
         (counts, total_pairs, state_counts)
     """
     counts = np.zeros((n_states, n_states), dtype=float)
     state_counts = np.zeros((n_states,), dtype=float)
     total_pairs = 0
-    
+
     for dtraj in dtrajs:
         arr = np.asarray(dtraj, dtype=np.int32)
-        
+
         # Count state visits
         for state in arr:
             if 0 <= state < n_states:
                 state_counts[state] += 1.0
-        
+
         # Count transitions with sliding window
         if arr.size > lag_time:
             for i in range(0, arr.size - lag_time):
@@ -1352,7 +1352,7 @@ def _compute_msm_statistics(
                 if 0 <= s_i < n_states and 0 <= s_j < n_states:
                     counts[s_i, s_j] += 1.0
                     total_pairs += 1
-    
+
     return counts, total_pairs, state_counts
 
 
@@ -1385,11 +1385,13 @@ def _build_msm(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
     )
     if pi.size == 0 or not np.isfinite(np.sum(pi)) or np.sum(pi) == 0.0:
         raise RuntimeError("Failed to compute a valid stationary distribution")
-    
+
     # Also compute and return detailed MSM statistics
     n_states = T.shape[0]
-    counts, total_pairs, state_counts = _compute_msm_statistics(clean, n_states, lag_time)
-    
+    counts, total_pairs, state_counts = _compute_msm_statistics(
+        clean, n_states, lag_time
+    )
+
     msm_data = {
         "transition_matrix": T,
         "stationary_distribution": pi,
@@ -1400,7 +1402,7 @@ def _build_msm(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
         "lag_time": lag_time,
         "dtrajs": clean,  # Store for debugging
     }
-    
+
     return T, pi, msm_data
 
 

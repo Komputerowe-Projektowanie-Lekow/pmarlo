@@ -393,7 +393,7 @@ def _handle_missing_source_segment(
     ):
         return None
     if planned <= 0:
-        return None
+        return 0
     if context.fill_policy == "skip":
         msg = (
             f"Segment {index} has no source frames; skipping {planned} planned frame(s)"
@@ -401,13 +401,13 @@ def _handle_missing_source_segment(
         logger.warning(msg)
         state.warnings.append(msg)
         state.skipped_segments.append(index)
-        return None
+        return 0
     if state.last_written_frame is None:
         msg = f"Segment {index} lacks source and no previous frame to repeat; skipping {planned} frame(s)"
         logger.warning(msg)
         state.warnings.append(msg)
         state.skipped_segments.append(index)
-        return None
+        return 0
 
     fill, warning = _build_fill_frames(
         context,
@@ -457,6 +457,8 @@ def _stream_segment_frames(
     segment: DemuxSegmentPlan,
     write_chunk: int,
 ) -> int:
+    if not segment.source_path:
+        return 0
     acc: List[np.ndarray] = []
     got = 0
     for frame in context.reader.iter_frames(

@@ -142,6 +142,8 @@ pre-commit = "^3.7"
 mypy = "^1.11"
 hypothesis = "^6.112"
 isort = "^6.0.1"
+tox = "^4.14"
+scriv = "^1.7.0"
 
 [tool.poetry.group.tests.dependencies]
 pytest = "^8.2"
@@ -150,7 +152,6 @@ pytest-randomly = "^3.15"
 pytest-testmon = "^2.1"
 pytest-picked = "^0.5"
 pytest-benchmark = "^4.0"
-tox = "^4.14"
 deeptime = ">=0.4.5,<0.5"
 torch = {version = ">=2.2,<3.0", source = "pytorch-cpu"}
 types-pyyaml = "^6.0.12.20250915"

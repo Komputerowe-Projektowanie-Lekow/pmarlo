@@ -25,19 +25,6 @@ import numpy as np
 from pmarlo import constants as const
 from pmarlo.utils.path_utils import ensure_directory
 
-if TYPE_CHECKING:
-    from .io.trajectory_writer import MDTrajDCDWriter
-
-
-class ReplicaExchangeProtocol(Protocol):
-    cv_model_path: str | None
-    cv_scaler_mean: Any | None
-    cv_scaler_scale: Any | None
-    reporter_stride: int | None
-    dcd_stride: int | None
-
-    def restore_from_checkpoint(self, checkpoint: Any) -> None: ...
-
 from .config import JOINT_USE_REWEIGHT
 from .data.aggregate import aggregate_and_build as _aggregate_and_build
 from .demultiplexing.exchange_validation import normalize_exchange_mapping
@@ -58,6 +45,20 @@ from .markov_state_model._msm_utils import pcca_like_macrostates as _pcca_like
 from .shards.indexing import initialise_shard_indices
 from .utils.array import concatenate_or_empty
 from .utils.mdtraj import load_mdtraj_topology, resolve_atom_selection
+
+if TYPE_CHECKING:
+    from .io.trajectory_writer import MDTrajDCDWriter
+
+
+class ReplicaExchangeProtocol(Protocol):
+    cv_model_path: str | None
+    cv_scaler_mean: Any | None
+    cv_scaler_scale: Any | None
+    reporter_stride: int | None
+    dcd_stride: int | None
+
+    def restore_from_checkpoint(self, checkpoint: Any) -> None: ...
+
 
 _run_ck: Any = None
 try:  # pragma: no cover - optional plotting dependency

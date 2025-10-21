@@ -91,6 +91,7 @@ class RunningStats:
         variance = np.clip(variance, a_min=0.0, a_max=None)
         return self._mean.copy(), np.sqrt(variance)
 
+
 logger = logging.getLogger("pmarlo")
 
 

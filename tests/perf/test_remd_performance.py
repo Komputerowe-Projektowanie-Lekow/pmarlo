@@ -43,7 +43,7 @@ def benchmark_protein_inputs(test_fixed_pdb_file: Path) -> tuple[PDBFile, ForceF
 
 @pytest.fixture
 def benchmark_simulation(
-    benchmark_protein_inputs: tuple[PDBFile, ForceField]
+    benchmark_protein_inputs: tuple[PDBFile, ForceField],
 ) -> Simulation:
     """Construct a lightweight Simulation instance for integrator benchmarks."""
 
