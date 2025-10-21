@@ -6,6 +6,8 @@ from typing import List, Optional, Tuple, cast
 
 import numpy as np
 
+from pmarlo import constants as const
+
 from ._msm_utils import (
     _row_normalize,
     _stationary_from_T,
@@ -135,10 +137,22 @@ def pcca_like_macrostates(
 
     P = np.asarray(T, dtype=float)
     n_sets = int(n_macrostates)
+    pi = _stationary_from_T(P)
+    flux = pi[:, None] * P
+    flux_sym = 0.5 * (flux + flux.T)
+    row_sums = flux_sym.sum(axis=1, keepdims=True)
+    row_sums[row_sums <= const.NUMERIC_MIN_POSITIVE] = 1.0
+    P_reversible = flux_sym / row_sums
+    pi_reversible = np.asarray(row_sums[:, 0], dtype=float)
+    total_flux = float(np.sum(pi_reversible))
+    if total_flux > 0.0:
+        pi_reversible /= total_flux
+    else:
+        pi_reversible = _stationary_from_T(P_reversible)
     try:
-        model = _pcca(P, n_metastable_sets=n_sets)
+        model = _pcca(P_reversible, n_metastable_sets=n_sets, pi=pi_reversible)
     except TypeError:
-        model = _pcca(P, n_sets)
+        model = _pcca(P_reversible, n_sets, pi_reversible)
     chi = np.asarray(model.memberships, dtype=float)
     labels = np.argmax(chi, axis=1)
     labels = _canonicalize_macro_labels(labels.astype(int), T)

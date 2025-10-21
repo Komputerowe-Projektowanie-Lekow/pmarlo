@@ -536,7 +536,6 @@ class ITSMixin:
         from deeptime.markov.tools.analysis import (
             stationary_distribution as _dt_stationary_distribution,
         )
-        from deeptime.markov.tools.analysis import timescales as _dt_timescales
 
         eig_samples: list[np.ndarray] = []
         ts_samples: list[np.ndarray] = []
@@ -573,16 +572,7 @@ class ITSMixin:
             eig_samples.append(eig.astype(float))
 
             if n_eval > 0:
-                ts = np.asarray(
-                    _dt_timescales(
-                        arr,
-                        tau=int(max(1, lag)),
-                        k=n_eval,
-                        mu=pi,
-                        reversible=True,
-                    ),
-                    dtype=float,
-                )
+                ts = np.asarray(safe_timescales(int(max(1, lag)), eig), dtype=float)
             else:
                 ts = np.empty((0,), dtype=float)
             ts_samples.append(np.asarray(ts, dtype=float))

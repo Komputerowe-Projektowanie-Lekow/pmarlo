@@ -13,6 +13,14 @@ class _StubRNG:
         return float(next(self._values))
 
 
+class _FakeQuantity:
+    def __init__(self, value: float):
+        self._value = float(value)
+
+    def value_in_unit(self, _unit):
+        return self._value
+
+
 def test_calculate_probability_matches_metropolis_expression():
     rng = np.random.default_rng(42)
     engine = ExchangeEngine([300.0, 600.0], rng)
@@ -27,7 +35,11 @@ def test_calculate_probability_matches_metropolis_expression():
     beta_i = 1.0 / (openmm.unit.MOLAR_GAS_CONSTANT_R * 300.0 * openmm.unit.kelvin)
     beta_j = 1.0 / (openmm.unit.MOLAR_GAS_CONSTANT_R * 600.0 * openmm.unit.kelvin)
     delta_q = (beta_i - beta_j) * (energies[1] - energies[0])
-    expected = float(min(1.0, np.exp(delta_q.value_in_unit(openmm.unit.dimensionless))))
+    if hasattr(delta_q, "value_in_unit"):
+        delta_value = delta_q.value_in_unit(openmm.unit.dimensionless)
+    else:
+        delta_value = float(delta_q)
+    expected = float(min(1.0, np.exp(delta_value)))
 
     assert prob == pytest.approx(expected)
 
@@ -56,6 +68,19 @@ def test_calculate_probability_requires_openmm_quantities():
 
     with pytest.raises(TypeError):
         engine.calculate_probability([0, 1], energies, 0, 1)
+
+
+def test_calculate_probability_accepts_quantity_like_objects():
+    rng = np.random.default_rng(21)
+    engine = ExchangeEngine([300.0, 450.0], rng)
+    energies = [
+        _FakeQuantity(12.0),
+        _FakeQuantity(8.0),
+    ]
+
+    prob = engine.calculate_probability([0, 1], energies, 0, 1)
+
+    assert 0.0 <= prob <= 1.0
 
 
 def test_accept_uses_rng_threshold():

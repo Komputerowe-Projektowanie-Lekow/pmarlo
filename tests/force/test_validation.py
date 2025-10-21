@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import openmm
 import pytest
 import yaml
 from openmm.app import ForceField, PDBFile
@@ -10,6 +11,37 @@ from pmarlo.replica_exchange.system_builder import create_system
 from pmarlo.settings import load_defaults, resolve_feature_spec_path
 
 from .utils import PDB_PATH, export_bias_module
+
+
+@pytest.fixture(autouse=True)
+def _force_openmm_torch_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ensure CV bias tests do not require the real openmm-torch backend."""
+
+    monkeypatch.setattr(
+        "pmarlo.replica_exchange.system_builder.check_openmm_torch_available",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "pmarlo.replica_exchange.system_builder._initialise_torch_force",
+        lambda model_path, uses_pbc, precision: _TorchForceStub(uses_pbc, precision),
+    )
+
+
+class _TorchForceStub(openmm.CustomExternalForce):
+    def __init__(self, uses_pbc: bool, precision: str) -> None:
+        super().__init__("0")
+        self._precision = str(precision)
+        self._uses_pbc = bool(uses_pbc)
+
+    def setUsesPeriodicBoundaryConditions(self, uses_pbc: bool) -> None:
+        self._uses_pbc = bool(uses_pbc)
+
+    def usesPeriodicBoundaryConditions(self) -> bool:
+        return self._uses_pbc
+
+    def setProperty(self, name: str, value: str) -> None:
+        if name == "precision":
+            self._precision = str(value)
 
 
 @pytest.fixture()

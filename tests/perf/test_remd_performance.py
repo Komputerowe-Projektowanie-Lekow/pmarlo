@@ -30,30 +30,24 @@ if not os.getenv("PMARLO_RUN_PERF"):
     )
 
 
-@pytest.fixture(scope="module")
-def ala2_inputs() -> tuple[PDBFile, ForceField]:
-    """Provide a tiny solvated-like topology with a periodic box for OpenMM tests."""
+@pytest.fixture
+def benchmark_protein_inputs(test_fixed_pdb_file: Path) -> tuple[PDBFile, ForceField]:
+    """Provide the canonical benchmark topology for OpenMM-based perf tests."""
 
-    pdb_path = Path(__file__).resolve().parents[1] / "data" / "ala2.pdb"
-    pdb = PDBFile(str(pdb_path))
-    box_vectors = unit.Quantity(
-        (
-            openmm.Vec3(3.0, 0.0, 0.0),
-            openmm.Vec3(0.0, 3.0, 0.0),
-            openmm.Vec3(0.0, 0.0, 3.0),
-        ),
-        unit.nanometer,
-    )
-    pdb.topology.setPeriodicBoxVectors(box_vectors)
+    pdb = PDBFile(str(test_fixed_pdb_file))
+    if pdb.topology.getPeriodicBoxVectors() is None:
+        raise RuntimeError("3gd8-fixed.pdb must define periodic box vectors.")
     forcefield = ForceField("amber14-all.xml")
     return pdb, forcefield
 
 
 @pytest.fixture
-def ala2_simulation(ala2_inputs: tuple[PDBFile, ForceField]) -> Simulation:
+def benchmark_simulation(
+    benchmark_protein_inputs: tuple[PDBFile, ForceField]
+) -> Simulation:
     """Construct a lightweight Simulation instance for integrator benchmarks."""
 
-    pdb, forcefield = ala2_inputs
+    pdb, forcefield = benchmark_protein_inputs
     system = create_system(pdb, forcefield)
     integrator = openmm.LangevinMiddleIntegrator(
         300.0 * unit.kelvin,
@@ -176,10 +170,10 @@ def test_temperature_ladder_retune_benchmark(benchmark, tmp_path: Path):
     assert len(result["suggested_temperatures"]) >= 2
 
 
-def test_openmm_system_builder_benchmark(benchmark, ala2_inputs):
+def test_openmm_system_builder_benchmark(benchmark, benchmark_protein_inputs):
     """Benchmark the cost of parameterizing an OpenMM System for REMD."""
 
-    pdb, forcefield = ala2_inputs
+    pdb, forcefield = benchmark_protein_inputs
 
     def _build():
         return create_system(pdb, forcefield)
@@ -189,10 +183,10 @@ def test_openmm_system_builder_benchmark(benchmark, ala2_inputs):
     assert system.getNumForces() >= 1
 
 
-def test_langevin_integrator_single_step(benchmark, ala2_simulation: Simulation):
+def test_langevin_integrator_single_step(benchmark, benchmark_simulation: Simulation):
     """Benchmark a single Langevin integration step within the REMD simulation."""
 
-    simulation = ala2_simulation
+    simulation = benchmark_simulation
 
     def _step():
         simulation.step(1)

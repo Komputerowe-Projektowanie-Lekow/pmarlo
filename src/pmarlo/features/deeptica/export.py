@@ -157,7 +157,9 @@ def export_cv_bias_potential(
     model_path = output_path / f"{model_name}.pt"
     with torch.inference_mode():
         scripted = torch.jit.script(bias_module)
-    optimised = torch.jit.optimize_for_inference(scripted)
+    optimised = torch.jit.optimize_for_inference(
+        scripted, ["compute_cvs", "feature_spec_hash_bytes"]
+    )
     import torch._C as torch_c
 
     optimised._c._register_attribute(
