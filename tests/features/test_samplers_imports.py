@@ -60,6 +60,6 @@ def test_weights_and_rare_regions_interact():
     assert weights[pairs[:, 0] >= 2].mean() > weights[pairs[:, 0] < 2].mean()
 
 
-def test_removed_import_path_is_unavailable():
-    with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("pmarlo.features.samplers")
+def test_sampler_module_is_importable():
+    module = importlib.import_module("pmarlo.samplers")
+    assert hasattr(module, "BalancedTempSampler")

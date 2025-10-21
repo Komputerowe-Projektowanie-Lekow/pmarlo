@@ -31,9 +31,11 @@ class ClusteringMixin:
             "Clustering features using %s: requested=%s", algorithm, n_states
         )
 
-        method_choice = (
-            algorithm if algorithm in ["kmeans", "minibatchkmeans"] else "kmeans"
-        )
+        if algorithm not in ["kmeans", "minibatchkmeans"]:
+            raise ValueError(
+                "Unsupported clustering algorithm provided; choose 'kmeans' or 'minibatchkmeans'"
+            )
+        method_choice = algorithm
         try:
             result: ClusteringResult = cluster_microstates(
                 self.features,

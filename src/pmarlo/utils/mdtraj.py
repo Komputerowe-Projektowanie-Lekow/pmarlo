@@ -35,7 +35,7 @@ def _resolve_selection_from_string(
 ) -> Sequence[int] | None:
     try:
         selection = topo.select(expression)
-    except Exception as exc:  # pragma: no cover - delegated to mdtraj
+    except (ValueError, TypeError) as exc:  # pragma: no cover - delegated to mdtraj
         handle_failure(exc)
         return None
     if selection.size == 0:
@@ -55,7 +55,7 @@ def _resolve_selection_from_sequence(
                 indices.append(int(item, 10))
             else:
                 indices.append(int(item))
-    except Exception as exc:
+    except (TypeError, ValueError) as exc:
         handle_failure(exc)
         return None
     if not indices:

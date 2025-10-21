@@ -58,16 +58,17 @@ def test_calculate_probability_is_one_for_favorable_swap():
     assert prob == pytest.approx(1.0)
 
 
-def test_calculate_probability_requires_openmm_quantities():
+def test_calculate_probability_accepts_mixed_types():
     rng = np.random.default_rng(13)
     engine = ExchangeEngine([300.0, 600.0], rng)
     energies = [
-        5.0,
-        10.0 * openmm.unit.kilojoules_per_mole,
+        5.0,  # float
+        10.0 * openmm.unit.kilojoules_per_mole,  # OpenMM quantity
     ]
 
-    with pytest.raises(TypeError):
-        engine.calculate_probability([0, 1], energies, 0, 1)
+    # Should not raise TypeError - mixed types are now supported
+    prob = engine.calculate_probability([0, 1], energies, 0, 1)
+    assert 0.0 <= prob <= 1.0
 
 
 def test_calculate_probability_accepts_quantity_like_objects():

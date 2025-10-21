@@ -98,15 +98,7 @@ def ensure_directory(
     """
 
     directory = Path(path)
-    try:
-        directory.mkdir(parents=parents, exist_ok=exist_ok)
-    except FileExistsError:
-        if exist_ok and directory.is_dir():
-            # The directory already exists (possibly created concurrently);
-            # treat this as success to mirror the previous idiom.
-            pass
-        else:  # pragma: no cover - rely on callers/tests to cover rare branch
-            raise
+    directory.mkdir(parents=parents, exist_ok=exist_ok)
 
     if mode is not None:
         directory.chmod(mode)

@@ -41,19 +41,13 @@ FillPolicy = Literal["repeat", "skip", "interpolate"]
 
 
 def _expected_frame_total(plan: Any) -> int:
-    try:
-        total = int(getattr(plan, "total_expected_frames", 0) or 0)
-    except Exception:
-        total = 0
-    if total > 0:
-        return total
-    try:
-        segments = getattr(plan, "segments", []) or []
-        return int(
-            sum(int(getattr(seg, "expected_frames", 0) or 0) for seg in segments)
-        )
-    except Exception:
-        return 0
+    total = getattr(plan, "total_expected_frames", None)
+    if total is not None:
+        total_value = int(total)
+        if total_value > 0:
+            return total_value
+    segments = getattr(plan, "segments")
+    return int(sum(int(seg.expected_frames) for seg in segments))
 
 
 def _select_target_temperature(
@@ -156,7 +150,7 @@ def demux_trajectories(
             details=[f"Unexpected error during demultiplexing: {exc}"],
         )
         logger.exception("Streaming demux failed; aborting demultiplexing")
-        return None
+        raise
 
     elapsed = perf_counter() - phase_start
     if result:
@@ -352,7 +346,7 @@ def _validate_exchange_integrity(
                 raise DemuxIntegrityError("Reporter stride exceeds exchange frequency")
         except DemuxIntegrityError:
             raise
-        except Exception:
+        except (TypeError, ValueError):
             raise DemuxIntegrityError("Non-monotonic frame indices detected")
 
         start_md_chk = int(
@@ -373,10 +367,7 @@ def _validate_exchange_integrity(
 def _replica_stride(remd: Any, replica_index: int, default_stride: int) -> int:
     strides = getattr(remd, "_replica_reporter_stride", []) or []
     if replica_index < len(strides):
-        try:
-            return int(strides[replica_index])
-        except Exception:
-            return int(default_stride)
+        return int(strides[replica_index])
     return int(default_stride)
 
 
@@ -405,18 +396,16 @@ def _probe_replica_info(remd: Any, reader: Any) -> tuple[list[str], list[int]]:
         try:
             frame_count = reader.probe_length(str(path))
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"Could not probe frames for {path}: {exc}")
-            frame_count = 0
+            raise RuntimeError(
+                f"Failed to probe frame count for replica trajectory {path}"
+            ) from exc
         replica_frames.append(int(frame_count))
     return replica_paths, replica_frames
 
 
 def _resolve_replica_strides(remd: Any) -> list[int] | None:
-    try:
-        strides = [int(s) for s in getattr(remd, "_replica_reporter_stride", [])]
-        return strides if strides else None
-    except Exception:
-        return None
+    strides = [int(s) for s in getattr(remd, "_replica_reporter_stride", [])]
+    return strides if strides else None
 
 
 def _open_demux_writer(remd: Any, backend: str, demux_file: Path) -> Any:
@@ -432,10 +421,12 @@ def _resolve_fill_policy(remd: Any) -> FillPolicy:
         _cfg, "DEMUX_FILL_POLICY", "repeat"
     )
     if not isinstance(raw, str) or not raw:
-        raw = "repeat"
+        raise ValueError("demux_fill_policy must be a non-empty string")
     raw = raw.lower()
     if raw not in ("repeat", "skip", "interpolate"):
-        raw = "repeat"
+        raise ValueError(
+            "demux_fill_policy must be one of {'repeat', 'skip', 'interpolate'}"
+        )
     return cast(FillPolicy, raw)
 
 
@@ -443,13 +434,12 @@ def _resolve_parallel_workers(remd: Any) -> Optional[int]:
     workers = getattr(remd, "demux_parallel_workers", None)
     if workers is None:
         workers = getattr(_cfg, "DEMUX_PARALLEL_WORKERS", None)
-    try:
-        if workers is None:
-            return None
-        value = int(workers)
-        return value if value > 0 else None
-    except Exception:
+    if workers is None:
         return None
+    value = int(workers)
+    if value <= 0:
+        raise ValueError("demux_parallel_workers must be a positive integer")
+    return value
 
 
 def _resolve_flush_settings(remd: Any) -> tuple[bool, Optional[int]]:
@@ -465,23 +455,19 @@ def _resolve_flush_settings(remd: Any) -> tuple[bool, Optional[int]]:
         "demux_checkpoint_interval",
         getattr(_cfg, "DEMUX_CHECKPOINT_INTERVAL", None),
     )
-    try:
-        if checkpoint_every is None:
-            return flush_between, None
-        value = int(checkpoint_every)
-        return flush_between, value if value > 0 else None
-    except Exception:
+    if checkpoint_every is None:
         return flush_between, None
+    value = int(checkpoint_every)
+    if value <= 0:
+        raise ValueError("demux_checkpoint_interval must be a positive integer")
+    return flush_between, value
 
 
 def _integration_timestep_ps(remd: Any) -> float:
-    try:
-        if remd.integrators:
-            return float(
-                remd.integrators[0].getStepSize().value_in_unit(unit.picoseconds)
-            )
-    except Exception:
-        pass
+    integrators = getattr(remd, "integrators", None)
+    if integrators:
+        step = integrators[0].getStepSize()
+        return float(step.value_in_unit(unit.picoseconds))
     return 0.0
 
 
@@ -519,34 +505,35 @@ def _finalize_metadata_dict(
     else:
         meta = {}
     meta.setdefault("schema_version", 2)
-    meta.setdefault("segment_count", len(getattr(plan, "segments", []) or []))
+    meta.setdefault("segment_count", len(plan.segments))
     meta.setdefault("frames_per_segment", frames_mode)
     meta.setdefault("fill_policy", fill_policy)
-    try:
-        segments = list(getattr(plan, "segments", []) or [])
-        real = list(getattr(result, "segment_real_frames", []) or [])
-        repaired = set(getattr(result, "repaired_segments", []) or [])
-        blocks: list[list[int]] = []
-        collected = 0
-        start: Optional[int] = None
-        for index, segment in enumerate(segments):
-            expected = int(getattr(segment, "expected_frames", 0) or 0)
-            real_frames = int(real[index]) if index < len(real) else 0
-            is_repaired = (index in repaired) or (real_frames < expected)
-            if expected <= 0 or is_repaired:
-                if start is not None:
-                    blocks.append([int(start), int(collected)])
-                    start = None
-            else:
-                if start is None:
-                    start = collected
-            collected += expected
-        if start is not None:
-            blocks.append([int(start), int(collected)])
-        if blocks:
-            meta.setdefault("contiguous_blocks", blocks)
-    except Exception:
-        pass
+    segments = list(plan.segments)
+    real = list(result.segment_real_frames)
+    if len(real) != len(segments):
+        raise ValueError(
+            "segment_real_frames length does not match demux plan segments"
+        )
+    repaired = set(result.repaired_segments)
+    blocks: list[list[int]] = []
+    collected = 0
+    start: Optional[int] = None
+    for index, segment in enumerate(segments):
+        expected = int(segment.expected_frames)
+        real_frames = int(real[index])
+        is_repaired = (index in repaired) or (real_frames < expected)
+        if expected <= 0 or is_repaired:
+            if start is not None:
+                blocks.append([int(start), int(collected)])
+                start = None
+        else:
+            if start is None:
+                start = collected
+        collected += expected
+    if start is not None:
+        blocks.append([int(start), int(collected)])
+    if blocks:
+        meta.setdefault("contiguous_blocks", blocks)
     return cast(DemuxMetadataDict, meta)
 
 
@@ -563,15 +550,11 @@ def _resolve_buffer_setting(remd: Any, warn_label: str) -> Optional[int]:
     raw = getattr(remd, "demux_chunk_size", None)
     if raw is None:
         raw = getattr(_cfg, "DEMUX_CHUNK_SIZE", None)
-    try:
-        if raw is None:
-            return None
-        value = int(raw)
-    except Exception:
+    if raw is None:
         return None
+    value = int(raw)
     if value <= 0:
-        logger.warning("%s <= 0; coercing to 1", warn_label)
-        value = 1
+        raise ValueError(f"{warn_label} must be a positive integer")
     if value > 65536:
         logger.warning("%s too large (%d); clamping to 65536", warn_label, value)
         value = 65536
