@@ -56,7 +56,7 @@ class _ToyMSMEstimator:
                 self.lag_time = 0
                 self.count_matrix = None
                 self.transition_matrix = None
-                self.estimator_backend = "local"
+                self.estimator_backend = "deeptime"
 
             # Protocol hooks that are unused in this benchmark
             def _maybe_apply_tica(
@@ -68,9 +68,6 @@ class _ToyMSMEstimator:
                 self, lag_time: int
             ) -> None:  # pragma: no cover - perf harness
                 raise NotImplementedError("TRAM method not supported in toy benchmark")
-
-            def _should_use_deeptime(self) -> bool:
-                return False
 
         self._impl = _Estimator(state, output_dir=output_dir)
 
