@@ -55,27 +55,20 @@ def test_plotting_with_nans(tmp_path):
     plt.close()
 
 
-def test_safe_timescales_delegates_to_deeptime(monkeypatch):
-    captured: dict[str, object] = {}
-
-    def _fake_timescales(evals, tau):
-        captured["evals"] = np.array(evals, copy=True)
-        captured["tau"] = tau
-        return np.ones_like(evals, dtype=float)
-
-    monkeypatch.setattr(
-        "pmarlo.markov_state_model.utils._dt_timescales_from_eigenvalues",
-        _fake_timescales,
-    )
-
+def test_safe_timescales_matches_log_formula():
     eigvals = np.array([[0.2, 0.5], [0.8, 0.95]])
     ts = safe_timescales(25, eigvals)
 
-    assert np.all(ts == 1.0)
-    assert np.isclose(captured["tau"], 25.0)
     clipped = np.clip(
-        eigvals.astype(float),
+        np.abs(eigvals.astype(float)),
         const.NUMERIC_MIN_POSITIVE,
         1.0 - const.NUMERIC_MIN_POSITIVE,
     )
-    np.testing.assert_allclose(captured["evals"], clipped.reshape(-1))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        expected = -25.0 / np.log(clipped)
+
+    invalid = (~np.isfinite(eigvals)) | (eigvals <= 0) | (eigvals >= 1)
+    expected = expected.astype(float)
+    expected[invalid] = np.nan
+
+    np.testing.assert_allclose(ts, expected)

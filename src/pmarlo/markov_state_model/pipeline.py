@@ -84,29 +84,18 @@ def _build_and_analyze(
     method = "tram" if temperatures and len(temperatures) > 1 else "standard"
     msm.build_msm(lag_time=lag_time, method=method)
     msm.compute_implied_timescales()
-    try:
-        msm.generate_free_energy_surface(cv1_name="CV1", cv2_name="CV2")
-    except Exception:
-        pass
+    msm.generate_free_energy_surface(cv1_name="CV1", cv2_name="CV2")
     msm.create_state_table()
     msm.extract_representative_structures()
     msm.save_analysis_results()
 
 
 def _emit_plots(msm: SupportsMSMPipeline) -> None:
-    for fn in (
-        lambda: msm.plot_free_energy_surface(save_file="free_energy_surface"),
-        lambda: msm.plot_implied_timescales(save_file="implied_timescales"),
-        lambda: msm.plot_implied_rates(save_file="implied_rates"),
-        lambda: msm.plot_free_energy_profile(save_file="free_energy_profile"),
-        lambda: msm.plot_ck_test(
-            save_file="ck_plot", n_macrostates=3, factors=[2, 3, 4]
-        ),
-    ):
-        try:
-            fn()
-        except Exception:
-            pass
+    msm.plot_free_energy_surface(save_file="free_energy_surface")
+    msm.plot_implied_timescales(save_file="implied_timescales")
+    msm.plot_implied_rates(save_file="implied_rates")
+    msm.plot_free_energy_profile(save_file="free_energy_profile")
+    msm.plot_ck_test(save_file="ck_plot", n_macrostates=3, factors=[2, 3, 4])
 
 
 def _validate_loaded_data(

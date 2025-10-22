@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import (
     TYPE_CHECKING,
-    Callable,
     List,
     Literal,
     Optional,
@@ -85,7 +84,7 @@ def run_complete_msm_analysis(
 
     _compute_optional_fes(msm=msm_protocol)
     _finalize_and_export(msm=msm_protocol)
-    _render_plots_safely(msm=msm_protocol)
+    _render_plots(msm=msm_protocol)
 
     return msm
 
@@ -145,10 +144,7 @@ def _select_estimation_method(temperatures: Optional[List[float]]) -> str:
 
 
 def _compute_optional_fes(*, msm: "EnhancedMSMProtocol") -> None:
-    try:
-        msm.generate_free_energy_surface(cv1_name="CV1", cv2_name="CV2")
-    except Exception:  # pragma: no cover - plotting safety net
-        pass
+    msm.generate_free_energy_surface(cv1_name="CV1", cv2_name="CV2")
 
 
 def _finalize_and_export(*, msm: "EnhancedMSMProtocol") -> None:
@@ -157,23 +153,12 @@ def _finalize_and_export(*, msm: "EnhancedMSMProtocol") -> None:
     msm.save_analysis_results()
 
 
-def _render_plots_safely(*, msm: "EnhancedMSMProtocol") -> None:
-    _try_plot(lambda: msm.plot_free_energy_surface(save_file="free_energy_surface"))
-    _try_plot(lambda: msm.plot_implied_timescales(save_file="implied_timescales"))
-    _try_plot(lambda: msm.plot_implied_rates(save_file="implied_rates"))
-    _try_plot(lambda: msm.plot_free_energy_profile(save_file="free_energy_profile"))
-    _try_plot(
-        lambda: msm.plot_ck_test(
-            save_file="ck_plot", n_macrostates=3, factors=[2, 3, 4]
-        )
-    )
-
-
-def _try_plot(plot_callable: Callable[[], object]) -> None:
-    try:
-        plot_callable()
-    except Exception:  # pragma: no cover - plotting safety net
-        pass
+def _render_plots(*, msm: "EnhancedMSMProtocol") -> None:
+    msm.plot_free_energy_surface(save_file="free_energy_surface")
+    msm.plot_implied_timescales(save_file="implied_timescales")
+    msm.plot_implied_rates(save_file="implied_rates")
+    msm.plot_free_energy_profile(save_file="free_energy_profile")
+    msm.plot_ck_test(save_file="ck_plot", n_macrostates=3, factors=[2, 3, 4])
 
 
 def _validate_loaded_data(
