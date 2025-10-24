@@ -2160,6 +2160,8 @@ class WorkflowBackend:
         stamp = _timestamp()
         output_dir = self.layout.bundles_dir / f"conformations-{stamp}"
         ensure_directory(output_dir)
+        config_dict: Dict[str, Any] = {}
+        summary_path = output_dir / "conformations_summary.json"
 
         try:
             # Load shards using the same method as MSM building
@@ -2477,7 +2479,6 @@ class WorkflowBackend:
                 representative_pdbs.append(f)
 
             # Save summary JSON
-            summary_path = output_dir / "conformations_summary.json"
             config_dict = asdict(config)
             if config.topology_pdb is not None:
                 config_dict["topology_pdb"] = str(
@@ -2509,7 +2510,7 @@ class WorkflowBackend:
 
             logger.info(f"Conformations analysis complete. Output saved to {output_dir}")
 
-            return ConformationsResult(
+            conf_result = ConformationsResult(
                 output_dir=output_dir,
                 tpt_summary=tpt_summary,
                 metastable_states=metastable_states,
@@ -2524,8 +2525,38 @@ class WorkflowBackend:
                 tpt_pathway_max_iterations=int(tpt_result.pathway_max_iterations),
             )
 
+            self.state.append_conformations(
+                {
+                    "output_dir": str(output_dir.resolve()),
+                    "summary": str(summary_path.resolve()),
+                    "created_at": stamp,
+                    "tpt_summary": _sanitize_artifacts(tpt_summary),
+                    "metastable_states": _sanitize_artifacts(metastable_states),
+                    "transition_states": _sanitize_artifacts(transition_states),
+                    "pathways": _sanitize_artifacts(pathways),
+                    "plots": {name: str(path) for name, path in plots.items()},
+                    "config": _sanitize_artifacts(config_dict),
+                    "tpt_converged": bool(tpt_result.tpt_converged),
+                    "tpt_pathway_iterations": int(tpt_result.pathway_iterations),
+                    "tpt_pathway_max_iterations": int(
+                        tpt_result.pathway_max_iterations
+                    ),
+                }
+            )
+
+            return conf_result
+
         except Exception as e:
             logger.error(f"Conformations analysis failed: {e}", exc_info=True)
+            self.state.append_conformations(
+                {
+                    "output_dir": str(output_dir.resolve()),
+                    "summary": str(summary_path.resolve()),
+                    "created_at": stamp,
+                    "config": _sanitize_artifacts(config_dict),
+                    "error": str(e),
+                }
+            )
             return ConformationsResult(
                 output_dir=output_dir,
                 tpt_summary={},
@@ -2570,9 +2601,35 @@ class WorkflowBackend:
     def list_builds(self) -> List[Dict[str, Any]]:
         return [dict(entry) for entry in self.state.builds]
 
+    def list_conformations(self) -> List[Dict[str, Any]]:
+        """Return recorded conformations analyses with resolved paths."""
+
+        self._reconcile_conformation_state()
+        entries: List[Dict[str, Any]] = []
+        for idx, entry in enumerate(self.state.conformations):
+            data = dict(entry)
+            data["state_index"] = idx
+            output_dir_raw = data.get("output_dir") or data.get("directory")
+            if output_dir_raw:
+                try:
+                    data["output_dir"] = str(Path(output_dir_raw).expanduser().resolve())
+                except Exception:
+                    data["output_dir"] = str(output_dir_raw)
+            summary_raw = data.get("summary") or data.get("summary_path")
+            if summary_raw:
+                try:
+                    data["summary"] = str(Path(summary_raw).expanduser().resolve())
+                except Exception:
+                    data["summary"] = str(summary_raw)
+            entries.append(data)
+
+        entries.sort(key=lambda e: str(e.get("created_at", "")), reverse=True)
+        return entries
+
     def sidebar_summary(self) -> Dict[str, int]:
-        # Reconcile stale shard entries first
+        # Reconcile stale manifest entries first
         self._reconcile_shard_state()
+        self._reconcile_conformation_state()
 
         # Count shard files on disk for accuracy
         try:
@@ -2585,6 +2642,7 @@ class WorkflowBackend:
             "shards": int(shard_files),
             "models": len(self.state.models),
             "builds": len(self.state.builds),
+            "conformations": len(self.state.conformations),
         }
 
     def _reconcile_shard_state(self) -> None:
@@ -2605,6 +2663,36 @@ class WorkflowBackend:
                         pass
         except Exception:
             # Non-fatal; leave state as-is
+            pass
+
+    def _reconcile_conformation_state(self) -> None:
+        """Drop conformations entries whose artifacts no longer exist."""
+
+        try:
+            to_delete: List[int] = []
+            for i, entry in enumerate(list(self.state.conformations)):
+                output_dir_raw = entry.get("output_dir") or entry.get("directory")
+                summary_raw = entry.get("summary") or entry.get("summary_path")
+
+                output_dir = Path(output_dir_raw).expanduser() if output_dir_raw else None
+                summary_path = Path(summary_raw).expanduser() if summary_raw else None
+
+                exists = False
+                if summary_path is not None and summary_path.exists():
+                    exists = True
+                elif output_dir is not None and output_dir.exists():
+                    exists = True
+
+                if not exists:
+                    to_delete.append(i)
+
+            for idx in reversed(to_delete):
+                try:
+                    self.state.remove_conformations(idx)
+                except Exception:
+                    pass
+        except Exception:
+            # Non-fatal cleanup failure
             pass
 
     # ------------------------------------------------------------------
@@ -2681,6 +2769,29 @@ class WorkflowBackend:
             return None
         entry = dict(self.state.builds[index])
         return self._load_analysis_from_entry(entry)
+
+    def load_conformations(
+        self, handle: int | Mapping[str, Any]
+    ) -> Optional[ConformationsResult]:
+        if isinstance(handle, Mapping):
+            entry = dict(handle)
+            state_idx = entry.get("state_index")
+            try:
+                idx = int(state_idx) if state_idx is not None else None
+            except (TypeError, ValueError):
+                idx = None
+            if idx is not None and 0 <= idx < len(self.state.conformations):
+                entry = dict(self.state.conformations[idx])
+                entry["state_index"] = idx
+                return self._load_conformations_from_entry(entry)
+            return self._load_conformations_from_entry(entry)
+
+        index = int(handle)
+        if index < 0 or index >= len(self.state.conformations):
+            return None
+        entry = dict(self.state.conformations[index])
+        entry["state_index"] = index
+        return self._load_conformations_from_entry(entry)
 
     def build_config_from_entry(self, entry: Dict[str, Any]) -> BuildConfig:
         bins_raw = entry.get("bins")
@@ -2904,6 +3015,147 @@ class WorkflowBackend:
             ),
             effective_stride_max=(
                 int(effective_stride_max) if effective_stride_max is not None else None
+            ),
+        )
+
+    def _conformations_config_from_entry(
+        self, payload: Any
+    ) -> ConformationsConfig:
+        if not isinstance(payload, Mapping):
+            return ConformationsConfig()
+
+        data: Dict[str, Any] = dict(payload)
+        for key in (
+            "topology_pdb",
+            "deeptica_projection_path",
+            "deeptica_metadata_path",
+        ):
+            value = data.get(key)
+            if value:
+                try:
+                    data[key] = Path(value).expanduser()
+                except Exception:
+                    data[key] = Path(str(value)).expanduser()
+            else:
+                data[key] = None
+
+        thresholds = data.get("committor_thresholds")
+        if isinstance(thresholds, (list, tuple)):
+            try:
+                data["committor_thresholds"] = tuple(float(v) for v in thresholds)
+            except Exception:
+                data.pop("committor_thresholds", None)
+
+        for state_key in ("source_states", "sink_states"):
+            states = data.get(state_key)
+            if isinstance(states, (list, tuple)):
+                try:
+                    data[state_key] = [int(s) for s in states]
+                except Exception:
+                    data[state_key] = [int(float(s)) for s in states if s is not None]
+
+        cluster_seed = data.get("cluster_seed")
+        if cluster_seed is not None:
+            try:
+                data["cluster_seed"] = int(cluster_seed)
+            except (TypeError, ValueError):
+                data["cluster_seed"] = None
+
+        try:
+            return ConformationsConfig(**data)
+        except Exception:
+            return ConformationsConfig()
+
+    def _load_conformations_from_entry(
+        self, entry: Mapping[str, Any]
+    ) -> Optional[ConformationsResult]:
+        output_dir_raw = entry.get("output_dir") or entry.get("directory")
+        if not output_dir_raw:
+            return None
+
+        output_dir = Path(output_dir_raw).expanduser()
+        summary_raw = entry.get("summary") or entry.get("summary_path")
+        summary_path = (
+            Path(summary_raw).expanduser()
+            if summary_raw
+            else output_dir / "conformations_summary.json"
+        )
+
+        if not summary_path.exists():
+            alt_summary = output_dir / "conformations_summary.json"
+            if alt_summary.exists():
+                summary_path = alt_summary
+            else:
+                return None
+
+        try:
+            payload = json.loads(summary_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
+        tpt_summary = dict(payload.get("tpt") or {})
+        metastable_states = dict(payload.get("metastable_states") or {})
+        transition_states = list(payload.get("transition_states") or [])
+        pathways = list(payload.get("pathways") or [])
+        created_at = str(payload.get("created_at", entry.get("created_at", _timestamp())))
+
+        config_payload = payload.get("config") or entry.get("config") or {}
+        config_obj = self._conformations_config_from_entry(config_payload)
+
+        plots: Dict[str, Path] = {}
+        entry_plots = entry.get("plots")
+        if isinstance(entry_plots, Mapping):
+            for name, plot_path in entry_plots.items():
+                try:
+                    candidate = Path(str(plot_path)).expanduser()
+                except Exception:
+                    continue
+                if candidate.exists():
+                    plots[str(name)] = candidate.resolve()
+
+        try:
+            for plot_path in output_dir.glob("*.png"):
+                plots.setdefault(plot_path.stem, plot_path.resolve())
+        except Exception:
+            pass
+
+        try:
+            representative_pdbs = [p.resolve() for p in sorted(output_dir.glob("*.pdb"))]
+        except Exception:
+            representative_pdbs = []
+
+        tpt_converged = bool(
+            entry.get("tpt_converged", tpt_summary.get("tpt_converged", True))
+        )
+
+        tpt_iterations = entry.get("tpt_pathway_iterations")
+        if tpt_iterations is None:
+            tpt_iterations = tpt_summary.get("pathway_iterations")
+
+        tpt_max_iterations = entry.get("tpt_pathway_max_iterations")
+        if tpt_max_iterations is None:
+            tpt_max_iterations = tpt_summary.get("pathway_max_iterations")
+
+        error_message = entry.get("error")
+        error_str = str(error_message) if error_message is not None else None
+
+        return ConformationsResult(
+            output_dir=output_dir.resolve(),
+            tpt_summary=tpt_summary,
+            metastable_states=metastable_states,
+            transition_states=transition_states,
+            pathways=pathways,
+            representative_pdbs=representative_pdbs,
+            plots=plots,
+            created_at=created_at,
+            config=config_obj,
+            error=error_str,
+            tpt_converged=bool(tpt_converged),
+            tpt_pathway_iterations=(
+                int(tpt_iterations) if tpt_iterations is not None else None
+            ),
+            tpt_pathway_max_iterations=(
+                int(tpt_max_iterations) if tpt_max_iterations is not None else None
             ),
         )
 
