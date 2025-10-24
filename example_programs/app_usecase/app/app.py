@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 import json
 import traceback
 
+
 import pandas as pd
 import streamlit as st
 
@@ -1070,8 +1071,6 @@ def main() -> None:
 
                         epochs_data = progress.get("epochs", [])
                         if epochs_data:
-                            # Plot training curves
-                            import pandas as pd
                             df = pd.DataFrame(epochs_data)
 
                             col1, col2 = st.columns(2)
@@ -1785,7 +1784,6 @@ def main() -> None:
                         val_score = metrics.get("val_score_curve", [])
                         if val_score:
                             st.write("**Validation Score Curve:**")
-                            import pandas as pd
                             epochs = list(range(1, len(val_score) + 1))
                             df = pd.DataFrame({"Epoch": epochs, "Val Score": val_score})
                             st.line_chart(df.set_index("Epoch"))
