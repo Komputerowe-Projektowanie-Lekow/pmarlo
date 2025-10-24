@@ -1435,6 +1435,46 @@ def main() -> None:
             st.info("Emit shards to run conformations analysis.")
         else:
             with st.expander("Configure Conformations Analysis", expanded=False):
+                available_topologies = layout.available_inputs()
+                topology_select_col, topology_manual_col = st.columns(2)
+                selected_topology: Optional[Path] = None
+                if available_topologies:
+                    selected_topology = topology_select_col.selectbox(
+                        "Topology PDB (from app_intputs/)",
+                        options=available_topologies,
+                        format_func=lambda p: p.name,
+                        key="conf_topology_select",
+                    )
+                else:
+                    topology_select_col.warning(
+                        "No PDB files detected in app_intputs/. Provide the topology used during sampling."
+                    )
+
+                manual_topology_entry = topology_manual_col.text_input(
+                    "Custom topology PDB path",
+                    value="",
+                    help=(
+                        "Optional manual override. Provide an absolute path or a path relative to the workspace "
+                        "for the topology used when running the simulations."
+                    ),
+                    key="conf_topology_manual",
+                ).strip()
+
+                topology_path_str = (
+                    manual_topology_entry
+                    if manual_topology_entry
+                    else (str(selected_topology) if selected_topology is not None else "")
+                )
+
+                if topology_path_str:
+                    topology_candidate = Path(topology_path_str)
+                    if not topology_candidate.is_absolute():
+                        topology_candidate = (layout.workspace_dir / topology_candidate).resolve()
+                    if not topology_candidate.exists():
+                        st.warning(
+                            f"Topology PDB {topology_path_str!s} does not exist. The analysis run will fail until a valid file is provided."
+                        )
+
                 conf_col1, conf_col2, conf_col3 = st.columns(3)
                 conf_lag = conf_col1.number_input(
                     "Lag (steps)", min_value=1, value=10, step=1, key="conf_lag"
@@ -1468,7 +1508,7 @@ def main() -> None:
             if st.button(
                 "Run Conformations Analysis",
                 type="primary",
-                disabled=len(selected_paths) == 0,
+                disabled=len(selected_paths) == 0 or not topology_path_str,
                 key="conformations_button",
             ):
                 try:
@@ -1481,8 +1521,9 @@ def main() -> None:
                         auto_detect_states=bool(conf_auto_detect),
                         n_paths=int(conf_n_paths),
                         compute_kis=bool(conf_compute_kis),
+                        topology_pdb=Path(topology_path_str),
                     )
-                    
+
                     with st.spinner("Running conformations analysis..."):
                         conf_result = backend.run_conformations_analysis(
                             selected_paths, conf_config
