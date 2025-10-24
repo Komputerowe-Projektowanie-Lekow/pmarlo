@@ -529,6 +529,11 @@ class ConformationsConfig:
     """Configuration for TPT conformations analysis."""
     lag: int = 10
     n_clusters: int = 30
+    cluster_mode: str = "kmeans"
+    cluster_seed: Optional[int] = 42
+    kmeans_kwargs: Dict[str, Any] = field(
+        default_factory=lambda: {"n_init": 50}
+    )
     n_components: int = 3
     n_metastable: int = 4
     temperature: float = 300.0
@@ -539,6 +544,7 @@ class ConformationsConfig:
     pathway_fraction: float = 0.99
     compute_kis: bool = True
     k_slow: int = 3
+    uncertainty_analysis: bool = True
     bootstrap_samples: int = 50
     n_representatives: int = 5
     topology_pdb: Optional[Path] = None
@@ -1871,12 +1877,47 @@ class WorkflowBackend:
                 raise ValueError(f"Unsupported cv_method '{config.cv_method}' for conformations")
             
             # Clustering
-            logger.info(f"Clustering into {config.n_clusters} microstates")
+            cluster_mode = (config.cluster_mode or "kmeans").strip().lower()
+            method_alias = {
+                "kmeans": "kmeans",
+                "minibatchkmeans": "minibatchkmeans",
+                "auto": "auto",
+            }
+            if cluster_mode not in method_alias:
+                raise ValueError(
+                    "Unsupported cluster_mode for conformations analysis: "
+                    f"{config.cluster_mode!r}."
+                )
+
+            cluster_kwargs: Mapping[str, Any]
+            if config.kmeans_kwargs is None:
+                cluster_kwargs = {}
+            elif isinstance(config.kmeans_kwargs, Mapping):
+                cluster_kwargs = dict(config.kmeans_kwargs)
+            else:
+                raise TypeError(
+                    "ConformationsConfig.kmeans_kwargs must be a mapping; "
+                    f"received {type(config.kmeans_kwargs).__name__}."
+                )
+
+            logger.info(
+                "Clustering into %d microstates using %s (seed=%s, kwargs=%s)",
+                int(config.n_clusters),
+                method_alias[cluster_mode],
+                "None" if config.cluster_seed is None else int(config.cluster_seed),
+                cluster_kwargs,
+            )
+
             clustering_result = cluster_microstates(
                 features_reduced,
-                method="minibatchkmeans",
-                n_states=config.n_clusters,
-                random_state=42,
+                method=method_alias[cluster_mode],
+                n_states=int(config.n_clusters),
+                random_state=(
+                    None
+                    if config.cluster_seed is None
+                    else int(config.cluster_seed)
+                ),
+                **cluster_kwargs,
             )
             # Extract labels from ClusteringResult object
             labels = clustering_result.labels
@@ -1923,7 +1964,7 @@ class WorkflowBackend:
                 find_metastable_states=True,
                 find_pathway_intermediates=True,
                 compute_kis=config.compute_kis,
-                uncertainty_analysis=False,
+                uncertainty_analysis=config.uncertainty_analysis,
                 n_bootstrap=config.bootstrap_samples,
                 representative_selection='medoid',
                 output_dir=str(output_dir),

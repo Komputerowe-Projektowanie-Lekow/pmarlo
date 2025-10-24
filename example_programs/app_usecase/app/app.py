@@ -1485,7 +1485,29 @@ def main() -> None:
                 conf_n_components = conf_col3.number_input(
                     "TICA components", min_value=2, value=3, step=1, key="conf_n_components"
                 )
-                
+
+                conf_cluster_col1, conf_cluster_col2, conf_cluster_col3 = st.columns(3)
+                conf_cluster_mode = conf_cluster_col1.selectbox(
+                    "Clustering method",
+                    options=["kmeans", "minibatchkmeans", "auto"],
+                    index=0,
+                    key="conf_cluster_mode",
+                )
+                conf_cluster_seed = conf_cluster_col2.number_input(
+                    "Clustering seed (-1 for random)",
+                    min_value=-1,
+                    value=42,
+                    step=1,
+                    key="conf_cluster_seed",
+                )
+                conf_kmeans_n_init = conf_cluster_col3.number_input(
+                    "K-means n_init",
+                    min_value=1,
+                    value=50,
+                    step=1,
+                    key="conf_kmeans_n_init",
+                )
+
                 conf_col4, conf_col5, conf_col6 = st.columns(3)
                 conf_n_metastable = conf_col4.number_input(
                     "N metastable states", min_value=2, value=4, step=1, key="conf_n_metastable"
@@ -1503,6 +1525,22 @@ def main() -> None:
                 )
                 conf_compute_kis = conf_col8.checkbox(
                     "Compute Kinetic Importance Score", value=True, key="conf_compute_kis"
+                )
+
+                conf_col9, conf_col10 = st.columns(2)
+                conf_uncertainty = conf_col9.checkbox(
+                    "Perform uncertainty analysis",
+                    value=True,
+                    help="Run bootstrap estimates for TPT observables and free energies.",
+                    key="conf_uncertainty_analysis",
+                )
+                conf_bootstrap_samples = conf_col10.number_input(
+                    "Bootstrap samples",
+                    min_value=1,
+                    value=50,
+                    step=5,
+                    help="Number of bootstrap resamples used during uncertainty analysis.",
+                    key="conf_bootstrap_samples",
                 )
 
                 conf_cv_col1, conf_cv_col2 = st.columns(2)
@@ -1550,12 +1588,21 @@ def main() -> None:
                     conf_config = ConformationsConfig(
                         lag=int(conf_lag),
                         n_clusters=int(conf_n_clusters),
+                        cluster_mode=str(conf_cluster_mode),
+                        cluster_seed=(
+                            int(conf_cluster_seed)
+                            if int(conf_cluster_seed) >= 0
+                            else None
+                        ),
+                        kmeans_kwargs={"n_init": int(conf_kmeans_n_init)},
                         n_components=int(conf_n_components),
                         n_metastable=int(conf_n_metastable),
                         temperature=float(conf_temperature),
                         auto_detect_states=bool(conf_auto_detect),
                         n_paths=int(conf_n_paths),
                         compute_kis=bool(conf_compute_kis),
+                        uncertainty_analysis=bool(conf_uncertainty),
+                        bootstrap_samples=int(conf_bootstrap_samples),
                         topology_pdb=Path(topology_path_str),
                         cv_method=str(conf_cv_method),
                         deeptica_projection_path=conf_deeptica_projection,

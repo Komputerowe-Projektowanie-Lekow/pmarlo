@@ -50,6 +50,39 @@ def main():
         "--n-paths", type=int, default=10, help="Maximum number of pathways"
     )
     parser.add_argument(
+        "--uncertainty-analysis",
+        action="store_true",
+        help="Enable bootstrap uncertainty quantification during TPT analysis.",
+    )
+    parser.add_argument(
+        "--bootstrap-samples",
+        type=int,
+        default=50,
+        help="Number of bootstrap samples used when uncertainty analysis is enabled.",
+    )
+    parser.add_argument(
+        "--cluster-mode",
+        type=str,
+        default="kmeans",
+        choices=["kmeans", "minibatchkmeans", "auto"],
+        help="Clustering algorithm to use for microstate assignment",
+    )
+    parser.add_argument(
+        "--cluster-seed",
+        type=int,
+        default=42,
+        help="Random seed for clustering (-1 disables deterministic seeding)",
+    )
+    parser.add_argument(
+        "--kmeans-kwargs",
+        type=str,
+        default=None,
+        help=(
+            "JSON object with additional parameters forwarded to the KMeans-based "
+            "clusterers (e.g. '{\"n_init\": 100}')"
+        ),
+    )
+    parser.add_argument(
         "--shard-indices",
         type=str,
         default="all",
@@ -61,6 +94,30 @@ def main():
     print("=" * 70)
     print("TPT CONFORMATIONS ANALYSIS - CLI")
     print("=" * 70)
+
+    if args.kmeans_kwargs:
+        try:
+            kmeans_kwargs = json.loads(args.kmeans_kwargs)
+        except json.JSONDecodeError as exc:
+            print(f"Error: Failed to parse --kmeans-kwargs JSON: {exc}")
+            return 1
+        if not isinstance(kmeans_kwargs, dict):
+            print("Error: --kmeans-kwargs must decode to a JSON object")
+            return 1
+    else:
+        kmeans_kwargs = {"n_init": 50}
+
+    cluster_seed = None if args.cluster_seed < 0 else int(args.cluster_seed)
+    cluster_mode = args.cluster_mode.strip().lower()
+    method_alias = {
+        "kmeans": "kmeans",
+        "minibatchkmeans": "minibatchkmeans",
+        "auto": "auto",
+    }
+    if cluster_mode not in method_alias:
+        print(f"Error: Unsupported cluster-mode '{args.cluster_mode}'")
+        return 1
+    cluster_method = method_alias[cluster_mode]
 
     # Find shard files
     if not args.shards_dir.exists():
@@ -191,13 +248,17 @@ def main():
         return 1
 
     # Clustering
-    print(f"\n[6/8] Clustering into {args.n_clusters} microstates...")
+    print(
+        f"\n[6/8] Clustering into {args.n_clusters} microstates using {cluster_method} "
+        f"(seed={'None' if cluster_seed is None else cluster_seed})..."
+    )
     try:
         clustering_result = cluster_microstates(
             features_reduced,
-            method="minibatchkmeans",
+            method=cluster_method,
             n_states=args.n_clusters,
-            random_state=42,
+            random_state=cluster_seed,
+            **kmeans_kwargs,
         )
         # Extract labels from ClusteringResult object
         labels = clustering_result.labels
@@ -250,8 +311,8 @@ def main():
                 find_metastable_states=True,
                 find_pathway_intermediates=True,
                 compute_kis=True,
-                uncertainty_analysis=False,
-                n_bootstrap=50,
+                uncertainty_analysis=args.uncertainty_analysis,
+                n_bootstrap=args.bootstrap_samples,
                 representative_selection='medoid',
                 output_dir=str(args.output_dir),
                 save_structures=trajectories_loaded,
@@ -372,6 +433,9 @@ def main():
         "config": {
             "lag": args.lag,
             "n_clusters": args.n_clusters,
+            "cluster_mode": args.cluster_mode,
+            "cluster_seed": cluster_seed,
+            "kmeans_kwargs": kmeans_kwargs,
             "n_components": tica_dim,
             "n_metastable": args.n_metastable,
             "temperature": args.temperature,

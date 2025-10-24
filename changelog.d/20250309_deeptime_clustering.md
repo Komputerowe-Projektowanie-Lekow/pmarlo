@@ -29,6 +29,7 @@
 ### Changed
 - Updated MSM clustering utilities to use deeptime's KMeans and MiniBatchKMeans estimators directly, removing custom wrappers and enforcing explicit parameter validation.
 - Fixed `find_conformations_tpt_real.py` to use direct imports from `pmarlo.markov_state_model` modules instead of `pmarlo.api` to avoid triggering module-level deeptime imports
+- Streamlit conformations analysis now accepts configurable clustering parameters (mode, seed, KMeans kwargs) matching the BuildConfig discretization controls instead of forcing MiniBatchKMeans with a hardcoded seed
 
 ### Fixed
 - **Streamlit app shard loading**: Fixed `run_conformations_analysis()` in `backend.py` to use `load_shards_as_dataset()` instead of non-existent `Shard.from_json()` method
