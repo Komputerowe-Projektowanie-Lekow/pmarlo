@@ -99,6 +99,17 @@ def _sanitize_artifacts(data: Any) -> Any:
     return _pmarlo_handles()["_sanitize_artifacts"](data)
 
 
+def _is_transition_matrix_reversible(
+    T: np.ndarray, pi: np.ndarray, atol: float = 1e-8, rtol: float = 1e-5
+) -> bool:
+    """Check detailed balance condition for a transition matrix."""
+
+    if T.size == 0 or pi.size == 0:
+        return False
+    flux = np.multiply(pi[:, None], T)
+    return np.allclose(flux, flux.T, atol=atol, rtol=rtol)
+
+
 def build_from_shards(*args: Any, **kwargs: Any) -> Any:
     return _pmarlo_handles()["build_from_shards"](*args, **kwargs)
 
@@ -483,6 +494,7 @@ class ConformationsConfig:
     k_slow: int = 3
     bootstrap_samples: int = 50
     n_representatives: int = 5
+    topology_pdb: Optional[Path] = None
 
 
 @dataclass
@@ -1667,9 +1679,6 @@ class WorkflowBackend:
         from pmarlo.conformations import find_conformations
         from pmarlo.conformations.visualizations import (
             plot_tpt_summary,
-            plot_committors,
-            plot_flux_network,
-            plot_pathways,
         )
         from pmarlo.markov_state_model.bridge import build_simple_msm
         from pmarlo.markov_state_model.clustering import cluster_microstates
@@ -1686,61 +1695,76 @@ class WorkflowBackend:
             shards = [Path(p).resolve() for p in shard_jsons]
             if not shards:
                 raise ValueError("No shards selected for conformations analysis")
-            
+
             dataset = load_shards_as_dataset(shards)
-            
+
             # Extract features from dataset
             if "X" not in dataset or len(dataset["X"]) == 0:
                 raise ValueError("No feature data found in shards")
-            
+
             features = np.asarray(dataset["X"], dtype=float)
             logger.info(f"Loaded {features.shape[0]} frames with {features.shape[1]} features")
-            
-            # Find topology PDB from shard metadata
-            topology_pdb = None
-            shard_meta_list = dataset.get("__shards__", [])
-            if shard_meta_list:
-                for shard_meta in shard_meta_list:
-                    if isinstance(shard_meta, Mapping):
-                        pdb_path = shard_meta.get("structure_pdb")
-                        if pdb_path:
-                            topology_pdb = Path(pdb_path)
-                            if topology_pdb.exists():
-                                break
-            
-            # Try to find topology from typical locations
-            if topology_pdb is None or not topology_pdb.exists():
-                # Look in app_intputs directory
-                potential_pdbs = list(self.layout.workspace_dir.glob("app_intputs/*.pdb"))
-                if potential_pdbs:
-                    topology_pdb = potential_pdbs[0]
-                    logger.info(f"Using topology from app_intputs: {topology_pdb.name}")
-            
-            if topology_pdb is None or not topology_pdb.exists():
-                logger.warning("No topology PDB found, trajectory loading will be skipped")
-                combined_traj = None
+
+            if config.topology_pdb is None:
+                raise ValueError(
+                    "A topology PDB must be specified for conformations analysis."
+                )
+
+            raw_topology = Path(config.topology_pdb)
+            if raw_topology.is_absolute():
+                topology_pdb = raw_topology.expanduser().resolve()
             else:
-                # Try to load trajectories for representative picking
-                logger.info(f"Loading trajectories with topology: {topology_pdb}")
-                all_trajs = []
-                for shard_meta in shard_meta_list:
-                    if isinstance(shard_meta, Mapping):
-                        traj_paths = shard_meta.get("trajectories", [])
-                        for traj_path_str in traj_paths:
-                            traj_path = Path(traj_path_str)
-                            if traj_path.exists():
-                                try:
-                                    traj = md.load(str(traj_path), top=str(topology_pdb))
-                                    all_trajs.append(traj)
-                                    logger.info(f"Loaded trajectory: {traj_path.name} ({len(traj)} frames)")
-                                except Exception as e:
-                                    logger.warning(f"Failed to load trajectory {traj_path.name}: {e}")
-                
-                combined_traj = md.join(all_trajs) if all_trajs else None
-                if combined_traj:
-                    logger.info(f"Combined trajectory: {len(combined_traj)} total frames")
-                else:
-                    logger.warning("No trajectories loaded, representative structures will not be saved")
+                topology_pdb = (self.layout.workspace_dir / raw_topology).expanduser().resolve()
+
+            if not topology_pdb.exists():
+                raise FileNotFoundError(
+                    f"Topology PDB {topology_pdb} does not exist."
+                )
+
+            shard_meta_list = dataset.get("__shards__", [])
+            if not shard_meta_list:
+                raise RuntimeError(
+                    "Shard metadata is missing; cannot locate trajectories for conformations analysis."
+                )
+
+            logger.info(f"Loading trajectories with topology: {topology_pdb}")
+            all_trajs = []
+            for idx, shard_meta in enumerate(shard_meta_list):
+                if not isinstance(shard_meta, Mapping):
+                    raise TypeError(
+                        f"Shard metadata entry {idx} is not a mapping; unable to read trajectories."
+                    )
+                traj_paths = shard_meta.get("trajectories", [])
+                if not traj_paths:
+                    raise RuntimeError(
+                        "Shard metadata does not include trajectory paths; cannot continue."
+                    )
+                for traj_path_str in traj_paths:
+                    traj_path = Path(traj_path_str)
+                    if not traj_path.is_absolute():
+                        traj_path = (self.layout.workspace_dir / traj_path).resolve()
+                    if not traj_path.exists():
+                        raise FileNotFoundError(
+                            f"Trajectory {traj_path} referenced in shard metadata does not exist."
+                        )
+                    try:
+                        traj = md.load(str(traj_path), top=str(topology_pdb))
+                    except Exception as exc:
+                        raise RuntimeError(
+                            f"Failed to load trajectory {traj_path.name}: {exc}"
+                        ) from exc
+                    all_trajs.append(traj)
+                    logger.info(
+                        f"Loaded trajectory: {traj_path.name} ({len(traj)} frames)"
+                    )
+
+            if not all_trajs:
+                raise RuntimeError(
+                    "No trajectories could be loaded; conformations analysis cannot proceed."
+                )
+
+            combined_traj = md.join(all_trajs)
+            logger.info(f"Combined trajectory: {len(combined_traj)} total frames")
             
             # Reduce features with TICA
             logger.info(f"Reducing features with TICA (n_components={config.n_components})")
@@ -1765,10 +1789,15 @@ class WorkflowBackend:
             T, pi = build_simple_msm(
                 [labels], n_states=n_states, lag=config.lag, count_mode="sliding"
             )
-            
+
+            if not _is_transition_matrix_reversible(T, pi):
+                raise ValueError(
+                    "Transition matrix is not reversible; TPT requires detailed balance."
+                )
+
             # Run TPT conformations analysis
             logger.info("Running TPT conformations analysis")
-            
+
             # Prepare MSM data dictionary
             msm_data = {
                 'T': T,
@@ -1794,86 +1823,89 @@ class WorkflowBackend:
                 output_dir=str(output_dir),
                 save_structures=True,
             )
-            
+
+            tpt_result = conf_result.tpt_result
+            if tpt_result is None:
+                raise RuntimeError(
+                    "TPT analysis did not produce a result. Ensure the transition matrix is reversible and source/sink states are valid."
+                )
+
             # Generate visualizations
             logger.info("Generating visualizations")
+            plot_tpt_summary(tpt_result, str(output_dir))
             plots = {}
-            if conf_result.tpt:
-                # TPT summary plot
-                plot_tpt_summary(conf_result.tpt, str(output_dir))
-                plots["tpt_summary"] = output_dir / "tpt_summary.png"
-                
-                # Committor plots
-                plot_committors(
-                    conf_result.tpt.forward_committor,
-                    conf_result.tpt.backward_committor,
-                    str(output_dir / "committors.png")
-                )
-                plots["committors"] = output_dir / "committors.png"
-                
-                # Flux network
-                plot_flux_network(
-                    conf_result.tpt.net_flux,
-                    str(output_dir / "flux_network.png")
-                )
-                plots["flux_network"] = output_dir / "flux_network.png"
-                
-                # Pathways
-                if conf_result.tpt.pathways:
-                    plot_pathways(
-                        conf_result.tpt.pathways,
-                        conf_result.tpt.pathway_fluxes,
-                        str(output_dir / "pathways.png")
-                    )
-                    plots["pathways"] = output_dir / "pathways.png"
-            
+            for plot_name in ("committors", "flux_network", "pathways"):
+                plot_path = output_dir / f"{plot_name}.png"
+                if plot_path.exists():
+                    plots[plot_name] = plot_path
+
             # Extract summary data
-            tpt_summary = {}
-            if conf_result.tpt:
-                tpt_summary = {
-                    "rate": float(conf_result.tpt.rate),
-                    "mfpt": float(conf_result.tpt.mfpt),
-                    "total_flux": float(conf_result.tpt.total_flux),
-                    "n_pathways": len(conf_result.tpt.pathways),
-                    "source_states": conf_result.tpt.source_states.tolist(),
-                    "sink_states": conf_result.tpt.sink_states.tolist(),
+            tpt_summary = {
+                "rate": float(tpt_result.rate),
+                "mfpt": float(tpt_result.mfpt),
+                "total_flux": float(tpt_result.total_flux),
+                "n_pathways": len(tpt_result.pathways),
+                "source_states": tpt_result.source_states.tolist(),
+                "sink_states": tpt_result.sink_states.tolist(),
+            }
+
+            metastable_states: Dict[str, Dict[str, Any]] = {}
+            for conf in conf_result.get_metastable_states():
+                macro_id = (
+                    int(conf.macrostate_id)
+                    if conf.macrostate_id is not None
+                    else int(conf.state_id)
+                )
+                micro_ids = conf.metadata.get("microstate_ids", [])
+                n_states = len(micro_ids) if isinstance(micro_ids, list) else 0
+                metastable_states[str(macro_id)] = {
+                    "population": float(conf.population),
+                    "n_states": n_states,
+                    "representative_pdb": (
+                        str(conf.structure_path)
+                        if conf.structure_path is not None
+                        else None
+                    ),
                 }
-            
-            metastable_states = {}
-            if conf_result.metastable_states:
-                for state_id, state in conf_result.metastable_states.items():
-                    metastable_states[state_id] = {
-                        "population": float(state.population),
-                        "n_states": len(state.state_indices),
-                        "representative_pdb": str(state.representative_pdb) if state.representative_pdb else None,
+
+            transition_states: List[Dict[str, Any]] = []
+            for conf in conf_result.get_transition_states():
+                transition_states.append(
+                    {
+                        "committor": float(conf.committor) if conf.committor is not None else 0.0,
+                        "state_index": int(conf.state_id),
+                        "representative_pdb": (
+                            str(conf.structure_path)
+                            if conf.structure_path is not None
+                            else None
+                        ),
                     }
-            
-            transition_states = []
-            if conf_result.transition_states:
-                for ts in conf_result.transition_states:
-                    transition_states.append({
-                        "committor": float(ts.committor),
-                        "state_index": int(ts.state_index),
-                        "representative_pdb": str(ts.representative_pdb) if ts.representative_pdb else None,
-                    })
-            
-            pathways = []
-            if conf_result.tpt and conf_result.tpt.pathways:
-                pathways = [list(map(int, path)) for path in conf_result.tpt.pathways]
-            
+                )
+
+            pathways: List[List[int]] = []
+            for path in tpt_result.pathways:
+                pathways.append([int(state) for state in path])
+
             representative_pdbs = []
             for f in output_dir.glob("*.pdb"):
                 representative_pdbs.append(f)
-            
+
             # Save summary JSON
             summary_path = output_dir / "conformations_summary.json"
+            config_dict = asdict(config)
+            if config.topology_pdb is not None:
+                config_dict["topology_pdb"] = str(
+                    Path(config.topology_pdb)
+                    if isinstance(config.topology_pdb, Path)
+                    else config.topology_pdb
+                )
             with open(summary_path, "w") as f:
                 json.dump({
                     "tpt": tpt_summary,
                     "metastable_states": metastable_states,
                     "transition_states": transition_states,
                     "pathways": pathways,
-                    "config": asdict(config),
+                    "config": config_dict,
                     "created_at": stamp,
                 }, f, indent=2)
             

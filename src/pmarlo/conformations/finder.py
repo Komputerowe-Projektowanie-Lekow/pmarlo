@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from scipy import constants
@@ -54,9 +54,9 @@ def find_conformations(
         sink_states: Sink state indices (if not auto-detected)
         auto_detect: Auto-detect source/sink states
         auto_detect_method: Detection method ('auto', 'fes', 'timescale', 'population')
-        find_transition_states: Identify transition state ensemble
-        find_metastable_states: Identify metastable states
-        find_pathway_intermediates: Identify pathway intermediates
+        find_transition_states: Include reactive states outside the source/sink sets
+        find_metastable_states: Include source and sink states
+        find_pathway_intermediates: Alias for including reactive states (for backward compatibility)
         compute_kis: Compute Kinetic Importance Score
         uncertainty_analysis: Perform bootstrap uncertainty quantification
         n_bootstrap: Number of bootstrap samples
@@ -146,31 +146,31 @@ def find_conformations(
                 bootstrap_std=boot_std,
             )
 
-    # Step 4: Identify metastable states
-    if find_metastable_states:
-        logger.info("Identifying metastable states")
-        n_metastable = kwargs.get("n_metastable", 4)
-        macrostate_labels, macro_conformations = _find_metastable_states(
-            T, pi, n_metastable, temperature_K, kis_result
-        )
+    # Step 4: Identify metastable and transition states from TPT results
+    if tpt_result is not None:
+        flux_by_state = _calculate_state_flux(tpt_result.flux_matrix)
 
-        conformations.extend(macro_conformations)
+        if find_metastable_states:
+            logger.info("Classifying metastable states from source and sink sets")
+            macrostate_labels, metastable_conformations = _find_metastable_states(
+                tpt_result,
+                pi,
+                temperature_K,
+                kis_result,
+                flux_by_state,
+            )
+            conformations.extend(metastable_conformations)
 
-    # Step 5: Identify transition states
-    if find_transition_states and tpt_result is not None:
-        logger.info("Identifying transition state ensemble")
-        ts_conformations = _find_transition_states(
-            tpt_result, pi, temperature_K, kis_result
-        )
-        conformations.extend(ts_conformations)
-
-    # Step 6: Identify pathway intermediates
-    if find_pathway_intermediates and tpt_result is not None:
-        logger.info("Identifying pathway intermediates")
-        pathway_conformations = _find_pathway_intermediates(
-            tpt_result, pi, temperature_K, kis_result
-        )
-        conformations.extend(pathway_conformations)
+        if find_transition_states or find_pathway_intermediates:
+            logger.info("Classifying reactive (transition) states")
+            transition_conformations = _find_transition_states(
+                tpt_result,
+                pi,
+                temperature_K,
+                kis_result,
+                flux_by_state,
+            )
+            conformations.extend(transition_conformations)
 
     # Step 7: Map conformations to frames (if features available)
     if features is not None and dtrajs is not None:
@@ -221,11 +221,13 @@ def find_conformations(
         uncertainty_results.append(fe_uncertainty)
 
     # Assemble final results
+    metastable_count = sum(1 for c in conformations if c.conformation_type == "metastable")
+    transition_count = sum(1 for c in conformations if c.conformation_type == "transition")
+    pathway_count = sum(1 for c in conformations if c.conformation_type == "pathway")
+
     metadata = {
         "n_conformations": len(conformations),
-        "n_transition_states": len([c for c in conformations if c.conformation_type == "transition"]),
-        "n_metastable_states": len([c for c in conformations if c.conformation_type == "metastable"]),
-        "n_pathway_intermediates": len([c for c in conformations if c.conformation_type == "pathway"]),
+        "n_pathway_intermediates": pathway_count,
         "auto_detected": auto_detect,
         "temperature_K": temperature_K,
         "uncertainty_analysis": uncertainty_analysis,
@@ -242,80 +244,12 @@ def find_conformations(
 
     logger.info(
         f"Conformations finder complete: found {len(conformations)} conformations "
-        f"({metadata['n_metastable_states']} metastable, "
-        f"{metadata['n_transition_states']} transition, "
-        f"{metadata['n_pathway_intermediates']} pathway)"
+        f"({metastable_count} metastable, "
+        f"{transition_count} transition, "
+        f"{pathway_count} pathway)"
     )
 
     return result
-
-
-def _find_metastable_states(
-    T: np.ndarray,
-    pi: np.ndarray,
-    n_metastable: int,
-    temperature_K: float,
-    kis_result: Optional[KISResult],
-) -> Tuple[np.ndarray, List[Conformation]]:
-    """Identify metastable states using PCCA+."""
-    try:
-        from deeptime.markov import pcca
-    except ImportError:
-        logger.warning("PCCA+ requires deeptime, skipping metastable states")
-        return np.array([]), []
-
-    try:
-        model = pcca(T, n_metastable)
-        memberships = np.asarray(model.memberships)
-        labels = np.argmax(memberships, axis=1)
-    except Exception as e:
-        logger.warning(f"PCCA+ failed: {e}")
-        return np.array([]), []
-
-    # Compute macrostate populations and free energies
-    kT = constants.k * temperature_K * constants.Avogadro / 1000.0
-
-    conformations = []
-
-    for macro_id in range(n_metastable):
-        states_in_macro = np.where(labels == macro_id)[0]
-
-        if len(states_in_macro) == 0:
-            continue
-
-        # Macrostate population
-        macro_pop = float(np.sum(pi[states_in_macro]))
-
-        # Free energy
-        free_energy = -kT * np.log(max(macro_pop, 1e-10))
-
-        # Select representative microstate (highest population)
-        micro_pops = pi[states_in_macro]
-        rep_local_idx = int(np.argmax(micro_pops))
-        rep_state_id = int(states_in_macro[rep_local_idx])
-
-        # KIS score if available
-        kis_score = None
-        if kis_result is not None:
-            kis_score = float(kis_result.kis_scores[rep_state_id])
-
-        conf = Conformation(
-            conformation_type="metastable",
-            state_id=rep_state_id,
-            macrostate_id=macro_id,
-            frame_index=-1,  # Will be assigned later
-            population=macro_pop,
-            free_energy=free_energy,
-            kis_score=kis_score,
-            metadata={
-                "n_microstates": len(states_in_macro),
-                "microstate_ids": states_in_macro.tolist(),
-            },
-        )
-
-        conformations.append(conf)
-
-    return labels, conformations
 
 
 def _find_transition_states(
@@ -323,35 +257,40 @@ def _find_transition_states(
     pi: np.ndarray,
     temperature_K: float,
     kis_result: Optional[KISResult],
+    flux_by_state: Optional[np.ndarray] = None,
 ) -> List[Conformation]:
-    """Identify transition state ensemble from committors."""
+    """Identify all reactive (non-source/sink) states."""
     kT = constants.k * temperature_K * constants.Avogadro / 1000.0
+    source_states = set(int(s) for s in np.asarray(tpt_result.source_states))
+    sink_states = set(int(s) for s in np.asarray(tpt_result.sink_states))
 
-    # States with committor ~ 0.5
-    ts_states = np.where(
-        (tpt_result.forward_committor >= 0.4) & (tpt_result.forward_committor <= 0.6)
-    )[0]
+    if flux_by_state is None:
+        flux_by_state = _calculate_state_flux(tpt_result.flux_matrix)
 
     conformations = []
 
-    for state_id in ts_states:
-        state_id_int = int(state_id)
-        population = float(pi[state_id_int])
+    for state_id in range(len(pi)):
+        if state_id in source_states or state_id in sink_states:
+            continue
+
+        population = float(pi[state_id])
         free_energy = -kT * np.log(max(population, 1e-10))
-        committor = float(tpt_result.forward_committor[state_id_int])
+        committor = float(tpt_result.forward_committor[state_id])
+        flux = float(flux_by_state[state_id])
 
         kis_score = None
         if kis_result is not None:
-            kis_score = float(kis_result.kis_scores[state_id_int])
+            kis_score = float(kis_result.kis_scores[state_id])
 
         conf = Conformation(
             conformation_type="transition",
-            state_id=state_id_int,
+            state_id=int(state_id),
             frame_index=-1,
             population=population,
             free_energy=free_energy,
             committor=committor,
             kis_score=kis_score,
+            flux=flux,
         )
 
         conformations.append(conf)
@@ -359,57 +298,60 @@ def _find_transition_states(
     return conformations
 
 
-def _find_pathway_intermediates(
+def _find_metastable_states(
     tpt_result: TPTResult,
     pi: np.ndarray,
     temperature_K: float,
     kis_result: Optional[KISResult],
-) -> List[Conformation]:
-    """Identify pathway intermediates from reactive flux."""
+    flux_by_state: Optional[np.ndarray] = None,
+) -> Tuple[Optional[np.ndarray], List[Conformation]]:
+    """Identify metastable states as source and sink sets from TPT results."""
     kT = constants.k * temperature_K * constants.Avogadro / 1000.0
 
-    # Find states with high reactive flux (bottlenecks)
-    flux_through_state = np.sum(tpt_result.flux_matrix, axis=1) + np.sum(
-        tpt_result.flux_matrix, axis=0
-    )
+    if flux_by_state is None:
+        flux_by_state = _calculate_state_flux(tpt_result.flux_matrix)
 
-    # Take top states
-    top_n = min(10, len(flux_through_state))
-    bottleneck_states = np.argsort(flux_through_state)[::-1][:top_n]
+    source_states = [int(s) for s in np.asarray(tpt_result.source_states)]
+    sink_states = [int(s) for s in np.asarray(tpt_result.sink_states)]
+    metastable_states = sorted(set(source_states + sink_states))
 
-    conformations = []
+    conformations: List[Conformation] = []
 
-    for state_id in bottleneck_states:
-        state_id_int = int(state_id)
-
-        # Skip source/sink states
-        if (
-            state_id_int in tpt_result.source_states
-            or state_id_int in tpt_result.sink_states
-        ):
-            continue
-
-        population = float(pi[state_id_int])
+    for state_id in metastable_states:
+        population = float(pi[state_id])
         free_energy = -kT * np.log(max(population, 1e-10))
-        flux = float(flux_through_state[state_id_int])
+        committor = float(tpt_result.forward_committor[state_id])
+        flux = float(flux_by_state[state_id])
 
         kis_score = None
         if kis_result is not None:
-            kis_score = float(kis_result.kis_scores[state_id_int])
+            kis_score = float(kis_result.kis_scores[state_id])
+
+        if state_id in source_states:
+            role = "source"
+        else:
+            role = "sink"
 
         conf = Conformation(
-            conformation_type="pathway",
-            state_id=state_id_int,
+            conformation_type="metastable",
+            state_id=int(state_id),
             frame_index=-1,
             population=population,
             free_energy=free_energy,
-            flux=flux,
+            committor=committor,
             kis_score=kis_score,
+            flux=flux,
+            metadata={"role": role},
         )
 
         conformations.append(conf)
 
-    return conformations
+    return None, conformations
+
+
+def _calculate_state_flux(flux_matrix: np.ndarray) -> np.ndarray:
+    """Compute the total reactive flux through each state."""
+    return np.sum(flux_matrix, axis=1) + np.sum(flux_matrix, axis=0)
 
 
 def _assign_frame_indices(

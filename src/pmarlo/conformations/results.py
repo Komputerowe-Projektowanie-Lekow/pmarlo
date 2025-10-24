@@ -153,9 +153,9 @@ class Conformation:
         local_frame_index: Frame index within trajectory
         population: Stationary population of this state
         free_energy: Free energy (kJ/mol)
-        committor: Committor probability (for transition states)
+        committor: Committor probability (available for all states when TPT is computed)
         kis_score: Kinetic importance score (if computed)
-        flux: Reactive flux (for pathway intermediates)
+        flux: Reactive flux through the state
         structure_path: Path to saved PDB file (if extracted)
         metadata: Additional metadata
     """
@@ -233,8 +233,9 @@ class ConformationSet:
         return self.get_by_type("metastable")
 
     def get_pathway_intermediates(self) -> List[Conformation]:
-        """Get all pathway intermediate conformations."""
-        return self.get_by_type("pathway")
+        """Backward-compatible alias for reactive transition states."""
+        # Classification now treats all non-source/sink states as transition states.
+        return self.get_transition_states()
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
