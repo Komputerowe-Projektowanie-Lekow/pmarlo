@@ -77,6 +77,8 @@ _LAST_BUILD = "__pmarlo_last_build"
 _RUN_PENDING = "__pmarlo_run_pending"
 _TRAIN_CONFIG_PENDING = "__pmarlo_pending_train_cfg"
 _TRAIN_FEEDBACK = "__pmarlo_train_feedback"
+_LAST_CONFORMATIONS = "__pmarlo_last_conformations"
+_CONFORMATIONS_FEEDBACK = "__pmarlo_conf_feedback"
 
 
 def _sync_sidebar_tica_dim() -> None:
@@ -495,6 +497,108 @@ def _render_deeptica_summary(summary: Dict[str, object]) -> None:
             st.line_chart(df_grad, height=200)
 
 
+def _render_conformations_result(conf_result: ConformationsResult) -> None:
+    """Visualise stored or freshly computed conformations analysis results."""
+
+    if conf_result.error:
+        st.error(f"Conformations analysis failed: {conf_result.error}")
+        st.info(f"Output directory: {conf_result.output_dir}")
+        return
+
+    if not conf_result.tpt_converged:
+        iteration_count = (
+            conf_result.tpt_pathway_iterations
+            or conf_result.tpt_summary.get("pathway_iterations")
+            or conf_result.tpt_pathway_max_iterations
+            or conf_result.tpt_summary.get("pathway_max_iterations")
+        )
+        if iteration_count is not None:
+            st.error(
+                "Warning: TPT calculation failed to converge after "
+                f"{iteration_count} iterations. Pathway results are unreliable. "
+                "Try increasing the number of clusters or adjusting the MSM lag time."
+            )
+        else:
+            st.error(
+                "Warning: TPT calculation failed to converge. Pathway results are unreliable. "
+                "Try increasing the number of clusters or adjusting the MSM lag time."
+            )
+
+    if conf_result.tpt_summary:
+        st.subheader("TPT Results")
+        cols = st.columns(4)
+        cols[0].metric(
+            "Rate", f"{conf_result.tpt_summary.get('rate', float('nan')):.3e}"
+        )
+        cols[1].metric(
+            "MFPT", f"{conf_result.tpt_summary.get('mfpt', float('nan')):.1f}"
+        )
+        cols[2].metric(
+            "Total Flux",
+            f"{conf_result.tpt_summary.get('total_flux', float('nan')):.3e}",
+        )
+        cols[3].metric(
+            "N Pathways", conf_result.tpt_summary.get("n_pathways", "n/a")
+        )
+
+    if conf_result.metastable_states:
+        st.subheader("Metastable States")
+        meta_df_data = []
+        for state_id, state_data in conf_result.metastable_states.items():
+            meta_df_data.append(
+                {
+                    "State": state_id,
+                    "Population": f"{float(state_data.get('population', 0.0)):.4f}",
+                    "N States": state_data.get("n_states", 0),
+                    "PDB": (
+                        Path(state_data.get("representative_pdb", "")).name
+                        if state_data.get("representative_pdb")
+                        else "N/A"
+                    ),
+                }
+            )
+        st.dataframe(pd.DataFrame(meta_df_data), use_container_width=True)
+
+    if conf_result.transition_states:
+        st.subheader("Transition States")
+        ts_df_data = []
+        for ts_data in conf_result.transition_states:
+            ts_df_data.append(
+                {
+                    "State Index": ts_data.get("state_index", ""),
+                    "Committor": f"{float(ts_data.get('committor', 0.0)):.3f}",
+                    "PDB": (
+                        Path(ts_data.get("representative_pdb", "")).name
+                        if ts_data.get("representative_pdb")
+                        else "N/A"
+                    ),
+                }
+            )
+        st.dataframe(pd.DataFrame(ts_df_data), use_container_width=True)
+
+    if conf_result.pathways:
+        st.subheader("Dominant Pathways")
+        st.write(conf_result.pathways)
+
+    if conf_result.plots:
+        st.subheader("Visualizations")
+        plot_cols = st.columns(2)
+        plot_idx = 0
+        for plot_name, plot_path in conf_result.plots.items():
+            if Path(plot_path).exists():
+                with plot_cols[plot_idx % 2]:
+                    st.image(
+                        str(plot_path),
+                        caption=plot_name.replace("_", " ").title(),
+                    )
+                plot_idx += 1
+
+    st.info(f"All conformations saved to: {conf_result.output_dir}")
+    if conf_result.representative_pdbs:
+        st.write(
+            f"📁 {len(conf_result.representative_pdbs)} representative PDB files saved"
+        )
+
 def _ensure_session_defaults() -> None:
     for key in (
         _LAST_SIM,
@@ -531,6 +635,8 @@ def _ensure_session_defaults() -> None:
         "conf_n_metastable_form", st.session_state["conf_n_metastable"]
     )
     st.session_state.setdefault("conf_committor_thresholds", (0.1, 0.9))
+    st.session_state.setdefault(_LAST_CONFORMATIONS, None)
+    st.session_state.setdefault(_CONFORMATIONS_FEEDBACK, None)
 
 
 def _consume_pending_training_config() -> None:
@@ -556,9 +662,10 @@ def main() -> None:
         cols = st.columns(2)
         cols[0].metric("Sim runs", summary.get("runs", 0))
         cols[1].metric("Shard files", summary.get("shards", 0))
-        cols = st.columns(2)
+        cols = st.columns(3)
         cols[0].metric("Models", summary.get("models", 0))
         cols[1].metric("Bundles", summary.get("builds", 0))
+        cols[2].metric("Conformation Sets", summary.get("conformations", 0))
         st.divider()
         st.number_input(
             "Number of Clusters",
@@ -637,11 +744,19 @@ def main() -> None:
     )
 
     with tab_conformation:
-        tab_sampling, tab_training, tab_analysis, tab_model_preview, tab_assets = st.tabs(
+        (
+            tab_sampling,
+            tab_training,
+            tab_msm_fes,
+            tab_conformations,
+            tab_model_preview,
+            tab_assets,
+        ) = st.tabs(
             [
                 "Sampling",
                 "Model Training",
-                "Analysis",
+                "MSM/FES Analysis",
+                "Conformation Analysis",
                 "Model Preview",
                 "Assets",
             ]
@@ -1264,7 +1379,7 @@ def main() -> None:
             if last_model_path is not None:
                 st.caption(f"Latest model bundle: {last_model_path}")
 
-        with tab_analysis:
+        with tab_msm_fes:
             st.header("Build MSM and FES")
             shard_groups = backend.shard_summaries()
 
@@ -1542,15 +1657,97 @@ def main() -> None:
                         traceback.print_exc()
                         st.error(f"Analysis failed: {exc}")
 
-            # Conformations Analysis Section
-            st.divider()
-            st.subheader("TPT Conformations Analysis")
-            st.write("Find metastable states, transition states, and pathways using Transition Path Theory.")
+        with tab_conformations:
+            st.header("TPT Conformations Analysis")
+            st.write(
+                "Find metastable states, transition states, and pathways using Transition Path Theory."
+            )
+
+            conformations = backend.list_conformations()
+            if conformations:
+                with st.expander(
+                    "Load recorded conformation analysis",
+                    expanded=st.session_state.get(_LAST_CONFORMATIONS) is None,
+                ):
+                    indices = list(range(len(conformations)))
+
+                    def _conformation_label(idx: int) -> str:
+                        entry = conformations[idx]
+                        output_dir = entry.get("output_dir", "")
+                        label = Path(output_dir).name if output_dir else f"conformations-{idx}"
+                        created = entry.get("created_at", "unknown")
+                        return f"{label} (created {created})"
+
+                    selected_conf_idx = st.selectbox(
+                        "Stored conformations",
+                        options=indices,
+                        format_func=_conformation_label,
+                        key="load_conformations_select",
+                    )
+                    if st.button("Show conformations", key="load_conformations_button"):
+                        entry = conformations[int(selected_conf_idx)]
+                        loaded = backend.load_conformations(entry)
+                        if loaded is not None:
+                            st.session_state[_LAST_CONFORMATIONS] = loaded
+                            st.session_state[_CONFORMATIONS_FEEDBACK] = (
+                                "success",
+                                f"Loaded conformations from {loaded.output_dir.name}.",
+                            )
+                        else:
+                            st.session_state[_CONFORMATIONS_FEEDBACK] = (
+                                "error",
+                                "Could not load the selected conformations bundle from disk.",
+                            )
+
+            shard_groups = backend.shard_summaries()
+            selected_paths: List[Path] = []
+            topology_path_str = ""
+            conf_cv_method = "tica"
+            conf_deeptica_projection: Optional[Path] = None
+            conf_deeptica_metadata: Optional[Path] = None
+            conf_lag = int(st.session_state.get("conf_lag", 10))
+            conf_n_clusters = int(st.session_state.get("conf_n_clusters", 100))
+            conf_n_components = int(st.session_state.get("conf_n_components", 3))
+            conf_committor_thresholds = tuple(
+                float(v)
+                for v in st.session_state.get("conf_committor_thresholds", (0.1, 0.9))
+            )
+            conf_cluster_mode = str(st.session_state.get("conf_cluster_mode", "kmeans"))
+            conf_cluster_seed = int(st.session_state.get("conf_cluster_seed", 42))
+            conf_kmeans_n_init = int(st.session_state.get("conf_kmeans_n_init", 50))
+            conf_n_metastable = int(st.session_state.get("conf_n_metastable", 10))
+            conf_temperature = float(st.session_state.get("conf_temperature", 300.0))
+            conf_n_paths = int(st.session_state.get("conf_n_paths", 10))
+            conf_auto_detect = bool(st.session_state.get("conf_auto_detect", True))
+            conf_compute_kis = bool(st.session_state.get("conf_compute_kis", True))
+            conf_uncertainty = bool(st.session_state.get("conf_uncertainty_analysis", True))
+            conf_bootstrap_samples = int(st.session_state.get("conf_bootstrap_samples", 50))
 
             if not shard_groups:
                 st.info("Emit shards to run conformations analysis.")
             else:
-                with st.expander("Configure Conformations Analysis", expanded=False):
+                run_ids = [str(entry.get("run_id")) for entry in shard_groups]
+                selected_runs = st.multiselect(
+                    "Shard groups for conformations",
+                    options=run_ids,
+                    default=run_ids,
+                    key="conf_selected_runs",
+                )
+                selected_paths = _select_shard_paths(shard_groups, selected_runs)
+                try:
+                    _, shard_summary = _summarize_selected_shards(selected_paths)
+                except ValueError as exc:
+                    st.error(f"Shard selection invalid: {exc}")
+                    st.stop()
+                st.write(
+                    f"Using {len(selected_paths)} shard files for conformations analysis."
+                )
+                if shard_summary:
+                    st.caption(shard_summary)
+
+                with st.expander(
+                    "Configure Conformations Analysis", expanded=False
+                ):
                     available_topologies = layout.available_inputs()
                     topology_select_col, topology_manual_col = st.columns(2)
                     selected_topology: Optional[Path] = None
@@ -1593,39 +1790,34 @@ def main() -> None:
 
                     conf_col1, conf_col2, conf_col3 = st.columns(3)
                     conf_lag = conf_col1.number_input(
-                        "Lag (steps)", min_value=1, value=10, step=1, key="conf_lag"
+                        "Lag (steps)", min_value=1, value=int(conf_lag), step=1, key="conf_lag"
                     )
-                    conf_n_clusters = int(st.session_state.get("conf_n_clusters", 100))
                     conf_col2.metric("N microstates", conf_n_clusters)
                     conf_col2.caption("Configured in the sidebar.")
                     conf_n_components = conf_col3.number_input(
-                        "TICA components", min_value=2, value=3, step=1, key="conf_n_components"
-                    )
-                    conf_committor_thresholds = tuple(
-                        float(v)
-                        for v in st.session_state.get(
-                            "conf_committor_thresholds", (0.1, 0.9)
-                        )
+                        "TICA components", min_value=2, value=int(conf_n_components), step=1, key="conf_n_components"
                     )
 
                     conf_cluster_col1, conf_cluster_col2, conf_cluster_col3 = st.columns(3)
                     conf_cluster_mode = conf_cluster_col1.selectbox(
                         "Clustering method",
                         options=["kmeans", "minibatchkmeans", "auto"],
-                        index=0,
+                        index=["kmeans", "minibatchkmeans", "auto"].index(
+                            conf_cluster_mode if conf_cluster_mode in {"kmeans", "minibatchkmeans", "auto"} else "kmeans"
+                        ),
                         key="conf_cluster_mode",
                     )
                     conf_cluster_seed = conf_cluster_col2.number_input(
                         "Clustering seed (-1 for random)",
                         min_value=-1,
-                        value=42,
+                        value=int(conf_cluster_seed),
                         step=1,
                         key="conf_cluster_seed",
                     )
                     conf_kmeans_n_init = conf_cluster_col3.number_input(
                         "K-means n_init",
                         min_value=1,
-                        value=50,
+                        value=int(conf_kmeans_n_init),
                         step=1,
                         key="conf_kmeans_n_init",
                     )
@@ -1634,38 +1826,42 @@ def main() -> None:
                     conf_n_metastable = conf_col4.number_input(
                         "N metastable states",
                         min_value=2,
-                        value=int(st.session_state.get("conf_n_metastable", 10)),
+                        value=int(conf_n_metastable),
                         step=1,
                         key="conf_n_metastable_form",
                         on_change=_sync_form_metastable_states,
                     )
                     st.session_state["conf_n_metastable"] = int(conf_n_metastable)
                     conf_temperature = conf_col5.number_input(
-                        "Temperature (K)", min_value=0.0, value=300.0, step=5.0, key="conf_temperature"
+                        "Temperature (K)",
+                        min_value=0.0,
+                        value=float(conf_temperature),
+                        step=5.0,
+                        key="conf_temperature",
                     )
                     conf_n_paths = conf_col6.number_input(
-                        "Max pathways", min_value=1, value=10, step=1, key="conf_n_paths"
+                        "Max pathways", min_value=1, value=int(conf_n_paths), step=1, key="conf_n_paths"
                     )
 
                     conf_col7, conf_col8 = st.columns(2)
                     conf_auto_detect = conf_col7.checkbox(
-                        "Auto-detect source/sink states", value=True, key="conf_auto_detect"
+                        "Auto-detect source/sink states", value=bool(conf_auto_detect), key="conf_auto_detect"
                     )
                     conf_compute_kis = conf_col8.checkbox(
-                        "Compute Kinetic Importance Score", value=True, key="conf_compute_kis"
+                        "Compute Kinetic Importance Score", value=bool(conf_compute_kis), key="conf_compute_kis"
                     )
 
                     conf_col9, conf_col10 = st.columns(2)
                     conf_uncertainty = conf_col9.checkbox(
                         "Perform uncertainty analysis",
-                        value=True,
+                        value=bool(conf_uncertainty),
                         help="Run bootstrap estimates for TPT observables and free energies.",
                         key="conf_uncertainty_analysis",
                     )
                     conf_bootstrap_samples = conf_col10.number_input(
                         "Bootstrap samples",
                         min_value=1,
-                        value=50,
+                        value=int(conf_bootstrap_samples),
                         step=5,
                         help="Number of bootstrap resamples used during uncertainty analysis.",
                         key="conf_bootstrap_samples",
@@ -1675,7 +1871,7 @@ def main() -> None:
                     conf_cv_method = conf_cv_col1.selectbox(
                         "CV method",
                         options=["tica", "deeptica"],
-                        index=0,
+                        index=0 if conf_cv_method != "deeptica" else 1,
                         key="conf_cv_method",
                     )
                     conf_deeptica_projection = None
@@ -1695,135 +1891,83 @@ def main() -> None:
                             help="Optional JSON file describing the whitening transform for the DeepTICA outputs.",
                         )
                         conf_deeptica_metadata = Path(metadata_str) if metadata_str else None
+
+            if st.button(
+                "Run Conformations Analysis",
+                type="primary",
+                disabled=(
+                    len(selected_paths) == 0
+                    or not topology_path_str
+                    or (
+                        conf_cv_method == "deeptica" and conf_deeptica_projection is None
+                    )
+                ),
+                key="conformations_button",
+            ):
+                try:
+                    conf_config = ConformationsConfig(
+                        lag=int(conf_lag),
+                        n_clusters=int(conf_n_clusters),
+                        cluster_mode=str(conf_cluster_mode),
+                        cluster_seed=(
+                            int(conf_cluster_seed)
+                            if int(conf_cluster_seed) >= 0
+                            else None
+                        ),
+                        kmeans_n_init=int(conf_kmeans_n_init),
+                        n_components=int(conf_n_components),
+                        n_metastable=int(conf_n_metastable),
+                        temperature=float(conf_temperature),
+                        auto_detect_states=bool(conf_auto_detect),
+                        n_paths=int(conf_n_paths),
+                        compute_kis=bool(conf_compute_kis),
+                        uncertainty_analysis=bool(conf_uncertainty),
+                        bootstrap_samples=int(conf_bootstrap_samples),
+                        topology_pdb=Path(topology_path_str),
+                        cv_method=str(conf_cv_method),
+                        deeptica_projection_path=conf_deeptica_projection,
+                        deeptica_metadata_path=conf_deeptica_metadata,
+                        committor_thresholds=tuple(conf_committor_thresholds),
+                    )
+
+                    with st.spinner("Running conformations analysis..."):
+                        conf_result = backend.run_conformations_analysis(
+                            selected_paths, conf_config
+                        )
+
+                    st.session_state[_LAST_CONFORMATIONS] = conf_result
+                    if conf_result.error:
+                        st.session_state[_CONFORMATIONS_FEEDBACK] = (
+                            "error",
+                            f"Conformations analysis failed: {conf_result.error}",
+                        )
                     else:
-                        conf_deeptica_projection = None
-                        conf_deeptica_metadata = None
-
-                if st.button(
-                    "Run Conformations Analysis",
-                    type="primary",
-                    disabled=(
-                        len(selected_paths) == 0
-                        or not topology_path_str
-                        or (
-                            conf_cv_method == "deeptica"
-                            and (conf_deeptica_projection is None)
+                        st.session_state[_CONFORMATIONS_FEEDBACK] = (
+                            "success",
+                            f"Conformations analysis complete! Output saved to {conf_result.output_dir.name}",
                         )
-                    ),
-                    key="conformations_button",
-                ):
-                    try:
-                        conf_config = ConformationsConfig(
-                            lag=int(conf_lag),
-                            n_clusters=int(conf_n_clusters),
-                            cluster_mode=str(conf_cluster_mode),
-                            cluster_seed=(
-                                int(conf_cluster_seed)
-                                if int(conf_cluster_seed) >= 0
-                                else None
-                            ),
-                            kmeans_n_init=int(conf_kmeans_n_init),
-                            n_components=int(conf_n_components),
-                            n_metastable=int(conf_n_metastable),
-                            temperature=float(conf_temperature),
-                            auto_detect_states=bool(conf_auto_detect),
-                            n_paths=int(conf_n_paths),
-                            compute_kis=bool(conf_compute_kis),
-                            uncertainty_analysis=bool(conf_uncertainty),
-                            bootstrap_samples=int(conf_bootstrap_samples),
-                            topology_pdb=Path(topology_path_str),
-                            cv_method=str(conf_cv_method),
-                            deeptica_projection_path=conf_deeptica_projection,
-                            deeptica_metadata_path=conf_deeptica_metadata,
-                            committor_thresholds=conf_committor_thresholds,
-                        )
+                except Exception as exc:
+                    traceback.print_exc()
+                    st.session_state[_CONFORMATIONS_FEEDBACK] = (
+                        "error",
+                        f"Conformations analysis failed: {exc}",
+                    )
 
-                        with st.spinner("Running conformations analysis..."):
-                            conf_result = backend.run_conformations_analysis(
-                                selected_paths, conf_config
-                            )
+            feedback = st.session_state.get(_CONFORMATIONS_FEEDBACK)
+            if isinstance(feedback, tuple) and len(feedback) == 2:
+                level, message = feedback
+                if level == "success":
+                    st.success(message)
+                elif level == "warning":
+                    st.warning(message)
+                elif level == "info":
+                    st.info(message)
+                else:
+                    st.error(message)
 
-                        if conf_result.error:
-                            st.error(f"Conformations analysis failed: {conf_result.error}")
-                        else:
-                            st.success(f"Conformations analysis complete! Output saved to {conf_result.output_dir.name}")
-
-                            if not conf_result.tpt_converged:
-                                iteration_count = None
-                                if conf_result.tpt_pathway_iterations is not None:
-                                    iteration_count = conf_result.tpt_pathway_iterations
-                                elif conf_result.tpt_summary.get("pathway_iterations") is not None:
-                                    iteration_count = conf_result.tpt_summary["pathway_iterations"]
-                                elif conf_result.tpt_pathway_max_iterations is not None:
-                                    iteration_count = conf_result.tpt_pathway_max_iterations
-                                elif conf_result.tpt_summary.get("pathway_max_iterations") is not None:
-                                    iteration_count = conf_result.tpt_summary["pathway_max_iterations"]
-
-                                if iteration_count is not None:
-                                    st.error(
-                                        "Warning: TPT calculation failed to converge after "
-                                        f"{iteration_count} iterations. Pathway results are unreliable. "
-                                        "Try increasing the number of clusters or adjusting the MSM lag time."
-                                    )
-                                else:
-                                    st.error(
-                                        "Warning: TPT calculation failed to converge. Pathway results are unreliable. "
-                                        "Try increasing the number of clusters or adjusting the MSM lag time."
-                                    )
-
-                            # Display TPT summary
-                            if conf_result.tpt_summary:
-                                st.subheader("TPT Results")
-                                cols = st.columns(4)
-                                cols[0].metric("Rate", f"{conf_result.tpt_summary['rate']:.3e}")
-                                cols[1].metric("MFPT", f"{conf_result.tpt_summary['mfpt']:.1f}")
-                                cols[2].metric("Total Flux", f"{conf_result.tpt_summary['total_flux']:.3e}")
-                                cols[3].metric("N Pathways", conf_result.tpt_summary['n_pathways'])
-
-                            # Display metastable states
-                            if conf_result.metastable_states:
-                                st.subheader("Metastable States")
-                                meta_df_data = []
-                                for state_id, state_data in conf_result.metastable_states.items():
-                                    meta_df_data.append({
-                                        "State": state_id,
-                                        "Population": f"{state_data['population']:.4f}",
-                                        "N States": state_data['n_states'],
-                                        "PDB": Path(state_data['representative_pdb']).name if state_data['representative_pdb'] else "N/A",
-                                    })
-                                st.dataframe(pd.DataFrame(meta_df_data), use_container_width=True)
-
-                            # Display transition states
-                            if conf_result.transition_states:
-                                st.subheader("Transition States")
-                                ts_df_data = []
-                                for ts_data in conf_result.transition_states:
-                                    ts_df_data.append({
-                                        "State Index": ts_data['state_index'],
-                                        "Committor": f"{ts_data['committor']:.3f}",
-                                        "PDB": Path(ts_data['representative_pdb']).name if ts_data['representative_pdb'] else "N/A",
-                                    })
-                                st.dataframe(pd.DataFrame(ts_df_data), use_container_width=True)
-
-                            # Display plots
-                            if conf_result.plots:
-                                st.subheader("Visualizations")
-                                plot_cols = st.columns(2)
-                                plot_idx = 0
-                                for plot_name, plot_path in conf_result.plots.items():
-                                    if plot_path.exists():
-                                        with plot_cols[plot_idx % 2]:
-                                            st.image(str(plot_path), caption=plot_name.replace("_", " ").title())
-                                        plot_idx += 1
-
-                            # Show output directory
-                            st.info(f"All conformations saved to: {conf_result.output_dir}")
-                            if conf_result.representative_pdbs:
-                                st.write(f"📁 {len(conf_result.representative_pdbs)} representative PDB files saved")
-
-                    except Exception as exc:
-                        traceback.print_exc()
-                        st.error(f"Conformations analysis failed: {exc}")
+            last_conf = st.session_state.get(_LAST_CONFORMATIONS)
+            if isinstance(last_conf, ConformationsResult):
+                _render_conformations_result(last_conf)
 
         with tab_model_preview:
             st.header("Model Preview & Inspection")

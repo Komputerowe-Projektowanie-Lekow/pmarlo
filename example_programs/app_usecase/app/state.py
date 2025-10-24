@@ -16,6 +16,7 @@ class _StateData:
     shards: List[Dict[str, Any]] = field(default_factory=list)
     models: List[Dict[str, Any]] = field(default_factory=list)
     builds: List[Dict[str, Any]] = field(default_factory=list)
+    conformations: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -23,6 +24,7 @@ class _StateData:
             "shards": list(self.shards),
             "models": list(self.models),
             "builds": list(self.builds),
+            "conformations": list(self.conformations),
         }
 
     @classmethod
@@ -32,6 +34,7 @@ class _StateData:
             shards=list(payload.get("shards", [])),
             models=list(payload.get("models", [])),
             builds=list(payload.get("builds", [])),
+            conformations=list(payload.get("conformations", [])),
         )
 
 
@@ -63,6 +66,10 @@ class StateManager:
     def builds(self) -> List[Dict[str, Any]]:
         return self._data.builds
 
+    @property
+    def conformations(self) -> List[Dict[str, Any]]:
+        return self._data.conformations
+
     # ------------------------------------------------------------------
     # Mutation helpers
     # ------------------------------------------------------------------
@@ -82,6 +89,10 @@ class StateManager:
         self._data.builds.append(dict(entry))
         self._save()
 
+    def append_conformations(self, entry: Dict[str, Any]) -> None:
+        self._data.conformations.append(dict(entry))
+        self._save()
+
     def remove_run(self, index: int) -> Optional[Dict[str, Any]]:
         return self._remove_from(self._data.runs, index)
 
@@ -94,6 +105,9 @@ class StateManager:
     def remove_build(self, index: int) -> Optional[Dict[str, Any]]:
         return self._remove_from(self._data.builds, index)
 
+    def remove_conformations(self, index: int) -> Optional[Dict[str, Any]]:
+        return self._remove_from(self._data.conformations, index)
+
     # ------------------------------------------------------------------
     # Summaries & persistence
     # ------------------------------------------------------------------
@@ -103,6 +117,7 @@ class StateManager:
             "shards": len(self._data.shards),
             "models": len(self._data.models),
             "builds": len(self._data.builds),
+            "conformations": len(self._data.conformations),
         }
 
     # ------------------------------------------------------------------
