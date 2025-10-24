@@ -23,3 +23,7 @@
     * **WRONG:** `python -c "import openmm"`
     * **RIGHT:** `poetry run pip install psutil`
     * **RIGHT:** `poetry run python -c "import openmm"`
+20. If `poetry run pytest` or `poetry run tox` fails with a `ModuleNotFoundError` (indicating a missing dependency):
+    * **DO NOT** modify the test code to skip the test (e.g., using `pytest.importorskip`). This violates Rule #13 (No Fallbacks).
+    * **DO** run the maintenance script: `./codex_maintenance_script.sh` to attempt to repair the environment and install missing dependencies.
+    * After the maintenance script runs, **DO** re-run the original `poetry run pytest ...` or `poetry run tox ...` command to verify the fix.
