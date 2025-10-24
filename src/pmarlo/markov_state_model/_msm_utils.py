@@ -5,6 +5,7 @@ from typing import Any, cast
 
 import numpy as np
 from deeptime.markov import pcca as _deeptime_pcca  # type: ignore
+from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
 from deeptime.markov.tools.analysis import (
     stationary_distribution as _dt_stationary_distribution,  # type: ignore
 )
@@ -202,8 +203,9 @@ def _fit_msm_deeptime(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Fit MSM using deeptime library (required dependency).
 
-    Uses TransitionCountEstimator to estimate the transition matrix,
-    then normalizes and computes stationary distribution.
+    Uses TransitionCountEstimator to estimate transition counts and
+    MaximumLikelihoodMSM with reversible=True to obtain a reversible
+    transition matrix and stationary distribution.
 
     Parameters
     ----------
@@ -238,8 +240,13 @@ def _fit_msm_deeptime(
             np.empty((0, 0), dtype=float),
             np.empty((0,), dtype=float),
         )
-    T_active = _row_normalize(res.counts)
-    pi_active = _stationary_from_T(T_active)
+    ml = MaximumLikelihoodMSM(
+        lagtime=int(max(1, lag)),
+        reversible=True,
+    )
+    msm_model = ml.fit(res.counts).fetch_model()
+    T_active = np.asarray(msm_model.transition_matrix, dtype=float)
+    pi_active = np.asarray(msm_model.stationary_distribution, dtype=float)
     return _expand_results(n_states, res.active, T_active, pi_active)
 
 

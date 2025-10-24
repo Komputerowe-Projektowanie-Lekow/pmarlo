@@ -7,6 +7,8 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
+from ..markov_state_model._msm_utils import ensure_connected_counts
+
 from .results import KISResult
 
 logger = logging.getLogger("pmarlo.conformations")
@@ -304,24 +306,34 @@ class KineticImportanceScore:
         """
         try:
             from deeptime.markov import TransitionCountEstimator
-        except ImportError:
-            raise ImportError("MSM rebuilding requires deeptime")
+            from deeptime.markov.msm import MaximumLikelihoodMSM
+        except ImportError as exc:
+            raise ImportError("MSM rebuilding requires deeptime") from exc
 
         # Count transitions
         tce = TransitionCountEstimator(lagtime=lag, count_mode="sliding", sparse=False)
         count_model = tce.fit(dtrajs).fetch_model()
         C = np.asarray(count_model.count_matrix, dtype=float)
+        n_states = C.shape[0]
 
-        # Normalize to transition matrix
-        row_sums = C.sum(axis=1, keepdims=True)
-        row_sums[row_sums == 0] = 1.0
-        T = C / row_sums
+        res = ensure_connected_counts(C)
+        if res.counts.size == 0:
+            T_empty = np.eye(n_states, dtype=float)
+            pi_empty = np.zeros((n_states,), dtype=float)
+            return T_empty, pi_empty
 
-        # Compute stationary distribution
-        eigenvalues, eigenvectors = np.linalg.eig(T.T)
-        stationary_idx = np.argmax(np.abs(eigenvalues))
-        pi = np.real(eigenvectors[:, stationary_idx])
-        pi = pi / np.sum(pi)
+        ml = MaximumLikelihoodMSM(
+            lagtime=int(max(1, lag)),
+            reversible=True,
+        )
+        msm_model = ml.fit(res.counts).fetch_model()
+        T_active = np.asarray(msm_model.transition_matrix, dtype=float)
+        pi_active = np.asarray(msm_model.stationary_distribution, dtype=float)
+
+        T = np.eye(n_states, dtype=float)
+        T[np.ix_(res.active, res.active)] = T_active
+        pi = np.zeros((n_states,), dtype=float)
+        pi[res.active] = pi_active
 
         return T, pi
 

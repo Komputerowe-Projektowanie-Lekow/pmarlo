@@ -9,7 +9,6 @@ import numpy as np
 from pmarlo import constants as const
 
 from ._msm_utils import (
-    _row_normalize,
     _stationary_from_T,
     check_transition_matrix,
     ensure_connected_counts,
@@ -73,8 +72,9 @@ def _fit_msm_deeptime(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Fit MSM using deeptime library (required dependency).
 
-    Uses TransitionCountEstimator to estimate the transition matrix,
-    then normalizes and computes stationary distribution.
+    Uses TransitionCountEstimator to estimate transition counts and
+    MaximumLikelihoodMSM with reversible=True to compute a reversible
+    transition matrix and stationary distribution.
 
     Parameters
     ----------
@@ -93,6 +93,7 @@ def _fit_msm_deeptime(
         (transition_matrix, stationary_distribution)
     """
     from deeptime.markov import TransitionCountEstimator  # type: ignore
+    from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
 
     tce = TransitionCountEstimator(
         lagtime=int(max(1, lag)),
@@ -109,8 +110,13 @@ def _fit_msm_deeptime(
             np.empty((0, 0), dtype=float),
             np.empty((0,), dtype=float),
         )
-    T_active = _row_normalize(res.counts)
-    pi_active = _stationary_from_T(T_active)
+    ml = MaximumLikelihoodMSM(
+        lagtime=int(max(1, lag)),
+        reversible=True,
+    )
+    msm_model = ml.fit(res.counts).fetch_model()
+    T_active = np.asarray(msm_model.transition_matrix, dtype=float)
+    pi_active = np.asarray(msm_model.stationary_distribution, dtype=float)
     return _expand_results(n_states, res.active, T_active, pi_active)
 
 

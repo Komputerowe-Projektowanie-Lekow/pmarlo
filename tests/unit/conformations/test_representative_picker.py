@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pathlib import Path
+
 import numpy as np
 
 from pmarlo.conformations.representative_picker import (
     RepresentativePicker,
+    TrajectoryFrameLocator,
+    TrajectorySegment,
     build_frame_index_lookup,
 )
 
@@ -84,3 +88,39 @@ def test_extract_structures_uses_local_indices(tmp_path: Path) -> None:
     saved_path = Path(saved[0])
     assert saved_path.exists()
     assert saved_path.name == "test_005_000004.pdb"
+
+
+def test_extract_structures_with_locator(tmp_path: Path) -> None:
+    import mdtraj as md
+
+    topology = Path("tests/_assets/3gd8-fixed.pdb").resolve()
+    trajectory = Path("tests/_assets/traj.dcd").resolve()
+
+    traj = md.load(str(trajectory), top=str(topology))
+    locator = TrajectoryFrameLocator(
+        segments=(
+            TrajectorySegment(
+                path=trajectory,
+                start=0,
+                stop=len(traj),
+                local_start=0,
+            ),
+        )
+    )
+
+    picker = RepresentativePicker()
+    representatives = [(0, 2, 0, 2)]
+
+    saved = picker.extract_structures(
+        representatives,
+        trajectories=None,
+        output_dir=str(tmp_path / "locator"),
+        prefix="loc",
+        topology_path=topology,
+        trajectory_locator=locator,
+    )
+
+    assert len(saved) == 1
+    saved_path = Path(saved[0])
+    assert saved_path.exists()
+    assert saved_path.name == "loc_000_000002.pdb"

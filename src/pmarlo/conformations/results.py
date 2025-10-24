@@ -41,6 +41,7 @@ class TPTResult:
     pathways: List[List[int]] = field(default_factory=list)
     pathway_fluxes: np.ndarray = field(default_factory=lambda: np.array([]))
     bottleneck_states: np.ndarray = field(default_factory=lambda: np.array([]))
+    tpt_converged: bool = True
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -57,6 +58,7 @@ class TPTResult:
             "pathways": self.pathways,
             "pathway_fluxes": self.pathway_fluxes.tolist(),
             "bottleneck_states": self.bottleneck_states.tolist(),
+            "tpt_converged": bool(self.tpt_converged),
         }
 
 
@@ -307,6 +309,7 @@ class ConformationSet:
                 pathways=tpt_data.get("pathways", []),
                 pathway_fluxes=np.array(tpt_data.get("pathway_fluxes", [])),
                 bottleneck_states=np.array(tpt_data.get("bottleneck_states", [])),
+                tpt_converged=bool(tpt_data.get("tpt_converged", True)),
             )
 
         # Reconstruct KIS result
