@@ -583,6 +583,8 @@ class ConformationsResult:
     config: ConformationsConfig
     error: Optional[str] = None
     tpt_converged: bool = True
+    tpt_pathway_iterations: Optional[int] = None
+    tpt_pathway_max_iterations: Optional[int] = None
 
 
 class WorkflowBackend:
@@ -2034,9 +2036,31 @@ class WorkflowBackend:
                     f"received {type(config.kmeans_kwargs).__name__}."
                 )
 
+            n_clusters = int(config.n_clusters)
+            if n_clusters <= 0:
+                raise ValueError(
+                    "ConformationsConfig.n_clusters must be a positive integer"
+                )
+
+            total_frames = int(features_reduced.shape[0])
+            if total_frames == 0:
+                raise ValueError("No frames available after dimensionality reduction")
+
+            frames_per_cluster = total_frames / float(n_clusters)
+            if frames_per_cluster > 10_000:
+                logger.warning(
+                    (
+                        "Using %d clusters for %d frames (~%.0f frames/cluster) may be too coarse. "
+                        "Increase n_clusters to improve transition state resolution."
+                    ),
+                    n_clusters,
+                    total_frames,
+                    frames_per_cluster,
+                )
+
             logger.info(
                 "Clustering into %d microstates using %s (seed=%s, n_init=%d, kwargs=%s)",
-                int(config.n_clusters),
+                n_clusters,
                 method_alias[cluster_mode],
                 "None" if config.cluster_seed is None else int(config.cluster_seed),
                 int(config.kmeans_n_init),
@@ -2046,7 +2070,7 @@ class WorkflowBackend:
             clustering_result = cluster_microstates(
                 features_reduced,
                 method=method_alias[cluster_mode],
-                n_states=int(config.n_clusters),
+                n_states=n_clusters,
                 random_state=(
                     None
                     if config.cluster_seed is None
@@ -2132,6 +2156,8 @@ class WorkflowBackend:
                 "source_states": tpt_result.source_states.tolist(),
                 "sink_states": tpt_result.sink_states.tolist(),
                 "tpt_converged": bool(tpt_result.tpt_converged),
+                "pathway_iterations": int(tpt_result.pathway_iterations),
+                "pathway_max_iterations": int(tpt_result.pathway_max_iterations),
             }
 
             metastable_states: Dict[str, Dict[str, Any]] = {}
@@ -2219,8 +2245,10 @@ class WorkflowBackend:
                 created_at=stamp,
                 config=config,
                 tpt_converged=bool(tpt_result.tpt_converged),
+                tpt_pathway_iterations=int(tpt_result.pathway_iterations),
+                tpt_pathway_max_iterations=int(tpt_result.pathway_max_iterations),
             )
-            
+
         except Exception as e:
             logger.error(f"Conformations analysis failed: {e}", exc_info=True)
             return ConformationsResult(
@@ -2235,6 +2263,8 @@ class WorkflowBackend:
                 config=config,
                 error=str(e),
                 tpt_converged=True,
+                tpt_pathway_iterations=None,
+                tpt_pathway_max_iterations=None,
             )
 
     # ------------------------------------------------------------------

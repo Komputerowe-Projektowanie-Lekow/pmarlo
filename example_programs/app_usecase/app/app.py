@@ -515,9 +515,9 @@ def main() -> None:
         st.divider()
         st.number_input(
             "Number of Clusters",
-            min_value=10,
+            min_value=50,
             max_value=1000,
-            value=int(st.session_state.get("conf_n_clusters", 100)),
+            value=int(st.session_state.get("conf_n_clusters", 200)),
             step=10,
             help=(
                 "Controls the number of clusters used when constructing the"
@@ -1633,9 +1633,27 @@ def main() -> None:
                         st.success(f"Conformations analysis complete! Output saved to {conf_result.output_dir.name}")
 
                         if not conf_result.tpt_converged:
-                            st.error(
-                                "Warning: TPT calculation failed to converge. The flux and pathway results shown are unreliable. Try increasing the number of clusters."
-                            )
+                            iteration_count = None
+                            if conf_result.tpt_pathway_iterations is not None:
+                                iteration_count = conf_result.tpt_pathway_iterations
+                            elif conf_result.tpt_summary.get("pathway_iterations") is not None:
+                                iteration_count = conf_result.tpt_summary["pathway_iterations"]
+                            elif conf_result.tpt_pathway_max_iterations is not None:
+                                iteration_count = conf_result.tpt_pathway_max_iterations
+                            elif conf_result.tpt_summary.get("pathway_max_iterations") is not None:
+                                iteration_count = conf_result.tpt_summary["pathway_max_iterations"]
+
+                            if iteration_count is not None:
+                                st.error(
+                                    "Warning: TPT calculation failed to converge after "
+                                    f"{iteration_count} iterations. Pathway results are unreliable. "
+                                    "Try increasing the number of clusters or adjusting the MSM lag time."
+                                )
+                            else:
+                                st.error(
+                                    "Warning: TPT calculation failed to converge. Pathway results are unreliable. "
+                                    "Try increasing the number of clusters or adjusting the MSM lag time."
+                                )
 
                         # Display TPT summary
                         if conf_result.tpt_summary:

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
+
+np = pytest.importorskip("numpy")
+pytest.importorskip("deeptime")
 
 from pmarlo.conformations.tpt_analysis import TPTAnalysis
 
@@ -83,6 +85,8 @@ def test_analyze_complete():
     assert result.rate > 0
     assert result.mfpt > 0
     assert result.total_flux > 0
+    assert result.pathway_iterations >= len(result.pathways)
+    assert result.pathway_max_iterations >= result.pathway_iterations
 
 
 def test_find_bottleneck_states():
@@ -136,4 +140,6 @@ def test_tpt_large_system():
     assert result.forward_committor.shape == (n_states,)
     assert result.rate >= 0
     assert result.total_flux >= 0
+    assert result.pathway_iterations >= len(result.pathways)
+    assert result.pathway_max_iterations >= result.pathway_iterations
 
