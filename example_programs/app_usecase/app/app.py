@@ -1640,7 +1640,6 @@ def main() -> None:
                         on_change=_sync_form_metastable_states,
                     )
                     st.session_state["conf_n_metastable"] = int(conf_n_metastable)
-                    st.session_state["conf_n_metastable_sidebar"] = int(conf_n_metastable)
                     conf_temperature = conf_col5.number_input(
                         "Temperature (K)", min_value=0.0, value=300.0, step=5.0, key="conf_temperature"
                     )
