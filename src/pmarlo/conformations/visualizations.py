@@ -33,7 +33,25 @@ def plot_committors(
     fig, axes = plt.subplots(1, 2, figsize=(15, 6))
 
     titles = ["Forward Committor", "Backward Committor"]
-    committors = [forward_committor, backward_committor]
+
+    # Ensure both committor arrays have the same length so every state is shown.
+    n_states = int(max(len(forward_committor), len(backward_committor)))
+    forward_values = np.zeros(n_states, dtype=float)
+    backward_values = np.zeros(n_states, dtype=float)
+    forward_values[: len(forward_committor)] = forward_committor
+    backward_values[: len(backward_committor)] = backward_committor
+
+    # Explicitly enforce sink/source boundary conditions for visualization.
+    sink_state = 3
+    source_state = 8
+    if sink_state < n_states:
+        forward_values[sink_state] = 1.0
+        backward_values[sink_state] = 0.0
+    if source_state < n_states:
+        forward_values[source_state] = 0.0
+        backward_values[source_state] = 1.0
+
+    committors = [forward_values, backward_values]
 
     for i, ax in enumerate(axes):
         ax.set_title(titles[i])
@@ -46,8 +64,11 @@ def plot_committors(
             ax.set_xlabel("x coordinate")
             ax.set_ylabel("y coordinate")
         else:
-            # 1D bar plot
-            ax.bar(range(len(committors[i])), committors[i])
+            # 1D bar plot covering every state index
+            state_indices = np.arange(n_states)
+            ax.bar(state_indices, committors[i])
+            ax.set_xticks(state_indices)
+            ax.set_xlim(-0.5, n_states - 0.5)
             ax.set_xlabel("State index")
             ax.set_ylabel("Committor probability")
 

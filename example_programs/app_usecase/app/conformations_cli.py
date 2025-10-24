@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -21,13 +22,13 @@ def main():
     parser.add_argument(
         "--shards-dir",
         type=Path,
-        default=Path("example_programs/app_usecase/app_intputs/experiments/mixed_ladders_shards"),
+        default=Path("../app_intputs/experiments/mixed_ladders_shards"),
         help="Directory containing shard files",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("example_programs/programs_outputs/conformations_cli"),
+        default=Path("../programs_outputs/conformations_cli"),
         help="Output directory for results",
     )
     parser.add_argument(
@@ -164,11 +165,23 @@ def main():
         if combined_traj:
             print(f"  [OK] Combined {len(combined_traj)} frames")
 
+    trajectories_loaded = combined_traj is not None
+    if not trajectories_loaded:
+        print("  [WARN] Trajectories unavailable; structure outputs will be skipped")
+
     # Dimensionality reduction
     print(f"\n[5/8] Reducing features with TICA (lag={args.lag}, n_components={args.n_components})...")
+    n_features = features.shape[1]
+    tica_dim = args.n_components
+    if args.n_components > n_features:
+        print(
+            f"[WARN] Requested {args.n_components} TICA components, but input data only has {n_features} features. Setting n_components = {n_features}."
+        )
+        tica_dim = n_features
+
     try:
         features_reduced = reduce_features(
-            features, method="tica", lag=args.lag, n_components=args.n_components
+            features, method="tica", lag=args.lag, n_components=tica_dim
         )
         print(f"  [OK] Reduced to {features_reduced.shape[1]} dimensions")
     except Exception as e:
@@ -214,6 +227,8 @@ def main():
     print(f"\n[8/8] Running TPT conformations analysis...")
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
+    pathway_warning = False
+
     try:
         # Prepare MSM data dictionary
         msm_data = {
@@ -222,22 +237,29 @@ def main():
             'dtrajs': [labels],
             'features': features_reduced,
         }
-        
-        conf_result = find_conformations(
-            msm_data=msm_data,
-            trajectories=[combined_traj] if combined_traj else None,
-            auto_detect=True,
-            auto_detect_method='auto',
-            find_transition_states=True,
-            find_metastable_states=True,
-            find_pathway_intermediates=True,
-            compute_kis=True,
-            uncertainty_analysis=False,
-            n_bootstrap=50,
-            representative_selection='medoid',
-            output_dir=str(args.output_dir),
-            save_structures=True,
-        )
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+
+            conf_result = find_conformations(
+                msm_data=msm_data,
+                trajectories=[combined_traj] if trajectories_loaded else None,
+                auto_detect=True,
+                auto_detect_method='auto',
+                find_transition_states=True,
+                find_metastable_states=True,
+                find_pathway_intermediates=True,
+                compute_kis=True,
+                uncertainty_analysis=False,
+                n_bootstrap=50,
+                representative_selection='medoid',
+                output_dir=str(args.output_dir),
+                save_structures=trajectories_loaded,
+            )
+
+            for warning in w:
+                if issubclass(warning.category, RuntimeWarning) and "Maximum number of iterations reached" in str(warning.message):
+                    pathway_warning = True
         print("  [OK] TPT analysis complete")
     except Exception as e:
         print(f"Error in TPT analysis: {e}")
@@ -280,30 +302,50 @@ def main():
         print(f"Warning: Visualization error: {e}")
 
     # Print results
+    print("\n[INFO] Printing results summary...")
     print("\n" + "=" * 70)
     print("RESULTS SUMMARY")
     print("=" * 70)
 
-    if conf_result.tpt_result:
-        print(f"\nTPT Metrics:")
-        print(f"  Rate:        {conf_result.tpt_result.rate:.3e} / step")
-        print(f"  MFPT:        {conf_result.tpt_result.mfpt:.1f} steps")
-        print(f"  Total Flux:  {conf_result.tpt_result.total_flux:.3e}")
-        print(f"  N Pathways:  {len(conf_result.tpt_result.pathways)}")
-        print(f"  Source:      {len(conf_result.tpt_result.source_states)} states")
-        print(f"  Sink:        {len(conf_result.tpt_result.sink_states)} states")
+    tpt_result = conf_result.tpt_result
+    metastable_states = conf_result.get_metastable_states()
+    transition_states = conf_result.get_transition_states()
 
-    metastable = conf_result.get_by_type('metastable')
-    if metastable:
-        print(f"\nMetastable States: {len(metastable)}")
-        for conf in metastable[:5]:
+    if tpt_result:
+        print(f"\nTPT Metrics:")
+        print(f"  Rate:        {tpt_result.rate:.3e} / step")
+        print(f"  MFPT:        {tpt_result.mfpt:.1f} steps")
+        print(f"  Total Flux:  {tpt_result.total_flux:.3e}")
+        print(f"  N Pathways:  {len(tpt_result.pathways)}")
+        print(f"  Source:      {len(tpt_result.source_states)} states")
+        print(f"  Sink:        {len(tpt_result.sink_states)} states")
+        if pathway_warning:
+            print(
+                "  [WARN] Pathway decomposition did not converge (maximum iterations reached). Results may be incomplete."
+            )
+
+        identified_metastable = len(metastable_states)
+        if args.n_metastable != identified_metastable:
+            print(
+                "[INFO] Requested "
+                f"{args.n_metastable} metastable states, but PCCA+ analysis identified "
+                f"{identified_metastable} robust states."
+            )
+
+    if metastable_states:
+        print(f"\nMetastable States: {len(metastable_states)}")
+        for conf in metastable_states:
             print(f"  {conf.state_id}: pop={conf.population:.4f}")
 
-    transition = conf_result.get_transition_states()
-    if transition:
-        print(f"\nTransition States: {len(transition)}")
-        for conf in transition[:5]:
-            print(f"  State {conf.state_id}: committor={conf.committor:.3f}")
+    if transition_states:
+        if not tpt_result:
+            raise RuntimeError(
+                "Transition state summary requires TPT results, but none were found."
+            )
+        print(f"\nTransition States: {len(transition_states)}")
+        for conf in transition_states:
+            committor = float(tpt_result.forward_committor[conf.state_id])
+            print(f"  State {conf.state_id}: committor={committor:.3f}")
 
     # Count PDB files
     pdb_files = list(args.output_dir.glob("*.pdb"))
@@ -314,8 +356,8 @@ def main():
     # Save summary JSON
     summary_path = args.output_dir / "conformations_summary.json"
     
-    metastable = conf_result.get_by_type('metastable')
-    transition = conf_result.get_transition_states()
+    metastable = metastable_states
+    transition = transition_states
     
     summary = {
         "tpt": {
@@ -330,7 +372,7 @@ def main():
         "config": {
             "lag": args.lag,
             "n_clusters": args.n_clusters,
-            "n_components": args.n_components,
+            "n_components": tica_dim,
             "n_metastable": args.n_metastable,
             "temperature": args.temperature,
         },

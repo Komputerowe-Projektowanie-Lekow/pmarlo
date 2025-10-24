@@ -1722,50 +1722,63 @@ class WorkflowBackend:
                 )
 
             shard_meta_list = dataset.get("__shards__", [])
-            if not shard_meta_list:
-                raise RuntimeError(
-                    "Shard metadata is missing; cannot locate trajectories for conformations analysis."
-                )
-
             logger.info(f"Loading trajectories with topology: {topology_pdb}")
             all_trajs = []
-            for idx, shard_meta in enumerate(shard_meta_list):
-                if not isinstance(shard_meta, Mapping):
-                    raise TypeError(
-                        f"Shard metadata entry {idx} is not a mapping; unable to read trajectories."
-                    )
-                traj_paths = shard_meta.get("trajectories", [])
-                if not traj_paths:
-                    raise RuntimeError(
-                        "Shard metadata does not include trajectory paths; cannot continue."
-                    )
-                for traj_path_str in traj_paths:
-                    traj_path = Path(traj_path_str)
-                    if not traj_path.is_absolute():
-                        traj_path = (self.layout.workspace_dir / traj_path).resolve()
-                    if not traj_path.exists():
-                        raise FileNotFoundError(
-                            f"Trajectory {traj_path} referenced in shard metadata does not exist."
+            missing_traj_info = False
+            warned_no_traj = False
+            if shard_meta_list:
+                for idx, shard_meta in enumerate(shard_meta_list):
+                    if not isinstance(shard_meta, Mapping):
+                        raise TypeError(
+                            f"Shard metadata entry {idx} is not a mapping; unable to read trajectories."
                         )
-                    try:
-                        traj = md.load(str(traj_path), top=str(topology_pdb))
-                    except Exception as exc:
-                        raise RuntimeError(
-                            f"Failed to load trajectory {traj_path.name}: {exc}"
-                        ) from exc
-                    all_trajs.append(traj)
-                    logger.info(
-                        f"Loaded trajectory: {traj_path.name} ({len(traj)} frames)"
-                    )
-
-            if not all_trajs:
-                raise RuntimeError(
-                    "No trajectories could be loaded; conformations analysis cannot proceed."
+                    traj_paths = shard_meta.get("trajectories")
+                    if not traj_paths:
+                        missing_traj_info = True
+                        logger.warning(
+                            "Shard metadata for entry %s does not include trajectory paths; representative structures will not be saved.",
+                            shard_meta.get("id", idx),
+                        )
+                        continue
+                    for traj_path_str in traj_paths:
+                        traj_path = Path(traj_path_str)
+                        if not traj_path.is_absolute():
+                            traj_path = (self.layout.workspace_dir / traj_path).resolve()
+                        if not traj_path.exists():
+                            raise FileNotFoundError(
+                                f"Trajectory {traj_path} referenced in shard metadata does not exist."
+                            )
+                        try:
+                            traj = md.load(str(traj_path), top=str(topology_pdb))
+                        except Exception as exc:
+                            raise RuntimeError(
+                                f"Failed to load trajectory {traj_path.name}: {exc}"
+                            ) from exc
+                        all_trajs.append(traj)
+                        logger.info(
+                            f"Loaded trajectory: {traj_path.name} ({len(traj)} frames)"
+                        )
+            else:
+                missing_traj_info = True
+                logger.warning(
+                    "Shard metadata is missing; no trajectories will be loaded. Representative structures will not be saved."
                 )
+                warned_no_traj = True
 
-            combined_traj = md.join(all_trajs)
-            logger.info(f"Combined trajectory: {len(combined_traj)} total frames")
-            
+            combined_traj = md.join(all_trajs) if all_trajs else None
+            if combined_traj is not None:
+                logger.info(f"Combined trajectory: {len(combined_traj)} total frames")
+            else:
+                if not missing_traj_info:
+                    logger.warning(
+                        "No trajectories could be loaded despite metadata entries; representative structures will not be saved."
+                    )
+                elif not warned_no_traj:
+                    logger.warning(
+                        "No trajectories loaded, representative structures will not be saved."
+                    )
+                    warned_no_traj = True
+
             # Reduce features with TICA
             logger.info(f"Reducing features with TICA (n_components={config.n_components})")
             features_reduced = reduce_features(
@@ -1808,7 +1821,7 @@ class WorkflowBackend:
             
             conf_result = find_conformations(
                 msm_data=msm_data,
-                trajectories=[combined_traj] if combined_traj else None,
+                trajectories=[combined_traj] if combined_traj is not None else None,
                 source_states=np.array(config.source_states) if config.source_states else None,
                 sink_states=np.array(config.sink_states) if config.sink_states else None,
                 auto_detect=config.auto_detect_states,
@@ -1821,7 +1834,7 @@ class WorkflowBackend:
                 n_bootstrap=config.bootstrap_samples,
                 representative_selection='medoid',
                 output_dir=str(output_dir),
-                save_structures=True,
+                save_structures=combined_traj is not None,
             )
 
             tpt_result = conf_result.tpt_result
