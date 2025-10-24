@@ -1504,11 +1504,46 @@ def main() -> None:
                 conf_compute_kis = conf_col8.checkbox(
                     "Compute Kinetic Importance Score", value=True, key="conf_compute_kis"
                 )
+
+                conf_cv_col1, conf_cv_col2 = st.columns(2)
+                conf_cv_method = conf_cv_col1.selectbox(
+                    "CV method",
+                    options=["tica", "deeptica"],
+                    index=0,
+                    key="conf_cv_method",
+                )
+                conf_deeptica_projection = None
+                conf_deeptica_metadata = None
+                if conf_cv_method == "deeptica":
+                    projection_str = conf_cv_col2.text_input(
+                        "DeepTICA projection path",
+                        value="",
+                        key="conf_deeptica_projection",
+                        help="Path to a .npz/.npy file containing precomputed DeepTICA CVs.",
+                    )
+                    conf_deeptica_projection = Path(projection_str) if projection_str else None
+                    metadata_str = st.text_input(
+                        "DeepTICA whitening metadata (optional)",
+                        value="",
+                        key="conf_deeptica_metadata",
+                        help="Optional JSON file describing the whitening transform for the DeepTICA outputs.",
+                    )
+                    conf_deeptica_metadata = Path(metadata_str) if metadata_str else None
+                else:
+                    conf_deeptica_projection = None
+                    conf_deeptica_metadata = None
             
             if st.button(
                 "Run Conformations Analysis",
                 type="primary",
-                disabled=len(selected_paths) == 0 or not topology_path_str,
+                disabled=(
+                    len(selected_paths) == 0
+                    or not topology_path_str
+                    or (
+                        conf_cv_method == "deeptica"
+                        and (conf_deeptica_projection is None)
+                    )
+                ),
                 key="conformations_button",
             ):
                 try:
@@ -1522,6 +1557,9 @@ def main() -> None:
                         n_paths=int(conf_n_paths),
                         compute_kis=bool(conf_compute_kis),
                         topology_pdb=Path(topology_path_str),
+                        cv_method=str(conf_cv_method),
+                        deeptica_projection_path=conf_deeptica_projection,
+                        deeptica_metadata_path=conf_deeptica_metadata,
                     )
 
                     with st.spinner("Running conformations analysis..."):
