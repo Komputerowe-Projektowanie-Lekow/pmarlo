@@ -15,6 +15,8 @@ try:  # Prefer package-relative imports when launched via `streamlit run -m`
     from .backend import (
         BuildArtifact,
         BuildConfig,
+        ConformationsConfig,
+        ConformationsResult,
         ShardRequest,
         SimulationConfig,
         TrainingConfig,
@@ -37,6 +39,8 @@ except ImportError:  # Fallback for `streamlit run app.py`
     from backend import (  # type: ignore
         BuildArtifact,
         BuildConfig,
+        ConformationsConfig,
+        ConformationsResult,
         ShardRequest,
         SimulationConfig,
         TrainingConfig,
@@ -1421,6 +1425,127 @@ def main() -> None:
                     print(f"--- DEBUG: Analysis failed with exception: {exc}")
                     traceback.print_exc()
                     st.error(f"Analysis failed: {exc}")
+        
+        # Conformations Analysis Section
+        st.divider()
+        st.subheader("TPT Conformations Analysis")
+        st.write("Find metastable states, transition states, and pathways using Transition Path Theory.")
+        
+        if not shard_groups:
+            st.info("Emit shards to run conformations analysis.")
+        else:
+            with st.expander("Configure Conformations Analysis", expanded=False):
+                conf_col1, conf_col2, conf_col3 = st.columns(3)
+                conf_lag = conf_col1.number_input(
+                    "Lag (steps)", min_value=1, value=10, step=1, key="conf_lag"
+                )
+                conf_n_clusters = conf_col2.number_input(
+                    "N microstates", min_value=10, value=30, step=5, key="conf_n_clusters"
+                )
+                conf_n_components = conf_col3.number_input(
+                    "TICA components", min_value=2, value=3, step=1, key="conf_n_components"
+                )
+                
+                conf_col4, conf_col5, conf_col6 = st.columns(3)
+                conf_n_metastable = conf_col4.number_input(
+                    "N metastable states", min_value=2, value=4, step=1, key="conf_n_metastable"
+                )
+                conf_temperature = conf_col5.number_input(
+                    "Temperature (K)", min_value=0.0, value=300.0, step=5.0, key="conf_temperature"
+                )
+                conf_n_paths = conf_col6.number_input(
+                    "Max pathways", min_value=1, value=10, step=1, key="conf_n_paths"
+                )
+                
+                conf_col7, conf_col8 = st.columns(2)
+                conf_auto_detect = conf_col7.checkbox(
+                    "Auto-detect source/sink states", value=True, key="conf_auto_detect"
+                )
+                conf_compute_kis = conf_col8.checkbox(
+                    "Compute Kinetic Importance Score", value=True, key="conf_compute_kis"
+                )
+            
+            if st.button(
+                "Run Conformations Analysis",
+                type="primary",
+                disabled=len(selected_paths) == 0,
+                key="conformations_button",
+            ):
+                try:
+                    conf_config = ConformationsConfig(
+                        lag=int(conf_lag),
+                        n_clusters=int(conf_n_clusters),
+                        n_components=int(conf_n_components),
+                        n_metastable=int(conf_n_metastable),
+                        temperature=float(conf_temperature),
+                        auto_detect_states=bool(conf_auto_detect),
+                        n_paths=int(conf_n_paths),
+                        compute_kis=bool(conf_compute_kis),
+                    )
+                    
+                    with st.spinner("Running conformations analysis..."):
+                        conf_result = backend.run_conformations_analysis(
+                            selected_paths, conf_config
+                        )
+                    
+                    if conf_result.error:
+                        st.error(f"Conformations analysis failed: {conf_result.error}")
+                    else:
+                        st.success(f"Conformations analysis complete! Output saved to {conf_result.output_dir.name}")
+                        
+                        # Display TPT summary
+                        if conf_result.tpt_summary:
+                            st.subheader("TPT Results")
+                            cols = st.columns(4)
+                            cols[0].metric("Rate", f"{conf_result.tpt_summary['rate']:.3e}")
+                            cols[1].metric("MFPT", f"{conf_result.tpt_summary['mfpt']:.1f}")
+                            cols[2].metric("Total Flux", f"{conf_result.tpt_summary['total_flux']:.3e}")
+                            cols[3].metric("N Pathways", conf_result.tpt_summary['n_pathways'])
+                        
+                        # Display metastable states
+                        if conf_result.metastable_states:
+                            st.subheader("Metastable States")
+                            meta_df_data = []
+                            for state_id, state_data in conf_result.metastable_states.items():
+                                meta_df_data.append({
+                                    "State": state_id,
+                                    "Population": f"{state_data['population']:.4f}",
+                                    "N States": state_data['n_states'],
+                                    "PDB": Path(state_data['representative_pdb']).name if state_data['representative_pdb'] else "N/A",
+                                })
+                            st.dataframe(pd.DataFrame(meta_df_data), use_container_width=True)
+                        
+                        # Display transition states
+                        if conf_result.transition_states:
+                            st.subheader("Transition States")
+                            ts_df_data = []
+                            for ts_data in conf_result.transition_states:
+                                ts_df_data.append({
+                                    "State Index": ts_data['state_index'],
+                                    "Committor": f"{ts_data['committor']:.3f}",
+                                    "PDB": Path(ts_data['representative_pdb']).name if ts_data['representative_pdb'] else "N/A",
+                                })
+                            st.dataframe(pd.DataFrame(ts_df_data), use_container_width=True)
+                        
+                        # Display plots
+                        if conf_result.plots:
+                            st.subheader("Visualizations")
+                            plot_cols = st.columns(2)
+                            plot_idx = 0
+                            for plot_name, plot_path in conf_result.plots.items():
+                                if plot_path.exists():
+                                    with plot_cols[plot_idx % 2]:
+                                        st.image(str(plot_path), caption=plot_name.replace("_", " ").title())
+                                    plot_idx += 1
+                        
+                        # Show output directory
+                        st.info(f"All conformations saved to: {conf_result.output_dir}")
+                        if conf_result.representative_pdbs:
+                            st.write(f"📁 {len(conf_result.representative_pdbs)} representative PDB files saved")
+                
+                except Exception as exc:
+                    traceback.print_exc()
+                    st.error(f"Conformations analysis failed: {exc}")
 
     with tab_model_preview:
         st.header("Model Preview & Inspection")

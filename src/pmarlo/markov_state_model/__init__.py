@@ -30,6 +30,9 @@ __all__ = [
     "Reweighter",
     "MSMBuilder",
     "BuilderMSMResult",
+    "find_conformations",
+    "TPTAnalysis",
+    "ConformationSet",
 ]
 
 _EXPORTS: Dict[str, Tuple[str, str]] = {
@@ -66,6 +69,9 @@ _EXPORTS: Dict[str, Tuple[str, str]] = {
     "Reweighter": ("pmarlo.markov_state_model.reweighter", "Reweighter"),
     "MSMBuilder": ("pmarlo.markov_state_model.msm_builder", "MSMBuilder"),
     "BuilderMSMResult": ("pmarlo.markov_state_model.msm_builder", "MSMResult"),
+    "find_conformations": ("pmarlo.conformations.finder", "find_conformations"),
+    "TPTAnalysis": ("pmarlo.conformations.tpt_analysis", "TPTAnalysis"),
+    "ConformationSet": ("pmarlo.conformations.results", "ConformationSet"),
 }
 
 
