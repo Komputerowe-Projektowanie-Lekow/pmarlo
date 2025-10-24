@@ -500,7 +500,7 @@ class BuildConfig:
     cluster_mode: str = "kmeans"
     n_microstates: int = 20
     kmeans_kwargs: Dict[str, Any] = field(
-        default_factory=lambda: {"n_init": 50}
+        default_factory=dict
     )
     reweight_mode: str = "MBAR"
     fes_method: str = "kde"
@@ -531,9 +531,8 @@ class ConformationsConfig:
     n_clusters: int = 30
     cluster_mode: str = "kmeans"
     cluster_seed: Optional[int] = 42
-    kmeans_kwargs: Dict[str, Any] = field(
-        default_factory=lambda: {"n_init": 50}
-    )
+    kmeans_n_init: int = 50
+    kmeans_kwargs: Dict[str, Any] = field(default_factory=dict)
     n_components: int = 3
     n_metastable: int = 4
     temperature: float = 300.0
@@ -1901,10 +1900,11 @@ class WorkflowBackend:
                 )
 
             logger.info(
-                "Clustering into %d microstates using %s (seed=%s, kwargs=%s)",
+                "Clustering into %d microstates using %s (seed=%s, n_init=%d, kwargs=%s)",
                 int(config.n_clusters),
                 method_alias[cluster_mode],
                 "None" if config.cluster_seed is None else int(config.cluster_seed),
+                int(config.kmeans_n_init),
                 cluster_kwargs,
             )
 
@@ -1917,6 +1917,7 @@ class WorkflowBackend:
                     if config.cluster_seed is None
                     else int(config.cluster_seed)
                 ),
+                n_init=int(config.kmeans_n_init),
                 **cluster_kwargs,
             )
             # Extract labels from ClusteringResult object

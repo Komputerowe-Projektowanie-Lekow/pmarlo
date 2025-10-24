@@ -74,12 +74,20 @@ def main():
         help="Random seed for clustering (-1 disables deterministic seeding)",
     )
     parser.add_argument(
+        "--kmeans-n-init",
+        type=int,
+        default=50,
+        help=(
+            "Number of random initialisations evaluated when clustering microstates."
+        ),
+    )
+    parser.add_argument(
         "--kmeans-kwargs",
         type=str,
         default=None,
         help=(
             "JSON object with additional parameters forwarded to the KMeans-based "
-            "clusterers (e.g. '{\"n_init\": 100}')"
+            "clusterers (e.g. '{\"max_iter\": 200}')"
         ),
     )
     parser.add_argument(
@@ -87,6 +95,12 @@ def main():
         type=str,
         default="all",
         help="Comma-separated shard indices or 'all'",
+    )
+    parser.add_argument(
+        "--topology",
+        type=Path,
+        required=True,
+        help="Path to the topology PDB file corresponding to the trajectories.",
     )
 
     args = parser.parse_args()
@@ -105,7 +119,11 @@ def main():
             print("Error: --kmeans-kwargs must decode to a JSON object")
             return 1
     else:
-        kmeans_kwargs = {"n_init": 50}
+        kmeans_kwargs = {}
+
+    if args.kmeans_n_init <= 0:
+        print("Error: --kmeans-n-init must be a positive integer")
+        return 1
 
     cluster_seed = None if args.cluster_seed < 0 else int(args.cluster_seed)
     cluster_mode = args.cluster_mode.strip().lower()
@@ -120,24 +138,25 @@ def main():
     cluster_method = method_alias[cluster_mode]
 
     # Find shard files
-    if not args.shards_dir.exists():
-        print(f"\nError: Shards directory not found: {args.shards_dir}")
+    shards_dir = args.shards_dir.expanduser().resolve()
+    if not shards_dir.exists():
+        print(f"\nError: Shards directory not found: {shards_dir}")
         print("\nAvailable directories:")
-        parent = args.shards_dir.parent
+        parent = shards_dir.parent
         if parent.exists():
             for d in parent.iterdir():
                 if d.is_dir():
                     print(f"  - {d}")
         return 1
 
-    shard_files = sorted(args.shards_dir.glob("*.json"))
+    shard_files = sorted(shards_dir.glob("*.json"))
     shard_files = [f for f in shard_files if not f.name.startswith("manifest")]
 
     if not shard_files:
-        print(f"\nError: No shard files found in {args.shards_dir}")
+        print(f"\nError: No shard files found in {shards_dir}")
         return 1
 
-    print(f"\nFound {len(shard_files)} shard files in {args.shards_dir}")
+    print(f"\nFound {len(shard_files)} shard files in {shards_dir}")
 
     # Select shards
     if args.shard_indices == "all":
@@ -187,44 +206,54 @@ def main():
 
     # Find topology
     print("\n[3/8] Finding topology PDB...")
-    topology_pdb = None
+    topology_pdb = args.topology.expanduser().resolve()
+    if not topology_pdb.exists():
+        print(f"Error: Topology PDB not found at path: {topology_pdb}")
+        return 1
+    print(f"  [OK] Using provided topology: {topology_pdb}")
+
+    # Load trajectories
+    print("\n[4/8] Loading trajectories...")
     shard_meta_list = dataset.get("__shards__", [])
-    for shard_meta in shard_meta_list:
-        if isinstance(shard_meta, dict):
-            pdb_path = shard_meta.get("structure_pdb")
-            if pdb_path:
-                topology_pdb = Path(pdb_path)
-                if topology_pdb.exists():
-                    print(f"  [OK] Found topology: {topology_pdb}")
-                    break
+    all_trajs = []
+    for idx, shard_meta in enumerate(shard_meta_list):
+        if not isinstance(shard_meta, dict):
+            print(
+                "Error: Shard metadata entry "
+                f"{idx} is not a mapping and does not list trajectories."
+            )
+            return 1
+        traj_paths = shard_meta.get("trajectories")
+        if not traj_paths:
+            print(
+                "Error: Shard metadata entry "
+                f"{idx} does not include trajectory paths."
+            )
+            return 1
+        for traj_path_str in traj_paths:
+            traj_path = Path(traj_path_str)
+            if traj_path.is_absolute():
+                traj_path = traj_path.expanduser().resolve()
+            else:
+                traj_path = (shards_dir / traj_path).expanduser().resolve()
+            if not traj_path.exists():
+                print(f"Error: Trajectory file not found: {traj_path}")
+                return 1
+            try:
+                traj = md.load(str(traj_path), top=str(topology_pdb))
+            except Exception as e:
+                print(f"Error: Failed to load {traj_path.name}: {e}")
+                return 1
+            all_trajs.append(traj)
+            print(f"  [OK] Loaded: {traj_path.name} ({len(traj)} frames)")
 
-    if topology_pdb is None or not topology_pdb.exists():
-        print("  [WARN] No topology PDB found, will skip trajectory loading")
-        combined_traj = None
-    else:
-        # Load trajectories
-        print("\n[4/8] Loading trajectories...")
-        all_trajs = []
-        for shard_meta in shard_meta_list:
-            if isinstance(shard_meta, dict):
-                traj_paths = shard_meta.get("trajectories", [])
-                for traj_path_str in traj_paths:
-                    traj_path = Path(traj_path_str)
-                    if traj_path.exists():
-                        try:
-                            traj = md.load(str(traj_path), top=str(topology_pdb))
-                            all_trajs.append(traj)
-                            print(f"  [OK] Loaded: {traj_path.name} ({len(traj)} frames)")
-                        except Exception as e:
-                            print(f"  [WARN] Failed to load {traj_path.name}: {e}")
+    combined_traj = md.join(all_trajs) if all_trajs else None
+    if combined_traj is None:
+        print("Error: No trajectories could be loaded from the provided shards.")
+        return 1
+    print(f"  [OK] Combined {len(combined_traj)} frames")
 
-        combined_traj = md.join(all_trajs) if all_trajs else None
-        if combined_traj:
-            print(f"  [OK] Combined {len(combined_traj)} frames")
-
-    trajectories_loaded = combined_traj is not None
-    if not trajectories_loaded:
-        print("  [WARN] Trajectories unavailable; structure outputs will be skipped")
+    trajectories_loaded = True
 
     # Dimensionality reduction
     print(f"\n[5/8] Reducing features with TICA (lag={args.lag}, n_components={args.n_components})...")
@@ -250,7 +279,7 @@ def main():
     # Clustering
     print(
         f"\n[6/8] Clustering into {args.n_clusters} microstates using {cluster_method} "
-        f"(seed={'None' if cluster_seed is None else cluster_seed})..."
+        f"(seed={'None' if cluster_seed is None else cluster_seed}, n_init={args.kmeans_n_init})..."
     )
     try:
         clustering_result = cluster_microstates(
@@ -258,6 +287,7 @@ def main():
             method=cluster_method,
             n_states=args.n_clusters,
             random_state=cluster_seed,
+            n_init=args.kmeans_n_init,
             **kmeans_kwargs,
         )
         # Extract labels from ClusteringResult object
@@ -436,6 +466,7 @@ def main():
             "cluster_mode": args.cluster_mode,
             "cluster_seed": cluster_seed,
             "kmeans_kwargs": kmeans_kwargs,
+            "kmeans_n_init": int(args.kmeans_n_init),
             "n_components": tica_dim,
             "n_metastable": args.n_metastable,
             "temperature": args.temperature,

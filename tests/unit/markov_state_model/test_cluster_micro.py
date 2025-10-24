@@ -1,4 +1,5 @@
-from unittest.mock import patch
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -21,13 +22,48 @@ def test_raises_for_no_features():
         cluster_microstates(Y)
 
 
-def test_kmeans_uses_int_n_init():
-    Y = np.random.rand(10, 2)
-    with patch("pmarlo.markov_state_model.clustering.KMeans") as mock_kmeans:
-        instance = mock_kmeans.return_value
-        instance.fit_predict.return_value = np.zeros(10, dtype=int)
-        cluster_microstates(Y, method="kmeans", n_states=2)
-        assert isinstance(mock_kmeans.call_args.kwargs["n_init"], int)
+def test_n_init_restarts_select_best(monkeypatch):
+    import pmarlo.markov_state_model.clustering as clustering
+
+    Y = np.vstack([np.zeros((5, 2)), np.ones((5, 2))])
+    seeds: list[Any] = []
+
+    class DummyModel:
+        def __init__(self, seed):
+            self.seed = seed
+
+        def transform(self, data):
+            if self.seed in (None, 42):
+                return np.zeros(data.shape[0], dtype=int)
+            labels = np.zeros(data.shape[0], dtype=int)
+            labels[data.shape[0] // 2 :] = 1
+            return labels
+
+    def fake_create(method, n_states, random_state, **kwargs):
+        class DummyEstimator:
+            def __init__(self, seed):
+                self.seed = seed
+
+            def fit_fetch(self, data):
+                seeds.append(self.seed)
+                return DummyModel(self.seed)
+
+        return DummyEstimator(random_state)
+
+    monkeypatch.setattr(clustering, "_create_clustering_estimator", fake_create)
+
+    result = clustering.cluster_microstates(
+        Y,
+        method="kmeans",
+        n_states=2,
+        random_state=42,
+        n_init=3,
+    )
+
+    assert len(seeds) == 3
+    assert len(set(seeds)) == len(seeds)
+    assert np.unique(result.labels).size == 2
+    assert set(seed for seed in seeds if seed is not None) >= {42}
 
 
 def test_auto_and_fixed_states():
@@ -45,7 +81,9 @@ def test_auto_and_fixed_states():
 def test_auto_switches_to_minibatch():
     Y = np.random.rand(10, 10)
     with patch("pmarlo.markov_state_model.clustering.MiniBatchKMeans") as mock_mb:
-        mock_mb.return_value.fit_predict.return_value = np.zeros(10, dtype=int)
+        result_mock = MagicMock()
+        result_mock.transform.return_value = np.zeros(10, dtype=int)
+        mock_mb.return_value.fit_fetch.return_value = result_mock
         cluster_microstates(Y, method="auto", n_states=2, minibatch_threshold=50)
         assert mock_mb.called
 
@@ -56,13 +94,20 @@ def test_auto_selection_sampling(monkeypatch):
     Y = np.random.rand(50, 3)
     fit_sizes: list[int] = []
 
+    class DummyResult:
+        def __init__(self, n_clusters):
+            self.n_clusters = n_clusters
+
+        def transform(self, data):
+            return np.arange(data.shape[0]) % self.n_clusters
+
     class DummyKMeans:
         def __init__(self, n_clusters, random_state=None, n_init=10):
             self.n_clusters = n_clusters
 
-        def fit_predict(self, data):
+        def fit_fetch(self, data):
             fit_sizes.append(data.shape[0])
-            return np.arange(data.shape[0]) % self.n_clusters
+            return DummyResult(self.n_clusters)
 
     def fake_silhouette(data, labels):
         assert data.shape[0] == labels.shape[0] == 10
@@ -89,13 +134,20 @@ def test_auto_selection_override(monkeypatch):
     Y = np.random.rand(40, 2)
     created: list[int] = []
 
+    class DummyResult:
+        def __init__(self, n_clusters):
+            self.n_clusters = n_clusters
+
+        def transform(self, data):
+            return np.arange(data.shape[0]) % self.n_clusters
+
     class DummyKMeans:
         def __init__(self, n_clusters, random_state=None, n_init=10):
             created.append(n_clusters)
             self.n_clusters = n_clusters
 
-        def fit_predict(self, data):
-            return np.arange(data.shape[0]) % self.n_clusters
+        def fit_fetch(self, data):
+            return DummyResult(self.n_clusters)
 
     monkeypatch.setattr(clustering, "KMeans", DummyKMeans)
 
