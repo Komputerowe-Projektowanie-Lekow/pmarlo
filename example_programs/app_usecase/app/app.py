@@ -563,6 +563,14 @@ def main() -> None:
             key="conf_tica_dim",
             on_change=_sync_sidebar_tica_dim,
         )
+        st.number_input(
+            "MSM Lag Time (steps)",
+            min_value=1,
+            max_value=1000,
+            value=int(st.session_state.get("conf_msm_lag_time", 75)),
+            step=5,
+            key="conf_msm_lag_time",
+        )
         inputs = layout.available_inputs()
         if inputs:
             st.write("Available inputs:")

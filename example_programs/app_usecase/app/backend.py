@@ -2363,6 +2363,7 @@ class WorkflowBackend:
                 compute_kis=config.compute_kis,
                 uncertainty_analysis=config.uncertainty_analysis,
                 n_bootstrap=config.bootstrap_samples,
+                lag=int(config.lag),
                 representative_selection='medoid',
                 output_dir=str(output_dir),
                 save_structures=True,
