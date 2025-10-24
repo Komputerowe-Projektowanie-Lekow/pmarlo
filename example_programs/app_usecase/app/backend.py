@@ -29,6 +29,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, cast
 
+import numpy as np
+
 from pmarlo.utils.path_utils import ensure_directory
 
 try:  # Package-relative when imported as module
@@ -54,6 +56,8 @@ __all__ = [
     "TrainingResult",
     "BuildConfig",
     "BuildArtifact",
+    "ConformationsConfig",
+    "ConformationsResult",
     "WorkflowBackend",
     "choose_sim_seed",
     "run_short_sim",
@@ -460,6 +464,40 @@ class BuildArtifact:
     effective_stride_max: Optional[int] = None
     analysis_healthy: bool = True
     guardrail_violations: Optional[List[Dict[str, Any]]] = None
+
+
+@dataclass
+class ConformationsConfig:
+    """Configuration for TPT conformations analysis."""
+    lag: int = 10
+    n_clusters: int = 30
+    n_components: int = 3
+    n_metastable: int = 4
+    temperature: float = 300.0
+    auto_detect_states: bool = True
+    source_states: Optional[List[int]] = None
+    sink_states: Optional[List[int]] = None
+    n_paths: int = 10
+    pathway_fraction: float = 0.99
+    compute_kis: bool = True
+    k_slow: int = 3
+    bootstrap_samples: int = 50
+    n_representatives: int = 5
+
+
+@dataclass
+class ConformationsResult:
+    """Result from TPT conformations analysis."""
+    output_dir: Path
+    tpt_summary: Dict[str, Any]
+    metastable_states: Dict[str, Any]
+    transition_states: List[Dict[str, Any]]
+    pathways: List[List[int]]
+    representative_pdbs: List[Path]
+    plots: Dict[str, Path]
+    created_at: str
+    config: ConformationsConfig
+    error: Optional[str] = None
 
 
 class WorkflowBackend:
@@ -1611,6 +1649,262 @@ class WorkflowBackend:
             traceback.print_exc()
             print("--- END DEBUG ERROR ---")
             raise
+
+    def run_conformations_analysis(
+        self,
+        shard_jsons: Sequence[Path],
+        config: ConformationsConfig,
+    ) -> ConformationsResult:
+        """Run TPT conformations analysis on shards.
+        
+        Args:
+            shard_jsons: Paths to shard JSON files
+            config: Configuration for conformations analysis
+            
+        Returns:
+            ConformationsResult with outputs and metadata
+        """
+        from pmarlo.conformations import find_conformations
+        from pmarlo.conformations.visualizations import (
+            plot_tpt_summary,
+            plot_committors,
+            plot_flux_network,
+            plot_pathways,
+        )
+        from pmarlo.markov_state_model.bridge import build_simple_msm
+        from pmarlo.markov_state_model.clustering import cluster_microstates
+        from pmarlo.markov_state_model.reduction import reduce_features
+        import mdtraj as md
+        
+        stamp = _timestamp()
+        output_dir = self.layout.bundles_dir / f"conformations-{stamp}"
+        ensure_directory(output_dir)
+        
+        try:
+            # Load shards using the same method as MSM building
+            logger.info(f"Loading {len(shard_jsons)} shards for conformations analysis")
+            shards = [Path(p).resolve() for p in shard_jsons]
+            if not shards:
+                raise ValueError("No shards selected for conformations analysis")
+            
+            dataset = load_shards_as_dataset(shards)
+            
+            # Extract features from dataset
+            if "X" not in dataset or len(dataset["X"]) == 0:
+                raise ValueError("No feature data found in shards")
+            
+            features = np.asarray(dataset["X"], dtype=float)
+            logger.info(f"Loaded {features.shape[0]} frames with {features.shape[1]} features")
+            
+            # Find topology PDB from shard metadata
+            topology_pdb = None
+            shard_meta_list = dataset.get("__shards__", [])
+            if shard_meta_list:
+                for shard_meta in shard_meta_list:
+                    if isinstance(shard_meta, Mapping):
+                        pdb_path = shard_meta.get("structure_pdb")
+                        if pdb_path:
+                            topology_pdb = Path(pdb_path)
+                            if topology_pdb.exists():
+                                break
+            
+            # Try to find topology from typical locations
+            if topology_pdb is None or not topology_pdb.exists():
+                # Look in app_intputs directory
+                potential_pdbs = list(self.layout.workspace_dir.glob("app_intputs/*.pdb"))
+                if potential_pdbs:
+                    topology_pdb = potential_pdbs[0]
+                    logger.info(f"Using topology from app_intputs: {topology_pdb.name}")
+            
+            if topology_pdb is None or not topology_pdb.exists():
+                logger.warning("No topology PDB found, trajectory loading will be skipped")
+                combined_traj = None
+            else:
+                # Try to load trajectories for representative picking
+                logger.info(f"Loading trajectories with topology: {topology_pdb}")
+                all_trajs = []
+                for shard_meta in shard_meta_list:
+                    if isinstance(shard_meta, Mapping):
+                        traj_paths = shard_meta.get("trajectories", [])
+                        for traj_path_str in traj_paths:
+                            traj_path = Path(traj_path_str)
+                            if traj_path.exists():
+                                try:
+                                    traj = md.load(str(traj_path), top=str(topology_pdb))
+                                    all_trajs.append(traj)
+                                    logger.info(f"Loaded trajectory: {traj_path.name} ({len(traj)} frames)")
+                                except Exception as e:
+                                    logger.warning(f"Failed to load trajectory {traj_path.name}: {e}")
+                
+                combined_traj = md.join(all_trajs) if all_trajs else None
+                if combined_traj:
+                    logger.info(f"Combined trajectory: {len(combined_traj)} total frames")
+                else:
+                    logger.warning("No trajectories loaded, representative structures will not be saved")
+            
+            # Reduce features with TICA
+            logger.info(f"Reducing features with TICA (n_components={config.n_components})")
+            features_reduced = reduce_features(
+                features, method="tica", lag=config.lag, n_components=config.n_components
+            )
+            
+            # Clustering
+            logger.info(f"Clustering into {config.n_clusters} microstates")
+            clustering_result = cluster_microstates(
+                features_reduced,
+                method="minibatchkmeans",
+                n_states=config.n_clusters,
+                random_state=42,
+            )
+            # Extract labels from ClusteringResult object
+            labels = clustering_result.labels
+            n_states = int(np.max(labels) + 1)
+            
+            # Build MSM
+            logger.info(f"Building MSM (lag={config.lag})")
+            T, pi = build_simple_msm(
+                [labels], n_states=n_states, lag=config.lag, count_mode="sliding"
+            )
+            
+            # Run TPT conformations analysis
+            logger.info("Running TPT conformations analysis")
+            
+            # Prepare MSM data dictionary
+            msm_data = {
+                'T': T,
+                'pi': pi,
+                'dtrajs': [labels],
+                'features': features_reduced,
+            }
+            
+            conf_result = find_conformations(
+                msm_data=msm_data,
+                trajectories=[combined_traj] if combined_traj else None,
+                source_states=np.array(config.source_states) if config.source_states else None,
+                sink_states=np.array(config.sink_states) if config.sink_states else None,
+                auto_detect=config.auto_detect_states,
+                auto_detect_method='auto',
+                find_transition_states=True,
+                find_metastable_states=True,
+                find_pathway_intermediates=True,
+                compute_kis=config.compute_kis,
+                uncertainty_analysis=False,
+                n_bootstrap=config.bootstrap_samples,
+                representative_selection='medoid',
+                output_dir=str(output_dir),
+                save_structures=True,
+            )
+            
+            # Generate visualizations
+            logger.info("Generating visualizations")
+            plots = {}
+            if conf_result.tpt:
+                # TPT summary plot
+                plot_tpt_summary(conf_result.tpt, str(output_dir))
+                plots["tpt_summary"] = output_dir / "tpt_summary.png"
+                
+                # Committor plots
+                plot_committors(
+                    conf_result.tpt.forward_committor,
+                    conf_result.tpt.backward_committor,
+                    str(output_dir / "committors.png")
+                )
+                plots["committors"] = output_dir / "committors.png"
+                
+                # Flux network
+                plot_flux_network(
+                    conf_result.tpt.net_flux,
+                    str(output_dir / "flux_network.png")
+                )
+                plots["flux_network"] = output_dir / "flux_network.png"
+                
+                # Pathways
+                if conf_result.tpt.pathways:
+                    plot_pathways(
+                        conf_result.tpt.pathways,
+                        conf_result.tpt.pathway_fluxes,
+                        str(output_dir / "pathways.png")
+                    )
+                    plots["pathways"] = output_dir / "pathways.png"
+            
+            # Extract summary data
+            tpt_summary = {}
+            if conf_result.tpt:
+                tpt_summary = {
+                    "rate": float(conf_result.tpt.rate),
+                    "mfpt": float(conf_result.tpt.mfpt),
+                    "total_flux": float(conf_result.tpt.total_flux),
+                    "n_pathways": len(conf_result.tpt.pathways),
+                    "source_states": conf_result.tpt.source_states.tolist(),
+                    "sink_states": conf_result.tpt.sink_states.tolist(),
+                }
+            
+            metastable_states = {}
+            if conf_result.metastable_states:
+                for state_id, state in conf_result.metastable_states.items():
+                    metastable_states[state_id] = {
+                        "population": float(state.population),
+                        "n_states": len(state.state_indices),
+                        "representative_pdb": str(state.representative_pdb) if state.representative_pdb else None,
+                    }
+            
+            transition_states = []
+            if conf_result.transition_states:
+                for ts in conf_result.transition_states:
+                    transition_states.append({
+                        "committor": float(ts.committor),
+                        "state_index": int(ts.state_index),
+                        "representative_pdb": str(ts.representative_pdb) if ts.representative_pdb else None,
+                    })
+            
+            pathways = []
+            if conf_result.tpt and conf_result.tpt.pathways:
+                pathways = [list(map(int, path)) for path in conf_result.tpt.pathways]
+            
+            representative_pdbs = []
+            for f in output_dir.glob("*.pdb"):
+                representative_pdbs.append(f)
+            
+            # Save summary JSON
+            summary_path = output_dir / "conformations_summary.json"
+            with open(summary_path, "w") as f:
+                json.dump({
+                    "tpt": tpt_summary,
+                    "metastable_states": metastable_states,
+                    "transition_states": transition_states,
+                    "pathways": pathways,
+                    "config": asdict(config),
+                    "created_at": stamp,
+                }, f, indent=2)
+            
+            logger.info(f"Conformations analysis complete. Output saved to {output_dir}")
+            
+            return ConformationsResult(
+                output_dir=output_dir,
+                tpt_summary=tpt_summary,
+                metastable_states=metastable_states,
+                transition_states=transition_states,
+                pathways=pathways,
+                representative_pdbs=representative_pdbs,
+                plots=plots,
+                created_at=stamp,
+                config=config,
+            )
+            
+        except Exception as e:
+            logger.error(f"Conformations analysis failed: {e}", exc_info=True)
+            return ConformationsResult(
+                output_dir=output_dir,
+                tpt_summary={},
+                metastable_states={},
+                transition_states=[],
+                pathways=[],
+                representative_pdbs=[],
+                plots={},
+                created_at=stamp,
+                config=config,
+                error=str(e),
+            )
 
     # ------------------------------------------------------------------
     # Utilities used by the UI

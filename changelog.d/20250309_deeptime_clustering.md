@@ -1,2 +1,59 @@
+### Added
+- New `pmarlo.conformations` module for Transition Path Theory (TPT) analysis using deeptime
+  - **Direct deeptime integration**: Uses `MarkovStateModel.reactive_flux()` API exactly as documented
+  - **NO FALLBACKS**: Raises ImportError immediately if deeptime is missing - no silent failures
+  - Auto-detection of source/sink states from FES, timescale gaps, and populations
+  - TPT analysis: forward/backward committors, reactive flux matrix, transition rates, MFPT via deeptime
+  - Pathway decomposition using `ReactiveFlux.pathways()` method
+  - Coarse-graining support via `ReactiveFlux.coarse_grain()`
+  - Kinetic Importance Score (KIS) metric with stability validation via bootstrap and hyperparameter ensembles
+  - Representative structure extraction with corrected TRAM/MBAR weighting (no double-weighting with π_i)
+  - Comprehensive uncertainty quantification via bootstrap and hyperparameter sensitivity
+  - Identification of transition state ensembles, metastable states, and pathway intermediates
+  - Visualization functions: committor plots, flux networks, pathway plots (following deeptime examples)
+  - High-level `find_conformations()` API for unified workflow
+  - Integration into MSM workflow as final analysis step
+  - JSON serialization/deserialization of ConformationSet results
+  - Example programs:
+    - `find_conformations_tpt.py` - Demo with test data
+    - `find_conformations_tpt_real.py` - Analysis on real shards with CLI selection
+  - **Streamlit App Integration**:
+    - New "TPT Conformations Analysis" section in Analysis tab of `app_usecase/app/app.py`
+    - Backend functions in `backend.py`: `ConformationsConfig`, `ConformationsResult`, `run_conformations_analysis()`
+    - Interactive UI with configurable parameters (lag, n_clusters, n_metastable states, temperature, etc.)
+    - Real-time visualization of TPT results, metastable states, transition states, and pathways
+    - Automatic saving of representative PDB structures to output directory (e.g., `metastable_1.pdb`, `transition_1.pdb`)
+    - Display of TPT metrics: rate, MFPT, total flux, pathway counts
+    - Export of conformations summary JSON with all analysis results
+
 ### Changed
 - Updated MSM clustering utilities to use deeptime's KMeans and MiniBatchKMeans estimators directly, removing custom wrappers and enforcing explicit parameter validation.
+- Fixed `find_conformations_tpt_real.py` to use direct imports from `pmarlo.markov_state_model` modules instead of `pmarlo.api` to avoid triggering module-level deeptime imports
+
+### Fixed
+- **Streamlit app shard loading**: Fixed `run_conformations_analysis()` in `backend.py` to use `load_shards_as_dataset()` instead of non-existent `Shard.from_json()` method
+  - Now uses same robust shard loading infrastructure as MSM building
+  - Added fallback topology PDB detection from `app_intputs/` directory
+  - Added graceful error handling for missing trajectories
+  - Added comprehensive logging at all steps
+- **Deeptime import errors**: Made `tpt_analysis.py` imports lazy using `TYPE_CHECKING`
+  - Module can now be imported without deeptime installed at runtime
+  - Actual deeptime usage still raises clear `ImportError` when needed
+  - Fixes "No module named 'deeptime'" errors during import even when deeptime is installed
+- **Clustering parameters**: Fixed `backend.py` and `find_conformations_tpt_real.py` to use correct `cluster_microstates()` parameters
+  - Removed unsupported `n_init` parameter (not valid for deeptime backend)
+  - Now uses `random_state=42` for reproducibility
+  - Fixes "Unsupported clustering parameters for deeptime backend: ['n_init']" error
+- **ClusteringResult type error**: Fixed `cluster_microstates()` usage to extract `.labels` attribute from returned `ClusteringResult` object
+  - Fixed `backend.py` and `find_conformations_tpt_real.py` to use `clustering_result.labels` instead of treating result as array
+  - Fixes "unsupported operand type(s) for +: 'ClusteringResult' and 'int'" error
+- **find_conformations() API**: Fixed conformations analysis to use correct `find_conformations()` signature
+  - Now passes MSM data as dictionary with 'T', 'pi', 'dtrajs', 'features' keys
+  - Uses correct keyword arguments: `auto_detect`, `find_transition_states`, `save_structures`
+  - Fixes "find_conformations() missing 1 required positional argument: 'msm_data'" error
+- **PCCA+ keyword argument**: Fixed all `pcca()` calls in conformations module to use positional argument for number of metastable states
+  - Changed `pcca(T, n_metastable_sets=n)` to `pcca(T, n)` (matches deeptime 0.4.5 signature)
+  - Fixed in `finder.py`, `state_detection.py`, and `uncertainty.py`
+  - Fixes "pcca() got an unexpected keyword argument 'n_metastable_sets'" error
+- Conformations analysis in Streamlit app and CLI now works with real shards without errors
+- Created `conformations_cli.py` tool for command-line conformations analysis
