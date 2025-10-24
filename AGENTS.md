@@ -18,3 +18,8 @@
 16. When you run the poetry run pytest or any pytest command, NEVER USE it with -noProfile.
 17. Whenever a test case is required, always use real data—never stubs or synthetically generated examples. For instance, consistently use the 3gd8-fixed PDB file rather than any other fabricated version.
 18. Whenever you can't run the poetry run pytest, try it with the 'POETRY_VIRTUALENVS_CREATE=true'.
+19. All commands related to Python, packages, or the project (including `python`, `pip`, `pytest`, `tox`, `mypy`, `ruff`, etc.) MUST be executed using `poetry run`. This ensures the command runs inside the project's virtual environment.
+    * **WRONG:** `pip install psutil`
+    * **WRONG:** `python -c "import openmm"`
+    * **RIGHT:** `poetry run pip install psutil`
+    * **RIGHT:** `poetry run python -c "import openmm"`
