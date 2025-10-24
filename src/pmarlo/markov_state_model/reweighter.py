@@ -8,8 +8,8 @@ import numpy as np
 
 from pmarlo.reweight.reweighter import (
     AnalysisReweightMode,
-    Reweighter as AnalysisReweighter,
 )
+from pmarlo.reweight.reweighter import Reweighter as AnalysisReweighter
 from pmarlo.shards.schema import Shard
 
 from . import (  # noqa: F401  # imported to signal dependency for future integration

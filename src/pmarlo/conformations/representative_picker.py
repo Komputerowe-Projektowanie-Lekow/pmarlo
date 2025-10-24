@@ -190,7 +190,9 @@ class RepresentativePicker:
                     )
                 state_weights = state_weights / weight_sum
             else:
-                state_weights = np.full(len(frames_in_state), 1.0 / len(frames_in_state))
+                state_weights = np.full(
+                    len(frames_in_state), 1.0 / len(frames_in_state)
+                )
 
             centroid = np.average(state_features, axis=0, weights=state_weights)
 
@@ -200,9 +202,7 @@ class RepresentativePicker:
             if n_select <= 0:
                 continue
 
-            selected_local_indices = np.argpartition(distances, n_select - 1)[
-                :n_select
-            ]
+            selected_local_indices = np.argpartition(distances, n_select - 1)[:n_select]
 
             for local_idx in selected_local_indices:
                 global_frame = int(frames_in_state[local_idx])
@@ -300,16 +300,19 @@ class RepresentativePicker:
         )[0]
 
         if len(ts_states) == 0:
-            raise ValueError(
-                f"No states found in committor range {committor_range}"
-            )
+            raise ValueError(f"No states found in committor range {committor_range}")
 
         logger.info(
             f"Found {len(ts_states)} transition states in committor range {committor_range}"
         )
 
         return self.pick_representatives(
-            features, dtrajs, ts_states, weights=weights, n_reps=n_reps, method="diverse"
+            features,
+            dtrajs,
+            ts_states,
+            weights=weights,
+            n_reps=n_reps,
+            method="diverse",
         )
 
     def pick_from_flux(

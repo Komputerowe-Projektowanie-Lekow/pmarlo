@@ -339,4 +339,3 @@ if __name__ == "__main__":
         shard_indices = None
 
     main(shard_dataset=args.dataset, shard_indices=shard_indices)
-

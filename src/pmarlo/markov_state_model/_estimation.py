@@ -177,7 +177,9 @@ class EstimationMixin:
             try:
                 msm_model = ml.fit(res.counts).fetch_model()
             except Exception as exc:  # pragma: no cover - defensive
-                raise RuntimeError("deeptime failed to fit maximum-likelihood MSM") from exc
+                raise RuntimeError(
+                    "deeptime failed to fit maximum-likelihood MSM"
+                ) from exc
             T_active = np.asarray(msm_model.transition_matrix, dtype=float)
             pi_active = np.asarray(msm_model.stationary_distribution, dtype=float)
             T_full = np.eye(self.n_states, dtype=float)
@@ -211,6 +213,7 @@ class EstimationMixin:
             ) from exc
 
         _ = (TransitionCountEstimator, MaximumLikelihoodMSM)
+
     def _compute_free_energies(self: _HasEstimationAttrs, temperature: float = 300.0):
         from scipy import constants
 

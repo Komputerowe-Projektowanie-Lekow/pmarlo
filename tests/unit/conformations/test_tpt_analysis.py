@@ -142,4 +142,3 @@ def test_tpt_large_system():
     assert result.total_flux >= 0
     assert result.pathway_iterations >= len(result.pathways)
     assert result.pathway_max_iterations >= result.pathway_iterations
-

@@ -103,6 +103,8 @@ def test_find_conformations_identifies_tse_states() -> None:
 
     assert results.metadata["n_transition_state_ensemble"] == len(tse_conformations)
 
-    other_transitions = [c for c in results.conformations if c.conformation_type == "transition"]
+    other_transitions = [
+        c for c in results.conformations if c.conformation_type == "transition"
+    ]
     for conf in other_transitions:
         assert conf.conformation_type == "transition"

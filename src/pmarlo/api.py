@@ -133,13 +133,11 @@ except Exception:  # pragma: no cover - executed without sklearn
     pca_reduce = tica_reduce = vamp_reduce = _missing_reduction  # type: ignore
 
 try:  # pragma: no cover - optional conformations analysis
-    from .conformations import (
-        ConformationSet as _ConformationSet,
-        KineticImportanceScore as _KineticImportanceScore,
-        StateDetector as _StateDetector,
-        TPTAnalysis as _TPTAnalysis,
-        find_conformations as _find_conformations,
-    )
+    from .conformations import ConformationSet as _ConformationSet
+    from .conformations import KineticImportanceScore as _KineticImportanceScore
+    from .conformations import StateDetector as _StateDetector
+    from .conformations import TPTAnalysis as _TPTAnalysis
+    from .conformations import find_conformations as _find_conformations
 
     find_conformations = _find_conformations
     TPTAnalysis = _TPTAnalysis

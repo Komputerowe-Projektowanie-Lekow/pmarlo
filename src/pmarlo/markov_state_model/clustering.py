@@ -32,9 +32,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, Literal, Mapping, cast
 
 import numpy as np
-from sklearn.metrics import silhouette_score
-
 from deeptime.clustering import KMeans, MiniBatchKMeans
+from sklearn.metrics import silhouette_score
 
 logger = logging.getLogger("pmarlo")
 
@@ -219,9 +218,7 @@ def _auto_select_n_states(
     estimator_kwargs = dict(estimator_kwargs or {})
 
     for n in candidates:
-        km = _create_clustering_estimator(
-            "kmeans", n, random_state, **estimator_kwargs
-        )
+        km = _create_clustering_estimator("kmeans", n, random_state, **estimator_kwargs)
         model = km.fit_fetch(Y_sample)
         labels = np.asarray(model.transform(Y_sample), dtype=int)
 
@@ -248,9 +245,7 @@ _COMMON_KWARGS: frozenset[str] = frozenset(
 _ATTRIBUTE_KWARGS: frozenset[str] = frozenset({"fixed_seed", "progress"})
 _MINIBATCH_ONLY_KWARGS: frozenset[str] = frozenset({"batch_size"})
 _SUPPORTED_KWARGS: frozenset[str] = frozenset(
-    set(_COMMON_KWARGS)
-    | set(_ATTRIBUTE_KWARGS)
-    | set(_MINIBATCH_ONLY_KWARGS)
+    set(_COMMON_KWARGS) | set(_ATTRIBUTE_KWARGS) | set(_MINIBATCH_ONLY_KWARGS)
 )
 
 
@@ -265,9 +260,7 @@ def _validate_clustering_kwargs(
         )
 
     if method == "kmeans" and any(k in kwargs for k in _MINIBATCH_ONLY_KWARGS):
-        raise TypeError(
-            "'batch_size' is only supported when method='minibatchkmeans'."
-        )
+        raise TypeError("'batch_size' is only supported when method='minibatchkmeans'.")
 
 
 def _split_kwargs_for_method(

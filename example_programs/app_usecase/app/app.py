@@ -1483,12 +1483,12 @@ def main() -> None:
                         print(f"--- DEBUG: Analysis failed with exception: {exc}")
                         traceback.print_exc()
                         st.error(f"Analysis failed: {exc}")
-        
+
             # Conformations Analysis Section
             st.divider()
             st.subheader("TPT Conformations Analysis")
             st.write("Find metastable states, transition states, and pathways using Transition Path Theory.")
-        
+
             if not shard_groups:
                 st.info("Emit shards to run conformations analysis.")
             else:
@@ -1576,7 +1576,7 @@ def main() -> None:
                     conf_n_paths = conf_col6.number_input(
                         "Max pathways", min_value=1, value=10, step=1, key="conf_n_paths"
                     )
-                
+
                     conf_col7, conf_col8 = st.columns(2)
                     conf_auto_detect = conf_col7.checkbox(
                         "Auto-detect source/sink states", value=True, key="conf_auto_detect"
@@ -1628,7 +1628,7 @@ def main() -> None:
                     else:
                         conf_deeptica_projection = None
                         conf_deeptica_metadata = None
-            
+
                 if st.button(
                     "Run Conformations Analysis",
                     type="primary",
@@ -1671,7 +1671,7 @@ def main() -> None:
                             conf_result = backend.run_conformations_analysis(
                                 selected_paths, conf_config
                             )
-                    
+
                         if conf_result.error:
                             st.error(f"Conformations analysis failed: {conf_result.error}")
                         else:
@@ -1708,7 +1708,7 @@ def main() -> None:
                                 cols[1].metric("MFPT", f"{conf_result.tpt_summary['mfpt']:.1f}")
                                 cols[2].metric("Total Flux", f"{conf_result.tpt_summary['total_flux']:.3e}")
                                 cols[3].metric("N Pathways", conf_result.tpt_summary['n_pathways'])
-                        
+
                             # Display metastable states
                             if conf_result.metastable_states:
                                 st.subheader("Metastable States")
@@ -1721,7 +1721,7 @@ def main() -> None:
                                         "PDB": Path(state_data['representative_pdb']).name if state_data['representative_pdb'] else "N/A",
                                     })
                                 st.dataframe(pd.DataFrame(meta_df_data), use_container_width=True)
-                        
+
                             # Display transition states
                             if conf_result.transition_states:
                                 st.subheader("Transition States")
@@ -1733,7 +1733,7 @@ def main() -> None:
                                         "PDB": Path(ts_data['representative_pdb']).name if ts_data['representative_pdb'] else "N/A",
                                     })
                                 st.dataframe(pd.DataFrame(ts_df_data), use_container_width=True)
-                        
+
                             # Display plots
                             if conf_result.plots:
                                 st.subheader("Visualizations")
@@ -1744,12 +1744,12 @@ def main() -> None:
                                         with plot_cols[plot_idx % 2]:
                                             st.image(str(plot_path), caption=plot_name.replace("_", " ").title())
                                         plot_idx += 1
-                        
+
                             # Show output directory
                             st.info(f"All conformations saved to: {conf_result.output_dir}")
                             if conf_result.representative_pdbs:
                                 st.write(f"📁 {len(conf_result.representative_pdbs)} representative PDB files saved")
-                
+
                     except Exception as exc:
                         traceback.print_exc()
                         st.error(f"Conformations analysis failed: {exc}")

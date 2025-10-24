@@ -446,10 +446,10 @@ def main():
 
     # Save summary JSON
     summary_path = args.output_dir / "conformations_summary.json"
-    
+
     metastable = metastable_states
     transition = transition_states
-    
+
     summary = {
         "tpt": {
             "rate": float(conf_result.tpt_result.rate) if conf_result.tpt_result else None,
@@ -486,4 +486,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-

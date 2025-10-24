@@ -564,4 +564,3 @@ def plot_tpt_summary(
         )
 
     plt.close("all")  # Clean up
-

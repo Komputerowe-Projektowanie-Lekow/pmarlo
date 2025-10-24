@@ -66,7 +66,9 @@ def test_conformations_full_workflow(real_trajectory):
     assert n_states <= 10
 
     # Step 4: Build MSM
-    T, pi = api.build_simple_msm([labels], n_states=n_states, lag=2, count_mode="sliding")
+    T, pi = api.build_simple_msm(
+        [labels], n_states=n_states, lag=2, count_mode="sliding"
+    )
 
     assert T.shape == (n_states, n_states)
     assert len(pi) == n_states
@@ -128,7 +130,9 @@ def test_conformations_with_uncertainty(real_trajectory):
     # Quick MSM
     features, _, _ = api.compute_features(traj, feature_specs=["phi_psi"])
     features_reduced = api.reduce_features(features, method="pca", n_components=2)
-    labels = api.cluster_microstates(features_reduced, method="minibatchkmeans", n_states=5)
+    labels = api.cluster_microstates(
+        features_reduced, method="minibatchkmeans", n_states=5
+    )
     n_states = int(np.max(labels) + 1)
 
     T, pi = api.build_simple_msm([labels], n_states=n_states, lag=1)
@@ -170,7 +174,9 @@ def test_conformations_manual_source_sink(real_trajectory):
     # Quick MSM
     features, _, _ = api.compute_features(traj, feature_specs=["phi_psi"])
     features_reduced = api.reduce_features(features, method="pca", n_components=2)
-    labels = api.cluster_microstates(features_reduced, method="minibatchkmeans", n_states=8)
+    labels = api.cluster_microstates(
+        features_reduced, method="minibatchkmeans", n_states=8
+    )
     n_states = int(np.max(labels) + 1)
 
     T, pi = api.build_simple_msm([labels], n_states=n_states, lag=1)
@@ -211,7 +217,9 @@ def test_conformations_serialization(real_trajectory):
     # Quick MSM
     features, _, _ = api.compute_features(traj, feature_specs=["phi_psi"])
     features_reduced = api.reduce_features(features, method="pca", n_components=2)
-    labels = api.cluster_microstates(features_reduced, method="minibatchkmeans", n_states=5)
+    labels = api.cluster_microstates(
+        features_reduced, method="minibatchkmeans", n_states=5
+    )
     n_states = int(np.max(labels) + 1)
 
     T, pi = api.build_simple_msm([labels], n_states=n_states, lag=1)
@@ -244,4 +252,3 @@ def test_conformations_serialization(real_trajectory):
 
         assert len(loaded.conformations) == len(results.conformations)
         assert loaded.metadata == results.metadata
-

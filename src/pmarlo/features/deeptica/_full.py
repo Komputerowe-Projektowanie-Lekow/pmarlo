@@ -7,8 +7,6 @@ import types
 from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from __future__ import annotations
-
 from typing import Any, Iterable, List, Optional, Tuple, cast
 
 import numpy as np
@@ -37,7 +35,6 @@ from .core.trainer_api import (
     train_deeptica_pipeline,
 )
 from .core.utils import safe_float as core_safe_float
-
 
 logger = logging.getLogger(__name__)
 

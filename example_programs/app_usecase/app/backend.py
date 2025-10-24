@@ -499,17 +499,20 @@ def calculate_its(
     if not lags_sorted:
         raise ValueError("Provide at least one positive lag time for ITS analysis")
 
-    from deeptime.markov.msm import MarkovStateModel
+    from deeptime.markov.msm import MaximumLikelihoodMSM
 
     timescale_results: List[np.ndarray] = []
     errors: Dict[int, str] = {}
 
+    dtrajs = [discrete]
+
     for lag in lags_sorted:
         logger.info("[ITS] Estimating MSM at lag=%d", lag)
-        estimator = MarkovStateModel(lagtime=int(lag), reversible=True)
+        estimator = MaximumLikelihoodMSM(lagtime=int(lag), reversible=True)
         try:
-            model = estimator.fit([discrete]).fetch_model()
-            times = np.asarray(model.timescales(), dtype=float)
+            fit_result = estimator.fit(dtrajs)
+            msm_model = fit_result.fetch_model()
+            times = np.asarray(msm_model.timescales(), dtype=float)
         except Exception as exc:  # pragma: no cover - depends on runtime data
             errors[int(lag)] = str(exc)
             logger.error("[ITS] MSM estimation failed for lag=%d: %s", lag, exc)
@@ -2136,11 +2139,11 @@ class WorkflowBackend:
         config: ConformationsConfig,
     ) -> ConformationsResult:
         """Run TPT conformations analysis on shards.
-        
+
         Args:
             shard_jsons: Paths to shard JSON files
             config: Configuration for conformations analysis
-            
+
         Returns:
             ConformationsResult with outputs and metadata
         """
@@ -2151,11 +2154,11 @@ class WorkflowBackend:
         )
         from pmarlo.markov_state_model.clustering import cluster_microstates
         from pmarlo.markov_state_model.reduction import reduce_features
-        
+
         stamp = _timestamp()
         output_dir = self.layout.bundles_dir / f"conformations-{stamp}"
         ensure_directory(output_dir)
-        
+
         try:
             # Load shards using the same method as MSM building
             logger.info(f"Loading {len(shard_jsons)} shards for conformations analysis")
@@ -2246,7 +2249,7 @@ class WorkflowBackend:
                 )
             else:
                 raise ValueError(f"Unsupported cv_method '{config.cv_method}' for conformations")
-            
+
             # Clustering
             cluster_mode = (config.cluster_mode or "kmeans").strip().lower()
             method_alias = {
@@ -2317,7 +2320,7 @@ class WorkflowBackend:
             # Extract labels from ClusteringResult object
             labels = clustering_result.labels
             n_states = int(np.max(labels) + 1)
-            
+
             # Build MSM using deeptime reversible estimator
             logger.info(f"Building MSM (lag={config.lag}) using deeptime")
             if dt is None:
@@ -2347,7 +2350,7 @@ class WorkflowBackend:
                 'dtrajs': [labels],
                 'features': features_reduced,
             }
-            
+
             conf_result = find_conformations(
                 msm_data=msm_data,
                 source_states=np.array(config.source_states) if config.source_states else None,
@@ -2467,9 +2470,9 @@ class WorkflowBackend:
                     "config": config_dict,
                     "created_at": stamp,
                 }, f, indent=2)
-            
+
             logger.info(f"Conformations analysis complete. Output saved to {output_dir}")
-            
+
             return ConformationsResult(
                 output_dir=output_dir,
                 tpt_summary=tpt_summary,
