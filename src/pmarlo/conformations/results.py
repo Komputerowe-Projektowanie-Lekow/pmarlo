@@ -145,7 +145,7 @@ class Conformation:
     """Single conformation with metadata.
 
     Attributes:
-        conformation_type: Type of conformation ('metastable', 'transition', 'pathway')
+        conformation_type: Type of conformation ('metastable', 'transition', 'tse', 'pathway')
         state_id: Microstate ID in the MSM
         macrostate_id: Macrostate ID (if applicable)
         frame_index: Global frame index in concatenated trajectories
@@ -227,6 +227,10 @@ class ConformationSet:
     def get_transition_states(self) -> List[Conformation]:
         """Get all transition state conformations."""
         return self.get_by_type("transition")
+
+    def get_transition_state_ensemble(self) -> List[Conformation]:
+        """Get transition state ensemble conformations (committor ≈ 0.5)."""
+        return self.get_by_type("tse")
 
     def get_metastable_states(self) -> List[Conformation]:
         """Get all metastable state conformations."""
