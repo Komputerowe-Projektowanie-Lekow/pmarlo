@@ -783,7 +783,7 @@ class ConformationsConfig:
     kmeans_kwargs: Dict[str, Any] = field(default_factory=dict)
     n_components: int = 10
     tica_dim: Optional[int] = None
-    n_metastable: int = 4
+    n_metastable: int = 10
     temperature: float = 300.0
     auto_detect_states: bool = True
     source_states: Optional[List[int]] = None
@@ -799,6 +799,7 @@ class ConformationsConfig:
     cv_method: str = "tica"
     deeptica_projection_path: Optional[Path] = None
     deeptica_metadata_path: Optional[Path] = None
+    committor_thresholds: Tuple[float, float] = (0.05, 0.95)
 
 
 @dataclass
@@ -2150,6 +2151,7 @@ class WorkflowBackend:
         from pmarlo.analysis.project_cv import apply_whitening_from_metadata
         from pmarlo.conformations import find_conformations
         from pmarlo.conformations.visualizations import (
+            plot_pcca_states,
             plot_tpt_summary,
         )
         from pmarlo.markov_state_model.clustering import cluster_microstates
@@ -2318,6 +2320,20 @@ class WorkflowBackend:
                 **cluster_kwargs,
             )
             # Extract labels from ClusteringResult object
+            if clustering_result.centers is None:
+                raise ValueError(
+                    "Clustering did not return cluster centers required for PCCA visualization."
+                )
+            cluster_centers = np.asarray(clustering_result.centers, dtype=float)
+            if cluster_centers.ndim != 2:
+                raise ValueError(
+                    "Cluster centers must be a 2D array to generate the PCCA visualization."
+                )
+            if cluster_centers.shape[1] < 2:
+                raise ValueError(
+                    "At least two TICA dimensions are required to plot PCCA metastable states."
+                )
+            tica_cluster_coords = cluster_centers[:, :2]
             labels = clustering_result.labels
             n_states = int(np.max(labels) + 1)
 
@@ -2370,7 +2386,26 @@ class WorkflowBackend:
                 topology_path=str(topology_pdb),
                 trajectory_locator=locator,
                 tica__dim=tica_dim,
+                committor_thresholds=tuple(config.committor_thresholds),
             )
+
+            macro_memberships_data = conf_result.metadata.get("macrostate_memberships")
+            if macro_memberships_data is None:
+                raise ValueError(
+                    "Conformations analysis did not return PCCA memberships required for visualization."
+                )
+            pcca_memberships = np.asarray(macro_memberships_data, dtype=float)
+            if pcca_memberships.ndim != 2:
+                raise ValueError(
+                    "PCCA memberships must be a 2D array to generate the metastable state plot."
+                )
+            if pcca_memberships.shape[0] != tica_cluster_coords.shape[0]:
+                raise ValueError(
+                    "The number of PCCA membership rows does not match the number of microstate clusters."
+                )
+
+            pcca_plot_path = output_dir / "pcca_states.png"
+            plot_pcca_states(tica_cluster_coords, pcca_memberships, str(pcca_plot_path))
 
             tpt_result = conf_result.tpt_result
             if tpt_result is None:
@@ -2381,7 +2416,7 @@ class WorkflowBackend:
             # Generate visualizations
             logger.info("Generating visualizations")
             plot_tpt_summary(tpt_result, str(output_dir))
-            plots = {}
+            plots = {"pcca_states": pcca_plot_path}
             for plot_name in ("committors", "flux_network", "pathways"):
                 plot_path = output_dir / f"{plot_name}.png"
                 if plot_path.exists():

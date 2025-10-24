@@ -24,6 +24,7 @@ from .results import (
 )
 from .tpt_analysis import TPTAnalysis
 from .uncertainty import UncertaintyQuantifier
+from .state_detection import StateDetector
 
 logger = logging.getLogger("pmarlo.conformations")
 
@@ -47,6 +48,7 @@ def find_conformations(
     tse_tolerance: float = 0.1,
     output_dir: Optional[str] = None,
     save_structures: bool = False,
+    committor_thresholds: Tuple[float, float] = (0.05, 0.95),
     **kwargs: Any,
 ) -> ConformationSet:
     """Find protein conformations using Transition Path Theory.
@@ -78,6 +80,8 @@ def find_conformations(
         tse_tolerance: Allowed deviation from 0.5 when identifying the transition state ensemble
         output_dir: Directory for saving structures
         save_structures: Save representative structures as PDB files
+        committor_thresholds: (lower, upper) thresholds for committor-based
+            classification of source, sink, and transition microstates
         **kwargs: Additional options
 
     Returns:
@@ -109,6 +113,9 @@ def find_conformations(
     tpt_result: Optional[TPTResult] = None
     kis_result: Optional[KISResult] = None
     uncertainty_results: List[UncertaintyResult] = []
+    committor_source_set: Set[int] = set()
+    committor_sink_set: Set[int] = set()
+    committor_transition_set: Set[int] = set()
 
     # Step 1: Lump microstates into metastable macrostates with PCCA+
     n_macrostates = int(kwargs.get("n_metastable", 2))
@@ -191,6 +198,17 @@ def find_conformations(
     if tpt_result is not None:
         flux_by_state = _calculate_state_flux(tpt_result.flux_matrix)
 
+        detector = StateDetector(committor_thresholds=committor_thresholds)
+        (
+            committor_source_array,
+            committor_sink_array,
+            committor_transition_array,
+        ) = detector.classify_committor_states(tpt_result.forward_committor)
+
+        committor_source_set = {int(s) for s in committor_source_array}
+        committor_sink_set = {int(s) for s in committor_sink_array}
+        committor_transition_set = {int(s) for s in committor_transition_array}
+
         if find_metastable_states:
             logger.info("Creating metastable conformations from PCCA+ macrostates")
             metastable_conformations = _create_metastable_conformations(
@@ -214,6 +232,7 @@ def find_conformations(
                     tpt_result.forward_committor, tolerance=tse_tolerance
                 )
             )
+            committor_transition_set.update(int(s) for s in tse_state_ids)
             transition_conformations = _create_transition_conformations(
                 tpt_result,
                 pi,
@@ -224,6 +243,7 @@ def find_conformations(
                 macrostate_memberships,
                 macrostate_roles,
                 tse_state_ids,
+                committor_transition_set,
             )
             conformations.extend(transition_conformations)
 
@@ -304,11 +324,21 @@ def find_conformations(
         "temperature_K": temperature_K,
         "uncertainty_analysis": uncertainty_analysis,
         "macrostate_populations": macrostate_populations.tolist(),
+        "macrostate_memberships": macrostate_memberships.tolist(),
         "macrostate_roles": {
             "source": sorted(macrostate_roles["source"]),
             "sink": sorted(macrostate_roles["sink"]),
         },
         "tse_tolerance": tse_tolerance,
+        "committor_thresholds": [
+            float(committor_thresholds[0]),
+            float(committor_thresholds[1]),
+        ],
+        "committor_classification_counts": {
+            "source": len(committor_source_set),
+            "sink": len(committor_sink_set),
+            "transition": len(committor_transition_set),
+        },
     }
 
     result = ConformationSet(
@@ -463,17 +493,22 @@ def _create_transition_conformations(
     macrostate_memberships: np.ndarray,
     macrostate_roles: Dict[str, Set[int]],
     tse_state_ids: Set[int],
+    transition_microstates: Set[int],
 ) -> List[Conformation]:
     """Create microstate-level conformations for transition regions."""
 
     kT = constants.k * temperature_K * constants.Avogadro / 1000.0
     source_states = set(int(s) for s in np.asarray(tpt_result.source_states))
     sink_states = set(int(s) for s in np.asarray(tpt_result.sink_states))
+    transition_microstates = {int(s) for s in transition_microstates}
+    tse_state_ids = {int(s) for s in tse_state_ids}
 
     conformations: List[Conformation] = []
 
     for state_id in range(len(pi)):
         if state_id in source_states or state_id in sink_states:
+            continue
+        if transition_microstates and state_id not in transition_microstates:
             continue
 
         population = float(pi[state_id])
