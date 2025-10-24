@@ -24,6 +24,9 @@ class ConformationsConfig:
     """Configuration for TPT conformations analysis."""
     lag: int = 10
     n_clusters: int = 30
+    cluster_mode: str = "kmeans"
+    cluster_seed: Optional[int] = 42
+    kmeans_kwargs: Dict[str, Any] = field(default_factory=lambda: {"n_init": 50})
     n_components: int = 3
     n_metastable: int = 4
     temperature: float = 300.0
@@ -34,6 +37,7 @@ class ConformationsConfig:
     pathway_fraction: float = 0.99
     compute_kis: bool = True
     k_slow: int = 3
+    uncertainty_analysis: bool = True
     bootstrap_samples: int = 50
     n_representatives: int = 5
 
@@ -65,9 +69,10 @@ def run_conformations_analysis(
 This method:
 1. Loads shards and extracts features (Rg, RMSD)
 2. Performs TICA dimensionality reduction
-3. Clusters into microstates using MiniBatchKMeans
+3. Clusters into microstates using the configured KMeans-based method
 4. Builds MSM with deeptime
 5. Runs TPT analysis via `find_conformations()`
+   - Uncertainty quantification settings (`uncertainty_analysis`, `bootstrap_samples`) now come from `ConformationsConfig` and are forwarded directly, so the workflow either performs or skips bootstrap analysis explicitly with no silent fallbacks.
 6. Generates visualizations (committors, flux networks, pathways)
 7. Saves representative PDB structures
 8. Exports summary JSON
@@ -163,6 +168,9 @@ Click on the **"Analysis"** tab in the app.
 2. Click on **"Configure Conformations Analysis"** expander to adjust parameters:
    - **Lag**: Lag time for MSM building (default: 10)
    - **N microstates**: Number of clusters (default: 30)
+   - **Clustering method**: Choice of KMeans, MiniBatchKMeans, or auto-selection
+   - **Clustering seed**: Deterministic seed for clustering (-1 disables)
+   - **K-means n_init**: Restarts forwarded to the clustering estimator
    - **TICA components**: Dimensionality reduction (default: 3)
    - **N metastable states**: Number of coarse-grained states (default: 4)
    - **Temperature**: Reference temperature in Kelvin (default: 300)
