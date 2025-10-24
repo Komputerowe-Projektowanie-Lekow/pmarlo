@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List
@@ -52,6 +53,8 @@ def _patch_common_conformation_dependencies(
     monkeypatch: pytest.MonkeyPatch,
     workspace: WorkspaceLayout,
     dataset: Dict[str, Any],
+    *,
+    patch_reduce: bool = True,
 ) -> List[str]:
     called: List[str] = []
 
@@ -64,10 +67,11 @@ def _patch_common_conformation_dependencies(
         fake_load_shards_as_dataset,
     )
 
-    monkeypatch.setattr(
-        "example_programs.app_usecase.app.backend.reduce_features",
-        lambda feats, method, lag, n_components: feats,
-    )
+    if patch_reduce:
+        monkeypatch.setattr(
+            "example_programs.app_usecase.app.backend.reduce_features",
+            lambda feats, method, lag, n_components: feats,
+        )
 
     monkeypatch.setattr(
         "example_programs.app_usecase.app.backend.cluster_microstates",
@@ -277,3 +281,126 @@ def test_conformations_successful_run_uses_conformation_set_api(
     assert result.plots.keys() == {"committors", "flux_network", "pathways"}
     assert "find" in calls
     assert any(key.startswith("load:") for key in calls)
+
+
+@pytest.mark.unit
+def test_conformations_uses_precomputed_deeptica_features(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _workspace: WorkspaceLayout,
+    _fake_dataset: Dict[str, Any],
+) -> None:
+    backend = WorkflowBackend(_workspace)
+    shard_path = _workspace.shards_dir / "sample.json"
+    shard_path.parent.mkdir(parents=True, exist_ok=True)
+    shard_path.write_text("{}", encoding="utf-8")
+
+    calls = _patch_common_conformation_dependencies(
+        monkeypatch, _workspace, _fake_dataset, patch_reduce=False
+    )
+
+    def _raise_reduce(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("reduce_features should not be called for DeepTICA inputs")
+
+    monkeypatch.setattr(
+        "example_programs.app_usecase.app.backend.reduce_features",
+        _raise_reduce,
+    )
+
+    projection = np.linspace(0.0, 5.0, num=12, dtype=float).reshape(6, 2)
+    projection_path = tmp_path / "deeptica_projection.npz"
+    np.savez(projection_path, projection=projection)
+    metadata = {
+        "output_mean": [0.5, -0.5],
+        "output_transform": [[1.0, 0.0], [0.0, 1.0]],
+        "output_transform_applied": False,
+    }
+    metadata_path = tmp_path / "deeptica_metadata.json"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    captured: Dict[str, np.ndarray] = {}
+
+    def fake_cluster(features_matrix: np.ndarray, *args: Any, **kwargs: Any) -> SimpleNamespace:
+        captured["matrix"] = np.asarray(features_matrix, dtype=float)
+        return SimpleNamespace(labels=np.array([0, 1, 0, 1, 0, 1], dtype=int))
+
+    monkeypatch.setattr(
+        "example_programs.app_usecase.app.backend.cluster_microstates",
+        fake_cluster,
+    )
+
+    monkeypatch.setattr(
+        "example_programs.app_usecase.app.backend.build_simple_msm",
+        lambda *_args, **_kwargs: (
+            np.array([[0.9, 0.1], [0.2, 0.8]], dtype=float),
+            np.array([0.5, 0.5], dtype=float),
+        ),
+    )
+
+    monkeypatch.setattr(
+        "example_programs.app_usecase.app.backend.find_conformations",
+        lambda **_kwargs: SimpleNamespace(
+            tpt_result=SimpleNamespace(
+                rate=0.1,
+                mfpt=1.0,
+                total_flux=0.2,
+                pathways=[[0, 1]],
+                source_states=np.array([0]),
+                sink_states=np.array([1]),
+            ),
+            get_metastable_states=lambda: [],
+            get_transition_states=lambda: [],
+        ),
+    )
+
+    config = ConformationsConfig(
+        topology_pdb=Path("app_intputs/test.pdb"),
+        cv_method="deeptica",
+        deeptica_projection_path=projection_path,
+        deeptica_metadata_path=metadata_path,
+    )
+
+    result = backend.run_conformations_analysis([shard_path], config)
+
+    assert result.error is None
+    assert "plot" in calls
+    expected = projection - np.asarray(metadata["output_mean"], dtype=float)
+    np.testing.assert_allclose(captured["matrix"], expected)
+
+
+@pytest.mark.unit
+def test_conformations_deeptica_requires_projection_path(
+    monkeypatch: pytest.MonkeyPatch,
+    _workspace: WorkspaceLayout,
+    _fake_dataset: Dict[str, Any],
+) -> None:
+    backend = WorkflowBackend(_workspace)
+    shard_path = _workspace.shards_dir / "sample.json"
+    shard_path.parent.mkdir(parents=True, exist_ok=True)
+    shard_path.write_text("{}", encoding="utf-8")
+
+    _patch_common_conformation_dependencies(monkeypatch, _workspace, _fake_dataset)
+
+    monkeypatch.setattr(
+        "example_programs.app_usecase.app.backend.build_simple_msm",
+        lambda *_args, **_kwargs: (
+            np.array([[0.85, 0.15], [0.2, 0.8]], dtype=float),
+            np.array([0.5, 0.5], dtype=float),
+        ),
+    )
+
+    monkeypatch.setattr(
+        "example_programs.app_usecase.app.backend.find_conformations",
+        lambda **_kwargs: None,
+    )
+
+    config = ConformationsConfig(
+        topology_pdb=Path("app_intputs/test.pdb"),
+        cv_method="deeptica",
+        deeptica_projection_path=None,
+    )
+
+    result = backend.run_conformations_analysis([shard_path], config)
+
+    assert result.error is not None
+    assert "projection" in result.error.lower()

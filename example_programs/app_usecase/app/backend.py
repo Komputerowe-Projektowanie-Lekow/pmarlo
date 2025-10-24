@@ -33,6 +33,11 @@ import numpy as np
 
 from pmarlo.utils.path_utils import ensure_directory
 
+try:
+    import deeptime as dt
+except ImportError:  # pragma: no cover - optional dependency
+    dt = None
+
 try:  # Package-relative when imported as module
     from .state import StateManager
 except ImportError:  # Fallback for direct script import
@@ -97,6 +102,48 @@ def _build_result_cls() -> "_BuildResult":
 
 def _sanitize_artifacts(data: Any) -> Any:
     return _pmarlo_handles()["_sanitize_artifacts"](data)
+
+
+def _resolve_workspace_path(base: Path, candidate: Path) -> Path:
+    if candidate.is_absolute():
+        return candidate.expanduser().resolve()
+    return (base / candidate).expanduser().resolve()
+
+
+def _load_projection_matrix(path: Path) -> np.ndarray:
+    if not path.exists():
+        raise FileNotFoundError(f"DeepTICA projection file does not exist: {path}")
+
+    suffix = path.suffix.lower()
+    if suffix == ".npz":
+        with np.load(path) as data:
+            for key in ("projection", "deeptica", "X"):
+                if key in data:
+                    matrix = np.asarray(data[key], dtype=float)
+                    break
+            else:
+                raise ValueError(
+                    "DeepTICA projection archive must contain a 'projection' or 'deeptica' array"
+                )
+    elif suffix in {".npy"}:
+        matrix = np.asarray(np.load(path), dtype=float)
+    else:
+        raise ValueError(
+            f"Unsupported DeepTICA projection format '{suffix}'. Use .npz or .npy."
+        )
+
+    if matrix.ndim != 2 or matrix.shape[0] == 0:
+        raise ValueError("DeepTICA projection must be a non-empty 2D array")
+    return matrix
+
+
+def _load_metadata_mapping(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(f"DeepTICA metadata file does not exist: {path}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping):
+        raise ValueError("DeepTICA metadata must decode to a mapping")
+    return dict(payload)
 
 
 def _is_transition_matrix_reversible(
@@ -495,6 +542,9 @@ class ConformationsConfig:
     bootstrap_samples: int = 50
     n_representatives: int = 5
     topology_pdb: Optional[Path] = None
+    cv_method: str = "tica"
+    deeptica_projection_path: Optional[Path] = None
+    deeptica_metadata_path: Optional[Path] = None
 
 
 @dataclass
@@ -1676,11 +1726,11 @@ class WorkflowBackend:
         Returns:
             ConformationsResult with outputs and metadata
         """
+        from pmarlo.analysis.project_cv import apply_whitening_from_metadata
         from pmarlo.conformations import find_conformations
         from pmarlo.conformations.visualizations import (
             plot_tpt_summary,
         )
-        from pmarlo.markov_state_model.bridge import build_simple_msm
         from pmarlo.markov_state_model.clustering import cluster_microstates
         from pmarlo.markov_state_model.reduction import reduce_features
         import mdtraj as md
@@ -1779,11 +1829,46 @@ class WorkflowBackend:
                     )
                     warned_no_traj = True
 
-            # Reduce features with TICA
-            logger.info(f"Reducing features with TICA (n_components={config.n_components})")
-            features_reduced = reduce_features(
-                features, method="tica", lag=config.lag, n_components=config.n_components
-            )
+            cv_method = (config.cv_method or "tica").strip().lower()
+            if cv_method == "deeptica":
+                if config.deeptica_projection_path is None:
+                    raise ValueError(
+                        "deeptica_projection_path is required when cv_method='deeptica'"
+                    )
+                projection_path = _resolve_workspace_path(
+                    self.layout.workspace_dir,
+                    Path(config.deeptica_projection_path),
+                )
+                logger.info("Loading precomputed DeepTICA projection from %s", projection_path)
+                features_reduced = _load_projection_matrix(projection_path)
+                if features_reduced.shape[0] != features.shape[0]:
+                    raise ValueError(
+                        "DeepTICA projection frame count does not match loaded features"
+                    )
+                if config.deeptica_metadata_path is not None:
+                    metadata_path = _resolve_workspace_path(
+                        self.layout.workspace_dir,
+                        Path(config.deeptica_metadata_path),
+                    )
+                    logger.info("Applying DeepTICA whitening metadata from %s", metadata_path)
+                    metadata = _load_metadata_mapping(metadata_path)
+                    features_reduced, _ = apply_whitening_from_metadata(
+                        np.asarray(features_reduced, dtype=float), metadata
+                    )
+                else:
+                    features_reduced = np.asarray(features_reduced, dtype=float)
+            elif cv_method == "tica":
+                logger.info(
+                    f"Reducing features with TICA (n_components={config.n_components})"
+                )
+                features_reduced = reduce_features(
+                    features,
+                    method="tica",
+                    lag=config.lag,
+                    n_components=config.n_components,
+                )
+            else:
+                raise ValueError(f"Unsupported cv_method '{config.cv_method}' for conformations")
             
             # Clustering
             logger.info(f"Clustering into {config.n_clusters} microstates")
@@ -1797,11 +1882,19 @@ class WorkflowBackend:
             labels = clustering_result.labels
             n_states = int(np.max(labels) + 1)
             
-            # Build MSM
-            logger.info(f"Building MSM (lag={config.lag})")
-            T, pi = build_simple_msm(
-                [labels], n_states=n_states, lag=config.lag, count_mode="sliding"
+            # Build MSM using deeptime reversible estimator
+            logger.info(f"Building MSM (lag={config.lag}) using deeptime")
+            if dt is None:
+                raise RuntimeError(
+                    "Deeptime library is required for reversible MSM estimation."
+                )
+
+            estimator = dt.markov.msm.MaximumLikelihoodMSM(
+                lagtime=config.lag, reversible=True
             )
+            msm_model = estimator.fit([labels]).fetch_model()
+            T = msm_model.transition_matrix
+            pi = msm_model.stationary_distribution
 
             if not _is_transition_matrix_reversible(T, pi):
                 raise ValueError(
@@ -1911,6 +2004,18 @@ class WorkflowBackend:
                     Path(config.topology_pdb)
                     if isinstance(config.topology_pdb, Path)
                     else config.topology_pdb
+                )
+            if config.deeptica_projection_path is not None:
+                config_dict["deeptica_projection_path"] = str(
+                    Path(config.deeptica_projection_path)
+                    if isinstance(config.deeptica_projection_path, Path)
+                    else config.deeptica_projection_path
+                )
+            if config.deeptica_metadata_path is not None:
+                config_dict["deeptica_metadata_path"] = str(
+                    Path(config.deeptica_metadata_path)
+                    if isinstance(config.deeptica_metadata_path, Path)
+                    else config.deeptica_metadata_path
                 )
             with open(summary_path, "w") as f:
                 json.dump({
