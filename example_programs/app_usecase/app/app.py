@@ -1594,7 +1594,7 @@ def main() -> None:
                             if int(conf_cluster_seed) >= 0
                             else None
                         ),
-                        kmeans_kwargs={"n_init": int(conf_kmeans_n_init)},
+                        kmeans_n_init=int(conf_kmeans_n_init),
                         n_components=int(conf_n_components),
                         n_metastable=int(conf_n_metastable),
                         temperature=float(conf_temperature),

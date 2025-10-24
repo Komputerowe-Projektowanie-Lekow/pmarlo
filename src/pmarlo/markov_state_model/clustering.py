@@ -341,6 +341,37 @@ def _create_clustering_estimator(
     return estimator
 
 
+def _remap_labels_and_compute_inertia(
+    Y: np.ndarray, raw_labels: np.ndarray
+) -> tuple[np.ndarray, np.ndarray | None, int, float]:
+    """Remap raw clustering labels to a dense range and compute inertia."""
+
+    unique_labels = np.unique(raw_labels)
+    n_unique = int(unique_labels.size)
+    if n_unique == 0:
+        raise ValueError(
+            "Clustering produced zero unique microstates; verify input coverage "
+            "and CV preprocessing."
+        )
+
+    label_map = {int(label): idx for idx, label in enumerate(unique_labels)}
+    remapped = np.empty_like(raw_labels, dtype=int)
+    for idx, label in enumerate(raw_labels):
+        remapped[idx] = label_map[int(label)]
+
+    centers = np.zeros((n_unique, Y.shape[1]), dtype=float)
+    for original_label, dense_label in label_map.items():
+        mask = raw_labels == original_label
+        if not np.any(mask):
+            continue
+        centers[dense_label] = np.asarray(Y[mask], dtype=float).mean(axis=0)
+
+    diffs = Y - centers[remapped]
+    inertia = float(np.sum(diffs * diffs))
+
+    return remapped, centers if centers.size else None, n_unique, inertia
+
+
 def cluster_microstates(
     Y: np.ndarray,
     method: Literal["auto", "minibatchkmeans", "kmeans"] = "auto",
@@ -397,7 +428,9 @@ def cluster_microstates(
         and ``initial_centers`` for all methods. ``progress`` and ``fixed_seed``
         can be supplied to control deterministic behaviour for standard
         ``KMeans`` clustering. ``batch_size`` is supported only when
-        ``method="minibatchkmeans"``.
+        ``method="minibatchkmeans"``. Supplying ``n_init`` performs multiple
+        clustering restarts using different seeds and selects the run with the
+        lowest within-cluster sum of squares.
 
     Returns
     -------
@@ -463,6 +496,28 @@ def cluster_microstates(
 
     Y = np.asarray(Y, dtype=float)
 
+    kwargs = dict(kwargs)
+    raw_n_init = kwargs.pop("n_init", None)
+    if raw_n_init is None:
+        n_init_restarts = 1
+    else:
+        try:
+            n_init_restarts = int(raw_n_init)
+        except (TypeError, ValueError) as exc:  # pragma: no cover - defensive guard
+            raise TypeError(
+                "n_init must be provided as an integer when clustering with deeptime"
+            ) from exc
+        if n_init_restarts <= 0:
+            raise ValueError(
+                "n_init must be a positive integer when clustering microstates"
+            )
+
+    if n_init_restarts > 1 and "fixed_seed" in kwargs:
+        raise ValueError(
+            "n_init cannot be combined with fixed_seed; provide only one mechanism "
+            "for controlling clustering initialisations."
+        )
+
     _validate_clustering_kwargs(method, kwargs)
 
     # Store original request for logging
@@ -497,12 +552,7 @@ def cluster_microstates(
             "parameters."
         )
 
-    # Create and configure the clustering estimator
-    estimator = _create_clustering_estimator(
-        chosen_method, n_states, random_state, **kwargs
-    )
-
-    # Execute clustering
+    # Execute clustering with optional restarts
     logger.info(
         "Starting clustering with %s algorithm: %d states, %d samples, %d features",
         chosen_method,
@@ -511,18 +561,68 @@ def cluster_microstates(
         Y.shape[1],
     )
 
-    model = estimator.fit_fetch(Y)
-    labels = cast(np.ndarray, np.asarray(model.transform(Y), dtype=int))
-    centers = getattr(model, "cluster_centers", None)
+    seeds: list[int | None]
+    if n_init_restarts == 1:
+        seeds = [random_state]
+    else:
+        rng = np.random.default_rng(random_state)
+        seeds = []
+        if random_state is None:
+            seeds.append(None)
+        else:
+            seeds.append(int(random_state))
+        existing = {s for s in seeds if isinstance(s, int)}
+        while len(seeds) < n_init_restarts:
+            candidate = int(rng.integers(0, np.iinfo(np.int32).max))
+            if candidate in existing:
+                continue
+            seeds.append(candidate)
+            existing.add(candidate)
 
-    unique_labels = int(np.unique(labels).size)
-    if unique_labels == 0:
-        message = (
-            "Clustering produced zero unique microstates; verify input coverage "
-            "and CV preprocessing."
+    best_run: dict[str, Any] | None = None
+
+    for init_index, seed in enumerate(seeds):
+        estimator = _create_clustering_estimator(
+            chosen_method, n_states, seed, **kwargs
         )
-        logger.error(message)
-        raise ValueError(message)
+        model = estimator.fit_fetch(Y)
+        labels_raw = cast(np.ndarray, np.asarray(model.transform(Y), dtype=int))
+
+        try:
+            labels, centers, unique_labels, inertia = _remap_labels_and_compute_inertia(
+                Y, labels_raw
+            )
+        except ValueError as exc:
+            logger.error("%s", exc)
+            raise
+
+        run_info = {
+            "labels": labels,
+            "centers": centers,
+            "unique": unique_labels,
+            "inertia": inertia,
+            "seed": seed,
+            "iteration": init_index,
+        }
+
+        if best_run is None or inertia < best_run["inertia"]:
+            best_run = run_info
+
+    assert best_run is not None  # for mypy
+
+    labels = cast(np.ndarray, best_run["labels"])
+    centers = best_run["centers"]
+    unique_labels = int(best_run["unique"])
+
+    if n_init_restarts > 1:
+        logger.info(
+            "Selected best clustering from %d initialisations (iteration=%d, seed=%s, inertia=%.6f)",
+            n_init_restarts,
+            int(best_run["iteration"]),
+            "None" if best_run["seed"] is None else int(best_run["seed"]),
+            float(best_run["inertia"]),
+        )
+
     if unique_labels != n_states:
         message = (
             "Clustering produced {unique} unique microstates, expected {expected}. "
@@ -531,22 +631,6 @@ def cluster_microstates(
         ).format(unique=unique_labels, expected=n_states)
         logger.warning(message)
         n_states = unique_labels
-
-    if centers is not None:
-        try:
-            n_centers = int(getattr(centers, "shape", (0,))[0])
-        except Exception:
-            n_centers = n_states
-        if n_centers != n_states:
-            logger.warning(
-                "Clustering returned %s centers, expected %s; trimming metadata.",
-                n_centers,
-                n_states,
-            )
-            try:
-                centers = np.asarray(centers)[:n_states]
-            except Exception:
-                centers = None
 
     # Log completion with rationale if available
     logger.info(
