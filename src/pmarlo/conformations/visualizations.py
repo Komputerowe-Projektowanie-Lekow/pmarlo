@@ -214,6 +214,63 @@ def plot_flux_network(
     return fig
 
 
+def plot_pcca_states(
+    tica_coords: np.ndarray,
+    pcca_memberships: np.ndarray,
+    output_path: str | Path,
+    *,
+    cmap_small: str = "tab10",
+    cmap_large: str = "tab20",
+    marker_size: int = 80,
+    edge_color: str = "black",
+    edge_width: float = 0.5,
+) -> Path:
+    """Plot PCCA+ macrostate assignments in the first two TICA dimensions."""
+
+    coords = np.asarray(tica_coords, dtype=float)
+    if coords.ndim != 2:
+        raise ValueError("tica_coords must be a 2D array of cluster coordinates")
+    if coords.shape[1] < 2:
+        raise ValueError("tica_coords must provide at least two dimensions for plotting")
+
+    memberships = np.asarray(pcca_memberships, dtype=float)
+    if memberships.ndim != 2:
+        raise ValueError("pcca_memberships must be a 2D array of macrostate memberships")
+    if memberships.shape[0] != coords.shape[0]:
+        raise ValueError(
+            "Number of PCCA membership rows must match the number of TICA coordinates"
+        )
+
+    state_labels = np.argmax(memberships, axis=1)
+    unique_labels = np.unique(state_labels)
+    cmap = cmap_small if unique_labels.size <= 10 else cmap_large
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    scatter = ax.scatter(
+        coords[:, 0],
+        coords[:, 1],
+        c=state_labels,
+        cmap=cmap,
+        s=marker_size,
+        edgecolor=edge_color,
+        linewidth=edge_width,
+    )
+    ax.set_xlabel("TICA 1")
+    ax.set_ylabel("TICA 2")
+    ax.set_title("PCCA+ Metastable State Decomposition")
+    cbar = fig.colorbar(scatter, ax=ax)
+    cbar.set_label("Metastable State ID")
+
+    fig.tight_layout()
+
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    return output
+
+
 def plot_pathways(
     pathways: List[List[int]],
     pathway_fluxes: np.ndarray,

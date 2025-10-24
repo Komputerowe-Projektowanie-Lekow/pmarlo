@@ -17,9 +17,33 @@ class StateDetector:
     source and sink states for TPT analysis.
     """
 
-    def __init__(self) -> None:
-        """Initialize state detector."""
-        pass
+    def __init__(
+        self, committor_thresholds: Tuple[float, float] = (0.05, 0.95)
+    ) -> None:
+        """Initialize state detector.
+
+        Args:
+            committor_thresholds: Lower and upper bounds that define the
+                committor probability thresholds for classifying microstates
+                as source, sink, or transition-like.
+        """
+
+        lower, upper = committor_thresholds
+        if not (0.0 <= lower < upper <= 1.0):
+            raise ValueError(
+                "committor_thresholds must satisfy 0 ≤ lower < upper ≤ 1"
+            )
+        self.committor_thresholds: Tuple[float, float] = (
+            float(lower),
+            float(upper),
+        )
+
+    def _resolve_metastable_count(self, value: Optional[int]) -> int:
+        """Resolve the number of metastable states, with a default of 2."""
+        resolved = 2 if value is None else int(value)
+        if resolved < 2:
+            raise ValueError("Number of metastable states must be at least 2")
+        return resolved
 
     def auto_detect(
         self,
@@ -27,7 +51,7 @@ class StateDetector:
         pi: np.ndarray,
         fes: Optional[Any] = None,
         its: Optional[np.ndarray] = None,
-        n_states: int = 2,
+        n_states: Optional[int] = None,
         method: str = "auto",
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Auto-detect source and sink states using multiple strategies.
@@ -45,36 +69,42 @@ class StateDetector:
         Returns:
             Tuple of (source_states, sink_states) as numpy arrays
         """
+        target_states = self._resolve_metastable_count(n_states)
+
         if method == "auto":
             # Try FES first
             if fes is not None:
                 try:
-                    return self.detect_from_fes(fes, n_basins=n_states)
+                    return self.detect_from_fes(fes, n_basins=target_states)
                 except Exception as e:
                     logger.debug(f"FES detection failed: {e}")
 
             # Try timescale gap
             if its is not None:
                 try:
-                    return self.detect_from_timescale_gap(T, pi, its, n_states=n_states)
+                    return self.detect_from_timescale_gap(
+                        T, pi, its, n_states=target_states
+                    )
                 except Exception as e:
                     logger.debug(f"Timescale gap detection failed: {e}")
 
             # Fall back to populations
-            return self.detect_from_populations(pi, top_n=n_states)
+            return self.detect_from_populations(pi, top_n=target_states)
 
         elif method == "fes":
             if fes is None:
                 raise ValueError("FES data required for fes method")
-            return self.detect_from_fes(fes, n_basins=n_states)
+            return self.detect_from_fes(fes, n_basins=target_states)
 
         elif method == "timescale":
             if its is None:
                 raise ValueError("Implied timescales required for timescale method")
-            return self.detect_from_timescale_gap(T, pi, its, n_states=n_states)
+            return self.detect_from_timescale_gap(
+                T, pi, its, n_states=target_states
+            )
 
         elif method == "population":
-            return self.detect_from_populations(pi, top_n=n_states)
+            return self.detect_from_populations(pi, top_n=target_states)
 
         else:
             raise ValueError(
@@ -85,7 +115,7 @@ class StateDetector:
     def detect_from_fes(
         self,
         fes: Any,
-        n_basins: int = 2,
+        n_basins: Optional[int] = None,
         method: str = "watershed",
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Detect metastable basins from Free Energy Surface.
@@ -104,12 +134,14 @@ class StateDetector:
         else:
             raise ValueError("FES object must have 'F' attribute")
 
+        target_basins = self._resolve_metastable_count(n_basins)
+
         if method == "watershed":
-            return self._watershed_basins(F, n_basins)
+            return self._watershed_basins(F, target_basins)
         elif method == "local_minima":
-            return self._local_minima_basins(F, n_basins)
+            return self._local_minima_basins(F, target_basins)
         elif method == "threshold":
-            return self._threshold_basins(F, n_basins)
+            return self._threshold_basins(F, target_basins)
         else:
             raise ValueError(f"Unknown FES method: {method}")
 
@@ -252,7 +284,7 @@ class StateDetector:
         T: np.ndarray,
         pi: np.ndarray,
         its: np.ndarray,
-        n_states: int = 2,
+        n_states: Optional[int] = None,
         gap_threshold: float = 2.0,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Detect metastable states using timescale gap and PCCA+.
@@ -268,9 +300,11 @@ class StateDetector:
             Tuple of (source_states, sink_states)
         """
         # Find gap in timescales
+        target_states = self._resolve_metastable_count(n_states)
+
         if len(its) < 2:
             # No gap, use populations
-            return self.detect_from_populations(pi, top_n=n_states)
+            return self.detect_from_populations(pi, top_n=target_states)
 
         # Compute ratios
         ratios = its[:-1] / np.maximum(its[1:], 1e-10)
@@ -281,9 +315,11 @@ class StateDetector:
                 f"No clear timescale gap found (max ratio: {ratios[gap_idx]:.2f})"
             )
 
-        # Use gap_idx + 2 as number of metastable states (accounting for stationary)
-        n_metastable = min(gap_idx + 2, n_states, len(its))
-        n_metastable = max(2, n_metastable)
+        n_metastable = target_states
+        if n_metastable > T.shape[0]:
+            raise ValueError(
+                "Requested number of metastable states exceeds the number of microstates"
+            )
 
         # Use PCCA+ to find metastable sets
         try:
@@ -315,7 +351,7 @@ class StateDetector:
         return source_states, sink_states
 
     def detect_from_populations(
-        self, pi: np.ndarray, top_n: int = 2
+        self, pi: np.ndarray, top_n: Optional[int] = None
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Detect states from highest populations.
 
@@ -326,9 +362,11 @@ class StateDetector:
         Returns:
             Tuple of (source_states, sink_states)
         """
+        n_states = self._resolve_metastable_count(top_n)
+
         # Find top populated states
         sorted_indices = np.argsort(pi)[::-1]
-        top_states = sorted_indices[:top_n]
+        top_states = sorted_indices[:n_states]
 
         if len(top_states) < 2:
             # Fallback
@@ -405,6 +443,25 @@ class StateDetector:
         )
 
         return source_states, sink_states
+
+    def classify_committor_states(
+        self, committors: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Classify microstates into source, sink, and transition regions."""
+
+        values = np.asarray(committors, dtype=float)
+        if values.ndim != 1:
+            raise ValueError("committors array must be one-dimensional")
+
+        lower_thresh, upper_thresh = self.committor_thresholds
+
+        source_microstates = np.where(values <= lower_thresh)[0]
+        sink_microstates = np.where(values >= upper_thresh)[0]
+        transition_microstates = np.where(
+            (values > lower_thresh) & (values < upper_thresh)
+        )[0]
+
+        return source_microstates, sink_microstates, transition_microstates
 
     def from_frame_indices(
         self,

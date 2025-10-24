@@ -93,6 +93,22 @@ def _sync_form_tica_dim() -> None:
     st.session_state["conf_tica_dim"] = value
 
 
+def _sync_sidebar_metastable_states() -> None:
+    """Synchronize sidebar metastable count with form state."""
+
+    value = int(st.session_state.get("conf_n_metastable_sidebar", 10))
+    st.session_state["conf_n_metastable"] = value
+    st.session_state["conf_n_metastable_form"] = value
+
+
+def _sync_form_metastable_states() -> None:
+    """Propagate form metastable updates back to the sidebar widget."""
+
+    value = int(st.session_state.get("conf_n_metastable_form", 10))
+    st.session_state["conf_n_metastable"] = value
+    st.session_state["conf_n_metastable_sidebar"] = value
+
+
 def _parse_temperature_ladder(raw: str) -> List[float]:
     cleaned = raw.replace(";", ",")
     temps: List[float] = []
@@ -507,6 +523,14 @@ def _ensure_session_defaults() -> None:
     st.session_state.setdefault("its_lag_times", [1, 5, 10, 50, 100, 200])
     st.session_state.setdefault("conf_tica_dim", 10)
     st.session_state.setdefault("conf_n_components", st.session_state["conf_tica_dim"])
+    st.session_state.setdefault("conf_n_metastable", 10)
+    st.session_state.setdefault(
+        "conf_n_metastable_sidebar", st.session_state["conf_n_metastable"]
+    )
+    st.session_state.setdefault(
+        "conf_n_metastable_form", st.session_state["conf_n_metastable"]
+    )
+    st.session_state.setdefault("conf_committor_thresholds", (0.1, 0.9))
 
 
 def _consume_pending_training_config() -> None:
@@ -564,12 +588,38 @@ def main() -> None:
             on_change=_sync_sidebar_tica_dim,
         )
         st.number_input(
+            "Number of Metastable States (PCCA+)",
+            min_value=2,
+            max_value=50,
+            value=int(st.session_state.get("conf_n_metastable", 10)),
+            step=1,
+            help=(
+                "Sets the number of macrostates identified by the PCCA+"
+                " decomposition during conformations analysis."
+            ),
+            key="conf_n_metastable_sidebar",
+            on_change=_sync_sidebar_metastable_states,
+        )
+        st.number_input(
             "MSM Lag Time (steps)",
             min_value=1,
             max_value=1000,
             value=int(st.session_state.get("conf_msm_lag_time", 75)),
             step=5,
             key="conf_msm_lag_time",
+        )
+        committor_thresholds = st.slider(
+            "Committor Thresholds",
+            min_value=0.0,
+            max_value=1.0,
+            value=tuple(st.session_state.get("conf_committor_thresholds", (0.1, 0.9))),
+            step=0.05,
+            help=(
+                "Define the committor probability range treated as transition "
+                "states. Values below the lower bound are classified as sources "
+                "and values above the upper bound as sinks."
+            ),
+            key="conf_committor_thresholds",
         )
         inputs = layout.available_inputs()
         if inputs:
@@ -1551,6 +1601,12 @@ def main() -> None:
                     conf_n_components = conf_col3.number_input(
                         "TICA components", min_value=2, value=3, step=1, key="conf_n_components"
                     )
+                    conf_committor_thresholds = tuple(
+                        float(v)
+                        for v in st.session_state.get(
+                            "conf_committor_thresholds", (0.1, 0.9)
+                        )
+                    )
 
                     conf_cluster_col1, conf_cluster_col2, conf_cluster_col3 = st.columns(3)
                     conf_cluster_mode = conf_cluster_col1.selectbox(
@@ -1576,8 +1632,15 @@ def main() -> None:
 
                     conf_col4, conf_col5, conf_col6 = st.columns(3)
                     conf_n_metastable = conf_col4.number_input(
-                        "N metastable states", min_value=2, value=4, step=1, key="conf_n_metastable"
+                        "N metastable states",
+                        min_value=2,
+                        value=int(st.session_state.get("conf_n_metastable", 10)),
+                        step=1,
+                        key="conf_n_metastable_form",
+                        on_change=_sync_form_metastable_states,
                     )
+                    st.session_state["conf_n_metastable"] = int(conf_n_metastable)
+                    st.session_state["conf_n_metastable_sidebar"] = int(conf_n_metastable)
                     conf_temperature = conf_col5.number_input(
                         "Temperature (K)", min_value=0.0, value=300.0, step=5.0, key="conf_temperature"
                     )
@@ -1673,6 +1736,7 @@ def main() -> None:
                             cv_method=str(conf_cv_method),
                             deeptica_projection_path=conf_deeptica_projection,
                             deeptica_metadata_path=conf_deeptica_metadata,
+                            committor_thresholds=conf_committor_thresholds,
                         )
 
                         with st.spinner("Running conformations analysis..."):

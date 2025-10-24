@@ -107,3 +107,16 @@ def test_detect_from_fes_local_minima():
 
     assert len(source) >= 1
     assert len(sink) >= 1
+
+
+def test_committor_classification_respects_thresholds() -> None:
+    """Forward committor classification honours configured thresholds."""
+
+    detector = StateDetector(committor_thresholds=(0.2, 0.8))
+    committors = np.array([0.0, 0.15, 0.2, 0.55, 0.85, 1.0])
+
+    source, sink, transition = detector.classify_committor_states(committors)
+
+    np.testing.assert_array_equal(source, np.array([0, 1, 2]))
+    np.testing.assert_array_equal(transition, np.array([3]))
+    np.testing.assert_array_equal(sink, np.array([4, 5]))

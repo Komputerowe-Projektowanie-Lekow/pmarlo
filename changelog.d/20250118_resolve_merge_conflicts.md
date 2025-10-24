@@ -1,2 +1,6 @@
 ### Fixed
-- Resolved merge conflicts in `pmarlo.conformations.finder.find_conformations()` by adopting the more comprehensive approach that includes flux calculation and proper metastable state classification using the `_find_metastable_states` function.
+- Resolved merge conflicts in conformations analysis workflow
+  - Updated `StateDetector` to use `committor_thresholds` parameter instead of `n_metastable`
+  - Maintained backward compatibility by keeping `_resolve_metastable_count` method
+  - Updated Streamlit app to support both metastable state configuration and committor thresholds
+  - Fixed backend conformations analysis to use new `committor_thresholds` parameter

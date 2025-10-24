@@ -370,6 +370,7 @@ def test_conformations_config_controls_uncertainty_options(
     assert captured_kwargs["uncertainty_analysis"] is False
     assert captured_kwargs["n_bootstrap"] == 25
     assert captured_kwargs["tica__dim"] == config.n_components
+    assert captured_kwargs["committor_thresholds"] == tuple(config.committor_thresholds)
 
 
 @pytest.mark.unit
@@ -471,6 +472,7 @@ def test_conformations_respects_tica_dimension(
     assert captured_reduce["lag"] == config.lag
     assert captured_reduce["n_components"] == 12
     assert captured_kwargs["tica__dim"] == 12
+    assert captured_kwargs["committor_thresholds"] == tuple(config.committor_thresholds)
 
 
 @pytest.mark.unit
