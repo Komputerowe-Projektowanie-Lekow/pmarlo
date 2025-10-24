@@ -27,6 +27,10 @@ class TPTResult:
         pathways: Top reactive pathways (list of state sequences)
         pathway_fluxes: Flux contribution of each pathway
         bottleneck_states: States with highest reactive flux
+        pathway_iterations: Number of iterations performed while extracting
+            pathways
+        pathway_max_iterations: Configured maximum number of iterations for the
+            pathway extraction routine
     """
 
     source_states: np.ndarray
@@ -42,6 +46,8 @@ class TPTResult:
     pathway_fluxes: np.ndarray = field(default_factory=lambda: np.array([]))
     bottleneck_states: np.ndarray = field(default_factory=lambda: np.array([]))
     tpt_converged: bool = True
+    pathway_iterations: int = 0
+    pathway_max_iterations: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -59,6 +65,8 @@ class TPTResult:
             "pathway_fluxes": self.pathway_fluxes.tolist(),
             "bottleneck_states": self.bottleneck_states.tolist(),
             "tpt_converged": bool(self.tpt_converged),
+            "pathway_iterations": int(self.pathway_iterations),
+            "pathway_max_iterations": int(self.pathway_max_iterations),
         }
 
 
@@ -310,6 +318,8 @@ class ConformationSet:
                 pathway_fluxes=np.array(tpt_data.get("pathway_fluxes", [])),
                 bottleneck_states=np.array(tpt_data.get("bottleneck_states", [])),
                 tpt_converged=bool(tpt_data.get("tpt_converged", True)),
+                pathway_iterations=int(tpt_data.get("pathway_iterations", 0)),
+                pathway_max_iterations=int(tpt_data.get("pathway_max_iterations", 0)),
             )
 
         # Reconstruct KIS result

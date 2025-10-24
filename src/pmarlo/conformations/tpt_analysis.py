@@ -22,6 +22,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger("pmarlo.conformations")
 
 
+# Increased ceiling on the number of pathway iterations allowed during the
+# deeptime pathway decomposition step. The deeptime implementation stops after
+# ``maxiter`` iterations and emits a ``RuntimeWarning`` when it reaches that
+# ceiling. Empirically, the default (1000) can be too low for larger MSMs, so we
+# raise it substantially while still allowing callers to restrict the number of
+# returned pathways separately.
+PATHWAY_MAX_ITERATIONS = 10_000
+
+
 class TPTAnalysis:
     """Transition Path Theory analysis using deeptime.
 
@@ -111,12 +120,18 @@ class TPTAnalysis:
 
         # Extract pathways using deeptime's pathway decomposition
         tpt_converged = True
+        pathway_iterations = 0
         with warnings.catch_warnings(record=True) as caught_warnings:
             warnings.simplefilter("always", category=RuntimeWarning)
             pathways, pathway_fluxes = flux.pathways(
                 fraction=pathway_fraction,
-                maxiter=n_paths,
+                maxiter=PATHWAY_MAX_ITERATIONS,
             )
+            pathway_iterations = len(pathways)
+
+        if pathway_iterations > n_paths:
+            pathways = pathways[:n_paths]
+            pathway_fluxes = pathway_fluxes[:n_paths]
 
         for caught in caught_warnings:
             if issubclass(caught.category, RuntimeWarning) and (
@@ -124,11 +139,20 @@ class TPTAnalysis:
             ):
                 tpt_converged = False
                 logger.warning(
-                    "TPT pathway extraction failed to converge: %s",
+                    "TPT pathway extraction failed to converge after %d iterations (max %d): %s",
+                    pathway_iterations,
+                    PATHWAY_MAX_ITERATIONS,
                     caught.message,
                 )
                 break
-        
+            if issubclass(caught.category, RuntimeWarning):
+                logger.warning(
+                    "Runtime warning during TPT pathway extraction after %d iterations (max %d): %s",
+                    pathway_iterations,
+                    PATHWAY_MAX_ITERATIONS,
+                    caught.message,
+                )
+
         # Convert pathways to lists
         pathways = [list(map(int, path)) for path in pathways]
         pathway_fluxes = np.asarray(pathway_fluxes, dtype=float)
@@ -155,6 +179,8 @@ class TPTAnalysis:
             pathway_fluxes=pathway_fluxes,
             bottleneck_states=bottleneck_states,
             tpt_converged=tpt_converged,
+            pathway_iterations=pathway_iterations,
+            pathway_max_iterations=PATHWAY_MAX_ITERATIONS,
         )
 
     def compute_committor(
