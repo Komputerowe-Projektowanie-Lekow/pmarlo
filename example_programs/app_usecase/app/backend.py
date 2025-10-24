@@ -50,6 +50,10 @@ except ImportError:  # Fallback for direct script import
     from state import StateManager  # type: ignore
 
 from pmarlo.analysis import compute_analysis_debug, export_analysis_debug
+from pmarlo.conformations.representative_picker import (
+    TrajectoryFrameLocator,
+    TrajectorySegment,
+)
 from pmarlo.data.aggregate import load_shards_as_dataset
 
 __all__ = [
@@ -70,6 +74,18 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+
+_STRUCTURE_EXTENSIONS: tuple[str, ...] = (
+    ".dcd",
+    ".xtc",
+    ".trr",
+    ".nc",
+    ".h5",
+    ".hdf5",
+    ".pdb",
+    ".gro",
+)
 
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -566,6 +582,7 @@ class ConformationsResult:
     created_at: str
     config: ConformationsConfig
     error: Optional[str] = None
+    tpt_converged: bool = True
 
 
 class WorkflowBackend:
@@ -1718,6 +1735,170 @@ class WorkflowBackend:
             print("--- END DEBUG ERROR ---")
             raise
 
+    def _extract_trajectory_names(self, source: Mapping[str, Any]) -> List[str]:
+        names: List[str] = []
+        for key in ("traj_files", "trajectories"):
+            entries = source.get(key)
+            if isinstance(entries, (list, tuple)):
+                for entry in entries:
+                    if isinstance(entry, str) and entry:
+                        names.append(entry)
+        primary = source.get("traj") or source.get("trajectory") or source.get("path")
+        if isinstance(primary, str) and primary:
+            names.append(primary)
+
+        deduped: List[str] = []
+        seen: set[str] = set()
+        for name in names:
+            if name not in seen:
+                seen.add(name)
+                deduped.append(name)
+        return deduped
+
+    def _search_structure_by_stem(self, base: Path, stem: str) -> Optional[Path]:
+        if not stem:
+            return None
+        base = base.resolve()
+        for ext in _STRUCTURE_EXTENSIONS:
+            candidate = (base / f"{stem}{ext}").resolve()
+            if candidate.exists():
+                return candidate
+        return None
+
+    def _maybe_resolve_structure_file(
+        self, target: Path, stem: str, shard_dir: Path
+    ) -> Optional[Path]:
+        suffix = target.suffix.lower()
+        if target.exists():
+            if suffix in _STRUCTURE_EXTENSIONS:
+                return target.resolve()
+            if suffix in {".npz", ".npy"}:
+                alt = self._search_structure_by_stem(target.parent, stem)
+                if alt is None:
+                    raise FileNotFoundError(
+                        f"Feature archive {target} does not have a matching structural trajectory"
+                    )
+                return alt
+            raise ValueError(
+                f"Unsupported trajectory file extension '{target.suffix}' for {target}"
+            )
+
+        alt = self._search_structure_by_stem(target.parent, stem)
+        if alt is not None:
+            return alt
+        if target.parent != shard_dir:
+            alt = self._search_structure_by_stem(shard_dir, stem)
+            if alt is not None:
+                return alt
+        return None
+
+    def _resolve_trajectory_path(
+        self, shard_path: Path, raw_names: Sequence[str]
+    ) -> Path:
+        if not raw_names:
+            raise ValueError(
+                f"Shard {shard_path} does not declare any trajectory file references"
+            )
+
+        shard_dir = shard_path.parent.resolve()
+        search_bases = [shard_dir, self.layout.workspace_dir.resolve()]
+
+        for name in raw_names:
+            candidate = Path(name)
+            stem = candidate.stem
+            if candidate.is_absolute():
+                targets = [candidate]
+            else:
+                targets = [(base / candidate).resolve() for base in search_bases]
+
+            for target in targets:
+                resolved = self._maybe_resolve_structure_file(target, stem, shard_dir)
+                if resolved is not None:
+                    if not resolved.exists():
+                        raise FileNotFoundError(
+                            f"Trajectory file {resolved} referenced by {shard_path} does not exist"
+                        )
+                    return resolved.resolve()
+
+        raise FileNotFoundError(
+            f"Could not resolve trajectory file for shard {shard_path.name}."
+        )
+
+    def _build_trajectory_locator(
+        self,
+        shard_paths: Sequence[Path],
+        shard_meta_list: Sequence[Mapping[str, Any]],
+    ) -> TrajectoryFrameLocator:
+        if len(shard_paths) != len(shard_meta_list):
+            raise ValueError(
+                "Shard metadata length mismatch; cannot map trajectories reliably."
+            )
+
+        segments: List[TrajectorySegment] = []
+        for idx, (shard_path, shard_meta) in enumerate(zip(shard_paths, shard_meta_list)):
+            if not isinstance(shard_meta, Mapping):
+                raise TypeError(
+                    f"Shard metadata entry {idx} is not a mapping; unable to resolve trajectories."
+                )
+
+            start_raw = shard_meta.get("start")
+            stop_raw = shard_meta.get("stop")
+            if start_raw is None or stop_raw is None:
+                raise ValueError(
+                    f"Shard metadata for {shard_path.name} must include start/stop offsets"
+                )
+            start = int(start_raw)
+            stop = int(stop_raw)
+            if stop <= start:
+                raise ValueError(
+                    f"Shard {shard_path.name} reports non-positive frame span ({start}->{stop})"
+                )
+
+            frames_loaded = int(shard_meta.get("frames_loaded", stop - start))
+            if frames_loaded != stop - start:
+                raise ValueError(
+                    f"Shard {shard_path.name} has inconsistent frame counts (loaded={frames_loaded}, span={stop - start})"
+                )
+
+            source = shard_meta.get("source")
+            if not isinstance(source, Mapping):
+                raise ValueError(
+                    f"Shard metadata for {shard_path.name} is missing provenance 'source' details"
+                )
+
+            frame_range = source.get("range") or source.get("frame_range")
+            if not (isinstance(frame_range, (list, tuple)) and len(frame_range) == 2):
+                raise ValueError(
+                    f"Shard metadata for {shard_path.name} must declare frame range for trajectory extraction"
+                )
+            local_start = int(frame_range[0])
+            local_stop = int(frame_range[1])
+            if local_stop - local_start != frames_loaded:
+                raise ValueError(
+                    f"Shard {shard_path.name} frame range ({local_start}->{local_stop}) does not match feature count {frames_loaded}"
+                )
+
+            trajectory_names = self._extract_trajectory_names(source)
+            trajectory_path = self._resolve_trajectory_path(shard_path, trajectory_names)
+
+            segments.append(
+                TrajectorySegment(
+                    path=trajectory_path,
+                    start=start,
+                    stop=stop,
+                    local_start=local_start,
+                )
+            )
+
+        segments.sort(key=lambda seg: seg.start)
+        for prev, current in zip(segments, segments[1:]):
+            if current.start < prev.stop:
+                raise ValueError(
+                    "Shard frame intervals overlap; cannot resolve representative frames to unique trajectories."
+                )
+
+        return TrajectoryFrameLocator(tuple(segments))
+
     def run_conformations_analysis(
         self,
         shard_jsons: Sequence[Path],
@@ -1739,7 +1920,6 @@ class WorkflowBackend:
         )
         from pmarlo.markov_state_model.clustering import cluster_microstates
         from pmarlo.markov_state_model.reduction import reduce_features
-        import mdtraj as md
         
         stamp = _timestamp()
         output_dir = self.layout.bundles_dir / f"conformations-{stamp}"
@@ -1778,62 +1958,16 @@ class WorkflowBackend:
                 )
 
             shard_meta_list = dataset.get("__shards__", [])
-            logger.info(f"Loading trajectories with topology: {topology_pdb}")
-            all_trajs = []
-            missing_traj_info = False
-            warned_no_traj = False
-            if shard_meta_list:
-                for idx, shard_meta in enumerate(shard_meta_list):
-                    if not isinstance(shard_meta, Mapping):
-                        raise TypeError(
-                            f"Shard metadata entry {idx} is not a mapping; unable to read trajectories."
-                        )
-                    traj_paths = shard_meta.get("trajectories")
-                    if not traj_paths:
-                        missing_traj_info = True
-                        logger.warning(
-                            "Shard metadata for entry %s does not include trajectory paths; representative structures will not be saved.",
-                            shard_meta.get("id", idx),
-                        )
-                        continue
-                    for traj_path_str in traj_paths:
-                        traj_path = Path(traj_path_str)
-                        if not traj_path.is_absolute():
-                            traj_path = (self.layout.workspace_dir / traj_path).resolve()
-                        if not traj_path.exists():
-                            raise FileNotFoundError(
-                                f"Trajectory {traj_path} referenced in shard metadata does not exist."
-                            )
-                        try:
-                            traj = md.load(str(traj_path), top=str(topology_pdb))
-                        except Exception as exc:
-                            raise RuntimeError(
-                                f"Failed to load trajectory {traj_path.name}: {exc}"
-                            ) from exc
-                        all_trajs.append(traj)
-                        logger.info(
-                            f"Loaded trajectory: {traj_path.name} ({len(traj)} frames)"
-                        )
-            else:
-                missing_traj_info = True
-                logger.warning(
-                    "Shard metadata is missing; no trajectories will be loaded. Representative structures will not be saved."
+            if not shard_meta_list:
+                raise ValueError(
+                    "Shard metadata missing from aggregated dataset; cannot locate trajectories."
                 )
-                warned_no_traj = True
 
-            combined_traj = md.join(all_trajs) if all_trajs else None
-            if combined_traj is not None:
-                logger.info(f"Combined trajectory: {len(combined_traj)} total frames")
-            else:
-                if not missing_traj_info:
-                    logger.warning(
-                        "No trajectories could be loaded despite metadata entries; representative structures will not be saved."
-                    )
-                elif not warned_no_traj:
-                    logger.warning(
-                        "No trajectories loaded, representative structures will not be saved."
-                    )
-                    warned_no_traj = True
+            locator = self._build_trajectory_locator(shards, shard_meta_list)
+            logger.info(
+                "Resolved %d trajectory segments for representative extraction",
+                len(locator.segments),
+            )
 
             cv_method = (config.cv_method or "tica").strip().lower()
             if cv_method == "deeptica":
@@ -1957,7 +2091,6 @@ class WorkflowBackend:
             
             conf_result = find_conformations(
                 msm_data=msm_data,
-                trajectories=[combined_traj] if combined_traj is not None else None,
                 source_states=np.array(config.source_states) if config.source_states else None,
                 sink_states=np.array(config.sink_states) if config.sink_states else None,
                 auto_detect=config.auto_detect_states,
@@ -1970,7 +2103,9 @@ class WorkflowBackend:
                 n_bootstrap=config.bootstrap_samples,
                 representative_selection='medoid',
                 output_dir=str(output_dir),
-                save_structures=combined_traj is not None,
+                save_structures=True,
+                topology_path=str(topology_pdb),
+                trajectory_locator=locator,
             )
 
             tpt_result = conf_result.tpt_result
@@ -1996,6 +2131,7 @@ class WorkflowBackend:
                 "n_pathways": len(tpt_result.pathways),
                 "source_states": tpt_result.source_states.tolist(),
                 "sink_states": tpt_result.sink_states.tolist(),
+                "tpt_converged": bool(tpt_result.tpt_converged),
             }
 
             metastable_states: Dict[str, Dict[str, Any]] = {}
@@ -2082,6 +2218,7 @@ class WorkflowBackend:
                 plots=plots,
                 created_at=stamp,
                 config=config,
+                tpt_converged=bool(tpt_result.tpt_converged),
             )
             
         except Exception as e:
@@ -2097,6 +2234,7 @@ class WorkflowBackend:
                 created_at=stamp,
                 config=config,
                 error=str(e),
+                tpt_converged=True,
             )
 
     # ------------------------------------------------------------------

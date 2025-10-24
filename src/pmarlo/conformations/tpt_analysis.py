@@ -9,6 +9,7 @@ No fallbacks - raises ImportError if deeptime is not available.
 from __future__ import annotations
 
 import logging
+import warnings
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import numpy as np
@@ -109,10 +110,24 @@ class TPTAnalysis:
         mfpt = float(flux.mfpt)
 
         # Extract pathways using deeptime's pathway decomposition
-        pathways, pathway_fluxes = flux.pathways(
-            fraction=pathway_fraction,
-            maxiter=n_paths
-        )
+        tpt_converged = True
+        with warnings.catch_warnings(record=True) as caught_warnings:
+            warnings.simplefilter("always", category=RuntimeWarning)
+            pathways, pathway_fluxes = flux.pathways(
+                fraction=pathway_fraction,
+                maxiter=n_paths,
+            )
+
+        for caught in caught_warnings:
+            if issubclass(caught.category, RuntimeWarning) and (
+                "Maximum number of iterations reached" in str(caught.message)
+            ):
+                tpt_converged = False
+                logger.warning(
+                    "TPT pathway extraction failed to converge: %s",
+                    caught.message,
+                )
+                break
         
         # Convert pathways to lists
         pathways = [list(map(int, path)) for path in pathways]
@@ -139,6 +154,7 @@ class TPTAnalysis:
             pathways=pathways,
             pathway_fluxes=pathway_fluxes,
             bottleneck_states=bottleneck_states,
+            tpt_converged=tpt_converged,
         )
 
     def compute_committor(

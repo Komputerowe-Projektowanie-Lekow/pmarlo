@@ -483,6 +483,7 @@ def _ensure_session_defaults() -> None:
     st.session_state.setdefault("analysis_fes_method", "kde")
     st.session_state.setdefault("analysis_fes_bandwidth", "scott")
     st.session_state.setdefault("analysis_min_count_per_bin", 1)
+    st.session_state.setdefault("conf_n_clusters", 100)
 
 
 def _consume_pending_training_config() -> None:
@@ -512,6 +513,19 @@ def main() -> None:
         cols[0].metric("Models", summary.get("models", 0))
         cols[1].metric("Bundles", summary.get("builds", 0))
         st.divider()
+        st.number_input(
+            "Number of Clusters",
+            min_value=10,
+            max_value=1000,
+            value=int(st.session_state.get("conf_n_clusters", 100)),
+            step=10,
+            help=(
+                "Controls the number of clusters used when constructing the"
+                " conformational microstates. Increase this to resolve"
+                " additional transition states."
+            ),
+            key="conf_n_clusters",
+        )
         inputs = layout.available_inputs()
         if inputs:
             st.write("Available inputs:")
@@ -1478,9 +1492,9 @@ def main() -> None:
                 conf_lag = conf_col1.number_input(
                     "Lag (steps)", min_value=1, value=10, step=1, key="conf_lag"
                 )
-                conf_n_clusters = conf_col2.number_input(
-                    "N microstates", min_value=10, value=30, step=5, key="conf_n_clusters"
-                )
+                conf_n_clusters = int(st.session_state.get("conf_n_clusters", 100))
+                conf_col2.metric("N microstates", conf_n_clusters)
+                conf_col2.caption("Configured in the sidebar.")
                 conf_n_components = conf_col3.number_input(
                     "TICA components", min_value=2, value=3, step=1, key="conf_n_components"
                 )
@@ -1617,7 +1631,12 @@ def main() -> None:
                         st.error(f"Conformations analysis failed: {conf_result.error}")
                     else:
                         st.success(f"Conformations analysis complete! Output saved to {conf_result.output_dir.name}")
-                        
+
+                        if not conf_result.tpt_converged:
+                            st.error(
+                                "Warning: TPT calculation failed to converge. The flux and pathway results shown are unreliable. Try increasing the number of clusters."
+                            )
+
                         # Display TPT summary
                         if conf_result.tpt_summary:
                             st.subheader("TPT Results")

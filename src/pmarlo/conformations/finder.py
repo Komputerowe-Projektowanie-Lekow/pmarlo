@@ -10,7 +10,11 @@ import numpy as np
 from scipy import constants
 
 from .kinetic_importance import KineticImportanceScore
-from .representative_picker import RepresentativePicker, build_frame_index_lookup
+from .representative_picker import (
+    RepresentativePicker,
+    TrajectoryFrameLocator,
+    build_frame_index_lookup,
+)
 from .results import Conformation, ConformationSet, KISResult, TPTResult, UncertaintyResult
 from .tpt_analysis import TPTAnalysis
 from .uncertainty import UncertaintyQuantifier
@@ -21,6 +25,8 @@ logger = logging.getLogger("pmarlo.conformations")
 def find_conformations(
     msm_data: Dict[str, Any],
     trajectories: Optional[Any] = None,
+    trajectory_locator: TrajectoryFrameLocator | None = None,
+    topology_path: str | Path | None = None,
     source_states: Optional[np.ndarray] = None,
     sink_states: Optional[np.ndarray] = None,
     auto_detect: bool = True,
@@ -50,6 +56,8 @@ def find_conformations(
             - 'fes': Free energy surface (optional, for auto-detection)
             - 'its': Implied timescales (optional, for auto-detection)
         trajectories: MDTraj trajectory or list of trajectories (for structure extraction)
+        trajectory_locator: Resolver mapping global frame indices to trajectory files
+        topology_path: Topology PDB used with ``trajectory_locator`` when loading frames
         source_states: Source state indices (if not auto-detected)
         sink_states: Sink state indices (if not auto-detected)
         auto_detect: Auto-detect source/sink states
@@ -227,9 +235,19 @@ def find_conformations(
         _update_with_representatives(conformations, representatives)
 
     # Step 6: Extract and save structures
-    if save_structures and trajectories is not None and output_dir is not None:
+    if save_structures and output_dir is not None:
+        if trajectory_locator is None and trajectories is None:
+            raise ValueError(
+                "Either trajectories or trajectory_locator must be provided when saving structures"
+            )
         logger.info("Extracting representative structures")
-        _extract_structures(conformations, trajectories, output_dir)
+        _extract_structures(
+            conformations,
+            trajectories,
+            output_dir,
+            trajectory_locator=trajectory_locator,
+            topology_path=topology_path,
+        )
 
     # Step 7: Uncertainty quantification
     if uncertainty_analysis and dtrajs is not None:
@@ -538,6 +556,9 @@ def _extract_structures(
     conformations: List[Conformation],
     trajectories: Any,
     output_dir: str,
+    *,
+    trajectory_locator: TrajectoryFrameLocator | None = None,
+    topology_path: str | Path | None = None,
 ) -> None:
     """Extract and save representative structures."""
     picker = RepresentativePicker()
@@ -574,7 +595,12 @@ def _extract_structures(
         # Save structures
         type_dir = str(Path(output_dir) / conf_type)
         saved_paths = picker.extract_structures(
-            representatives, trajectories, type_dir, prefix=conf_type
+            representatives,
+            trajectories,
+            type_dir,
+            prefix=conf_type,
+            topology_path=topology_path,
+            trajectory_locator=trajectory_locator,
         )
 
         # Update conformations with paths

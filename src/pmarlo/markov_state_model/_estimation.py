@@ -172,7 +172,7 @@ class EstimationMixin:
             cm[np.ix_(res.active, res.active)] = res.counts
             ml = MaximumLikelihoodMSM(
                 lagtime=int(max(1, getattr(self, "lag_time", 1))),
-                reversible=False,
+                reversible=True,
             )
             try:
                 msm_model = ml.fit(res.counts).fetch_model()

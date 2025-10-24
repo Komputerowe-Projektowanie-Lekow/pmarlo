@@ -4,11 +4,44 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 logger = logging.getLogger("pmarlo.conformations")
+
+
+@dataclass(frozen=True)
+class TrajectorySegment:
+    """Mapping between global frame span and a physical trajectory file."""
+
+    path: Path
+    start: int
+    stop: int
+    local_start: int
+
+    def contains(self, global_frame: int) -> bool:
+        return self.start <= global_frame < self.stop
+
+    def to_local(self, global_frame: int) -> int:
+        offset = global_frame - self.start
+        return self.local_start + offset
+
+
+@dataclass(frozen=True)
+class TrajectoryFrameLocator:
+    """Resolve global frame indices to physical trajectory files."""
+
+    segments: Tuple[TrajectorySegment, ...]
+
+    def resolve(self, global_frame: int) -> Tuple[Path, int]:
+        for segment in self.segments:
+            if segment.contains(global_frame):
+                return segment.path, segment.to_local(global_frame)
+        raise IndexError(
+            f"Global frame {global_frame} does not map to any known trajectory segment"
+        )
 
 
 @dataclass(frozen=True)
@@ -311,15 +344,47 @@ class RepresentativePicker:
         trajectories: Any,
         output_dir: str,
         prefix: str = "state",
+        *,
+        topology_path: str | Path | None = None,
+        trajectory_locator: TrajectoryFrameLocator | None = None,
     ) -> List[str]:
         """Extract and save representative structures as PDB files."""
-
-        from pathlib import Path
 
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
         saved_files: List[str] = []
+
+        if trajectory_locator is not None:
+            if topology_path is None:
+                raise ValueError(
+                    "topology_path is required when extracting structures from raw trajectories"
+                )
+            top_path = Path(topology_path).resolve()
+            if not top_path.exists():
+                raise FileNotFoundError(
+                    f"Topology file {top_path} required for representative extraction does not exist"
+                )
+
+            import mdtraj as md
+
+            for state_id, global_idx, _traj_idx, _local_idx in representatives:
+                traj_path, frame_index = trajectory_locator.resolve(global_idx)
+                if not traj_path.exists():
+                    raise FileNotFoundError(
+                        f"Trajectory file {traj_path} does not exist for state {state_id}"
+                    )
+                frame = md.load_frame(
+                    str(traj_path), index=int(frame_index), top=str(top_path)
+                )
+
+                filename = f"{prefix}_{state_id:03d}_{global_idx:06d}.pdb"
+                filepath = output_path / filename
+                frame.save_pdb(str(filepath))
+                saved_files.append(str(filepath))
+
+            logger.info(f"Saved {len(saved_files)} structures to {output_dir}")
+            return saved_files
 
         if not isinstance(trajectories, list):
             trajectories = [trajectories]
