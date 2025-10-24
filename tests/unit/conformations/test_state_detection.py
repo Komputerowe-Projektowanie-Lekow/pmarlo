@@ -107,4 +107,3 @@ def test_detect_from_fes_local_minima():
 
     assert len(source) >= 1
     assert len(sink) >= 1
-

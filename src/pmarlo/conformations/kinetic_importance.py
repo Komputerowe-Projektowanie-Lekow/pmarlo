@@ -8,7 +8,6 @@ from typing import List, Optional, Tuple
 import numpy as np
 
 from ..markov_state_model._msm_utils import ensure_connected_counts
-
 from .results import KISResult
 
 logger = logging.getLogger("pmarlo.conformations")
@@ -126,9 +125,7 @@ class KineticImportanceScore:
             logger.debug(f"Using default k_slow={default_k}")
             return default_k
 
-    def _select_by_timescale_gap(
-        self, its: np.ndarray, gap_threshold: float
-    ) -> int:
+    def _select_by_timescale_gap(self, its: np.ndarray, gap_threshold: float) -> int:
         """Select k_slow based on timescale gap.
 
         Args:
@@ -157,13 +154,13 @@ class KineticImportanceScore:
         else:
             # No clear gap, use default
             k_slow = min(5, len(its))
-            logger.debug(f"No clear gap (max ratio: {ratios[gap_idx]:.2f}), k_slow={k_slow}")
+            logger.debug(
+                f"No clear gap (max ratio: {ratios[gap_idx]:.2f}), k_slow={k_slow}"
+            )
 
         return max(2, k_slow)
 
-    def _select_by_variance_explained(
-        self, variance_threshold: float = 0.9
-    ) -> int:
+    def _select_by_variance_explained(self, variance_threshold: float = 0.9) -> int:
         """Select k_slow based on variance explained.
 
         Args:
@@ -466,4 +463,3 @@ class KineticImportanceScore:
         overlap = float(np.mean(s**2))
 
         return overlap
-

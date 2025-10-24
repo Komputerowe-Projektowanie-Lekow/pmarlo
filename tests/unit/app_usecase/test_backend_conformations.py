@@ -146,7 +146,9 @@ def test_conformations_requires_topology_path(
     )
 
     def fake_find_conformations(**_kwargs: Any) -> ConformationSet:
-        raise AssertionError("find_conformations should not be called when topology is missing")
+        raise AssertionError(
+            "find_conformations should not be called when topology is missing"
+        )
 
     monkeypatch.setattr(
         "example_programs.app_usecase.app.backend.find_conformations",
@@ -171,7 +173,9 @@ def test_conformations_rejects_non_reversible_transition_matrix(
     shard_path.parent.mkdir(parents=True, exist_ok=True)
     shard_path.write_text("{}", encoding="utf-8")
 
-    calls = _patch_common_conformation_dependencies(monkeypatch, _workspace, _fake_dataset)
+    calls = _patch_common_conformation_dependencies(
+        monkeypatch, _workspace, _fake_dataset
+    )
 
     monkeypatch.setattr(
         "example_programs.app_usecase.app.backend.build_simple_msm",
@@ -205,7 +209,9 @@ def test_conformations_successful_run_uses_conformation_set_api(
     shard_path.parent.mkdir(parents=True, exist_ok=True)
     shard_path.write_text("{}", encoding="utf-8")
 
-    calls = _patch_common_conformation_dependencies(monkeypatch, _workspace, _fake_dataset)
+    calls = _patch_common_conformation_dependencies(
+        monkeypatch, _workspace, _fake_dataset
+    )
 
     monkeypatch.setattr(
         "example_programs.app_usecase.app.backend.build_simple_msm",
@@ -504,7 +510,9 @@ def test_conformations_uses_precomputed_deeptica_features(
 
     captured: Dict[str, np.ndarray] = {}
 
-    def fake_cluster(features_matrix: np.ndarray, *args: Any, **kwargs: Any) -> SimpleNamespace:
+    def fake_cluster(
+        features_matrix: np.ndarray, *args: Any, **kwargs: Any
+    ) -> SimpleNamespace:
         captured["matrix"] = np.asarray(features_matrix, dtype=float)
         return SimpleNamespace(labels=np.array([0, 1, 0, 1, 0, 1], dtype=int))
 

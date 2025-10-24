@@ -61,7 +61,8 @@ class UncertaintyQuantifier:
             try:
                 # Resample trajectories
                 resampled_dtrajs = [
-                    dtrajs[self.rng.integers(0, len(dtrajs))] for _ in range(len(dtrajs))
+                    dtrajs[self.rng.integers(0, len(dtrajs))]
+                    for _ in range(len(dtrajs))
                 ]
 
                 # Rebuild MSM
@@ -138,7 +139,8 @@ class UncertaintyQuantifier:
             try:
                 # Resample
                 resampled_dtrajs = [
-                    dtrajs[self.rng.integers(0, len(dtrajs))] for _ in range(len(dtrajs))
+                    dtrajs[self.rng.integers(0, len(dtrajs))]
+                    for _ in range(len(dtrajs))
                 ]
 
                 # Rebuild MSM
@@ -221,7 +223,8 @@ class UncertaintyQuantifier:
             try:
                 # Resample
                 resampled_dtrajs = [
-                    dtrajs[self.rng.integers(0, len(dtrajs))] for _ in range(len(dtrajs))
+                    dtrajs[self.rng.integers(0, len(dtrajs))]
+                    for _ in range(len(dtrajs))
                 ]
 
                 # Rebuild MSM
@@ -299,10 +302,14 @@ class UncertaintyQuantifier:
                     ensemble["T"].append(T)
                     ensemble["pi"].append(pi)
                     ensemble["dtrajs"].append(dtrajs_new)
-                    ensemble["params"].append({"lag_time": lag, "n_clusters": n_clusters})
+                    ensemble["params"].append(
+                        {"lag_time": lag, "n_clusters": n_clusters}
+                    )
 
                 except Exception as e:
-                    logger.debug(f"Ensemble member (lag={lag}, n={n_clusters}) failed: {e}")
+                    logger.debug(
+                        f"Ensemble member (lag={lag}, n={n_clusters}) failed: {e}"
+                    )
 
         logger.info(f"Built ensemble with {len(ensemble['T'])} models")
 
@@ -546,4 +553,3 @@ class UncertaintyQuantifier:
         T_macro = T_macro / row_sums
 
         return T_macro
-

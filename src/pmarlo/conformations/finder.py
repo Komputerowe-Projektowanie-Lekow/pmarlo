@@ -15,7 +15,13 @@ from .representative_picker import (
     TrajectoryFrameLocator,
     build_frame_index_lookup,
 )
-from .results import Conformation, ConformationSet, KISResult, TPTResult, UncertaintyResult
+from .results import (
+    Conformation,
+    ConformationSet,
+    KISResult,
+    TPTResult,
+    UncertaintyResult,
+)
 from .tpt_analysis import TPTAnalysis
 from .uncertainty import UncertaintyQuantifier
 
@@ -87,7 +93,9 @@ def find_conformations(
 
     # Validate required inputs
     if "T" not in msm_data or "pi" not in msm_data:
-        raise ValueError("msm_data must contain 'T' (transition matrix) and 'pi' (stationary distribution)")
+        raise ValueError(
+            "msm_data must contain 'T' (transition matrix) and 'pi' (stationary distribution)"
+        )
 
     T = np.asarray(msm_data["T"])
     pi = np.asarray(msm_data["pi"])
@@ -120,7 +128,9 @@ def find_conformations(
             )
 
         logger.info("Auto-detecting source and sink macrostates from PCCA+ populations")
-        source_macro_id, sink_macro_id = _select_source_sink_macrostates(macrostate_populations)
+        source_macro_id, sink_macro_id = _select_source_sink_macrostates(
+            macrostate_populations
+        )
         source_states = macrostate_sets[source_macro_id]
         sink_states = macrostate_sets[sink_macro_id]
         macrostate_roles["source"].add(int(source_macro_id))
@@ -149,7 +159,9 @@ def find_conformations(
     # Step 3: Run TPT analysis
     logger.info("Running Transition Path Theory analysis")
     tpt = TPTAnalysis(T, pi)
-    tpt_result = tpt.analyze(source_states, sink_states, n_paths=kwargs.get("n_paths", 5))
+    tpt_result = tpt.analyze(
+        source_states, sink_states, n_paths=kwargs.get("n_paths", 5)
+    )
 
     # Step 4: Compute KIS if requested
     if compute_kis:
@@ -194,7 +206,9 @@ def find_conformations(
             conformations.extend(metastable_conformations)
 
         if find_transition_states or find_pathway_intermediates:
-            logger.info("Classifying reactive microstates and transition state ensemble")
+            logger.info(
+                "Classifying reactive microstates and transition state ensemble"
+            )
             tse_state_ids = set(
                 tpt.identify_transition_state_ensemble(
                     tpt_result.forward_committor, tolerance=tse_tolerance
@@ -215,7 +229,9 @@ def find_conformations(
 
     # Step 5: Select representative structures
     if features is not None and dtrajs is not None and len(conformations) > 0:
-        logger.info(f"Selecting representatives using {representative_selection} method")
+        logger.info(
+            f"Selecting representatives using {representative_selection} method"
+        )
         picker = RepresentativePicker()
 
         # Get unique states from conformations
@@ -256,7 +272,11 @@ def find_conformations(
 
         # Bootstrap TPT observables
         tpt_uncertainties = quantifier.bootstrap_tpt(
-            dtrajs, source_states, sink_states, n_boot=n_bootstrap, lag=kwargs.get("lag", 1)
+            dtrajs,
+            source_states,
+            sink_states,
+            n_boot=n_bootstrap,
+            lag=kwargs.get("lag", 1),
         )
         uncertainty_results.extend(tpt_uncertainties.values())
 
@@ -267,8 +287,12 @@ def find_conformations(
         uncertainty_results.append(fe_uncertainty)
 
     # Assemble final results
-    metastable_count = sum(1 for c in conformations if c.conformation_type == "metastable")
-    transition_count = sum(1 for c in conformations if c.conformation_type == "transition")
+    metastable_count = sum(
+        1 for c in conformations if c.conformation_type == "metastable"
+    )
+    transition_count = sum(
+        1 for c in conformations if c.conformation_type == "transition"
+    )
     pathway_count = sum(1 for c in conformations if c.conformation_type == "pathway")
     tse_count = sum(1 for c in conformations if c.conformation_type == "tse")
 
@@ -349,7 +373,9 @@ def _compute_pcca_macrostates(
     return labels.astype(int), memberships, macrostate_sets, macrostate_populations
 
 
-def _select_source_sink_macrostates(macrostate_populations: np.ndarray) -> Tuple[int, int]:
+def _select_source_sink_macrostates(
+    macrostate_populations: np.ndarray,
+) -> Tuple[int, int]:
     """Select source and sink macrostates based on population ordering."""
     if macrostate_populations.size < 2:
         raise ValueError("At least two macrostates are required for TPT analysis")
@@ -364,7 +390,9 @@ def _select_source_sink_macrostates(macrostate_populations: np.ndarray) -> Tuple
             break
 
     if sink_macro is None:
-        raise ValueError("Unable to identify a sink macrostate with non-zero population")
+        raise ValueError(
+            "Unable to identify a sink macrostate with non-zero population"
+        )
 
     if sink_macro == source_macro:
         raise ValueError("Source and sink macrostates must be distinct")
@@ -495,8 +523,6 @@ def _macrostate_role(macrostate_id: int, macrostate_roles: Dict[str, Set[int]]) 
     return "intermediate"
 
 
-
-
 def _assign_frame_indices(
     conformations: List[Conformation],
     dtrajs: List[np.ndarray],
@@ -570,7 +596,9 @@ def _extract_structures(
 
     # Group by conformation type
     for conf_type in ordered_types:
-        type_conformations = [c for c in conformations if c.conformation_type == conf_type]
+        type_conformations = [
+            c for c in conformations if c.conformation_type == conf_type
+        ]
 
         if not type_conformations:
             continue
@@ -607,4 +635,3 @@ def _extract_structures(
         for i, conf in enumerate(type_conformations):
             if i < len(saved_paths):
                 conf.structure_path = saved_paths[i]
-

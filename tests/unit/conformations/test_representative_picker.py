@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pathlib import Path
-
 import numpy as np
 
 from pmarlo.conformations.representative_picker import (

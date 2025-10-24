@@ -341,9 +341,7 @@ class Reweighter:
             normalized = (base / total).astype(np.float64, copy=False)
             weights[split_name] = normalized
             self._cache[thermo.shard_id] = normalized
-            self._store_split_weights(
-                dataset, split_name, thermo.shard_id, normalized
-            )
+            self._store_split_weights(dataset, split_name, thermo.shard_id, normalized)
 
         return weights
 
@@ -386,7 +384,9 @@ class Reweighter:
 
         raw_dtrajs = tram_payload.get("dtrajs")
         if not isinstance(raw_dtrajs, Sequence) or not raw_dtrajs:
-            raise ValueError("TRAM dataset must provide a non-empty sequence of 'dtrajs'")
+            raise ValueError(
+                "TRAM dataset must provide a non-empty sequence of 'dtrajs'"
+            )
 
         dtrajs: list[np.ndarray] = []
         for idx, traj in enumerate(raw_dtrajs):
@@ -453,7 +453,9 @@ class Reweighter:
             n_therm_states = int(bias_matrices[0].shape[1]) if bias_matrices else None
 
         if n_therm_states is None or n_therm_states <= 0:
-            raise ValueError("TRAM dataset must define at least one thermodynamic state")
+            raise ValueError(
+                "TRAM dataset must define at least one thermodynamic state"
+            )
 
         lagtime_raw = tram_payload.get("lagtime", 1)
         try:
@@ -468,7 +470,9 @@ class Reweighter:
 
         dataset_splits = dataset.get("splits")
         if not isinstance(dataset_splits, Mapping):
-            raise ValueError("TRAM mode requires dataset 'splits' mapping to resolve indices")
+            raise ValueError(
+                "TRAM mode requires dataset 'splits' mapping to resolve indices"
+            )
 
         traj_map = tram_payload.get("trajectory_map") or tram_payload.get(
             "trajectory_indices"

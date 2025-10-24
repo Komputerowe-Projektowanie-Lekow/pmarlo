@@ -108,9 +108,7 @@ def __getattr__(name: str) -> Any:
     try:
         module_name, attr_name = _EXPORTS[name]
     except KeyError:
-        raise AttributeError(
-            f"module {__name__!r} has no attribute {name!r}"
-        ) from None
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
 
     try:
         module = import_module(module_name)
@@ -134,4 +132,3 @@ def __getattr__(name: str) -> Any:
 def __dir__() -> list[str]:
     """List all public exports."""
     return sorted(__all__)
-

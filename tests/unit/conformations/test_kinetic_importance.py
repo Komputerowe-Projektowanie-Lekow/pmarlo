@@ -84,4 +84,3 @@ def test_kis_ranking():
         state_i = result.ranked_states[i]
         state_j = result.ranked_states[i + 1]
         assert result.kis_scores[state_i] >= result.kis_scores[state_j]
-

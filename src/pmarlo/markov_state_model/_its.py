@@ -297,9 +297,7 @@ class ITSMixin:
 
         samples = getattr(posterior, "samples", None)
         if not samples:
-            raise RuntimeError(
-                f"BayesianMSM returned no samples for lag {lag_int}"
-            )
+            raise RuntimeError(f"BayesianMSM returned no samples for lag {lag_int}")
 
         matrices = []
         for sample in samples:

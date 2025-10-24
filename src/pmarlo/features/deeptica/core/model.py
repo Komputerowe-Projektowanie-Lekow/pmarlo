@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import types
-from __future__ import annotations
-
 from typing import Any, Iterable
 
 import numpy as np
@@ -11,7 +9,6 @@ from scipy.linalg import eigh, eigvalsh
 from sklearn.covariance import ShrunkCovariance
 
 from pmarlo import constants as const
-
 from pmarlo.utils.seed import set_global_seed
 
 from .utils import safe_float

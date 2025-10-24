@@ -126,8 +126,7 @@ class StateDetector:
             Tuple of (source_states, sink_states) as state indices
         """
         try:
-            from scipy.ndimage import label
-            from scipy.ndimage import minimum_filter
+            from scipy.ndimage import label, minimum_filter
         except ImportError:
             raise ImportError("Watershed detection requires scipy")
 
@@ -353,7 +352,9 @@ class StateDetector:
         Returns:
             Tuple of (source_states, sink_states)
         """
-        return np.asarray(source_indices, dtype=int), np.asarray(sink_indices, dtype=int)
+        return np.asarray(source_indices, dtype=int), np.asarray(
+            sink_indices, dtype=int
+        )
 
     def from_cv_ranges(
         self,
@@ -454,4 +455,3 @@ class StateDetector:
             )
 
         return source_states, sink_states
-

@@ -36,7 +36,7 @@ class TPTAnalysis:
 
     Follows the deeptime TPT API exactly:
     https://deeptime-ml.github.io/latest/notebooks/tpt.html
-    
+
     Uses deeptime's MarkovStateModel.reactive_flux() method directly.
     """
 
@@ -46,7 +46,7 @@ class TPTAnalysis:
         Args:
             T: Transition matrix (n_states x n_states)
             pi: Stationary distribution (n_states,)
-        
+
         Raises:
             ValueError: If T is not square or pi length doesn't match
         """
@@ -59,10 +59,11 @@ class TPTAnalysis:
             raise ValueError("Transition matrix must be square")
         if len(pi) != self.n_states:
             raise ValueError("Stationary distribution length must match T dimensions")
-        
+
         # Create deeptime MSM object
         # This is the canonical way per deeptime docs
         from deeptime.markov.msm import MarkovStateModel
+
         self.msm = MarkovStateModel(self.T, stationary_distribution=self.pi)
 
     def analyze(
@@ -84,7 +85,7 @@ class TPTAnalysis:
 
         Returns:
             TPTResult with all analysis outputs
-            
+
         Raises:
             ImportError: If deeptime is not available
             ValueError: If source and sink states overlap
@@ -203,7 +204,7 @@ class TPTAnalysis:
 
         Returns:
             Committor probabilities (n_states,)
-            
+
         Raises:
             ImportError: If deeptime is not available
             ValueError: If source and sink overlap
@@ -238,7 +239,7 @@ class TPTAnalysis:
 
         Returns:
             Tuple of (flux_matrix, net_flux, total_flux)
-            
+
         Raises:
             ImportError: If deeptime is not available
             ValueError: If source and sink overlap
@@ -273,25 +274,25 @@ class TPTAnalysis:
         Uses deeptime's ReactiveFlux.coarse_grain() method.
 
         Args:
-            source_states: Source state indices  
+            source_states: Source state indices
             sink_states: Sink state indices
             sets: List of state sets for coarse-graining
 
         Returns:
             Tuple of (coarse_grained_sets, coarse_grained_flux)
-            
+
         Raises:
             ImportError: If deeptime is not available
         """
         # Get reactive flux
         source = np.unique(source_states).astype(int).tolist()
         sink = np.unique(sink_states).astype(int).tolist()
-        
+
         flux = self.msm.reactive_flux(source, sink)
-        
+
         # Coarse-grain
         cg_sets, cg_flux = flux.coarse_grain(sets)
-        
+
         return cg_sets, cg_flux
 
     def find_bottleneck_states(
@@ -381,11 +382,12 @@ class TPTAnalysis:
                 "flux_fraction": float(flux / total_flux) if total_flux > 0 else 0.0,
                 "states": path,
                 "free_energies": path_free_energies,
-                "max_barrier": float(np.max(path_free_energies) - path_free_energies[0])
-                if len(path_free_energies) > 0
-                else 0.0,
+                "max_barrier": (
+                    float(np.max(path_free_energies) - path_free_energies[0])
+                    if len(path_free_energies) > 0
+                    else 0.0
+                ),
             }
             statistics.append(stats)
 
         return statistics
-

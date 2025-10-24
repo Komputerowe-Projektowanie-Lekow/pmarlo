@@ -101,7 +101,9 @@ class KISResult:
             "eigenvalues": self.eigenvalues.tolist(),
             "ranked_states": self.ranked_states.tolist(),
             "stability_metric": (
-                float(self.stability_metric) if self.stability_metric is not None else None
+                float(self.stability_metric)
+                if self.stability_metric is not None
+                else None
             ),
             "bootstrap_std": (
                 self.bootstrap_std.tolist() if self.bootstrap_std is not None else None
@@ -189,10 +191,20 @@ class Conformation:
         return {
             "conformation_type": self.conformation_type,
             "state_id": int(self.state_id),
-            "macrostate_id": int(self.macrostate_id) if self.macrostate_id is not None else None,
+            "macrostate_id": (
+                int(self.macrostate_id) if self.macrostate_id is not None else None
+            ),
             "frame_index": int(self.frame_index),
-            "trajectory_index": int(self.trajectory_index) if self.trajectory_index is not None else None,
-            "local_frame_index": int(self.local_frame_index) if self.local_frame_index is not None else None,
+            "trajectory_index": (
+                int(self.trajectory_index)
+                if self.trajectory_index is not None
+                else None
+            ),
+            "local_frame_index": (
+                int(self.local_frame_index)
+                if self.local_frame_index is not None
+                else None
+            ),
             "population": float(self.population),
             "free_energy": float(self.free_energy),
             "committor": float(self.committor) if self.committor is not None else None,
@@ -232,7 +244,9 @@ class ConformationSet:
         Returns:
             List of matching conformations
         """
-        return [c for c in self.conformations if c.conformation_type == conformation_type]
+        return [
+            c for c in self.conformations if c.conformation_type == conformation_type
+        ]
 
     def get_transition_states(self) -> List[Conformation]:
         """Get all transition state conformations."""
@@ -259,7 +273,9 @@ class ConformationSet:
             "kis_result": self.kis_result.to_dict() if self.kis_result else None,
             "uncertainty_results": [u.to_dict() for u in self.uncertainty_results],
             "macrostate_labels": (
-                self.macrostate_labels.tolist() if self.macrostate_labels is not None else None
+                self.macrostate_labels.tolist()
+                if self.macrostate_labels is not None
+                else None
             ),
             "metadata": self.metadata,
         }
@@ -347,7 +363,11 @@ class ConformationSet:
             uncertainty_results.append(
                 UncertaintyResult(
                     observable_name=u["observable_name"],
-                    mean=np.array(u["mean"]) if isinstance(u["mean"], list) else u["mean"],
+                    mean=(
+                        np.array(u["mean"])
+                        if isinstance(u["mean"], list)
+                        else u["mean"]
+                    ),
                     std=np.array(u["std"]) if isinstance(u["std"], list) else u["std"],
                     ci_lower=(
                         np.array(u["ci_lower"])
@@ -376,4 +396,3 @@ class ConformationSet:
             macrostate_labels=macrostate_labels,
             metadata=data.get("metadata", {}),
         )
-
