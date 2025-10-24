@@ -363,6 +363,108 @@ def test_conformations_config_controls_uncertainty_options(
     assert result.error is None
     assert captured_kwargs["uncertainty_analysis"] is False
     assert captured_kwargs["n_bootstrap"] == 25
+    assert captured_kwargs["tica__dim"] == config.n_components
+
+
+@pytest.mark.unit
+def test_conformations_respects_tica_dimension(
+    monkeypatch: pytest.MonkeyPatch,
+    _workspace: WorkspaceLayout,
+    _fake_dataset: Dict[str, Any],
+) -> None:
+    backend = WorkflowBackend(_workspace)
+    shard_path = _workspace.shards_dir / "sample.json"
+    shard_path.parent.mkdir(parents=True, exist_ok=True)
+    shard_path.write_text("{}", encoding="utf-8")
+
+    _patch_common_conformation_dependencies(
+        monkeypatch, _workspace, _fake_dataset, patch_reduce=False
+    )
+
+    captured_reduce: Dict[str, Any] = {}
+
+    def fake_reduce_features(
+        features: Any, *, method: str, lag: int, n_components: int
+    ) -> Any:
+        captured_reduce.update(
+            {"method": method, "lag": lag, "n_components": n_components}
+        )
+        return features
+
+    monkeypatch.setattr(
+        "example_programs.app_usecase.app.backend.reduce_features",
+        fake_reduce_features,
+    )
+
+    monkeypatch.setattr(
+        "example_programs.app_usecase.app.backend.build_simple_msm",
+        lambda *_args, **_kwargs: (
+            np.array([[0.85, 0.15], [0.2, 0.8]], dtype=float),
+            np.array([0.5, 0.5], dtype=float),
+        ),
+    )
+
+    source_states = np.array([0])
+    sink_states = np.array([1])
+    pathways = [[0, 1]]
+    captured_kwargs: Dict[str, Any] = {}
+
+    def fake_find_conformations(**kwargs: Any) -> ConformationSet:
+        captured_kwargs.update(kwargs)
+        flux = np.array([[0.0, 0.2], [0.0, 0.0]])
+        net_flux = np.array([[0.0, 0.2], [-0.2, 0.0]])
+        tpt_result = TPTResult(
+            source_states=source_states,
+            sink_states=sink_states,
+            forward_committor=np.array([0.0, 1.0]),
+            backward_committor=np.array([1.0, 0.0]),
+            flux_matrix=flux,
+            net_flux=net_flux,
+            total_flux=0.2,
+            rate=0.05,
+            mfpt=10.0,
+            pathways=pathways,
+            pathway_fluxes=np.array([0.2]),
+            bottleneck_states=np.array([0]),
+        )
+
+        conformations = [
+            Conformation(
+                conformation_type="metastable",
+                state_id=0,
+                macrostate_id=0,
+                frame_index=0,
+                population=0.5,
+                free_energy=1.0,
+                metadata={"microstate_ids": [0, 1]},
+                structure_path="metastable_0.pdb",
+            )
+        ]
+
+        return ConformationSet(
+            conformations=conformations,
+            tpt_result=tpt_result,
+            metadata={"n_conformations": len(conformations)},
+        )
+
+    monkeypatch.setattr(
+        "example_programs.app_usecase.app.backend.find_conformations",
+        fake_find_conformations,
+    )
+
+    config = ConformationsConfig(
+        topology_pdb=Path("app_intputs/test.pdb"),
+        tica_dim=12,
+        n_components=6,
+    )
+
+    result = backend.run_conformations_analysis([shard_path], config)
+
+    assert result.error is None
+    assert captured_reduce["method"] == "tica"
+    assert captured_reduce["lag"] == config.lag
+    assert captured_reduce["n_components"] == 12
+    assert captured_kwargs["tica__dim"] == 12
 
 
 @pytest.mark.unit
