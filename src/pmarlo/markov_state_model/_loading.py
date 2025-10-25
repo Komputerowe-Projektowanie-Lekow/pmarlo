@@ -72,6 +72,10 @@ class LoadingMixin:
                         i + 1,
                         traj_file,
                     )
+                    # TEMPORARY DEBUG CHECK: Verify logger configuration
+                    print(
+                        f"DEBUG_CHECK: Logger name='{logger.name}', Effective level={logger.getEffectiveLevel()}, Handler count={len(logger.handlers)}, Root handler count={len(__import__('logging').getLogger().handlers)}"
+                    )
                     first_skipped_shards.append(f"{i + 1} ({traj_file})")
                 continue
 
@@ -84,6 +88,10 @@ class LoadingMixin:
                         "Trajectory %d (%s): SKIPPED - Empty trajectory (0 frames)",
                         i + 1,
                         traj_file,
+                    )
+                    # TEMPORARY DEBUG CHECK: Verify logger configuration
+                    print(
+                        f"DEBUG_CHECK: Logger name='{logger.name}', Effective level={logger.getEffectiveLevel()}, Handler count={len(logger.handlers)}, Root handler count={len(__import__('logging').getLogger().handlers)}"
                     )
                     first_empty_shards.append(f"{i + 1} ({traj_file})")
                 continue
