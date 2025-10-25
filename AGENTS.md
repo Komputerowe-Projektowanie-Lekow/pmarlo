@@ -27,3 +27,4 @@
     * **DO NOT** modify the test code to skip the test (e.g., using `pytest.importorskip`). This violates Rule #13 (No Fallbacks).
     * **DO** run the maintenance script: `./codex_maintenance_script.sh` to attempt to repair the environment and install missing dependencies.
     * After the maintenance script runs, **DO** re-run the original `poetry run pytest ...` or `poetry run tox ...` command to verify the fix.
+21. Write clean and elegant code, without overcomplications, do not use emojis in the codebase.
