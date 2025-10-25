@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -9,6 +10,8 @@ import numpy as np
 from pmarlo import constants as const
 from pmarlo.utils.path_utils import ensure_directory
 from pmarlo.utils.thermodynamics import kT_kJ_per_mol
+
+logger = logging.getLogger(__name__)
 
 
 def save_transition_matrix_heatmap(
@@ -207,3 +210,169 @@ def fes2d(
     if np.any(np.isfinite(F)):
         F -= np.nanmin(F)
     return F.astype(float, copy=False), xe, ye, warn
+
+
+def plot_sampling_validation(
+    projected_data_1d: list[np.ndarray],
+    max_traj_length_plot: int = 5000,
+    bins: int = 50,
+    ax: Optional[plt.Axes] = None,
+    max_legend_entries: int = 20,
+) -> Tuple[plt.Figure, plt.Axes]:
+    """Plot 1D histograms and trajectory traces to validate sampling connectivity.
+
+    This plot shows the 1D histogram (approximating the free energy landscape)
+    and overlays the path of each individual shard (trajectory) to visually
+    inspect if all basins are connected and reversibly sampled.
+
+    Parameters
+    ----------
+    projected_data_1d
+        List of 1D numpy arrays (e.g., [traj[:, 0] for traj in projection]).
+    max_traj_length_plot
+        Maximum frames to plot for trajectory traces (for clarity).
+    bins
+        Number of bins for the histogram (default 50 to reduce complexity).
+    ax
+        Matplotlib axis to plot on. If None, creates a new figure.
+    max_legend_entries
+        Maximum number of trajectories to show in legend. If there are more
+        trajectories than this, no legend is shown to avoid image size issues.
+
+    Returns
+    -------
+    fig, ax
+        Matplotlib Figure and Axes objects.
+    """
+    logger.info(f"Starting sampling validation plot with {len(projected_data_1d)} trajectories")
+
+    if ax is None:
+        # Use constrained_layout instead of tight_layout to better control figure size
+        fig, ax = plt.subplots(figsize=(10, 6), constrained_layout=True, dpi=100)
+    else:
+        fig = ax.get_figure()
+
+    if not projected_data_1d:
+        ax.text(0.5, 0.5, "No projection data available", ha="center", va="center")
+        ax.axis("off")
+        return fig, ax
+
+    logger.info("Generating color map for trajectories")
+    colors = plt.cm.jet(np.linspace(0, 1, len(projected_data_1d)))
+
+    logger.info(f"Plotting histograms for {len(projected_data_1d)} trajectories...")
+    for i, traj in enumerate(projected_data_1d):
+        if traj.size == 0:
+            continue
+        if i % 5 == 0:  # Log every 5th trajectory to avoid spam
+            logger.info(f"  Histogram {i+1}/{len(projected_data_1d)} (length: {len(traj)} frames)")
+        ax.hist(traj, bins=bins, alpha=0.3, density=True, color=colors[i])
+
+    logger.info("All histograms plotted, getting axis limits")
+    ylims = ax.get_ylim()
+    xlims = ax.get_xlim()
+
+    # Determine if we should show legend entries
+    show_legend = len(projected_data_1d) <= max_legend_entries
+
+    logger.info(f"Plotting trajectory traces (max {max_traj_length_plot} frames each)...")
+    for i, traj in enumerate(projected_data_1d):
+        if traj.size == 0:
+            continue
+        plot_len = min(len(traj), max_traj_length_plot)
+        if i % 5 == 0:  # Log every 5th trajectory
+            logger.info(f"  Trajectory {i+1}/{len(projected_data_1d)} (plotting {plot_len} frames)")
+        traj_segment = traj[:plot_len]
+        y_time = np.linspace(ylims[0], ylims[1] * 0.9, plot_len)
+
+        # Only add label if we're showing the legend
+        label = f"Shard {i}" if show_legend else None
+        ax.plot(
+            traj_segment,
+            y_time,
+            alpha=0.5,
+            color=colors[i],
+            lw=0.5,
+            label=label,
+        )
+
+    logger.info("Adding annotations and finalizing plot...")
+    ax.annotate(
+        "",
+        xy=(0.95 * xlims[1], 0.7 * ylims[1]),
+        xytext=(0.95 * xlims[1], 0.3 * ylims[1]),
+        arrowprops=dict(fc="gray", ec="none", alpha=0.6, width=2),
+    )
+    ax.text(
+        0.96 * xlims[1],
+        0.5 * ylims[1],
+        "time",
+        ha="left",
+        va="center",
+        rotation=90,
+        color="gray",
+    )
+
+    ax.set_xlabel("TICA Component 1")
+    ax.set_ylabel("Histogram Density / Trajectory Time")
+    ax.set_ylim(ylims)
+    ax.set_xlim(xlims)
+
+    # Only show legend if we have a reasonable number of trajectories
+    if show_legend:
+        ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1), title="Trajectories")
+    else:
+        logger.info(f"Skipping legend ({len(projected_data_1d)} trajectories > {max_legend_entries} max)")
+
+
+    logger.info("Sampling validation plot complete")
+    return fig, ax
+
+
+def plot_free_energy_2d(
+    grid: Tuple[np.ndarray, np.ndarray],
+    fes: np.ndarray,
+    ax: Optional[plt.Axes] = None,
+    cmap: str = "viridis",
+    levels: int = 20,
+    max_energy_kj_per_mol: float = 50.0,
+) -> Tuple[plt.Figure, plt.Axes]:
+    """Plot a 2D Free Energy Surface (FES) contour plot.
+
+    Parameters
+    ----------
+    grid
+        The coordinate grid, typically [xx, yy] from meshgrid or FES calculator.
+    fes
+        The 2D free energy array (in kJ/mol).
+    ax
+        Matplotlib axis to plot on. If None, creates a new figure.
+    cmap
+        Colormap to use.
+    levels
+        Number of contour levels.
+    max_energy_kj_per_mol
+        Maximum free energy to plot (in kJ/mol). Energies above this will be capped.
+
+    Returns
+    -------
+    fig, ax
+        Matplotlib Figure and Axes objects.
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(8, 6))
+    else:
+        fig = ax.get_figure()
+
+    xx, yy = grid
+    capped_fes = np.clip(fes, a_min=0, a_max=max_energy_kj_per_mol)
+
+    contour = ax.contourf(xx, yy, capped_fes.T, levels=levels, cmap=cmap, extend="max")
+    cbar = fig.colorbar(contour, ax=ax, label="Free Energy (kJ/mol)")
+
+    ax.set_xlabel("TICA Component 1")
+    ax.set_ylabel("TICA Component 2")
+    ax.set_title("Free Energy Surface")
+    fig.tight_layout()
+
+    return fig, ax
