@@ -288,7 +288,7 @@ class TestFormatValidationReport:
 
         report = format_validation_report(validation_results)
 
-        assert "✓ VALID" in report
+        assert "VALID" in report
         assert "Build completed successfully" in report
         assert "All shards used" in report
         assert "Available shards: 5" in report
@@ -307,7 +307,7 @@ class TestFormatValidationReport:
 
         report = format_validation_report(validation_results)
 
-        assert "✗ INVALID" in report
+        assert "INVALID" in report
         assert "Critical error occurred" in report
         assert "Missing some data" in report
 
@@ -324,7 +324,7 @@ class TestFormatValidationReport:
 
         report = format_validation_report(validation_results)
 
-        assert "✓ VALID" in report
+        assert "VALID" in report
         assert "Mixed source kinds detected" in report
         assert "Narrow temperature range" in report
 

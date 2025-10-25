@@ -408,7 +408,9 @@ class ITSMixin:
 
     def _its_default_lag_times(self, lag_times: Optional[List[int]]) -> List[int]:
         if lag_times is None:
-            return [1, 2, 3, 5, 8, 10, 15, 20, 30, 50, 75, 100, 150, 200]
+            # Extended lag sweep for more comprehensive ITS analysis
+            # Includes powers of 2 (20, 40, 80, 160, 320, 640, 1280) for physically meaningful times
+            return [1, 2, 3, 5, 8, 10, 15, 20, 30, 40, 50, 75, 80, 100, 150, 160, 200, 320, 640, 1280]
         return [int(max(1, v)) for v in lag_times]
 
     def _validate_its_inputs(

@@ -21,7 +21,7 @@ def save_transition_matrix_heatmap(
 
     out_dir = Path(output_dir)
     ensure_directory(out_dir)
-    plt.figure(figsize=(6, 5))
+    plt.figure(figsize=const.PLOT_FIGURE_SIZE_HEATMAP)
     plt.imshow(T, cmap="viridis", origin="lower")
     plt.colorbar(label="Transition Probability")
     plt.xlabel("j")
@@ -29,7 +29,7 @@ def save_transition_matrix_heatmap(
     plt.title("Transition Matrix")
     filepath = out_dir / name
     plt.tight_layout()
-    plt.savefig(filepath, dpi=200)
+    plt.savefig(filepath, dpi=const.PLOT_DPI)
     plt.close()
     return str(filepath) if filepath.exists() else None
 
@@ -46,9 +46,9 @@ def save_fes_contour(
 ) -> Optional[str]:
     out_dir = Path(output_dir)
     ensure_directory(out_dir)
-    x_centers = 0.5 * (xedges[:-1] + xedges[1:])
-    y_centers = 0.5 * (yedges[:-1] + yedges[1:])
-    plt.figure(figsize=(7, 6))
+    x_centers = const.PLOT_BIN_EDGE_CENTER_FACTOR * (xedges[:-1] + xedges[1:])
+    y_centers = const.PLOT_BIN_EDGE_CENTER_FACTOR * (yedges[:-1] + yedges[1:])
+    plt.figure(figsize=const.PLOT_FIGURE_SIZE_FES_CONTOUR)
     finite_mask = np.isfinite(F)
     if F.size == 0:
         raise ValueError("F must contain at least one element")
@@ -56,13 +56,13 @@ def save_fes_contour(
         raise ValueError("FES contains no finite values; cannot render contour plot")
 
     empty_frac = 1.0 - float(np.count_nonzero(finite_mask)) / float(F.size)
-    if empty_frac > 0.60:
+    if empty_frac > const.FES_SPARSITY_ERROR_THRESHOLD:
         raise ValueError(
-            f"FES is too sparse to plot reliably ({empty_frac*100.0:.1f}% empty bins)"
+            f"FES is too sparse to plot reliably ({empty_frac*const.FES_PERCENTAGE_SCALE:.1f}% empty bins)"
         )
 
     F_for_plot = np.where(finite_mask, F, np.nan)
-    c = plt.contourf(x_centers, y_centers, F_for_plot.T, levels=20, cmap="viridis")
+    c = plt.contourf(x_centers, y_centers, F_for_plot.T, levels=const.PLOT_CONTOUR_LEVELS, cmap="viridis")
     plt.colorbar(c, label="Free Energy (kJ/mol)")
     title_warn = ""
     if mask is not None:
@@ -71,7 +71,7 @@ def save_fes_contour(
             x_centers,
             y_centers,
             m,
-            levels=[0.5, 1.5],
+            levels=list(const.PLOT_MASK_LEVELS),
             colors="none",
             hatches=["////"],
         )
@@ -80,7 +80,7 @@ def save_fes_contour(
     plt.title(f"FES ({xlabel} vs {ylabel}){title_warn}")
     filepath = out_dir / filename
     plt.tight_layout()
-    plt.savefig(filepath, dpi=200)
+    plt.savefig(filepath, dpi=const.PLOT_DPI)
     plt.close()
     return str(filepath) if filepath.exists() else None
 
@@ -109,15 +109,15 @@ def save_pmf_line(
     """
     out_dir = Path(output_dir)
     ensure_directory(out_dir)
-    x_centers = 0.5 * (edges[:-1] + edges[1:])
-    plt.figure(figsize=(7, 4))
-    plt.plot(x_centers, F, color="steelblue", lw=2)
+    x_centers = const.PLOT_BIN_EDGE_CENTER_FACTOR * (edges[:-1] + edges[1:])
+    plt.figure(figsize=const.PLOT_FIGURE_SIZE_PMF_LINE)
+    plt.plot(x_centers, F, color="steelblue", lw=const.PLOT_LINE_WIDTH)
     plt.xlabel(xlabel)
     plt.ylabel("Free Energy (kJ/mol)")
     plt.title("1D PMF")
     filepath = out_dir / filename
     plt.tight_layout()
-    plt.savefig(filepath, dpi=200)
+    plt.savefig(filepath, dpi=const.PLOT_DPI)
     plt.close()
     return str(filepath) if filepath.exists() else None
 
@@ -156,8 +156,8 @@ def fes2d(
         raise ValueError("x and y must be non-empty and have the same shape")
 
     if adaptive:
-        x_lo, x_hi = np.quantile(x, [0.01, 0.99])
-        y_lo, y_hi = np.quantile(y, [0.01, 0.99])
+        x_lo, x_hi = np.quantile(x, [const.FES_QUANTILE_LOW, const.FES_QUANTILE_HIGH])
+        y_lo, y_hi = np.quantile(y, [const.FES_QUANTILE_LOW, const.FES_QUANTILE_HIGH])
         # Avoid zero-width ranges
         if (
             not np.isfinite([x_lo, x_hi, y_lo, y_hi]).all()
@@ -175,25 +175,25 @@ def fes2d(
                 xe = np.linspace(
                     float(np.min(x)),
                     float(np.max(x)) + const.NUMERIC_RELATIVE_TOLERANCE,
-                    41,
+                    const.FES_DEGENERATE_BINS,
                 )
                 ye = np.linspace(
                     float(np.min(y)),
                     float(np.max(y)) + const.NUMERIC_RELATIVE_TOLERANCE,
-                    41,
+                    const.FES_DEGENERATE_BINS,
                 )
                 H = np.zeros((len(xe) - 1, len(ye) - 1), dtype=float)
                 return np.full_like(H, np.nan), xe, ye, "Invalid FES ranges"
-        nb = max(40, int(np.sqrt(len(x)) / 4))
+        nb = max(const.FES_ADAPTIVE_MIN_BINS, int(np.sqrt(len(x)) / const.FES_ADAPTIVE_BIN_DIVISOR))
         H, xe, ye = np.histogram2d(x, y, bins=nb, range=[[x_lo, x_hi], [y_lo, y_hi]])
     else:
         nb = int(bins)
         if nb <= 0:
-            nb = 100
+            nb = const.FES_DEFAULT_BINS
         H, xe, ye = np.histogram2d(x, y, bins=nb)
 
-    empty = (H < max(1, int(min_count))).mean() * 100.0
-    if empty > 30.0:
+    empty = (H < max(1, int(min_count))).mean() * const.FES_PERCENTAGE_SCALE
+    if empty > const.FES_SPARSITY_WARNING_THRESHOLD * const.FES_PERCENTAGE_SCALE:
         warn = (
             f"Sparse FES: {empty:.1f}% empty bins (try adaptive bins or more sampling)"
         )

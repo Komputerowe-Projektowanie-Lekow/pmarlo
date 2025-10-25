@@ -346,6 +346,7 @@ def main():
                 representative_selection='medoid',
                 output_dir=str(args.output_dir),
                 save_structures=trajectories_loaded,
+                n_metastable=args.n_metastable,  # Pass the n_metastable parameter
             )
 
             for warning in w:
