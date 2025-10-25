@@ -6,6 +6,7 @@ import json
 import traceback
 
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -29,6 +30,8 @@ try:  # Prefer package-relative imports when launched via `streamlit run -m`
     )
     from .plots import plot_fes, plot_msm
     from .plots.diagnostics import (
+        create_fes_validation_plot,
+        create_sampling_validation_plot,
         format_warnings,
         plot_autocorrelation_curves,
         plot_canonical_correlations,
@@ -55,6 +58,8 @@ except ImportError:  # Fallback for `streamlit run app.py`
     )
     from plots import plot_fes, plot_msm  # type: ignore
     from plots.diagnostics import (  # type: ignore
+        create_fes_validation_plot,
+        create_sampling_validation_plot,
         format_warnings,
         plot_autocorrelation_curves,
         plot_canonical_correlations,
@@ -688,6 +693,7 @@ def main() -> None:
             tab_training,
             tab_msm_fes,
             tab_conformations,
+            tab_validation,
             tab_model_preview,
             tab_assets,
         ) = st.tabs(
@@ -696,6 +702,7 @@ def main() -> None:
                 "Model Training",
                 "MSM/FES Analysis",
                 "Conformation Analysis",
+                "Free Energy Validation",
                 "Model Preview",
                 "Assets",
             ]
@@ -2044,6 +2051,130 @@ def main() -> None:
             last_conf = st.session_state.get(_LAST_CONFORMATIONS)
             if isinstance(last_conf, ConformationsResult):
                 _render_conformations_result(last_conf)
+
+        with tab_validation:
+            st.header("Free Energy Validation")
+
+            shard_groups = backend.shard_summaries()
+            if not shard_groups:
+                st.info("Emit shards first to generate validation plots.")
+            else:
+                run_ids = [str(entry.get("run_id")) for entry in shard_groups]
+                selected_runs = st.multiselect(
+                    "Select shard groups for validation",
+                    options=run_ids,
+                    default=run_ids,
+                    key="validation_selected_runs",
+                )
+                selected_paths = _select_shard_paths(shard_groups, selected_runs)
+
+                if not selected_paths:
+                    st.warning("Select at least one shard group to generate validation plots.")
+                else:
+                    try:
+                        _, shard_summary = _summarize_selected_shards(selected_paths)
+                        st.caption(f"Using {len(selected_paths)} shards: {shard_summary}")
+                    except ValueError as exc:
+                        st.error(f"Invalid shard selection: {exc}")
+                        st.stop()
+
+                    col1, col2, col3 = st.columns(3)
+                    val_n_components = col1.number_input(
+                        "TICA components",
+                        min_value=2,
+                        max_value=20,
+                        value=3,
+                        key="validation_n_components",
+                    )
+                    val_lag = col2.number_input(
+                        "TICA lag",
+                        min_value=1,
+                        max_value=100,
+                        value=10,
+                        key="validation_lag",
+                    )
+                    val_temperature = col3.number_input(
+                        "Temperature (K)",
+                        min_value=0.0,
+                        value=300.0,
+                        step=10.0,
+                        key="validation_temperature",
+                    )
+
+                    if st.button("Generate Validation Plots", key="run_validation"):
+                        try:
+                            from pmarlo.data.aggregate import load_shards_as_dataset
+                            from pmarlo.markov_state_model.reduction import reduce_features
+                            from pmarlo.markov_state_model.free_energy import generate_2d_fes
+
+                            with st.spinner("Loading shard data..."):
+                                dataset = load_shards_as_dataset(selected_paths)
+                                X_list = dataset.get("X", [])
+                                if X_list is None or (isinstance(X_list, list) and len(X_list) == 0):
+                                    st.error("No feature data found in shards.")
+                                    st.stop()
+
+                            with st.spinner("Computing TICA projection..."):
+                                projection = reduce_features(
+                                    X_list,
+                                    method="tica",
+                                    lag=int(val_lag),
+                                    n_components=int(val_n_components),
+                                )
+                                if projection is None:
+                                    st.error("TICA projection failed.")
+                                    st.stop()
+
+                            st.success(f"Computed TICA projection with shape {projection.shape}")
+
+                            col_left, col_right = st.columns(2)
+
+                            with col_left:
+                                st.subheader("Sampling Connectivity")
+                                with st.spinner("Generating sampling plot..."):
+                                    # projection is a single array, not a list of arrays
+                                    # We need to split it back into trajectories for the sampling plot
+                                    if projection.ndim == 2 and projection.shape[1] >= 1:
+                                        # For sampling plot, we can use the projection as-is or split by trajectory
+                                        # The create_sampling_validation_plot expects a list of arrays
+                                        # We'll need to reconstruct trajectory boundaries
+                                        try:
+                                            # Get trajectory lengths from the dataset
+                                            traj_lengths = [len(traj) for traj in X_list]
+                                            # Split projection back into per-trajectory arrays
+                                            projection_list = []
+                                            start_idx = 0
+                                            for length in traj_lengths:
+                                                projection_list.append(projection[start_idx:start_idx + length])
+                                                start_idx += length
+                                            sampling_fig = create_sampling_validation_plot(projection_list)
+                                            st.pyplot(sampling_fig, clear_figure=True, use_container_width=True)
+                                        except Exception as sampling_err:
+                                            st.warning(f"Could not generate sampling plot: {sampling_err}")
+                                    else:
+                                        st.warning("Insufficient projection data for sampling plot.")
+
+                            with col_right:
+                                st.subheader("Free Energy Surface")
+                                with st.spinner("Computing FES..."):
+                                    # projection is already a concatenated array
+                                    if projection.ndim == 2 and projection.shape[1] >= 2:
+                                        fes_result = generate_2d_fes(
+                                            cv1=projection[:, 0],
+                                            cv2=projection[:, 1],
+                                            temperature=float(val_temperature),
+                                            bins=(50, 50),
+                                        )
+                                        fes_fig = create_fes_validation_plot(fes_result)
+                                        st.pyplot(fes_fig, clear_figure=True, use_container_width=True)
+                                    else:
+                                        st.warning("Need at least 2 TICA components for FES.")
+
+                        except Exception as e:
+                            st.error(f"Validation failed: {e}")
+                            import traceback
+                            with st.expander("Show error details"):
+                                st.code(traceback.format_exc())
 
         with tab_model_preview:
             st.header("Model Preview & Inspection")
