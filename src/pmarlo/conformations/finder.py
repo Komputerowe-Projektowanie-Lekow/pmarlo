@@ -648,6 +648,7 @@ def _extract_structures(
 
         # Build representatives list
         representatives: List[Tuple[int, int, int, int]] = []
+        conformations_with_representatives = []
         for c in type_conformations:
             if c.frame_index < 0:
                 continue
@@ -659,6 +660,7 @@ def _extract_structures(
             representatives.append(
                 (c.state_id, c.frame_index, c.trajectory_index, c.local_frame_index)
             )
+            conformations_with_representatives.append(c)
 
         if not representatives:
             continue
@@ -675,6 +677,6 @@ def _extract_structures(
         )
 
         # Update conformations with paths
-        for i, conf in enumerate(type_conformations):
+        for i, conf in enumerate(conformations_with_representatives):
             if i < len(saved_paths):
                 conf.structure_path = saved_paths[i]

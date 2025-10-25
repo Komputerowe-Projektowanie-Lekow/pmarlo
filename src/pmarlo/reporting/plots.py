@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.figure import Figure
 
 from pmarlo import constants as const
 from pmarlo.utils.path_utils import ensure_directory
@@ -213,100 +214,109 @@ def fes2d(
 
 
 def plot_sampling_validation(
-    projected_data_1d: list[np.ndarray],
-    max_traj_length_plot: int = 5000,
-    bins: int = 50,
+    projected_data_1d: List[np.ndarray],
+    max_traj_length_plot: int = 1000,
+    bins: int = 150,  # Increased default bins
+    stride: int = 10,
+    alpha_hist: float = 0.15,
+    alpha_traj: float = 0.4,
+    lw_traj: float = 0.3,
+    cmap_name: str = "viridis",
     ax: Optional[plt.Axes] = None,
-    max_legend_entries: int = 20,
-) -> Tuple[plt.Figure, plt.Axes]:
-    """Plot 1D histograms and trajectory traces to validate sampling connectivity.
+) -> Figure:
+    """
+    Plots 1D histograms and trajectory traces to validate sampling connectivity.
 
     This plot shows the 1D histogram (approximating the free energy landscape)
     and overlays the path of each individual shard (trajectory) to visually
     inspect if all basins are connected and reversibly sampled.
 
-    Parameters
-    ----------
-    projected_data_1d
-        List of 1D numpy arrays (e.g., [traj[:, 0] for traj in projection]).
-    max_traj_length_plot
-        Maximum frames to plot for trajectory traces (for clarity).
-    bins
-        Number of bins for the histogram (default 50 to reduce complexity).
-    ax
-        Matplotlib axis to plot on. If None, creates a new figure.
-    max_legend_entries
-        Maximum number of trajectories to show in legend. If there are more
-        trajectories than this, no legend is shown to avoid image size issues.
-
-    Returns
-    -------
-    fig, ax
-        Matplotlib Figure and Axes objects.
+    :param projected_data_1d: List of 1D numpy arrays (e.g., [traj[:, 0] for traj in projection]).
+    :param max_traj_length_plot: Max frames to plot for trajectory traces (for clarity).
+    :param bins: Number of bins for the histogram.
+    :param stride: Plot every N-th point for trajectory traces to reduce density.
+    :param alpha_hist: Transparency for histograms.
+    :param alpha_traj: Transparency for trajectory lines.
+    :param lw_traj: Line width for trajectory lines.
+    :param cmap_name: Colormap name for trajectory lines.
+    :param ax: Matplotlib axis to plot on.
+    :return: Matplotlib Figure.
     """
-    logger.info(f"Starting sampling validation plot with {len(projected_data_1d)} trajectories")
+    if not projected_data_1d:
+        logger.warning("No projected data provided for sampling validation plot.")
+        return plt.figure() # Return empty figure
 
     if ax is None:
-        # Use constrained_layout instead of tight_layout to better control figure size
-        fig, ax = plt.subplots(figsize=(10, 6), constrained_layout=True, dpi=100)
+        fig, ax = plt.subplots(figsize=(10, 6))
     else:
         fig = ax.get_figure()
 
-    if not projected_data_1d:
-        ax.text(0.5, 0.5, "No projection data available", ha="center", va="center")
-        ax.axis("off")
-        return fig, ax
+    # Generate colors
+    try:
+        colors = plt.get_cmap(cmap_name)(np.linspace(0, 1, len(projected_data_1d)))
+    except ValueError:
+        logger.warning(f"Colormap '{cmap_name}' not found, using 'viridis'.")
+        colors = plt.get_cmap("viridis")(np.linspace(0, 1, len(projected_data_1d)))
 
-    logger.info("Generating color map for trajectories")
-    colors = plt.cm.jet(np.linspace(0, 1, len(projected_data_1d)))
+    # --- 1. Plot Histograms ---
+    # Combine all data for a single representative histogram
+    all_data_1d = np.concatenate(projected_data_1d)
+    ax.hist(all_data_1d, bins=bins, alpha=alpha_hist, density=True, color='grey', label='Overall Distribution')
 
-    logger.info(f"Plotting histograms for {len(projected_data_1d)} trajectories...")
-    for i, traj in enumerate(projected_data_1d):
-        if traj.size == 0:
-            continue
-        if i % 5 == 0:  # Log every 5th trajectory to avoid spam
-            logger.info(f"  Histogram {i+1}/{len(projected_data_1d)} (length: {len(traj)} frames)")
-        ax.hist(traj, bins=bins, alpha=0.3, density=True, color=colors[i])
-
-    logger.info("All histograms plotted, getting axis limits")
     ylims = ax.get_ylim()
     xlims = ax.get_xlim()
 
-    # Determine if we should show legend entries
-    show_legend = len(projected_data_1d) <= max_legend_entries
-
-    logger.info(f"Plotting trajectory traces (max {max_traj_length_plot} frames each)...")
+    # --- 2. Plot Trajectory Traces ---
+    num_shards_to_label = min(15, len(projected_data_1d)) # Limit legend entries
     for i, traj in enumerate(projected_data_1d):
-        if traj.size == 0:
+        print(f"[DEBUG] Shard {i}: traj length = {len(traj)}")
+
+        if len(traj) == 0:
+            print(f"[DEBUG] Shard {i}: SKIPPED - empty trajectory")
             continue
+
         plot_len = min(len(traj), max_traj_length_plot)
-        if i % 5 == 0:  # Log every 5th trajectory
-            logger.info(f"  Trajectory {i+1}/{len(projected_data_1d)} (plotting {plot_len} frames)")
-        traj_segment = traj[:plot_len]
-        y_time = np.linspace(ylims[0], ylims[1] * 0.9, plot_len)
+        print(f"[DEBUG] Shard {i}: plot_len = {plot_len}, max_traj_length_plot = {max_traj_length_plot}")
 
-        # Only add label if we're showing the legend
-        label = f"Shard {i}" if show_legend else None
-        ax.plot(
-            traj_segment,
-            y_time,
-            alpha=0.5,
-            color=colors[i],
-            lw=0.5,
-            label=label,
-        )
+        traj_segment = traj[:plot_len:stride]
+        actual_plot_len = len(traj_segment)
 
-    logger.info("Adding annotations and finalizing plot...")
+        print(f"[DEBUG] Shard {i}: stride = {stride}, actual_plot_len = {actual_plot_len}")
+        print(f"[DEBUG] Shard {i}: traj_segment shape = {traj_segment.shape}, dtype = {traj_segment.dtype}")
+
+        # Print first few values for the first 3 shards
+        if i < 3:
+            print(f"[DEBUG] Shard {i}: traj_segment[:10] = {traj_segment[:10]}")
+
+        if actual_plot_len > 1:
+            y_time = np.linspace(ylims[0], ylims[1] * 0.9, actual_plot_len)
+            label = f"Shard {i}" if i < num_shards_to_label else None
+            ax.plot(
+                traj_segment,
+                y_time,
+                alpha=alpha_traj,
+                color=colors[i],
+                lw=lw_traj,
+                label=label,
+            )
+            print(f"[DEBUG] Shard {i}: PLOTTED with y_time range [{y_time[0]:.4f}, {y_time[-1]:.4f}]")
+        else:
+            print(f"[DEBUG] Shard {i}: SKIPPED - actual_plot_len <= 1")
+
+    # --- 3. Add Time Arrow ---
+    # Ensure arrow/text are placed reasonably within potentially changed xlims
+    arrow_x = xlims[0] + 0.95 * (xlims[1] - xlims[0])
+    text_x = xlims[0] + 0.96 * (xlims[1] - xlims[0])
     ax.annotate(
         "",
-        xy=(0.95 * xlims[1], 0.7 * ylims[1]),
-        xytext=(0.95 * xlims[1], 0.3 * ylims[1]),
+        xy=(arrow_x, 0.7 * ylims[1]),
+        xytext=(arrow_x, 0.3 * ylims[1]),
         arrowprops=dict(fc="gray", ec="none", alpha=0.6, width=2),
     )
     ax.text(
-        0.96 * xlims[1],
+        text_x,
         0.5 * ylims[1],
-        "time",
+        "$x(time)$",
         ha="left",
         va="center",
         rotation=90,
@@ -318,61 +328,81 @@ def plot_sampling_validation(
     ax.set_ylim(ylims)
     ax.set_xlim(xlims)
 
-    # Only show legend if we have a reasonable number of trajectories
-    if show_legend:
-        ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1), title="Trajectories")
-    else:
-        logger.info(f"Skipping legend ({len(projected_data_1d)} trajectories > {max_legend_entries} max)")
+    handles, labels = ax.get_legend_handles_labels()
+    # Only show legend if there are labels
+    if labels:
+         # Place legend outside plot area
+        ax.legend(handles, labels, loc="upper left", bbox_to_anchor=(1.02, 1), title=f"Shards (Top {num_shards_to_label})")
 
+    try:
+        fig.tight_layout(rect=(0, 0, 0.85, 1)) # Adjust layout to make space for legend
+    except ValueError:
+        logger.warning("Could not adjust layout for sampling validation plot legend.")
+        fig.tight_layout()
 
-    logger.info("Sampling validation plot complete")
-    return fig, ax
+    return fig
 
 
 def plot_free_energy_2d(
-    grid: Tuple[np.ndarray, np.ndarray],
+    grid: List[np.ndarray],
     fes: np.ndarray,
     ax: Optional[plt.Axes] = None,
     cmap: str = "viridis",
-    levels: int = 20,
-    max_energy_kj_per_mol: float = 50.0,
-) -> Tuple[plt.Figure, plt.Axes]:
-    """Plot a 2D Free Energy Surface (FES) contour plot.
+    levels: int = 25, # Increased levels for smoother look
+    max_energy_kt: float = 7.0, # Reduced default cap
+    add_contour_lines: bool = True,
+    line_color: str = 'black',
+    line_width: float = 0.5,
+    line_alpha: float = 0.6,
+) -> Figure:
+    """
+    Plots a 2D Free Energy Surface (FES) contour plot.
 
-    Parameters
-    ----------
-    grid
-        The coordinate grid, typically [xx, yy] from meshgrid or FES calculator.
-    fes
-        The 2D free energy array (in kJ/mol).
-    ax
-        Matplotlib axis to plot on. If None, creates a new figure.
-    cmap
-        Colormap to use.
-    levels
-        Number of contour levels.
-    max_energy_kj_per_mol
-        Maximum free energy to plot (in kJ/mol). Energies above this will be capped.
-
-    Returns
-    -------
-    fig, ax
-        Matplotlib Figure and Axes objects.
+    :param grid: The coordinate grid [xx, yy] from FESCalculator.
+    :param fes: The 2D free energy array from FESCalculator.
+    :param ax: Matplotlib axis to plot on.
+    :param cmap: Colormap to use.
+    :param levels: Number of contour levels.
+    :param max_energy_kt: Max free energy to plot (in kT). Energies above
+                          this will be capped.
+    :param add_contour_lines: Whether to overlay contour lines.
+    :param line_color: Color for contour lines.
+    :param line_width: Line width for contour lines.
+    :param line_alpha: Transparency for contour lines.
+    :return: Matplotlib Figure.
     """
     if ax is None:
         fig, ax = plt.subplots(figsize=(8, 6))
     else:
         fig = ax.get_figure()
 
-    xx, yy = grid
-    capped_fes = np.clip(fes, a_min=0, a_max=max_energy_kj_per_mol)
+    if not grid or len(grid) < 2 or fes is None:
+        logger.warning("Invalid grid or FES data for 2D plot.")
+        ax.text(0.5, 0.5, "Invalid FES data", ha='center', va='center')
+        return fig
 
-    contour = ax.contourf(xx, yy, capped_fes.T, levels=levels, cmap=cmap, extend="max")
-    cbar = fig.colorbar(contour, ax=ax, label="Free Energy (kJ/mol)")
+    xx, yy = grid
+
+    # Cap the energy for better visualization
+    capped_fes = np.clip(fes, a_min=0, a_max=max_energy_kt)
+
+    # Note: Use fes.T because histogram2d/deeptime produce (x, y)
+    # but contourf expects (y, x)
+    contour = ax.contourf(
+        xx, yy, capped_fes.T, levels=levels, cmap=cmap, extend="max"
+    )
+    cbar = fig.colorbar(contour, ax=ax)
+    cbar.set_label("Free Energy ($k_B T$)")
+
+    if add_contour_lines:
+        ax.contour(
+            xx, yy, capped_fes.T, levels=levels, colors=line_color,
+            linewidths=line_width, alpha=line_alpha
+        )
 
     ax.set_xlabel("TICA Component 1")
     ax.set_ylabel("TICA Component 2")
     ax.set_title("Free Energy Surface")
     fig.tight_layout()
 
-    return fig, ax
+    return fig

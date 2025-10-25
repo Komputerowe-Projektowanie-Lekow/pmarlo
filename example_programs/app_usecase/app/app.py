@@ -9,6 +9,7 @@ import traceback
 import numpy as np
 import pandas as pd
 import streamlit as st
+import matplotlib.pyplot as plt
 
 from pmarlo.data.shard_io import ShardRunSummary, summarize_shard_runs
 try:  # Prefer package-relative imports when launched via `streamlit run -m`
@@ -2078,6 +2079,8 @@ def main() -> None:
                         st.error(f"Invalid shard selection: {exc}")
                         st.stop()
 
+                    # TICA Parameters
+                    st.subheader("TICA Projection Parameters")
                     col1, col2, col3 = st.columns(3)
                     val_n_components = col1.number_input(
                         "TICA components",
@@ -2101,7 +2104,104 @@ def main() -> None:
                         key="validation_temperature",
                     )
 
-                    if st.button("Generate Validation Plots", key="run_validation"):
+                    st.divider()
+
+                    # --- Sampling Plot Controls ---
+                    st.subheader("Sampling Plot Appearance Controls")
+                    st.markdown(
+                        """
+                        Adjust visualization parameters for the trajectory sampling validation plot (1D histogram on TICA 1).
+                        """
+                    )
+                    col_samp1, col_samp2, col_samp3 = st.columns(3)
+                    with col_samp1:
+                        st.number_input(
+                            "Max Trajectory Length to Plot",
+                            min_value=100,
+                            max_value=20000,
+                            value=st.session_state.get("val_plot_max_len", 1000),
+                            step=100,
+                            key="val_plot_max_len",
+                            help="Maximum number of frames per shard to visualize."
+                        )
+                    with col_samp2:
+                        st.number_input(
+                            "Histogram Bins",
+                            min_value=10,
+                            max_value=500,
+                            value=st.session_state.get("val_plot_hist_bins", 150),
+                            step=10,
+                            key="val_plot_hist_bins",
+                            help="Number of bins for the 1D histogram."
+                        )
+                    with col_samp3:
+                        st.number_input(
+                            "Trajectory Point Stride",
+                            min_value=1,
+                            max_value=100,
+                            value=st.session_state.get("val_plot_stride", 10),
+                            step=1,
+                            key="val_plot_stride",
+                            help="Plot every N-th point of the trajectory path for clarity."
+                        )
+
+                    st.divider()
+
+                    # --- FES Plot Controls ---
+                    st.subheader("Free Energy Surface (FES) Plot Controls")
+                    st.markdown(
+                        """
+                        Customize the 2D Free Energy Surface visualization on TICA 1 vs TICA 2.
+                        """
+                    )
+                    col_fes1, col_fes2, col_fes3 = st.columns(3)
+                    with col_fes1:
+                        st.slider(
+                            "Max Free Energy (kT)",
+                            min_value=1.0,
+                            max_value=20.0,
+                            value=st.session_state.get("fes_plot_max_kt", 7.0),
+                            step=0.5,
+                            key="fes_plot_max_kt",
+                            help="Cap the color scale at this energy value (in kT)."
+                        )
+                    with col_fes2:
+                        st.number_input(
+                            "Contour Levels",
+                            min_value=5,
+                            max_value=100,
+                            value=st.session_state.get("fes_plot_levels", 25),
+                            step=5,
+                            key="fes_plot_levels",
+                            help="Number of levels for the contour plot."
+                        )
+                    with col_fes3:
+                        # Get list of available colormaps
+                        available_colormaps = sorted([
+                            'viridis', 'plasma', 'inferno', 'magma', 'cividis',
+                            'coolwarm', 'RdYlBu', 'seismic', 'twilight', 'jet'
+                        ])
+                        default_cmap = st.session_state.get("fes_plot_cmap", "viridis")
+                        if default_cmap not in available_colormaps:
+                            default_cmap = "viridis"
+                        cmap_index = available_colormaps.index(default_cmap)
+
+                        st.selectbox(
+                            "Colormap",
+                            available_colormaps,
+                            index=cmap_index,
+                            key="fes_plot_cmap"
+                        )
+
+                    st.checkbox(
+                        "Show Contour Lines",
+                        value=st.session_state.get("fes_plot_lines", True),
+                        key="fes_plot_lines"
+                    )
+
+                    st.divider()
+
+                    if st.button("Generate Validation Plots", key="run_validation", type="primary"):
                         try:
                             from pmarlo.data.aggregate import load_shards_as_dataset
                             from pmarlo.markov_state_model.reduction import reduce_features
@@ -2132,450 +2232,80 @@ def main() -> None:
                             with col_left:
                                 st.subheader("Sampling Connectivity")
                                 with st.spinner("Generating sampling plot..."):
-                                    # projection is a single array, not a list of arrays
-                                    # We need to split it back into trajectories for the sampling plot
-                                    if projection.ndim == 2 and projection.shape[1] >= 1:
-                                        # For sampling plot, we can use the projection as-is or split by trajectory
-                                        # The create_sampling_validation_plot expects a list of arrays
-                                        # We'll need to reconstruct trajectory boundaries
-                                        try:
-                                            # Get trajectory lengths from the dataset
-                                            traj_lengths = [len(traj) for traj in X_list]
-                                            # Split projection back into per-trajectory arrays
-                                            projection_list = []
-                                            start_idx = 0
-                                            for length in traj_lengths:
-                                                projection_list.append(projection[start_idx:start_idx + length])
-                                                start_idx += length
-                                            sampling_fig = create_sampling_validation_plot(projection_list)
+                                    try:
+                                        # Get trajectory lengths from the dataset
+                                        traj_lengths = [len(traj) for traj in X_list]
+                                        # Split projection back into per-trajectory arrays
+                                        projection_list = []
+                                        start_idx = 0
+                                        for length in traj_lengths:
+                                            projection_list.append(projection[start_idx:start_idx + length])
+                                            start_idx += length
+
+                                        # Create a mock app_state object with projection data
+                                        class MockAppState:
+                                            def __init__(self, proj_list):
+                                                self.projection_data = proj_list
+
+                                        mock_state = MockAppState(projection_list)
+                                        sampling_fig = create_sampling_validation_plot(mock_state)
+
+                                        if sampling_fig and hasattr(sampling_fig, 'axes'):
                                             st.pyplot(sampling_fig, clear_figure=True, use_container_width=True)
-                                        except Exception as sampling_err:
-                                            st.warning(f"Could not generate sampling plot: {sampling_err}")
-                                    else:
-                                        st.warning("Insufficient projection data for sampling plot.")
+                                        else:
+                                            st.warning("Could not generate sampling validation plot.")
+                                    except Exception as sampling_err:
+                                        st.warning(f"Could not generate sampling plot: {sampling_err}")
+                                        import traceback
+                                        with st.expander("Show error details"):
+                                            st.code(traceback.format_exc())
 
                             with col_right:
                                 st.subheader("Free Energy Surface")
                                 with st.spinner("Computing FES..."):
-                                    # projection is already a concatenated array
-                                    if projection.ndim == 2 and projection.shape[1] >= 2:
-                                        fes_result = generate_2d_fes(
-                                            cv1=projection[:, 0],
-                                            cv2=projection[:, 1],
-                                            temperature=float(val_temperature),
-                                            bins=(50, 50),
-                                        )
-                                        fes_fig = create_fes_validation_plot(fes_result)
-                                        st.pyplot(fes_fig, clear_figure=True, use_container_width=True)
-                                    else:
-                                        st.warning("Need at least 2 TICA components for FES.")
+                                    try:
+                                        if projection.ndim == 2 and projection.shape[1] >= 2:
+                                            fes_result = generate_2d_fes(
+                                                cv1=projection[:, 0],
+                                                cv2=projection[:, 1],
+                                                temperature=float(val_temperature),
+                                                bins=(50, 50),
+                                            )
+
+                                            # Create a mock app_state object with FES data
+                                            class MockAppStateFES:
+                                                def __init__(self, fes_result):
+                                                    # Extract bin centers from edges
+                                                    x_centers = 0.5 * (fes_result.xedges[:-1] + fes_result.xedges[1:])
+                                                    y_centers = 0.5 * (fes_result.yedges[:-1] + fes_result.yedges[1:])
+
+                                                    # Create meshgrid
+                                                    xx, yy = np.meshgrid(x_centers, y_centers)
+                                                    self.fes_grid = [xx, yy]
+
+                                                    # Extract free energy values
+                                                    self.fes_data = fes_result.F
+
+                                            mock_state_fes = MockAppStateFES(fes_result)
+                                            fes_fig = create_fes_validation_plot(mock_state_fes)
+
+                                            if fes_fig and hasattr(fes_fig, 'axes'):
+                                                st.pyplot(fes_fig, clear_figure=True, use_container_width=True)
+                                            else:
+                                                st.warning("Could not generate Free Energy Surface plot.")
+                                        else:
+                                            st.warning("Need at least 2 TICA components for FES.")
+                                    except Exception as fes_err:
+                                        st.warning(f"Could not generate FES plot: {fes_err}")
+                                        import traceback
+                                        with st.expander("Show error details"):
+                                            st.code(traceback.format_exc())
 
                         except Exception as e:
                             st.error(f"Validation failed: {e}")
                             import traceback
                             with st.expander("Show error details"):
                                 st.code(traceback.format_exc())
-
-        with tab_model_preview:
-            st.header("Model Preview & Inspection")
-
-            # Allow user to select a trained model to inspect
-            models = backend.list_models()
-            if not models:
-                st.info("No trained models available. Train a model in the 'Model Training' tab first.")
-            else:
-                indices = list(range(len(models)))
-
-                def _model_preview_label(idx: int) -> str:
-                    entry = models[idx]
-                    bundle_raw = entry.get("bundle", "")
-                    bundle_name = Path(bundle_raw).name if bundle_raw else f"model-{idx}"
-                    created = entry.get("created_at", "unknown")
-                    return f"{bundle_name} (created {created})"
-
-                selected_model_idx = st.selectbox(
-                    "Select model to inspect",
-                    options=indices,
-                    format_func=_model_preview_label,
-                    key="model_preview_select",
-                )
-
-                if st.button("Load Model Details", key="model_preview_load_button"):
-                    loaded = backend.load_model(int(selected_model_idx))
-                    if loaded is not None:
-                        st.session_state["_model_preview_data"] = loaded
-                        st.rerun()
-
-                # Display loaded model
-                preview_data = st.session_state.get("_model_preview_data")
-                if preview_data is not None:
-                    st.success(f"Model: {preview_data.bundle_path.name}")
-
-                    # Model Configuration
-                    with st.expander("Model Configuration", expanded=True):
-                        model_entry = models[selected_model_idx]
-                        config_data = {
-                            "Dataset Hash": model_entry.get("dataset_hash", "N/A"),
-                            "Lag": model_entry.get("lag", "N/A"),
-                            "Temperature (K)": model_entry.get("temperature", "N/A"),
-                            "Seed": model_entry.get("seed", "N/A"),
-                            "Max Epochs": model_entry.get("max_epochs", "N/A"),
-                            "Early Stopping Patience": model_entry.get("early_stopping", "N/A"),
-                            "Created At": model_entry.get("created_at", "N/A"),
-                        }
-
-                        bins = model_entry.get("bins", {})
-                        if bins:
-                            config_data["Bins (Rg)"] = bins.get("Rg", "N/A")
-                            config_data["Bins (RMSD)"] = bins.get("RMSD_ref", "N/A")
-
-                        hidden = model_entry.get("hidden", [])
-                        if hidden:
-                            config_data["Hidden Layers"] = " → ".join(str(h) for h in hidden)
-
-                        tau_schedule = model_entry.get("tau_schedule", [])
-                        if tau_schedule:
-                            config_data["Tau Schedule"] = ", ".join(str(t) for t in tau_schedule)
-
-                        config_data["Val Tau"] = model_entry.get("val_tau", "N/A")
-                        config_data["Epochs per Tau"] = model_entry.get("epochs_per_tau", "N/A")
-
-                        for key, value in config_data.items():
-                            st.write(f"**{key}**: {value}")
-
-                    # Model Architecture
-                    with st.expander("Model Architecture", expanded=True):
-                        st.write("**Network Structure:**")
-                        hidden_layers = model_entry.get("hidden", [])
-                        if hidden_layers:
-                            # Visualize network architecture
-                            layers = ["Input"] + [f"Hidden {i+1} ({h})" for i, h in enumerate(hidden_layers)] + ["Output (2)"]
-                            st.write(" → ".join(layers))
-
-                            # Calculate approximate parameter count
-                            # Assuming input dimension from bins
-                            bins_dict = model_entry.get("bins", {})
-                            input_dim = 2  # Default: Rg + RMSD
-
-                            total_params = 0
-                            prev_dim = input_dim
-                            for h in hidden_layers:
-                                total_params += prev_dim * h + h  # weights + biases
-                                prev_dim = h
-                            total_params += prev_dim * 2 + 2  # output layer
-
-                            st.metric("Approximate Total Parameters", f"{total_params:,}")
-                        else:
-                            st.info("Hidden layer configuration not available")
-
-                    # Training Metrics
-                    with st.expander("Training Metrics", expanded=True):
-                        metrics = model_entry.get("metrics", {})
-                        if metrics:
-                            # Display key metrics
-                            key_metrics = {
-                                "Best Val Score": metrics.get("best_val_score", "N/A"),
-                                "Best Epoch": metrics.get("best_epoch", "N/A"),
-                                "Best Tau": metrics.get("best_tau", "N/A"),
-                                "Wall Time (s)": metrics.get("wall_time_s", "N/A"),
-                            }
-
-                            cols = st.columns(len(key_metrics))
-                            for col, (key, value) in zip(cols, key_metrics.items()):
-                                col.metric(key, value if value != "N/A" else "N/A")
-
-                            # Plot training curves
-                            val_score = metrics.get("val_score_curve", [])
-                            if val_score:
-                                st.write("**Validation Score Curve:**")
-                                epochs = list(range(1, len(val_score) + 1))
-                                df = pd.DataFrame({"Epoch": epochs, "Val Score": val_score})
-                                st.line_chart(df.set_index("Epoch"))
-                        else:
-                            st.info("Training metrics not available for this model")
-
-                    # Model Files
-                    with st.expander("Model Files & Checkpoints"):
-                        st.write(f"**Bundle Path**: `{preview_data.bundle_path}`")
-
-                        if preview_data.checkpoint_dir and preview_data.checkpoint_dir.exists():
-                            st.write(f"**Checkpoint Directory**: `{preview_data.checkpoint_dir}`")
-
-                            # List checkpoint files
-                            checkpoint_files = list(preview_data.checkpoint_dir.glob("*"))
-                            if checkpoint_files:
-                                st.write("**Available Files:**")
-                                for f in sorted(checkpoint_files):
-                                    st.write(f"- `{f.name}`")
-                        else:
-                            st.info("No checkpoint directory available")
-
-        with tab_assets:
-            st.header("Recorded assets")
-
-            # Simulations section
-            st.subheader("Simulations")
-            runs = backend.state.runs
-            if runs:
-                for i, run in enumerate(runs):
-                    col1, col2 = st.columns([8, 1])
-                    with col1:
-                        st.write(
-                            f"**{run.get('run_id', 'Unknown')}** - {run.get('steps', 0)} steps - {run.get('created_at', 'Unknown date')}"
-                        )
-                        st.caption(f"Temperatures: {run.get('temperatures', [])} K")
-                    with col2:
-                        if st.button(
-                            "❌", key=f"delete_run_{i}", help="Delete this simulation"
-                        ):
-                            if backend.delete_simulation(i):
-                                st.success(
-                                    f"Deleted simulation {run.get('run_id', 'Unknown')}"
-                                )
-                                st.rerun()
-                            else:
-                                st.error("Failed to delete simulation")
-                    st.divider()
-            else:
-                st.info("No simulations recorded yet.")
-
-            # Shard batches section
-            st.subheader("Shard batches")
-            shards = backend.state.shards
-            if shards:
-                for i, shard in enumerate(shards):
-                    col1, col2 = st.columns([8, 1])
-                    with col1:
-                        st.write(
-                            f"**{shard.get('run_id', 'Unknown')}** - {shard.get('n_shards', 0)} shards ({shard.get('n_frames', 0)} frames)"
-                        )
-                        st.caption(
-                            f"Temperature: {shard.get('temperature', 0)} K, Stride: {shard.get('stride', 0)} - {shard.get('created_at', 'Unknown date')}"
-                        )
-                    with col2:
-                        if st.button(
-                            "❌", key=f"delete_shard_{i}", help="Delete this shard batch"
-                        ):
-                            if backend.delete_shard_batch(i):
-                                st.success(
-                                    f"Deleted shard batch from {shard.get('run_id', 'Unknown')}"
-                                )
-                                st.rerun()
-                            else:
-                                st.error("Failed to delete shard batch")
-                    st.divider()
-            else:
-                st.info("No shard batches recorded yet.")
-
-            # Models section
-            st.subheader("Models")
-            last_train: TrainingResult | None = st.session_state.get(_LAST_TRAIN)
-            if last_train is not None:
-                _show_build_outputs(last_train)
-                summary = (
-                    last_train.build_result.artifacts.get("mlcv_deeptica")
-                    if last_train.build_result
-                    else None
-                )
-                if summary:
-                    _render_deeptica_summary(summary)
-
-            models = backend.list_models()
-            if models:
-                for i, model in enumerate(models):
-                    col1, col2 = st.columns([8, 1])
-                    with col1:
-                        bundle_name = Path(model.get("bundle", "")).name
-                        st.write(
-                            f"**{bundle_name}** - Lag: {model.get('lag', 0)}, Temperature: {model.get('temperature', 0)} K"
-                        )
-                        st.caption(
-                            f"Bins: Rg={model.get('bins', {}).get('Rg', 0)}, RMSD={model.get('bins', {}).get('RMSD_ref', 0)} - {model.get('created_at', 'Unknown date')}"
-                        )
-                    with col2:
-                        if st.button(
-                            "❌", key=f"delete_model_{i}", help="Delete this model"
-                        ):
-                            if backend.delete_model(i):
-                                st.success(f"Deleted model {bundle_name}")
-                                st.rerun()
-                            else:
-                                st.error("Failed to delete model")
-                    st.divider()
-            else:
-                st.info("No models recorded yet.")
-
-            # Analysis bundles section
-            st.subheader("Analysis bundles")
-            builds = backend.list_builds()
-            if builds:
-                for i, build in enumerate(builds):
-                    col1, col2 = st.columns([8, 1])
-                    with col1:
-                        bundle_name = Path(build.get("bundle", "")).name
-                        st.write(
-                            f"**{bundle_name}** - Lag: {build.get('lag', 0)}, Temperature: {build.get('temperature', 0)} K"
-                        )
-                        st.caption(
-                            f"Learn CV: {build.get('learn_cv', False)} - {build.get('created_at', 'Unknown date')}"
-                        )
-                    with col2:
-                        if st.button(
-                            "❌",
-                            key=f"delete_build_{i}",
-                            help="Delete this analysis bundle",
-                        ):
-                            if backend.delete_analysis_bundle(i):
-                                st.success(f"Deleted analysis bundle {bundle_name}")
-                                st.rerun()
-                            else:
-                                st.error("Failed to delete analysis bundle")
-                    st.divider()
-            else:
-                st.info("No analysis bundles recorded yet.")
-
-
-    with tab_its:
-        st.header("Implied Timescales Pre-Analysis")
-        st.write("Compute implied timescales to guide MSM lag selection before running conformations analysis.")
-        shard_groups = backend.shard_summaries()
-        if not shard_groups:
-            st.info("Emit shards before computing implied timescales.")
-        else:
-            # Data Selection
-            with st.expander("Data Selection", expanded=True):
-                run_ids = [str(entry.get("run_id")) for entry in shard_groups]
-                default_runs = st.session_state.get("its_selected_runs")
-                if not default_runs:
-                    default_runs = run_ids[-1:] if run_ids else []
-                selected_runs = st.multiselect(
-                    "Shard groups",
-                    options=run_ids,
-                    default=default_runs,
-                    key="its_selected_runs",
-                )
-                selected_paths = _select_shard_paths(shard_groups, selected_runs)
-                try:
-                    _, its_summary_text = _summarize_selected_shards(selected_paths)
-                except ValueError as exc:
-                    st.error(f"Shard selection invalid: {exc}")
-                    its_summary_text = ""
-                st.write(f"Using {len(selected_paths)} shard files for ITS.")
-                if its_summary_text:
-                    st.caption(its_summary_text)
-
-            # Topology Configuration
-            with st.expander("Topology Configuration", expanded=True):
-                available_topologies = layout.available_inputs()
-                topo_col_select, topo_col_manual = st.columns(2)
-                selected_topology = None
-                if available_topologies:
-                    selected_topology = topo_col_select.selectbox(
-                        "Topology PDB (from app_intputs/)",
-                        options=available_topologies,
-                        format_func=lambda p: p.name,
-                        key="its_topology_select",
-                    )
-                else:
-                    topo_col_select.warning("No topology PDB files detected in app_intputs/.")
-                topology_manual_entry = topo_col_manual.text_input(
-                    "Custom topology PDB path",
-                    value=st.session_state.get("its_topology_manual", ""),
-                    key="its_topology_manual",
-                    help="Provide an absolute or relative path to override the topology selection"
-                ).strip()
-                topology_path_str = topology_manual_entry or (str(selected_topology) if selected_topology is not None else "")
-                if topology_path_str:
-                    topology_candidate = Path(topology_path_str)
-                    if not topology_candidate.is_absolute():
-                        topology_candidate = (layout.workspace_dir / topology_candidate).resolve()
-                    if not topology_candidate.exists():
-                        st.warning(f"Topology PDB {topology_candidate} does not exist.")
-
-            # Analysis Parameters
-            with st.expander("Analysis Parameters", expanded=True):
-                col_clusters, col_tica = st.columns(2)
-                n_clusters = col_clusters.number_input(
-                    "Number of Clusters for ITS",
-                    min_value=50,
-                    max_value=1000,
-                    value=int(st.session_state.get("its_n_clusters", 200)),
-                    step=50,
-                    key="its_n_clusters",
-                    help="Number of microstates for MSM discretization"
-                )
-                tica_dim = col_tica.number_input(
-                    "Number of TICA Dimensions for ITS",
-                    min_value=2,
-                    max_value=50,
-                    value=int(st.session_state.get("its_tica_dim", 10)),
-                    step=1,
-                    key="its_tica_dim",
-                    help="Dimensionality reduction via TICA before clustering"
-                )
-
-                lag_options = [1, 2, 5, 10, 20, 50, 100, 200, 500]
-                lag_default = st.session_state.get("its_lag_times", [1, 5, 10, 50, 100, 200])
-                lag_times = st.multiselect(
-                    "Lag Times to Test (steps)",
-                    options=lag_options,
-                    default=lag_default,
-                    key="its_lag_times",
-                    help="Multiple lag times to compute and compare implied timescales"
-                )
-
-                feature_spec_path = layout.app_root / "app" / "feature_spec.yaml"
-                st.caption(f"Feature specification: {feature_spec_path}")
-
-            if st.button("Calculate Implied Timescales", type="primary", key="its_calculate"):
-                if not selected_paths:
-                    st.error("Select at least one shard group to compute ITS.")
-                elif not lag_times:
-                    st.error("Select at least one lag time for ITS computation.")
-                elif not topology_path_str:
-                    st.error("Provide a topology PDB file for ITS computation.")
-                else:
-                    try:
-                        with st.spinner("Computing implied timescales... This may take several minutes."):
-                            its_result = calculate_its(
-                                data_directory=layout.shards_dir,
-                                topology_path=topology_path_str,
-                                feature_spec_path=feature_spec_path,
-                                n_clusters=int(n_clusters),
-                                tica_dim=int(tica_dim),
-                                lag_times=lag_times,
-                                shard_paths=selected_paths,
-                            )
-                    except Exception as exc:
-                        st.error(f"Failed to compute implied timescales: {exc}")
-                        traceback.print_exc()
-                    else:
-                        lag_list = its_result.get("lag_times", [])
-                        timescales = its_result.get("timescales", [])
-                        metadata = its_result.get("metadata", {})
-                        errors = its_result.get("errors", {})
-
-                        if timescales:
-                            try:
-                                fig = backend_plot_its(lag_list, timescales)
-                            except Exception as exc:
-                                st.error(f"Unable to render implied timescales plot: {exc}")
-                            else:
-                                st.pyplot(fig, clear_figure=True, width="stretch")
-
-                                if metadata:
-                                    st.subheader("Analysis Metadata")
-                                    meta_cols = st.columns(3)
-                                    meta_cols[0].metric("Frames", metadata.get("n_frames", "n/a"))
-                                    meta_cols[1].metric("Features", metadata.get("n_features", "n/a"))
-                                    meta_cols[2].metric("Clusters", metadata.get("n_states", "n/a"))
-
-                                if errors:
-                                    st.warning("⚠️ Some lag times encountered errors:")
-                                    for lag, message in errors.items():
-                                        st.warning(f"Lag {lag}: {message}")
-                        else:
-                            st.warning("No timescales were computed. Check the error messages above.")
     st.caption(
         "Run this app with: poetry run streamlit run example_programs/app_usecase/app/app.py"
     )
