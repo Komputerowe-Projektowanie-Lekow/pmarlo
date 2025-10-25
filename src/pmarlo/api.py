@@ -132,6 +132,32 @@ except Exception:  # pragma: no cover - executed without sklearn
 
     pca_reduce = tica_reduce = vamp_reduce = _missing_reduction  # type: ignore
 
+try:  # pragma: no cover - optional conformations analysis
+    from .conformations import ConformationSet as _ConformationSet
+    from .conformations import KineticImportanceScore as _KineticImportanceScore
+    from .conformations import StateDetector as _StateDetector
+    from .conformations import TPTAnalysis as _TPTAnalysis
+    from .conformations import find_conformations as _find_conformations
+
+    find_conformations = _find_conformations
+    TPTAnalysis = _TPTAnalysis
+    StateDetector = _StateDetector
+    KineticImportanceScore = _KineticImportanceScore
+    ConformationSet = _ConformationSet
+except Exception:  # pragma: no cover - executed without deeptime/sklearn
+
+    def _find_conformations_stub(*_args: object, **_kwargs: object) -> Any:
+        raise ImportError(
+            "Conformations analysis requires deeptime and scikit-learn. "
+            "Install with `pip install 'pmarlo[analysis]'`."
+        )
+
+    find_conformations = _find_conformations_stub  # type: ignore
+    TPTAnalysis = Any  # type: ignore
+    StateDetector = Any  # type: ignore
+    KineticImportanceScore = Any  # type: ignore
+    ConformationSet = Any  # type: ignore
+
 try:  # pragma: no cover - optional OpenMM dependency
     from .replica_exchange.config import RemdConfig
     from .replica_exchange.replica_exchange import ReplicaExchange as _ReplicaExchange

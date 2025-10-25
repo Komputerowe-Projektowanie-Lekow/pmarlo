@@ -5,26 +5,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-import numpy as np
-
+from pmarlo.utils.json_io import normalize_for_json_row
 from pmarlo.utils.path_utils import ensure_directory
-
-
-def _normalize_for_json_row(row: Dict[str, Any]) -> Dict[str, Any]:
-    """Ensure JSON rows carry the same fields and JSON-serializable types as CSV rows.
-
-    - Convert numpy scalars/arrays to Python types/lists.
-    - Pass through nested dicts (e.g., mfpt_to, pair, periodic).
-    """
-    out: Dict[str, Any] = {}
-    for k, v in row.items():
-        if isinstance(v, np.generic):
-            out[k] = v.item()
-        elif isinstance(v, np.ndarray):
-            out[k] = v.tolist()
-        else:
-            out[k] = v
-    return out
 
 
 def write_conformations_csv_json(
@@ -37,7 +19,7 @@ def write_conformations_csv_json(
     ensure_directory(out)
 
     # CSV
-    normalized_items = [_normalize_for_json_row(it) for it in items]
+    normalized_items = [normalize_for_json_row(it) for it in items]
     if normalized_items:
         keys = sorted({k for it in normalized_items for k in it.keys()})
         with open(out / csv_name, "w", newline="", encoding="utf-8") as f:

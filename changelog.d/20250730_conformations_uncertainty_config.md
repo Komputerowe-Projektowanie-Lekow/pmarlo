@@ -1,0 +1,2 @@
+- Added configurable uncertainty analysis controls to the Streamlit workflow backend so `find_conformations()` receives explicit `uncertainty_analysis` and `n_bootstrap` parameters from the UI.
+- Extended the Streamlit app and CLI tooling with toggles for bootstrap uncertainty analysis and covered the new behaviour with unit tests.

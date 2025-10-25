@@ -50,6 +50,7 @@ def candidate_lag_ladder(
         raise ValueError("n_candidates must be positive")
 
     # Curated ladder spanning typical analysis ranges
+    # Extended to include powers of 2 (40, 80, 160, 320, 640, 1280) for comprehensive ITS analysis
     base: list[int] = [
         1,
         2,
@@ -60,15 +61,21 @@ def candidate_lag_ladder(
         15,
         20,
         30,
+        40,
         50,
         75,
+        80,
         100,
         150,
+        160,
         200,
         300,
+        320,
         500,
+        640,
         750,
         1000,
+        1280,
         1500,
         2000,
     ]

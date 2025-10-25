@@ -1,0 +1,3 @@
+2025-10-25 21:12:27 | INFO     | root | Logging initialized. Log file: C:\Users\konrad_guest\Documents\GitHub\pmarlo\example_programs\app_usecase\app_outputs\app_logs\app_log_20251025_211227.log
+2025-10-25 21:12:27 | INFO     | root | App directory: C:\Users\konrad_guest\Documents\GitHub\pmarlo\example_programs\app_usecase\app
+2025-10-25 21:12:31 | INFO     | pmarlo.markov_state_model.free_energy | FES masked fraction=0.000

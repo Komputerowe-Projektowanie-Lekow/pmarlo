@@ -343,7 +343,7 @@ def format_validation_report(validation_results: Dict[str, Any]) -> str:
     lines = []
 
     # Status
-    status = "✓ VALID" if validation_results["is_valid"] else "✗ INVALID"
+    status = "VALID" if validation_results["is_valid"] else "INVALID"
     lines.append(f"Build Validation: {status}")
     lines.append("")
 
@@ -365,14 +365,14 @@ def format_validation_report(validation_results: Dict[str, Any]) -> str:
     if validation_results["warnings"]:
         lines.append("Warnings:")
         for warning in validation_results["warnings"]:
-            lines.append(f"  ⚠ {warning}")
+            lines.append(f"  ! {warning}")
         lines.append("")
 
     # Errors
     if validation_results["errors"]:
         lines.append("Errors:")
         for error in validation_results["errors"]:
-            lines.append(f"  ✗ {error}")
+            lines.append(f"  X {error}")
         lines.append("")
 
     # Shard table (first 10 entries)

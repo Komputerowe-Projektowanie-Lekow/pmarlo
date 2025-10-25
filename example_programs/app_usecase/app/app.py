@@ -4,9 +4,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 import json
 import traceback
+import logging
+import os
+from datetime import datetime
 
+import numpy as np
 import pandas as pd
 import streamlit as st
+import matplotlib.pyplot as plt
 
 from pmarlo.data.shard_io import ShardRunSummary, summarize_shard_runs
 try:  # Prefer package-relative imports when launched via `streamlit run -m`
@@ -15,6 +20,10 @@ try:  # Prefer package-relative imports when launched via `streamlit run -m`
     from .backend import (
         BuildArtifact,
         BuildConfig,
+        ConformationsConfig,
+        ConformationsResult,
+        calculate_its,
+        plot_its as backend_plot_its,
         ShardRequest,
         SimulationConfig,
         TrainingConfig,
@@ -24,6 +33,8 @@ try:  # Prefer package-relative imports when launched via `streamlit run -m`
     )
     from .plots import plot_fes, plot_msm
     from .plots.diagnostics import (
+        create_fes_validation_plot,
+        create_sampling_validation_plot,
         format_warnings,
         plot_autocorrelation_curves,
         plot_canonical_correlations,
@@ -37,6 +48,10 @@ except ImportError:  # Fallback for `streamlit run app.py`
     from backend import (  # type: ignore
         BuildArtifact,
         BuildConfig,
+        ConformationsConfig,
+        ConformationsResult,
+        calculate_its,
+        plot_its as backend_plot_its,
         ShardRequest,
         SimulationConfig,
         TrainingConfig,
@@ -46,6 +61,8 @@ except ImportError:  # Fallback for `streamlit run app.py`
     )
     from plots import plot_fes, plot_msm  # type: ignore
     from plots.diagnostics import (  # type: ignore
+        create_fes_validation_plot,
+        create_sampling_validation_plot,
         format_warnings,
         plot_autocorrelation_curves,
         plot_canonical_correlations,
@@ -68,6 +85,107 @@ _LAST_BUILD = "__pmarlo_last_build"
 _RUN_PENDING = "__pmarlo_run_pending"
 _TRAIN_CONFIG_PENDING = "__pmarlo_pending_train_cfg"
 _TRAIN_FEEDBACK = "__pmarlo_train_feedback"
+_LAST_CONFORMATIONS = "__pmarlo_last_conformations"
+_CONFORMATIONS_FEEDBACK = "__pmarlo_conf_feedback"
+
+
+def _configure_file_logging() -> None:
+    """Configure Python logging to write to a timestamped file.
+
+    Creates a log file in example_programs/app_usecase/app_outputs/app_logs/
+    with a timestamp in the filename. All logs from the app and pmarlo library
+    will be captured in this file.
+
+    This function is idempotent - if logging has already been configured
+    (i.e., handlers are present), it will return immediately without
+    reconfiguring.
+
+    Raises:
+        OSError: If the log directory cannot be created or the log file cannot be opened.
+    """
+    # Singleton check: Only configure logging once
+    root_logger = logging.getLogger()
+    if root_logger.hasHandlers():
+        # Logging already configured, skip
+        return
+
+    # Define log directory path
+    app_dir = Path(__file__).resolve().parent
+    log_dir = app_dir.parent / "app_outputs" / "app_logs"
+
+    # Create log directory if it doesn't exist
+    os.makedirs(log_dir, exist_ok=True)
+
+    # Create unique log filename with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_filename = f"app_log_{timestamp}.log"
+    log_filepath = log_dir / log_filename
+
+    # Configure logging with file handler
+
+    # Set logging level to capture all messages
+    root_logger.setLevel(logging.DEBUG)
+
+    # Create file handler
+    file_handler = logging.FileHandler(log_filepath, mode='w', encoding='utf-8')
+    file_handler.setLevel(logging.DEBUG)
+
+    # Create formatter
+    formatter = logging.Formatter(
+        fmt='%(asctime)s | %(levelname)-8s | %(name)s | %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    file_handler.setFormatter(formatter)
+
+    # Add handler to root logger (affects all loggers including pmarlo)
+    root_logger.addHandler(file_handler)
+
+    # Reduce verbosity for noisy third-party libraries
+    # Set matplotlib logger to INFO to suppress DEBUG messages
+    mpl_logger = logging.getLogger('matplotlib')
+    mpl_logger.setLevel(logging.INFO)
+
+    # Set PIL/Pillow logger to INFO to suppress DEBUG messages
+    pil_logger = logging.getLogger('PIL')
+    pil_logger.setLevel(logging.INFO)
+
+    # Explicitly ensure pmarlo logger remains at DEBUG level
+    pmarlo_logger = logging.getLogger('pmarlo')
+    pmarlo_logger.setLevel(logging.DEBUG)
+
+    # Log initialization message
+    root_logger.info(f"Logging initialized. Log file: {log_filepath}")
+    root_logger.info(f"App directory: {app_dir}")
+
+
+def _sync_sidebar_tica_dim() -> None:
+    """Keep sidebar TICA dimension in sync with form inputs."""
+
+    value = int(st.session_state.get("conf_tica_dim", 10))
+    st.session_state["conf_n_components"] = value
+
+
+def _sync_form_tica_dim() -> None:
+    """Propagate form-based TICA updates back to the sidebar widget."""
+
+    value = int(st.session_state.get("conf_n_components", 10))
+    st.session_state["conf_tica_dim"] = value
+
+
+def _sync_sidebar_metastable_states() -> None:
+    """Synchronize sidebar metastable count with form state."""
+
+    value = int(st.session_state.get("conf_n_metastable_sidebar", 10))
+    st.session_state["conf_n_metastable"] = value
+    st.session_state["conf_n_metastable_form"] = value
+
+
+def _sync_form_metastable_states() -> None:
+    """Propagate form metastable updates back to the sidebar widget."""
+
+    value = int(st.session_state.get("conf_n_metastable_form", 10))
+    st.session_state["conf_n_metastable"] = value
+    st.session_state["conf_n_metastable_sidebar"] = value
 
 
 def _parse_temperature_ladder(raw: str) -> List[float]:
@@ -456,6 +574,108 @@ def _render_deeptica_summary(summary: Dict[str, object]) -> None:
             st.line_chart(df_grad, height=200)
 
 
+def _render_conformations_result(conf_result: ConformationsResult) -> None:
+    """Visualise stored or freshly computed conformations analysis results."""
+
+    if conf_result.error:
+        st.error(f"Conformations analysis failed: {conf_result.error}")
+        st.info(f"Output directory: {conf_result.output_dir}")
+        return
+
+    if not conf_result.tpt_converged:
+        iteration_count = (
+            conf_result.tpt_pathway_iterations
+            or conf_result.tpt_summary.get("pathway_iterations")
+            or conf_result.tpt_pathway_max_iterations
+            or conf_result.tpt_summary.get("pathway_max_iterations")
+        )
+        if iteration_count is not None:
+            st.error(
+                "Warning: TPT calculation failed to converge after "
+                f"{iteration_count} iterations. Pathway results are unreliable. "
+                "Try increasing the number of clusters or adjusting the MSM lag time."
+            )
+        else:
+            st.error(
+                "Warning: TPT calculation failed to converge. Pathway results are unreliable. "
+                "Try increasing the number of clusters or adjusting the MSM lag time."
+            )
+
+    if conf_result.tpt_summary:
+        st.subheader("TPT Results")
+        cols = st.columns(4)
+        cols[0].metric(
+            "Rate", f"{conf_result.tpt_summary.get('rate', float('nan')):.3e}"
+        )
+        cols[1].metric(
+            "MFPT", f"{conf_result.tpt_summary.get('mfpt', float('nan')):.1f}"
+        )
+        cols[2].metric(
+            "Total Flux",
+            f"{conf_result.tpt_summary.get('total_flux', float('nan')):.3e}",
+        )
+        cols[3].metric(
+            "N Pathways", conf_result.tpt_summary.get("n_pathways", "n/a")
+        )
+
+    if conf_result.metastable_states:
+        st.subheader("Metastable States")
+        meta_df_data = []
+        for state_id, state_data in conf_result.metastable_states.items():
+            meta_df_data.append(
+                {
+                    "State": state_id,
+                    "Population": f"{float(state_data.get('population', 0.0)):.4f}",
+                    "N States": state_data.get("n_states", 0),
+                    "PDB": (
+                        Path(state_data.get("representative_pdb", "")).name
+                        if state_data.get("representative_pdb")
+                        else "N/A"
+                    ),
+                }
+            )
+        st.dataframe(pd.DataFrame(meta_df_data), use_container_width=True)
+
+    if conf_result.transition_states:
+        st.subheader("Transition States")
+        ts_df_data = []
+        for ts_data in conf_result.transition_states:
+            ts_df_data.append(
+                {
+                    "State Index": ts_data.get("state_index", ""),
+                    "Committor": f"{float(ts_data.get('committor', 0.0)):.3f}",
+                    "PDB": (
+                        Path(ts_data.get("representative_pdb", "")).name
+                        if ts_data.get("representative_pdb")
+                        else "N/A"
+                    ),
+                }
+            )
+        st.dataframe(pd.DataFrame(ts_df_data), use_container_width=True)
+
+    if conf_result.pathways:
+        st.subheader("Dominant Pathways")
+        st.write(conf_result.pathways)
+
+    if conf_result.plots:
+        st.subheader("Visualizations")
+        plot_cols = st.columns(2)
+        plot_idx = 0
+        for plot_name, plot_path in conf_result.plots.items():
+            if Path(plot_path).exists():
+                with plot_cols[plot_idx % 2]:
+                    st.image(
+                        str(plot_path),
+                        caption=plot_name.replace("_", " ").title(),
+                    )
+                plot_idx += 1
+
+    st.info(f"All conformations saved to: {conf_result.output_dir}")
+    if conf_result.representative_pdbs:
+        st.write(
+            f"{len(conf_result.representative_pdbs)} representative PDB files saved"
+        )
+
 def _ensure_session_defaults() -> None:
     for key in (
         _LAST_SIM,
@@ -478,6 +698,22 @@ def _ensure_session_defaults() -> None:
     st.session_state.setdefault("analysis_fes_method", "kde")
     st.session_state.setdefault("analysis_fes_bandwidth", "scott")
     st.session_state.setdefault("analysis_min_count_per_bin", 1)
+    st.session_state.setdefault("conf_n_clusters", 100)
+    st.session_state.setdefault("its_n_clusters", 200)
+    st.session_state.setdefault("its_tica_dim", 10)
+    st.session_state.setdefault("its_lag_times", [1, 5, 10, 50, 100, 200])
+    st.session_state.setdefault("conf_tica_dim", 10)
+    st.session_state.setdefault("conf_n_components", st.session_state["conf_tica_dim"])
+    st.session_state.setdefault("conf_n_metastable", 10)
+    st.session_state.setdefault(
+        "conf_n_metastable_sidebar", st.session_state["conf_n_metastable"]
+    )
+    st.session_state.setdefault(
+        "conf_n_metastable_form", st.session_state["conf_n_metastable"]
+    )
+    st.session_state.setdefault("conf_committor_thresholds", (0.1, 0.9))
+    st.session_state.setdefault(_LAST_CONFORMATIONS, None)
+    st.session_state.setdefault(_CONFORMATIONS_FEEDBACK, None)
 
 
 def _consume_pending_training_config() -> None:
@@ -489,6 +725,9 @@ def _consume_pending_training_config() -> None:
 
 
 def main() -> None:
+    # Configure file logging FIRST, before any other operations
+    _configure_file_logging()
+
     st.set_page_config(page_title="PMARLO Joint Learning", layout="wide")
     _ensure_session_defaults()
     _consume_pending_training_config()
@@ -503,9 +742,10 @@ def main() -> None:
         cols = st.columns(2)
         cols[0].metric("Sim runs", summary.get("runs", 0))
         cols[1].metric("Shard files", summary.get("shards", 0))
-        cols = st.columns(2)
+        cols = st.columns(3)
         cols[0].metric("Models", summary.get("models", 0))
         cols[1].metric("Bundles", summary.get("builds", 0))
+        cols[2].metric("Conformation Sets", summary.get("conformations", 0))
         st.divider()
         inputs = layout.available_inputs()
         if inputs:
@@ -515,1172 +755,1631 @@ def main() -> None:
         else:
             st.info("Drop prepared PDB files into app_intputs/ to get started.")
 
-    tab_sampling, tab_training, tab_analysis, tab_model_preview, tab_assets = st.tabs(
+    tab_conformation, tab_its = st.tabs(
         [
-            "Sampling",
-            "Model Training",
-            "Analysis",
-            "Model Preview",
-            "Assets",
+            "Conformation Analysis",
+            "Implied Timescales",
         ]
     )
 
-    with tab_sampling:
-        st.header("Sampling & Shard Production")
-        inputs = layout.available_inputs()
-        if not inputs:
-            st.warning("No prepared proteins found. Place a PDB under app_intputs/.")
-        else:
-            default_index = 0
-            input_choice = st.selectbox(
-                "Protein input (PDB)",
-                options=inputs,
-                format_func=lambda p: p.name,
-                index=default_index,
-                key="sim_input_choice",
-            )
-            temps_raw = st.text_input(
-                "Temperature ladder (K)",
-                "300, 320, 340",
-                key="sim_temperature_ladder",
-            )
-            steps = st.number_input(
-                "Total MD steps",
-                min_value=1000,
-                max_value=5_000_000,
-                value=50_000,
-                step=5_000,
-                key="sim_total_steps",
-            )
-            quick = st.checkbox(
-                "Quick preset (short equilibration)",
-                value=True,
-                key="sim_quick_preset",
-            )
-            save_restart = st.checkbox(
-                "Save last frame as restart input",
-                value=True,
-                help=(
-                    "When enabled, the final MD frame is stored in the run directory and "
-                    "copied into app_intputs/ so it becomes available as a protein input."
-                ),
-                key="sim_save_restart_snapshot",
-            )
-            random_seed_str = st.text_input(
-                "Random seed (blank = auto)",
-                "",
-                key="sim_random_seed",
-            )
-            run_label = st.text_input(
-                "Run label (optional)",
-                "",
-                key="sim_run_label",
-            )
+    with tab_conformation:
+        (
+            tab_sampling,
+            tab_training,
+            tab_msm_fes,
+            tab_conformations,
+            tab_validation,
+            tab_model_preview,
+            tab_assets,
+        ) = st.tabs(
+            [
+                "Sampling",
+                "Model Training",
+                "MSM/FES Analysis",
+                "Conformation Analysis",
+                "Free Energy Validation",
+                "Model Preview",
+                "Assets",
+            ]
+        )
 
-            # CV Model Selection
-            st.subheader("CV-Informed Sampling (Optional)")
-            models = backend.list_models()
-            cv_model_path = None
-            if models:
-                use_cv_model = st.checkbox(
-                    "Use trained CV model to inform sampling",
-                    value=False,
-                    help="Select a trained Deep-TICA model. Model parameters will be saved with simulation metadata for future CV-guided analysis.",
-                    key="sim_use_cv_model",
+        with tab_sampling:
+            st.header("Sampling & Shard Production")
+            inputs = layout.available_inputs()
+            if not inputs:
+                st.warning("No prepared proteins found. Place a PDB under app_intputs/.")
+            else:
+                # Basic Simulation Settings
+                with st.expander("Basic Simulation Settings", expanded=True):
+                    default_index = 0
+                    input_choice = st.selectbox(
+                        "Protein input (PDB)",
+                        options=inputs,
+                        format_func=lambda p: p.name,
+                        index=default_index,
+                        key="sim_input_choice",
+                    )
+                    temps_raw = st.text_input(
+                        "Temperature ladder (K)",
+                        "300, 320, 340",
+                        key="sim_temperature_ladder",
+                        help="Comma-separated temperatures for replica exchange MD"
+                    )
+                    steps = st.number_input(
+                        "Total MD steps",
+                        min_value=1000,
+                        max_value=5_000_000,
+                        value=50_000,
+                        step=5_000,
+                        key="sim_total_steps",
+                    )
+                    col_quick, col_restart = st.columns(2)
+                    quick = col_quick.checkbox(
+                        "Quick preset (short equilibration)",
+                        value=True,
+                        key="sim_quick_preset",
+                    )
+                    save_restart = col_restart.checkbox(
+                        "Save last frame as restart input",
+                        value=True,
+                        help=(
+                            "When enabled, the final MD frame is stored in the run directory and "
+                            "copied into app_intputs/ so it becomes available as a protein input."
+                        ),
+                        key="sim_save_restart_snapshot",
+                    )
+                    col_seed, col_label = st.columns(2)
+                    random_seed_str = col_seed.text_input(
+                        "Random seed (blank = auto)",
+                        "",
+                        key="sim_random_seed",
+                    )
+                    run_label = col_label.text_input(
+                        "Run label (optional)",
+                        "",
+                        key="sim_run_label",
+                    )
+
+                # CV-Informed Sampling
+                with st.expander("CV-Informed Sampling (Optional)", expanded=False):
+                    st.write("Use a trained Deep-TICA model to bias the simulation and explore diverse conformations.")
+                    models = backend.list_models()
+                    cv_model_path = None
+                    if models:
+                        use_cv_model = st.checkbox(
+                            "Use trained CV model to inform sampling",
+                            value=False,
+                            help="Select a trained Deep-TICA model. Model parameters will be saved with simulation metadata for future CV-guided analysis.",
+                            key="sim_use_cv_model",
+                        )
+                        if use_cv_model:
+                            model_indices = list(range(len(models)))
+
+                            def _cv_model_label(idx: int) -> str:
+                                entry = models[idx]
+                                bundle_raw = entry.get("bundle", "")
+                                bundle_name = Path(bundle_raw).name if bundle_raw else f"model-{idx}"
+                                return bundle_name
+
+                            selected_cv_idx = st.selectbox(
+                                "Select CV model",
+                                options=model_indices,
+                                format_func=_cv_model_label,
+                                key="sim_cv_model_select",
+                            )
+                            # Get checkpoint_dir where exported .pt files are, not the .pbz bundle
+                            model_entry = models[selected_cv_idx]
+                            checkpoint_dir_str = model_entry.get("checkpoint_dir")
+                            cv_model_path = Path(checkpoint_dir_str) if checkpoint_dir_str else None
+
+                            if cv_model_path and cv_model_path.exists():
+                                st.success(f"Selected CV model from: {cv_model_path.name}")
+                                st.info(
+                                    "**CV-Informed Sampling ENABLED**\n\n"
+                                    "The trained Deep-TICA model will be used to bias the simulation:\n"
+                                    "- **Bias type**: Harmonic expansion (E = k * Σ(cv²))\n"
+                                    "- **Effect**: Repulsive forces in CV space → explore diverse conformations\n"
+                                    "- **Implementation**: OpenMM computes forces via F = -∇E\n\n"
+                                    "**Requirements**:\n"
+                                    "- `openmm-torch` must be installed (`conda install -c conda-forge openmm-torch`)\n"
+                                    "- CUDA-enabled PyTorch recommended (CPU is ~10-20x slower)\n\n"
+                                    "**Note**: The model expects **molecular features** (distances, angles) as input. "
+                                    "Feature extraction is automatically configured in the OpenMM system."
+                                )
+                            elif cv_model_path:
+                                st.error(f"Model checkpoint directory not found: {cv_model_path}")
+                    else:
+                        st.info("No trained CV models available. Train a model in the 'Model Training' tab to enable CV-informed sampling.")
+
+                # Advanced Options
+                with st.expander("Advanced Simulation Options", expanded=False):
+                    jitter = st.checkbox(
+                        "Jitter starting structure",
+                        value=False,
+                        key="sim_jitter_toggle",
+                        help="Add small random perturbations to initial atomic positions"
+                    )
+                    jitter_sigma = st.number_input(
+                        "Jitter sigma (Angstrom)",
+                        min_value=0.0,
+                        value=0.05,
+                        step=0.01,
+                        key="sim_jitter_sigma",
+                    )
+                    exchange_override = st.number_input(
+                        "Exchange frequency override (steps)",
+                        min_value=0,
+                        value=0,
+                        step=50,
+                        help="0 keeps the automatic heuristic.",
+                        key="sim_exchange_override",
+                    )
+                    temp_schedule = st.selectbox(
+                        "Temperature schedule",
+                        options=["auto", "exponential", "geometric", "linear"],
+                        index=0,
+                        key="sim_temperature_schedule",
+                        help="Method for distributing replicas across the temperature ladder"
+                    )
+                    schedule_mode = None if temp_schedule == "auto" else temp_schedule
+
+                run_in_progress = bool(st.session_state.get(_RUN_PENDING, False))
+
+                # CRITICAL: Only trigger simulation on button click, not on every rerun
+                if st.button(
+                    "Run replica exchange",
+                    type="primary",
+                    disabled=run_in_progress,
+                    key="sim_run_button",
+                ):
+                    # Button was just clicked - prepare config and run IMMEDIATELY
+                    try:
+                        temps = _parse_temperature_ladder(temps_raw)
+                        seed_val = int(random_seed_str) if random_seed_str.strip() else None
+                        config = SimulationConfig(
+                            pdb_path=input_choice,
+                            temperatures=temps,
+                            steps=int(steps),
+                            quick=quick,
+                             save_restart_pdb=bool(save_restart),
+                            random_seed=seed_val,
+                            label=run_label or None,
+                            jitter_start=bool(jitter),
+                            jitter_sigma_A=float(jitter_sigma),
+                            exchange_frequency_steps=(
+                                int(exchange_override) if exchange_override > 0 else None
+                            ),
+                            temperature_schedule_mode=schedule_mode,
+                            # DISABLED: CV biasing is not production-ready (causes 10-20x slowdown on CPU)
+                            # cv_model_bundle=cv_model_path if cv_model_path and cv_model_path.exists() else None,
+                            cv_model_bundle=None,
+                        )
+
+                        # Mark as in progress BEFORE running to prevent double-clicks
+                        st.session_state[_RUN_PENDING] = True
+
+                        with st.spinner("Running replica exchange..."):
+                            sim_result = backend.run_sampling(config)
+
+                        st.session_state[_LAST_SIM] = sim_result
+                        st.session_state[_LAST_SHARDS] = None
+                        st.success(f"Simulation complete: {sim_result.run_id}")
+
+                    except Exception as exc:
+                        st.error(f"Simulation failed: {exc}")
+                    finally:
+                        st.session_state[_RUN_PENDING] = False
+                        st.rerun()  # Force rerun to update UI
+
+                # Show status if simulation is still running (shouldn't happen with sync execution)
+                elif run_in_progress:
+                    st.info("⏳ Simulation in progress... (This shouldn't persist - if it does, refresh the page)")
+
+            sim = st.session_state.get(_LAST_SIM)
+
+            if backend.state.runs:
+                with st.expander("Load recorded run", expanded=sim is None):
+                    run_entries = backend.state.runs
+                    run_ids = [str(entry.get("run_id")) for entry in run_entries]
+                    if run_ids:
+                        current_idx = 0
+                        if sim is not None and sim.run_id in run_ids:
+                            current_idx = run_ids.index(sim.run_id)
+                        selected_run_id = st.selectbox(
+                            "Select run",
+                            options=run_ids,
+                            index=current_idx,
+                            key="load_run_select",
+                        )
+                        if st.button("Use this run", key="load_run_button"):
+                            loaded = backend.load_run(selected_run_id)
+                            if loaded is not None:
+                                st.session_state[_LAST_SIM] = loaded
+                                st.session_state[_LAST_SHARDS] = None
+                                sim = loaded
+                                st.success(f"Loaded run {loaded.run_id}.")
+                            else:
+                                st.error("Could not load the selected run from disk.")
+                    else:
+                        st.info("No recorded runs available yet.")
+
+            if sim is not None:
+                st.success(
+                    f"Latest run {sim.run_id} produced {len(sim.traj_files)} "
+                    f"trajectories across {len(sim.analysis_temperatures)} temperatures."
                 )
-                if use_cv_model:
-                    model_indices = list(range(len(models)))
+                st.caption(f"Workspace: {sim.run_dir}")
+                with st.expander("Run outputs", expanded=False):
+                    payload = {
+                        "run_id": sim.run_id,
+                        "trajectories": [p.name for p in sim.traj_files],
+                        "analysis_temperatures": sim.analysis_temperatures,
+                    }
+                    if sim.restart_pdb_path:
+                        payload["restart_pdb"] = sim.restart_pdb_path.name
+                    if sim.restart_inputs_entry:
+                        payload["restart_input_entry"] = sim.restart_inputs_entry.name
+                    st.json(payload)
+                    if sim.restart_inputs_entry:
+                        st.caption(
+                            f"Restart snapshot copied to inputs: {sim.restart_inputs_entry.name}"
+                        )
+                st.subheader("Emit shards from the latest run")
+                with st.form("emit_shards_form"):
+                    stride = st.number_input(
+                        "Stride (frames)",
+                        min_value=1,
+                        value=5,
+                        step=1,
+                        key="emit_stride",
+                    )
+                    frames_per_shard = st.number_input(
+                        "Frames per shard",
+                        min_value=500,
+                        value=5000,
+                        step=500,
+                        key="frames_per_shard",
+                    )
+                    hop_frames = st.number_input(
+                        "Hop (overlap step)",
+                        min_value=0,
+                        value=5000,
+                        step=500,
+                        key="hop_frames",
+                    )
+                    temp_default = (
+                        sim.analysis_temperatures[0] if sim.analysis_temperatures else 300.0
+                    )
+                    shard_temp = st.number_input(
+                        "Shard metadata temperature (K)",
+                        min_value=0.0,
+                        value=float(temp_default),
+                        step=5.0,
+                        key="emit_temperature",
+                    )
+                    seed_start = st.number_input(
+                        "Shard ID seed start",
+                        min_value=0,
+                        value=0,
+                        step=1,
+                        key="emit_seed_start",
+                    )
+                    reference_path = st.text_input(
+                        "Reference PDB for RMSD (optional)",
+                        value="",
+                        key="emit_reference",
+                    )
+                    emit = st.form_submit_button("Emit shard files")
+                    if emit:
+                        try:
+                            request = ShardRequest(
+                                stride=int(stride),
+                                temperature=float(shard_temp),
+                                seed_start=int(seed_start),
+                                frames_per_shard=int(frames_per_shard),
+                                hop_frames=int(hop_frames) if hop_frames > 0 else None,
+                                reference=(
+                                    Path(reference_path).expanduser().resolve()
+                                    if reference_path.strip()
+                                    else None
+                                ),
+                            )
+                            shard_result = backend.emit_shards(
+                                sim,
+                                request,
+                                provenance={"source": "app_usecase"},
+                            )
+                            st.session_state[_LAST_SHARDS] = shard_result
+                            st.success(
+                                f"Emitted {shard_result.n_shards} shards "
+                                f"({shard_result.n_frames} frames)."
+                            )
+                            st.json(
+                                {
+                                    "directory": str(shard_result.shard_dir),
+                                    "files": [p.name for p in shard_result.shard_paths],
+                                }
+                            )
+                        except Exception as exc:
+                            st.error(f"Shard emission failed: {exc}")
 
-                    def _cv_model_label(idx: int) -> str:
+        with tab_training:
+            st.header("Train collective-variable model")
+            feedback = st.session_state.get(_TRAIN_FEEDBACK)
+            if feedback:
+                if isinstance(feedback, tuple) and len(feedback) == 2:
+                    level, message = feedback
+                else:
+                    level, message = ("info", str(feedback))
+                display_fn = getattr(st, str(level), st.info)
+                display_fn(str(message))
+                st.session_state[_TRAIN_FEEDBACK] = None
+            shard_groups = backend.shard_summaries()
+            if not shard_groups:
+                st.info("Emit shards before training a CV model.")
+            else:
+                # Data Selection
+                with st.expander("Data Selection", expanded=True):
+                    run_ids = [str(entry.get("run_id")) for entry in shard_groups]
+                    selected_runs = st.multiselect(
+                        "Shard groups",
+                        options=run_ids,
+                        default=run_ids[-1:] if run_ids else [],
+                    )
+                    selected_paths = _select_shard_paths(shard_groups, selected_runs)
+                    try:
+                        _selection_runs, selection_text = _summarize_selected_shards(
+                            selected_paths
+                        )
+                    except ValueError as exc:
+                        st.error(f"Shard selection invalid: {exc}")
+                        st.stop()
+                    st.write(f"Using {len(selected_paths)} shard files for training.")
+                    if selection_text:
+                        st.caption(selection_text)
+
+                # Basic Training Parameters
+                with st.expander("Basic Training Parameters", expanded=True):
+                    col_a, col_b = st.columns(2)
+                    lag = col_a.number_input(
+                        "Lag (steps)", min_value=1, value=5, step=1, key="train_lag",
+                        help="Time delay for computing time-lagged correlations"
+                    )
+                    temperature = col_b.number_input(
+                        "Reference temperature (K)",
+                        min_value=0.0,
+                        value=300.0,
+                        step=5.0,
+                        key="train_temperature",
+                        help="Temperature for reweighting calculations"
+                    )
+                    col_c, col_d = st.columns(2)
+                    seed = col_c.number_input(
+                        "Training seed", min_value=0, value=1337, step=1, key="train_seed",
+                        help="Random seed for reproducibility"
+                    )
+                    max_epochs = col_d.number_input(
+                        "Max epochs", min_value=20, value=200, step=10, key="train_max_epochs",
+                        help="Maximum number of training epochs"
+                    )
+                    patience = st.number_input(
+                        "Early stopping patience",
+                        min_value=5,
+                        value=25,
+                        step=5,
+                        key="train_patience",
+                        help="Number of epochs without improvement before stopping"
+                    )
+
+                # Feature Binning
+                with st.expander("Feature Binning", expanded=False):
+                    col_bins_a, col_bins_b = st.columns(2)
+                    bins_rg = col_bins_a.number_input(
+                        "Bins for Rg", min_value=8, value=64, step=4, key="train_bins_rg",
+                        help="Number of bins for radius of gyration"
+                    )
+                    bins_rmsd = col_bins_b.number_input(
+                        "Bins for RMSD", min_value=8, value=64, step=4, key="train_bins_rmsd",
+                        help="Number of bins for RMSD from reference"
+                    )
+
+                # Network Architecture
+                with st.expander("Network Architecture", expanded=False):
+                    hidden = st.text_input(
+                        "Hidden layer widths",
+                        value=st.session_state.get("train_hidden_layers", "128,128"),
+                        help="Comma-separated integers for the Deep-TICA network (e.g., 128,128 for two hidden layers)",
+                        key="train_hidden_layers",
+                    )
+                    hidden_layers = tuple(
+                        int(v.strip()) for v in hidden.split(",") if v.strip()
+                    ) or (128, 128)
+
+                # Curriculum Learning
+                with st.expander("Curriculum Learning", expanded=False):
+                    st.write("Configure the multi-tau curriculum training strategy")
+                    col_tau_a, col_tau_b, col_tau_c = st.columns(3)
+                    tau_raw = col_tau_a.text_input(
+                        "Tau schedule (steps)",
+                        value=st.session_state.get("train_tau_schedule", "2,5,10,20"),
+                        key="train_tau_schedule",
+                        help="Comma-separated lag times for curriculum learning"
+                    )
+                    val_tau = col_tau_b.number_input(
+                        "Validation tau (steps)",
+                        min_value=1,
+                        value=int(st.session_state.get("train_val_tau", 20)),
+                        step=1,
+                        key="train_val_tau",
+                        help="Lag time used for validation scoring"
+                    )
+                    epochs_per_tau = col_tau_c.number_input(
+                        "Epochs per tau",
+                        min_value=1,
+                        value=int(st.session_state.get("train_epochs_per_tau", 15)),
+                        step=1,
+                        key="train_epochs_per_tau",
+                        help="Number of epochs to train at each tau value"
+                    )
+
+                disabled = len(selected_paths) == 0
+                if st.button(
+                    "Train Deep-TICA model",
+                    type="primary",
+                    disabled=disabled,
+                    key="train_button",
+                ):
+                    try:
+                        tau_values = _parse_tau_schedule(tau_raw)
+                    except ValueError as exc:
+                        st.error(f"Tau schedule error: {exc}")
+                    else:
+                        try:
+                            train_cfg = TrainingConfig(
+                                lag=int(lag),
+                                bins={"Rg": int(bins_rg), "RMSD_ref": int(bins_rmsd)},
+                                seed=int(seed),
+                                temperature=float(temperature),
+                                max_epochs=int(max_epochs),
+                                early_stopping=int(patience),
+                                hidden=hidden_layers,
+                                tau_schedule=tuple(tau_values),
+                                val_tau=int(val_tau),
+                                epochs_per_tau=int(epochs_per_tau),
+                            )
+
+                            # Use st.status to show progress during training
+                            with st.status("Training Deep-TICA model...", expanded=True) as status:
+                                st.write("Loading and preparing shard data...")
+                                st.write(f"- Using {len(selected_paths)} shard files")
+                                if selection_text:
+                                    st.write(f"  Runs: {selection_text}")
+                                st.write(f"- Lag: {lag}, Bins: Rg={bins_rg}, RMSD={bins_rmsd}")
+                                st.write(f"- Max epochs: {max_epochs}, Patience: {patience}")
+                                st.write("")
+                                st.write("Starting training pipeline...")
+                                st.caption("Note: Initial data loading may take several minutes for large datasets.")
+
+                                result = backend.train_model(selected_paths, train_cfg)
+
+                                status.update(label="Training completed!", state="complete", expanded=False)
+
+                            st.session_state[_LAST_TRAIN] = result
+                            st.session_state[_LAST_TRAIN_CONFIG] = train_cfg
+                            st.session_state[_TRAIN_CONFIG_PENDING] = train_cfg
+
+                            # Show training progress if available
+                            if result.checkpoint_dir:
+                                progress = backend.get_training_progress(result.checkpoint_dir)
+                                if progress and progress.get("status") == "completed":
+                                    st.success(f"Training completed! Best val score: {progress.get('best_val_score', 0.0):.4f}")
+
+                            st.session_state[_TRAIN_FEEDBACK] = (
+                                "success",
+                                f"Model stored at {result.bundle_path.name} (hash {result.dataset_hash}).",
+                            )
+                            st.rerun()
+                        except RuntimeError as exc:
+                            if "Deep-TICA optional dependencies missing" in str(exc):
+                                st.warning(DEEPTICA_SKIP_MESSAGE)
+                            else:
+                                st.error(f"Training failed: {exc}")
+                        except Exception as exc:
+                            st.error(f"Training failed: {exc}")
+
+            # Check for ongoing training and show log viewer
+            models_dir = layout.models_dir
+            training_dirs = [d for d in models_dir.glob("training-*") if d.is_dir()]
+            if training_dirs:
+                latest_training = max(training_dirs, key=lambda d: d.name)
+                log_file = latest_training / "training.log"
+                progress_file = latest_training / "training_progress.json"
+
+                # Check if this is an ongoing training (progress file doesn't exist or status is "training")
+                is_training_ongoing = False
+                if log_file.exists():
+                    if not progress_file.exists():
+                        is_training_ongoing = True
+                    else:
+                        try:
+                            with progress_file.open("r") as f:
+                                progress_data = json.load(f)
+                                if progress_data.get("status") == "training":
+                                    is_training_ongoing = True
+                        except Exception:
+                            pass
+
+                if is_training_ongoing and log_file.exists():
+                    with st.expander("⚠️ Training in Progress - View Log", expanded=True):
+                        st.warning(f"Training directory: `{latest_training.name}`")
+                        st.caption("Training may take 10-30 minutes depending on data size. Check the log below for progress.")
+
+                        if st.button("Refresh Log", key="refresh_train_log_button"):
+                            st.rerun()
+
+                        try:
+                            with log_file.open("r") as f:
+                                log_content = f.read()
+
+                            # Show last 50 lines of log
+                            log_lines = log_content.strip().split("\n")
+                            if len(log_lines) > 50:
+                                st.text_area(
+                                    "Recent Log Entries (last 50 lines)",
+                                    "\n".join(log_lines[-50:]),
+                                    height=300,
+                                    key="train_log_viewer"
+                                )
+                            else:
+                                st.text_area(
+                                    "Training Log",
+                                    log_content,
+                                    height=300,
+                                    key="train_log_viewer_full"
+                                )
+                        except Exception as e:
+                            st.error(f"Could not read log file: {e}")
+
+            last_train: TrainingResult | None = st.session_state.get(_LAST_TRAIN)
+            if last_train is not None:
+                # Show real-time training progress if available
+                if last_train.checkpoint_dir:
+                    progress = backend.get_training_progress(last_train.checkpoint_dir)
+                    if progress:
+                        with st.expander("Training Progress", expanded=True):
+                            status = progress.get("status", "unknown")
+                            st.write(f"**Status**: {status}")
+
+                            if status == "training":
+                                current_epoch = progress.get("current_epoch", 0)
+                                total_epochs = progress.get("total_epochs_planned", 0)
+                                if total_epochs > 0:
+                                    st.progress(current_epoch / total_epochs)
+                                    st.write(f"Epoch {current_epoch} / {total_epochs}")
+
+                            epochs_data = progress.get("epochs", [])
+                            if epochs_data:
+                                df = pd.DataFrame(epochs_data)
+
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    if "val_score" in df.columns:
+                                        st.line_chart(df[["epoch", "val_score"]].set_index("epoch"))
+                                        st.caption("Validation Score")
+                                with col2:
+                                    if "train_loss" in df.columns:
+                                        st.line_chart(df[["epoch", "train_loss"]].set_index("epoch"))
+                                        st.caption("Training Loss")
+
+                                # Show best epoch info
+                                best_epoch = progress.get("best_epoch")
+                                best_score = progress.get("best_val_score", 0.0)
+                                if best_epoch:
+                                    st.info(f"Best validation score: {best_score:.4f} at epoch {best_epoch}")
+
+                _show_build_outputs(last_train)
+                summary = (
+                    last_train.build_result.artifacts.get("mlcv_deeptica")
+                    if last_train.build_result
+                    else None
+                )
+                if summary:
+                    _render_deeptica_summary(summary)
+
+            models = backend.list_models()
+            if models:
+                with st.expander(
+                    "Load recorded model",
+                    expanded=st.session_state.get(_LAST_TRAIN) is None,
+                ):
+                    indices = list(range(len(models)))
+
+                    def _model_label(idx: int) -> str:
                         entry = models[idx]
                         bundle_raw = entry.get("bundle", "")
-                        bundle_name = Path(bundle_raw).name if bundle_raw else f"model-{idx}"
-                        return bundle_name
-
-                    selected_cv_idx = st.selectbox(
-                        "Select CV model",
-                        options=model_indices,
-                        format_func=_cv_model_label,
-                        key="sim_cv_model_select",
-                    )
-                    # Get checkpoint_dir where exported .pt files are, not the .pbz bundle
-                    model_entry = models[selected_cv_idx]
-                    checkpoint_dir_str = model_entry.get("checkpoint_dir")
-                    cv_model_path = Path(checkpoint_dir_str) if checkpoint_dir_str else None
-
-                    if cv_model_path and cv_model_path.exists():
-                        st.success(f"✓ Selected CV model from: {cv_model_path.name}")
-                        st.info(
-                            "**CV-Informed Sampling ENABLED** 🚀\n\n"
-                            "The trained Deep-TICA model will be used to bias the simulation:\n"
-                            "- **Bias type**: Harmonic expansion (E = k * Σ(cv²))\n"
-                            "- **Effect**: Repulsive forces in CV space → explore diverse conformations\n"
-                            "- **Implementation**: OpenMM computes forces via F = -∇E\n\n"
-                            "⚠️ **Requirements**:\n"
-                            "- `openmm-torch` must be installed (`conda install -c conda-forge openmm-torch`)\n"
-                            "- CUDA-enabled PyTorch recommended (CPU is ~10-20x slower)\n\n"
-                            "⚠️ **Note**: The model expects **molecular features** (distances, angles) as input. "
-                            "Feature extraction is automatically configured in the OpenMM system."
+                        bundle_name = (
+                            Path(bundle_raw).name if bundle_raw else f"model-{idx}"
                         )
-                    elif cv_model_path:
-                        st.error(f"⚠️ Model checkpoint directory not found: {cv_model_path}")
-            else:
-                st.info("No trained CV models available. Train a model in the 'Model Training' tab to enable CV-informed sampling.")
+                        created = entry.get("created_at", "unknown")
+                        return f"{bundle_name} (created {created})"
 
-            col_extra = st.expander("Advanced options", expanded=False)
-            with col_extra:
-                jitter = st.checkbox(
-                    "Jitter starting structure",
-                    value=False,
-                    key="sim_jitter_toggle",
-                )
-                jitter_sigma = st.number_input(
-                    "Jitter sigma (Angstrom)",
-                    min_value=0.0,
-                    value=0.05,
-                    step=0.01,
-                    key="sim_jitter_sigma",
-                )
-                exchange_override = st.number_input(
-                    "Exchange frequency override (steps)",
-                    min_value=0,
-                    value=0,
-                    step=50,
-                    help="0 keeps the automatic heuristic.",
-                    key="sim_exchange_override",
-                )
-                temp_schedule = st.selectbox(
-                    "Temperature schedule",
-                    options=["auto", "exponential", "geometric", "linear"],
-                    index=0,
-                    key="sim_temperature_schedule",
-                )
-                schedule_mode = None if temp_schedule == "auto" else temp_schedule
-
-            run_in_progress = bool(st.session_state.get(_RUN_PENDING, False))
-
-            # CRITICAL: Only trigger simulation on button click, not on every rerun
-            if st.button(
-                "Run replica exchange",
-                type="primary",
-                disabled=run_in_progress,
-                key="sim_run_button",
-            ):
-                # Button was just clicked - prepare config and run IMMEDIATELY
-                try:
-                    temps = _parse_temperature_ladder(temps_raw)
-                    seed_val = int(random_seed_str) if random_seed_str.strip() else None
-                    config = SimulationConfig(
-                        pdb_path=input_choice,
-                        temperatures=temps,
-                        steps=int(steps),
-                        quick=quick,
-                         save_restart_pdb=bool(save_restart),
-                        random_seed=seed_val,
-                        label=run_label or None,
-                        jitter_start=bool(jitter),
-                        jitter_sigma_A=float(jitter_sigma),
-                        exchange_frequency_steps=(
-                            int(exchange_override) if exchange_override > 0 else None
-                        ),
-                        temperature_schedule_mode=schedule_mode,
-                        # DISABLED: CV biasing is not production-ready (causes 10-20x slowdown on CPU)
-                        # cv_model_bundle=cv_model_path if cv_model_path and cv_model_path.exists() else None,
-                        cv_model_bundle=None,
+                    selected_idx = st.selectbox(
+                        "Stored models",
+                        options=indices,
+                        format_func=_model_label,
+                        key="load_model_select",
                     )
-
-                    # Mark as in progress BEFORE running to prevent double-clicks
-                    st.session_state[_RUN_PENDING] = True
-
-                    with st.spinner("Running replica exchange..."):
-                        sim_result = backend.run_sampling(config)
-
-                    st.session_state[_LAST_SIM] = sim_result
-                    st.session_state[_LAST_SHARDS] = None
-                    st.success(f"Simulation complete: {sim_result.run_id}")
-
-                except Exception as exc:
-                    st.error(f"Simulation failed: {exc}")
-                finally:
-                    st.session_state[_RUN_PENDING] = False
-                    st.rerun()  # Force rerun to update UI
-
-            # Show status if simulation is still running (shouldn't happen with sync execution)
-            elif run_in_progress:
-                st.info("⏳ Simulation in progress... (This shouldn't persist - if it does, refresh the page)")
-
-        sim = st.session_state.get(_LAST_SIM)
-
-        if backend.state.runs:
-            with st.expander("Load recorded run", expanded=sim is None):
-                run_entries = backend.state.runs
-                run_ids = [str(entry.get("run_id")) for entry in run_entries]
-                if run_ids:
-                    current_idx = 0
-                    if sim is not None and sim.run_id in run_ids:
-                        current_idx = run_ids.index(sim.run_id)
-                    selected_run_id = st.selectbox(
-                        "Select run",
-                        options=run_ids,
-                        index=current_idx,
-                        key="load_run_select",
-                    )
-                    if st.button("Use this run", key="load_run_button"):
-                        loaded = backend.load_run(selected_run_id)
+                    if st.button("Show model", key="load_model_button"):
+                        loaded = backend.load_model(int(selected_idx))
                         if loaded is not None:
-                            st.session_state[_LAST_SIM] = loaded
-                            st.session_state[_LAST_SHARDS] = None
-                            sim = loaded
-                            st.success(f"Loaded run {loaded.run_id}.")
+                            st.session_state[_LAST_TRAIN] = loaded
+                            cfg_loaded: TrainingConfig | None = None
+                            try:
+                                cfg_loaded = backend.training_config_from_entry(
+                                    models[int(selected_idx)]
+                                )
+                            except Exception:
+                                cfg_loaded = None
+                            if cfg_loaded is not None:
+                                st.session_state[_LAST_TRAIN_CONFIG] = cfg_loaded
+                                st.session_state[_TRAIN_CONFIG_PENDING] = cfg_loaded
+                            st.session_state[_TRAIN_FEEDBACK] = (
+                                "success",
+                                f"Loaded model {loaded.bundle_path.name}.",
+                            )
+                            st.rerun()
                         else:
-                            st.error("Could not load the selected run from disk.")
-                else:
-                    st.info("No recorded runs available yet.")
+                            st.error("Could not load the selected model from disk.")
 
-        if sim is not None:
-            st.success(
-                f"Latest run {sim.run_id} produced {len(sim.traj_files)} "
-                f"trajectories across {len(sim.analysis_temperatures)} temperatures."
-            )
-            st.caption(f"Workspace: {sim.run_dir}")
-            with st.expander("Run outputs", expanded=False):
-                payload = {
-                    "run_id": sim.run_id,
-                    "trajectories": [p.name for p in sim.traj_files],
-                    "analysis_temperatures": sim.analysis_temperatures,
-                }
-                if sim.restart_pdb_path:
-                    payload["restart_pdb"] = sim.restart_pdb_path.name
-                if sim.restart_inputs_entry:
-                    payload["restart_input_entry"] = sim.restart_inputs_entry.name
-                st.json(payload)
-                if sim.restart_inputs_entry:
-                    st.caption(
-                        f"Restart snapshot copied to inputs: {sim.restart_inputs_entry.name}"
+            last_model_path = backend.latest_model_path()
+            if last_model_path is not None:
+                st.caption(f"Latest model bundle: {last_model_path}")
+
+        with tab_msm_fes:
+            st.header("Build MSM and FES")
+            shard_groups = backend.shard_summaries()
+
+            builds = backend.list_builds()
+            if builds:
+                with st.expander(
+                    "Load recorded analysis bundle",
+                    expanded=st.session_state.get(_LAST_BUILD) is None,
+                ):
+                    indices = list(range(len(builds)))
+
+                    def _build_label(idx: int) -> str:
+                        entry = builds[idx]
+                        bundle_raw = entry.get("bundle", "")
+                        bundle_name = (
+                            Path(bundle_raw).name if bundle_raw else f"bundle-{idx}"
+                        )
+                        created = entry.get("created_at", "unknown")
+                        return f"{bundle_name} (created {created})"
+
+                    selected_idx = st.selectbox(
+                        "Stored analysis bundles",
+                        options=indices,
+                        format_func=_build_label,
+                        key="load_build_select",
                     )
-            st.subheader("Emit shards from the latest run")
-            with st.form("emit_shards_form"):
-                stride = st.number_input(
-                    "Stride (frames)",
-                    min_value=1,
-                    value=5,
-                    step=1,
-                    key="emit_stride",
-                )
-                frames_per_shard = st.number_input(
-                    "Frames per shard",
-                    min_value=500,
-                    value=5000,
-                    step=500,
-                    key="frames_per_shard",
-                )
-                hop_frames = st.number_input(
-                    "Hop (overlap step)",
-                    min_value=0,
-                    value=5000,
-                    step=500,
-                    key="hop_frames",
-                )
-                temp_default = (
-                    sim.analysis_temperatures[0] if sim.analysis_temperatures else 300.0
-                )
-                shard_temp = st.number_input(
-                    "Shard metadata temperature (K)",
-                    min_value=0.0,
-                    value=float(temp_default),
-                    step=5.0,
-                    key="emit_temperature",
-                )
-                seed_start = st.number_input(
-                    "Shard ID seed start",
-                    min_value=0,
-                    value=0,
-                    step=1,
-                    key="emit_seed_start",
-                )
-                reference_path = st.text_input(
-                    "Reference PDB for RMSD (optional)",
-                    value="",
-                    key="emit_reference",
-                )
-                emit = st.form_submit_button("Emit shard files")
-                if emit:
-                    try:
-                        request = ShardRequest(
-                            stride=int(stride),
-                            temperature=float(shard_temp),
-                            seed_start=int(seed_start),
-                            frames_per_shard=int(frames_per_shard),
-                            hop_frames=int(hop_frames) if hop_frames > 0 else None,
-                            reference=(
-                                Path(reference_path).expanduser().resolve()
-                                if reference_path.strip()
+                    if st.button("Show bundle", key="load_build_button"):
+                        loaded = backend.load_analysis_bundle(int(selected_idx))
+                        if loaded is not None:
+                            st.session_state[_LAST_BUILD] = loaded
+                            try:
+                                cfg_loaded = backend.build_config_from_entry(
+                                    builds[int(selected_idx)]
+                                )
+                                _apply_analysis_config_to_state(cfg_loaded)
+                            except Exception:
+                                pass
+                            st.success(f"Loaded bundle {loaded.bundle_path.name}.")
+                            _show_build_outputs(loaded)
+                            summary = (
+                                loaded.build_result.artifacts.get("mlcv_deeptica")
+                                if loaded.build_result
                                 else None
-                            ),
-                        )
-                        shard_result = backend.emit_shards(
-                            sim,
-                            request,
-                            provenance={"source": "app_usecase"},
-                        )
-                        st.session_state[_LAST_SHARDS] = shard_result
-                        st.success(
-                            f"Emitted {shard_result.n_shards} shards "
-                            f"({shard_result.n_frames} frames)."
-                        )
-                        st.json(
-                            {
-                                "directory": str(shard_result.shard_dir),
-                                "files": [p.name for p in shard_result.shard_paths],
-                            }
-                        )
-                    except Exception as exc:
-                        st.error(f"Shard emission failed: {exc}")
+                            )
+                            if summary:
+                                _render_deeptica_summary(summary)
+                        else:
+                            st.error(
+                                "Could not load the selected analysis bundle from disk."
+                            )
 
-    with tab_training:
-        st.header("Train collective-variable model")
-        feedback = st.session_state.get(_TRAIN_FEEDBACK)
-        if feedback:
-            if isinstance(feedback, tuple) and len(feedback) == 2:
-                level, message = feedback
+            if not shard_groups:
+                st.info("Emit shards to build an MSM/FES bundle.")
             else:
-                level, message = ("info", str(feedback))
-            display_fn = getattr(st, str(level), st.info)
-            display_fn(str(message))
-            st.session_state[_TRAIN_FEEDBACK] = None
-        shard_groups = backend.shard_summaries()
-        if not shard_groups:
-            st.info("Emit shards before training a CV model.")
-        else:
-            run_ids = [str(entry.get("run_id")) for entry in shard_groups]
-            selected_runs = st.multiselect(
-                "Shard groups",
-                options=run_ids,
-                default=run_ids[-1:] if run_ids else [],
-            )
-            selected_paths = _select_shard_paths(shard_groups, selected_runs)
-            try:
-                _selection_runs, selection_text = _summarize_selected_shards(
-                    selected_paths
+                run_ids = [str(entry.get("run_id")) for entry in shard_groups]
+                selected_runs = st.multiselect(
+                    "Shard groups for analysis",
+                    options=run_ids,
+                    default=run_ids,
                 )
-            except ValueError as exc:
-                st.error(f"Shard selection invalid: {exc}")
-                st.stop()
-            st.write(f"Using {len(selected_paths)} shard files for training.")
-            if selection_text:
-                st.caption(selection_text)
-            col_a, col_b, col_c = st.columns(3)
-            lag = col_a.number_input(
-                "Lag (steps)", min_value=1, value=5, step=1, key="train_lag"
-            )
-            bins_rg = col_b.number_input(
-                "Bins for Rg", min_value=8, value=64, step=4, key="train_bins_rg"
-            )
-            bins_rmsd = col_c.number_input(
-                "Bins for RMSD", min_value=8, value=64, step=4, key="train_bins_rmsd"
-            )
-            col_d, col_e, col_f = st.columns(3)
-            seed = col_d.number_input(
-                "Training seed", min_value=0, value=1337, step=1, key="train_seed"
-            )
-            max_epochs = col_e.number_input(
-                "Max epochs", min_value=20, value=200, step=10, key="train_max_epochs"
-            )
-            patience = col_f.number_input(
-                "Early stopping patience",
-                min_value=5,
-                value=25,
-                step=5,
-                key="train_patience",
-            )
-            temperature = st.number_input(
-                "Reference temperature (K)",
-                min_value=0.0,
-                value=300.0,
-                step=5.0,
-                key="train_temperature",
-            )
-            hidden = st.text_input(
-                "Hidden layer widths",
-                value=st.session_state.get("train_hidden_layers", "128,128"),
-                help="Comma-separated integers for the Deep-TICA network.",
-                key="train_hidden_layers",
-            )
-            col_tau, col_val, col_ep = st.columns(3)
-            tau_raw = col_tau.text_input(
-                "Tau schedule (steps)",
-                value=st.session_state.get("train_tau_schedule", "2,5,10,20"),
-                key="train_tau_schedule",
-            )
-            val_tau = col_val.number_input(
-                "Validation tau (steps)",
-                min_value=1,
-                value=int(st.session_state.get("train_val_tau", 20)),
-                step=1,
-                key="train_val_tau",
-            )
-            epochs_per_tau = col_ep.number_input(
-                "Epochs per tau",
-                min_value=1,
-                value=int(st.session_state.get("train_epochs_per_tau", 15)),
-                step=1,
-                key="train_epochs_per_tau",
-            )
-            hidden_layers = tuple(
-                int(v.strip()) for v in hidden.split(",") if v.strip()
-            ) or (128, 128)
-            disabled = len(selected_paths) == 0
-            if st.button(
-                "Train Deep-TICA model",
-                type="primary",
-                disabled=disabled,
-                key="train_button",
-            ):
+                selected_paths = _select_shard_paths(shard_groups, selected_runs)
                 try:
-                    tau_values = _parse_tau_schedule(tau_raw)
+                    _analysis_runs, analysis_text = _summarize_selected_shards(
+                        selected_paths
+                    )
                 except ValueError as exc:
-                    st.error(f"Tau schedule error: {exc}")
-                else:
+                    st.error(f"Shard selection invalid: {exc}")
+                    st.stop()
+                st.write(f"Using {len(selected_paths)} shard files for analysis.")
+                if analysis_text:
+                    st.caption(analysis_text)
+
+                # General Settings
+                with st.expander(" General Settings", expanded=True):
+                    col_seed, col_temp = st.columns(2)
+                    seed = col_seed.number_input(
+                        "Build seed",
+                        min_value=0,
+                        value=2025,
+                        step=1,
+                        key="analysis_seed",
+                        help="Random seed for reproducibility"
+                    )
+                    temperature = col_temp.number_input(
+                        "Reference temperature (K)",
+                        min_value=0.0,
+                        value=300.0,
+                        step=5.0,
+                        key="analysis_temperature",
+                        help="Temperature for free energy calculations"
+                    )
+
+                # MSM Configuration
+                with st.expander(" MSM Configuration", expanded=True):
+                    lag = st.number_input(
+                        "Lag time (steps)",
+                        min_value=1,
+                        value=10,
+                        step=1,
+                        key="analysis_lag",
+                        help="Time delay for building the Markov State Model"
+                    )
+                    col_cluster, col_micro = st.columns(2)
+                    cluster_mode = col_cluster.selectbox(
+                        "Discretization mode",
+                        options=["kmeans", "grid"],
+                        index=(
+                            0
+                            if str(
+                                st.session_state.get("analysis_cluster_mode", "kmeans")
+                            ).lower()
+                            != "grid"
+                            else 1
+                        ),
+                        key="analysis_cluster_mode",
+                        help="Method for partitioning CV space into microstates"
+                    )
+                    n_microstates = col_micro.number_input(
+                        "Number of microstates",
+                        min_value=2,
+                        value=int(st.session_state.get("analysis_n_microstates", 20)),
+                        step=1,
+                        key="analysis_n_microstates",
+                        help="Number of discrete states for MSM construction"
+                    )
+                    reweight_default = str(
+                        st.session_state.get("analysis_reweight_mode", "TRAM")
+                    )
+                    reweight_index = 0
+                    if reweight_default.upper() == "MBAR":
+                        reweight_index = 1
+                    reweight_mode = st.selectbox(
+                        "Reweighting mode",
+                        options=["TRAM", "MBAR"],
+                        index=reweight_index,
+                        key="analysis_reweight_mode",
+                        help="Statistical reweighting method for enhanced sampling"
+                    )
+
+                # Collective Variable Settings
+                with st.expander(" Collective Variable (CV) Settings", expanded=True):
+                    col_rg, col_rmsd = st.columns(2)
+                    bins_rg = col_rg.number_input(
+                        "Bins for Rg",
+                        min_value=8,
+                        value=72,
+                        step=4,
+                        key="analysis_bins_rg",
+                        help="Number of bins for radius of gyration"
+                    )
+                    bins_rmsd = col_rmsd.number_input(
+                        "Bins for RMSD",
+                        min_value=8,
+                        value=72,
+                        step=4,
+                        key="analysis_bins_rmsd",
+                        help="Number of bins for RMSD from reference"
+                    )
+                    apply_whitening = st.checkbox(
+                        "Apply CV whitening",
+                        value=True,
+                        key="analysis_apply_whitening",
+                        help="Standardize CVs to have zero mean and unit variance"
+                    )
+                    learn_cv = st.checkbox(
+                        "Re-learn Deep-TICA during build",
+                        value=False,
+                        key="analysis_learn_cv",
+                        help="Train a new Deep-TICA model for dimensionality reduction"
+                    )
+                    deeptica_params = None
+                    if learn_cv:
+                        st.markdown("**Deep-TICA Parameters**")
+                        reuse = st.checkbox(
+                            "Reuse last training hyperparameters",
+                            value=st.session_state.get(_LAST_TRAIN_CONFIG) is not None,
+                            key="analysis_reuse_train_cfg",
+                        )
+                        if reuse and st.session_state.get(_LAST_TRAIN_CONFIG) is not None:
+                            cfg: TrainingConfig = st.session_state[_LAST_TRAIN_CONFIG]
+                            deeptica_params = cfg.deeptica_params()
+                        else:
+                            lag_ml = st.number_input(
+                                "Deep-TICA lag",
+                                min_value=1,
+                                value=int(lag),
+                                key="analysis_lag_ml",
+                            )
+                            hidden_ml = st.text_input(
+                                "Deep-TICA hidden layers",
+                                value="128,128",
+                                key="analysis_hidden_layers",
+                            )
+                            hidden_layers = tuple(
+                                int(v.strip()) for v in hidden_ml.split(",") if v.strip()
+                            ) or (128, 128)
+                            max_epochs = st.number_input(
+                                "Deep-TICA max epochs",
+                                min_value=20,
+                                value=200,
+                                step=10,
+                                key="analysis_max_epochs",
+                            )
+                            patience = st.number_input(
+                                "Deep-TICA patience",
+                                min_value=5,
+                                value=25,
+                                step=5,
+                                key="analysis_patience",
+                            )
+                            deeptica_params = {
+                                "lag": int(lag_ml),
+                                "n_out": 2,
+                                "hidden": hidden_layers,
+                                "max_epochs": int(max_epochs),
+                                "early_stopping": int(patience),
+                                "reweight_mode": "scaled_time",
+                            }
+
+                # FES Configuration
+                with st.expander(" Free Energy Surface (FES) Configuration", expanded=True):
+                    col_fes_method, col_bw, col_min = st.columns(3)
+                    fes_method = col_fes_method.selectbox(
+                        "FES method",
+                        options=["kde", "grid"],
+                        index=(
+                            0
+                            if str(st.session_state.get("analysis_fes_method", "kde")).lower()
+                            != "grid"
+                            else 1
+                        ),
+                        key="analysis_fes_method",
+                        help="Method for computing the free energy surface: KDE (kernel density) or grid-based"
+                    )
+                    fes_bandwidth = col_bw.text_input(
+                        "FES bandwidth",
+                        value=str(st.session_state.get("analysis_fes_bandwidth", "scott")),
+                        help="Use 'scott', 'silverman', or a positive float (only for KDE).",
+                        key="analysis_fes_bandwidth",
+                    )
+                    min_count_per_bin = col_min.number_input(
+                        "Min count per bin",
+                        min_value=0,
+                        value=int(st.session_state.get("analysis_min_count_per_bin", 1)),
+                        step=1,
+                        key="analysis_min_count_per_bin",
+                        help="Minimum number of samples required per bin for FES computation"
+                    )
+
+                disabled = len(selected_paths) == 0
+                if st.button(
+                    "Build MSM/FES bundle",
+                    type="primary",
+                    disabled=disabled,
+                    key="analysis_build_button",
+                ):
+                    print("--- DEBUG: Build MSM/FES button clicked! ---")
                     try:
-                        train_cfg = TrainingConfig(
+                        bw_clean = fes_bandwidth.strip()
+                        try:
+                            bandwidth_val: str | float = (
+                                float(bw_clean) if bw_clean else "scott"
+                            )
+                        except ValueError:
+                            bandwidth_val = bw_clean or "scott"
+                        reweight_norm = str(reweight_mode)
+                        if reweight_norm.upper() in {"MBAR", "TRAM"}:
+                            reweight_final = reweight_norm.upper()
+                        else:
+                            reweight_final = "none"
+                        build_cfg = BuildConfig(
                             lag=int(lag),
                             bins={"Rg": int(bins_rg), "RMSD_ref": int(bins_rmsd)},
                             seed=int(seed),
                             temperature=float(temperature),
-                            max_epochs=int(max_epochs),
-                            early_stopping=int(patience),
-                            hidden=hidden_layers,
-                            tau_schedule=tuple(tau_values),
-                            val_tau=int(val_tau),
-                            epochs_per_tau=int(epochs_per_tau),
+                            learn_cv=bool(learn_cv),
+                            deeptica_params=deeptica_params,
+                            notes={"source": "app_usecase"},
+                            apply_cv_whitening=bool(apply_whitening),
+                            cluster_mode=str(cluster_mode),
+                            n_microstates=int(n_microstates),
+                            reweight_mode=reweight_final,
+                            fes_method=str(fes_method),
+                            fes_bandwidth=bandwidth_val,
+                            fes_min_count_per_bin=int(min_count_per_bin),
                         )
-
-                        # Use st.status to show progress during training
-                        with st.status("Training Deep-TICA model...", expanded=True) as status:
-                            st.write("📊 Loading and preparing shard data...")
-                            st.write(f"- Using {len(selected_paths)} shard files")
-                            if selection_text:
-                                st.write(f"  Runs: {selection_text}")
-                            st.write(f"- Lag: {lag}, Bins: Rg={bins_rg}, RMSD={bins_rmsd}")
-                            st.write(f"- Max epochs: {max_epochs}, Patience: {patience}")
-                            st.write("")
-                            st.write("⚙️ Starting training pipeline...")
-                            st.caption("Note: Initial data loading may take several minutes for large datasets.")
-
-                            result = backend.train_model(selected_paths, train_cfg)
-
-                            status.update(label="Training completed!", state="complete", expanded=False)
-
-                        st.session_state[_LAST_TRAIN] = result
-                        st.session_state[_LAST_TRAIN_CONFIG] = train_cfg
-                        st.session_state[_TRAIN_CONFIG_PENDING] = train_cfg
-
-                        # Show training progress if available
-                        if result.checkpoint_dir:
-                            progress = backend.get_training_progress(result.checkpoint_dir)
-                            if progress and progress.get("status") == "completed":
-                                st.success(f"Training completed! Best val score: {progress.get('best_val_score', 0.0):.4f}")
-
-                        st.session_state[_TRAIN_FEEDBACK] = (
-                            "success",
-                            f"Model stored at {result.bundle_path.name} (hash {result.dataset_hash}).",
-                        )
-                        st.rerun()
-                    except RuntimeError as exc:
-                        if "Deep-TICA optional dependencies missing" in str(exc):
-                            st.warning(DEEPTICA_SKIP_MESSAGE)
-                        else:
-                            st.error(f"Training failed: {exc}")
+                        artifact: BuildArtifact | None = None
+                        try:
+                            artifact = backend.build_analysis(selected_paths, build_cfg)
+                        except ValueError as err:
+                            error_message = str(err)
+                            if "No transition pairs found" in error_message:
+                                st.warning(
+                                    "Analysis halted: "
+                                    "no transition pairs were detected for the current lag. "
+                                    f"{error_message}"
+                                )
+                            else:
+                                raise
+                        if artifact is not None:
+                            st.session_state[_LAST_BUILD] = artifact
+                            st.success(
+                                f"Bundle {artifact.bundle_path.name} written (hash {artifact.dataset_hash})."
+                            )
+                            _show_build_outputs(artifact)
+                            summary = (
+                                artifact.build_result.artifacts.get("mlcv_deeptica")
+                                if artifact.build_result
+                                else None
+                            )
+                            if summary:
+                                _render_deeptica_summary(summary)
                     except Exception as exc:
-                        st.error(f"Training failed: {exc}")
+                        print(f"--- DEBUG: Analysis failed with exception: {exc}")
+                        traceback.print_exc()
+                        st.error(f"Analysis failed: {exc}")
 
-        # Check for ongoing training and show log viewer
-        models_dir = layout.models_dir
-        training_dirs = [d for d in models_dir.glob("training-*") if d.is_dir()]
-        if training_dirs:
-            latest_training = max(training_dirs, key=lambda d: d.name)
-            log_file = latest_training / "training.log"
-            progress_file = latest_training / "training_progress.json"
+        with tab_conformations:
+            st.header("TPT Conformations Analysis")
+            st.write(
+                "Find metastable states, transition states, and pathways using Transition Path Theory."
+            )
 
-            # Check if this is an ongoing training (progress file doesn't exist or status is "training")
-            is_training_ongoing = False
-            if log_file.exists():
-                if not progress_file.exists():
-                    is_training_ongoing = True
-                else:
-                    try:
-                        with progress_file.open("r") as f:
-                            progress_data = json.load(f)
-                            if progress_data.get("status") == "training":
-                                is_training_ongoing = True
-                    except Exception:
-                        pass
+            conformations = backend.list_conformations()
+            if conformations:
+                with st.expander(
+                    "Load recorded conformation analysis",
+                    expanded=st.session_state.get(_LAST_CONFORMATIONS) is None,
+                ):
+                    indices = list(range(len(conformations)))
 
-            if is_training_ongoing and log_file.exists():
-                with st.expander("⚠️ Training in Progress - View Log", expanded=True):
-                    st.warning(f"Training directory: `{latest_training.name}`")
-                    st.caption("Training may take 10-30 minutes depending on data size. Check the log below for progress.")
+                    def _conformation_label(idx: int) -> str:
+                        entry = conformations[idx]
+                        output_dir = entry.get("output_dir", "")
+                        label = Path(output_dir).name if output_dir else f"conformations-{idx}"
+                        created = entry.get("created_at", "unknown")
+                        return f"{label} (created {created})"
 
-                    if st.button("Refresh Log", key="refresh_train_log_button"):
-                        st.rerun()
-
-                    try:
-                        with log_file.open("r") as f:
-                            log_content = f.read()
-
-                        # Show last 50 lines of log
-                        log_lines = log_content.strip().split("\n")
-                        if len(log_lines) > 50:
-                            st.text_area(
-                                "Recent Log Entries (last 50 lines)",
-                                "\n".join(log_lines[-50:]),
-                                height=300,
-                                key="train_log_viewer"
+                    selected_conf_idx = st.selectbox(
+                        "Stored conformations",
+                        options=indices,
+                        format_func=_conformation_label,
+                        key="load_conformations_select",
+                    )
+                    if st.button("Show conformations", key="load_conformations_button"):
+                        entry = conformations[int(selected_conf_idx)]
+                        loaded = backend.load_conformations(entry)
+                        if loaded is not None:
+                            st.session_state[_LAST_CONFORMATIONS] = loaded
+                            st.session_state[_CONFORMATIONS_FEEDBACK] = (
+                                "success",
+                                f"Loaded conformations from {loaded.output_dir.name}.",
                             )
                         else:
-                            st.text_area(
-                                "Training Log",
-                                log_content,
-                                height=300,
-                                key="train_log_viewer_full"
+                            st.session_state[_CONFORMATIONS_FEEDBACK] = (
+                                "error",
+                                "Could not load the selected conformations bundle from disk.",
                             )
-                    except Exception as e:
-                        st.error(f"Could not read log file: {e}")
 
-        last_train: TrainingResult | None = st.session_state.get(_LAST_TRAIN)
-        if last_train is not None:
-            # Show real-time training progress if available
-            if last_train.checkpoint_dir:
-                progress = backend.get_training_progress(last_train.checkpoint_dir)
-                if progress:
-                    with st.expander("Training Progress", expanded=True):
-                        status = progress.get("status", "unknown")
-                        st.write(f"**Status**: {status}")
-
-                        if status == "training":
-                            current_epoch = progress.get("current_epoch", 0)
-                            total_epochs = progress.get("total_epochs_planned", 0)
-                            if total_epochs > 0:
-                                st.progress(current_epoch / total_epochs)
-                                st.write(f"Epoch {current_epoch} / {total_epochs}")
-
-                        epochs_data = progress.get("epochs", [])
-                        if epochs_data:
-                            # Plot training curves
-                            import pandas as pd
-                            df = pd.DataFrame(epochs_data)
-
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                if "val_score" in df.columns:
-                                    st.line_chart(df[["epoch", "val_score"]].set_index("epoch"))
-                                    st.caption("Validation Score")
-                            with col2:
-                                if "train_loss" in df.columns:
-                                    st.line_chart(df[["epoch", "train_loss"]].set_index("epoch"))
-                                    st.caption("Training Loss")
-
-                            # Show best epoch info
-                            best_epoch = progress.get("best_epoch")
-                            best_score = progress.get("best_val_score", 0.0)
-                            if best_epoch:
-                                st.info(f"Best validation score: {best_score:.4f} at epoch {best_epoch}")
-
-            _show_build_outputs(last_train)
-            summary = (
-                last_train.build_result.artifacts.get("mlcv_deeptica")
-                if last_train.build_result
-                else None
+            shard_groups = backend.shard_summaries()
+            selected_paths: List[Path] = []
+            topology_path_str = ""
+            conf_cv_method = "tica"
+            conf_deeptica_projection: Optional[Path] = None
+            conf_deeptica_metadata: Optional[Path] = None
+            conf_lag = int(st.session_state.get("conf_lag", 10))
+            conf_n_clusters = int(st.session_state.get("conf_n_clusters", 100))
+            conf_n_components = int(st.session_state.get("conf_n_components", 3))
+            conf_committor_thresholds = tuple(
+                float(v)
+                for v in st.session_state.get("conf_committor_thresholds", (0.1, 0.9))
             )
-            if summary:
-                _render_deeptica_summary(summary)
+            conf_cluster_mode = str(st.session_state.get("conf_cluster_mode", "kmeans"))
+            conf_cluster_seed = int(st.session_state.get("conf_cluster_seed", 42))
+            conf_kmeans_n_init = int(st.session_state.get("conf_kmeans_n_init", 50))
+            conf_n_metastable = int(st.session_state.get("conf_n_metastable", 10))
+            conf_temperature = float(st.session_state.get("conf_temperature", 300.0))
+            conf_n_paths = int(st.session_state.get("conf_n_paths", 10))
+            conf_auto_detect = bool(st.session_state.get("conf_auto_detect", True))
+            conf_compute_kis = bool(st.session_state.get("conf_compute_kis", True))
+            conf_uncertainty = bool(st.session_state.get("conf_uncertainty_analysis", True))
+            conf_bootstrap_samples = int(st.session_state.get("conf_bootstrap_samples", 50))
 
-        models = backend.list_models()
-        if models:
-            with st.expander(
-                "Load recorded model",
-                expanded=st.session_state.get(_LAST_TRAIN) is None,
-            ):
-                indices = list(range(len(models)))
-
-                def _model_label(idx: int) -> str:
-                    entry = models[idx]
-                    bundle_raw = entry.get("bundle", "")
-                    bundle_name = (
-                        Path(bundle_raw).name if bundle_raw else f"model-{idx}"
-                    )
-                    created = entry.get("created_at", "unknown")
-                    return f"{bundle_name} (created {created})"
-
-                selected_idx = st.selectbox(
-                    "Stored models",
-                    options=indices,
-                    format_func=_model_label,
-                    key="load_model_select",
+            if not shard_groups:
+                st.info("Emit shards to run conformations analysis.")
+            else:
+                run_ids = [str(entry.get("run_id")) for entry in shard_groups]
+                selected_runs = st.multiselect(
+                    "Shard groups for conformations",
+                    options=run_ids,
+                    default=run_ids,
+                    key="conf_selected_runs",
                 )
-                if st.button("Show model", key="load_model_button"):
-                    loaded = backend.load_model(int(selected_idx))
-                    if loaded is not None:
-                        st.session_state[_LAST_TRAIN] = loaded
-                        cfg_loaded: TrainingConfig | None = None
-                        try:
-                            cfg_loaded = backend.training_config_from_entry(
-                                models[int(selected_idx)]
-                            )
-                        except Exception:
-                            cfg_loaded = None
-                        if cfg_loaded is not None:
-                            st.session_state[_LAST_TRAIN_CONFIG] = cfg_loaded
-                            st.session_state[_TRAIN_CONFIG_PENDING] = cfg_loaded
-                        st.session_state[_TRAIN_FEEDBACK] = (
-                            "success",
-                            f"Loaded model {loaded.bundle_path.name}.",
-                        )
-                        st.rerun()
-                    else:
-                        st.error("Could not load the selected model from disk.")
-
-        last_model_path = backend.latest_model_path()
-        if last_model_path is not None:
-            st.caption(f"Latest model bundle: {last_model_path}")
-
-    with tab_analysis:
-        st.header("Build MSM and FES")
-        shard_groups = backend.shard_summaries()
-
-        builds = backend.list_builds()
-        if builds:
-            with st.expander(
-                "Load recorded analysis bundle",
-                expanded=st.session_state.get(_LAST_BUILD) is None,
-            ):
-                indices = list(range(len(builds)))
-
-                def _build_label(idx: int) -> str:
-                    entry = builds[idx]
-                    bundle_raw = entry.get("bundle", "")
-                    bundle_name = (
-                        Path(bundle_raw).name if bundle_raw else f"bundle-{idx}"
-                    )
-                    created = entry.get("created_at", "unknown")
-                    return f"{bundle_name} (created {created})"
-
-                selected_idx = st.selectbox(
-                    "Stored analysis bundles",
-                    options=indices,
-                    format_func=_build_label,
-                    key="load_build_select",
-                )
-                if st.button("Show bundle", key="load_build_button"):
-                    loaded = backend.load_analysis_bundle(int(selected_idx))
-                    if loaded is not None:
-                        st.session_state[_LAST_BUILD] = loaded
-                        try:
-                            cfg_loaded = backend.build_config_from_entry(
-                                builds[int(selected_idx)]
-                            )
-                            _apply_analysis_config_to_state(cfg_loaded)
-                        except Exception:
-                            pass
-                        st.success(f"Loaded bundle {loaded.bundle_path.name}.")
-                        _show_build_outputs(loaded)
-                        summary = (
-                            loaded.build_result.artifacts.get("mlcv_deeptica")
-                            if loaded.build_result
-                            else None
-                        )
-                        if summary:
-                            _render_deeptica_summary(summary)
-                    else:
-                        st.error(
-                            "Could not load the selected analysis bundle from disk."
-                        )
-
-        if not shard_groups:
-            st.info("Emit shards to build an MSM/FES bundle.")
-        else:
-            run_ids = [str(entry.get("run_id")) for entry in shard_groups]
-            selected_runs = st.multiselect(
-                "Shard groups for analysis",
-                options=run_ids,
-                default=run_ids,
-            )
-            selected_paths = _select_shard_paths(shard_groups, selected_runs)
-            try:
-                _analysis_runs, analysis_text = _summarize_selected_shards(
-                    selected_paths
-                )
-            except ValueError as exc:
-                st.error(f"Shard selection invalid: {exc}")
-                st.stop()
-            st.write(f"Using {len(selected_paths)} shard files for analysis.")
-            if analysis_text:
-                st.caption(analysis_text)
-            col_a, col_b, col_c = st.columns(3)
-            lag = col_a.number_input(
-                "Lag (steps)", min_value=1, value=10, step=1, key="analysis_lag"
-            )
-            bins_rg = col_b.number_input(
-                "Bins for Rg", min_value=8, value=72, step=4, key="analysis_bins_rg"
-            )
-            bins_rmsd = col_c.number_input(
-                "Bins for RMSD", min_value=8, value=72, step=4, key="analysis_bins_rmsd"
-            )
-            col_d, col_e = st.columns(2)
-            seed = col_d.number_input(
-                "Build seed", min_value=0, value=2025, step=1, key="analysis_seed"
-            )
-            temperature = col_e.number_input(
-                "Reference temperature (K)",
-                min_value=0.0,
-                value=300.0,
-                step=5.0,
-                key="analysis_temperature",
-            )
-            learn_cv = st.checkbox(
-                "Re-learn Deep-TICA during build",
-                value=False,
-                key="analysis_learn_cv",
-            )
-            apply_whitening = st.checkbox(
-                "Apply CV whitening",
-                value=True,
-                key="analysis_apply_whitening",
-            )
-            col_cluster, col_micro = st.columns(2)
-            cluster_mode = col_cluster.selectbox(
-                "Discretization mode",
-                options=["kmeans", "grid"],
-                index=(
-                    0
-                    if str(
-                        st.session_state.get("analysis_cluster_mode", "kmeans")
-                    ).lower()
-                    != "grid"
-                    else 1
-                ),
-                key="analysis_cluster_mode",
-            )
-            n_microstates = col_micro.number_input(
-                "Number of microstates",
-                min_value=2,
-                value=int(st.session_state.get("analysis_n_microstates", 20)),
-                step=1,
-                key="analysis_n_microstates",
-            )
-            reweight_default = str(
-                st.session_state.get("analysis_reweight_mode", "MBAR")
-            )
-            reweight_index = 0
-            if reweight_default.upper() == "TRAM":
-                reweight_index = 1
-            elif reweight_default.lower() == "none":
-                reweight_index = 2
-            reweight_mode = st.selectbox(
-                "Reweighting mode",
-                options=["MBAR", "TRAM", "none"],
-                index=reweight_index,
-                key="analysis_reweight_mode",
-            )
-            col_fes_method, col_bw, col_min = st.columns(3)
-            fes_method = col_fes_method.selectbox(
-                "FES method",
-                options=["kde", "grid"],
-                index=(
-                    0
-                    if str(st.session_state.get("analysis_fes_method", "kde")).lower()
-                    != "grid"
-                    else 1
-                ),
-                key="analysis_fes_method",
-            )
-            fes_bandwidth = col_bw.text_input(
-                "FES bandwidth",
-                value=str(st.session_state.get("analysis_fes_bandwidth", "scott")),
-                help="Use 'scott', 'silverman', or a positive float (only for KDE).",
-                key="analysis_fes_bandwidth",
-            )
-            min_count_per_bin = col_min.number_input(
-                "Min count per bin",
-                min_value=0,
-                value=int(st.session_state.get("analysis_min_count_per_bin", 1)),
-                step=1,
-                key="analysis_min_count_per_bin",
-            )
-            deeptica_params = None
-            if learn_cv:
-                reuse = st.checkbox(
-                    "Reuse last training hyperparameters",
-                    value=st.session_state.get(_LAST_TRAIN_CONFIG) is not None,
-                    key="analysis_reuse_train_cfg",
-                )
-                if reuse and st.session_state.get(_LAST_TRAIN_CONFIG) is not None:
-                    cfg: TrainingConfig = st.session_state[_LAST_TRAIN_CONFIG]
-                    deeptica_params = cfg.deeptica_params()
-                else:
-                    lag_ml = st.number_input(
-                        "Deep-TICA lag",
-                        min_value=1,
-                        value=int(lag),
-                        key="analysis_lag_ml",
-                    )
-                    hidden_ml = st.text_input(
-                        "Deep-TICA hidden layers",
-                        value="128,128",
-                        key="analysis_hidden_layers",
-                    )
-                    hidden_layers = tuple(
-                        int(v.strip()) for v in hidden_ml.split(",") if v.strip()
-                    ) or (128, 128)
-                    max_epochs = st.number_input(
-                        "Deep-TICA max epochs",
-                        min_value=20,
-                        value=200,
-                        step=10,
-                        key="analysis_max_epochs",
-                    )
-                    patience = st.number_input(
-                        "Deep-TICA patience",
-                        min_value=5,
-                        value=25,
-                        step=5,
-                        key="analysis_patience",
-                    )
-                    deeptica_params = {
-                        "lag": int(lag_ml),
-                        "n_out": 2,
-                        "hidden": hidden_layers,
-                        "max_epochs": int(max_epochs),
-                        "early_stopping": int(patience),
-                        "reweight_mode": "scaled_time",
-                    }
-            disabled = len(selected_paths) == 0
-            if st.button(
-                "Build MSM/FES bundle",
-                type="primary",
-                disabled=disabled,
-                key="analysis_build_button",
-            ):
-                print("--- DEBUG: Build MSM/FES button clicked! ---")
+                selected_paths = _select_shard_paths(shard_groups, selected_runs)
                 try:
-                    bw_clean = fes_bandwidth.strip()
-                    try:
-                        bandwidth_val: str | float = (
-                            float(bw_clean) if bw_clean else "scott"
+                    _, shard_summary = _summarize_selected_shards(selected_paths)
+                except ValueError as exc:
+                    st.error(f"Shard selection invalid: {exc}")
+                    st.stop()
+                st.write(
+                    f"Using {len(selected_paths)} shard files for conformations analysis."
+                )
+                if shard_summary:
+                    st.caption(shard_summary)
+
+                with st.expander(
+                    "Configure Conformations Analysis", expanded=False
+                ):
+                    # Topology Selection
+                    st.markdown(" Topology Selection")
+                    available_topologies = layout.available_inputs()
+                    topology_select_col, topology_manual_col = st.columns(2)
+                    selected_topology: Optional[Path] = None
+                    if available_topologies:
+                        selected_topology = topology_select_col.selectbox(
+                            "Topology PDB (from app_intputs/)",
+                            options=available_topologies,
+                            format_func=lambda p: p.name,
+                            key="conf_topology_select",
                         )
-                    except ValueError:
-                        bandwidth_val = bw_clean or "scott"
-                    reweight_norm = str(reweight_mode)
-                    if reweight_norm.upper() in {"MBAR", "TRAM"}:
-                        reweight_final = reweight_norm.upper()
                     else:
-                        reweight_final = "none"
-                    build_cfg = BuildConfig(
-                        lag=int(lag),
-                        bins={"Rg": int(bins_rg), "RMSD_ref": int(bins_rmsd)},
-                        seed=int(seed),
-                        temperature=float(temperature),
-                        learn_cv=bool(learn_cv),
-                        deeptica_params=deeptica_params,
-                        notes={"source": "app_usecase"},
-                        apply_cv_whitening=bool(apply_whitening),
-                        cluster_mode=str(cluster_mode),
-                        n_microstates=int(n_microstates),
-                        reweight_mode=reweight_final,
-                        fes_method=str(fes_method),
-                        fes_bandwidth=bandwidth_val,
-                        fes_min_count_per_bin=int(min_count_per_bin),
+                        topology_select_col.warning(
+                            "No PDB files detected in app_intputs/. Provide the topology used during sampling."
+                        )
+
+                    manual_topology_entry = topology_manual_col.text_input(
+                        "Custom topology PDB path",
+                        value="",
+                        help=(
+                            "Optional manual override. Provide an absolute path or a path relative to the workspace "
+                            "for the topology used when running the simulations."
+                        ),
+                        key="conf_topology_manual",
+                    ).strip()
+
+                    topology_path_str = (
+                        manual_topology_entry
+                        if manual_topology_entry
+                        else (str(selected_topology) if selected_topology is not None else "")
                     )
-                    artifact: BuildArtifact | None = None
-                    try:
-                        artifact = backend.build_analysis(selected_paths, build_cfg)
-                    except ValueError as err:
-                        error_message = str(err)
-                        if "No transition pairs found" in error_message:
+
+                    if topology_path_str:
+                        topology_candidate = Path(topology_path_str)
+                        if not topology_candidate.is_absolute():
+                            topology_candidate = (layout.workspace_dir / topology_candidate).resolve()
+                        if not topology_candidate.exists():
                             st.warning(
-                                "Analysis halted: "
-                                "no transition pairs were detected for the current lag. "
-                                f"{error_message}"
+                                f"Topology PDB {topology_path_str!s} does not exist. The analysis run will fail until a valid file is provided."
                             )
-                        else:
-                            raise
-                    if artifact is not None:
-                        st.session_state[_LAST_BUILD] = artifact
-                        st.success(
-                            f"Bundle {artifact.bundle_path.name} written (hash {artifact.dataset_hash})."
+
+                    st.divider()
+
+                    # Basic Analysis Parameters
+                    st.markdown(" Basic Analysis Parameters")
+                    conf_col1, conf_col2, conf_col3 = st.columns(3)
+                    conf_lag = conf_col1.number_input(
+                        "Lag (steps)",
+                        min_value=1,
+                        value=int(conf_lag),
+                        step=1,
+                        key="conf_lag",
+                        help="Time delay for MSM construction"
+                    )
+                    conf_n_components = conf_col2.number_input(
+                        "TICA components",
+                        min_value=2,
+                        value=int(conf_n_components),
+                        step=1,
+                        key="conf_n_components",
+                        help="Number of TICA dimensions for dimensionality reduction"
+                    )
+                    conf_temperature = conf_col3.number_input(
+                        "Temperature (K)",
+                        min_value=0.0,
+                        value=float(conf_temperature),
+                        step=5.0,
+                        key="conf_temperature",
+                        help="Reference temperature for free energy calculations"
+                    )
+
+                    st.divider()
+
+                    # Clustering Configuration
+                    st.markdown(" Clustering Configuration")
+                    conf_cluster_col1, conf_cluster_col2 = st.columns(2)
+                    conf_n_clusters = conf_cluster_col1.number_input(
+                        "N microstates (clusters)",
+                        min_value=50,
+                        max_value=1000,
+                        value=int(conf_n_clusters),
+                        step=10,
+                        help=(
+                            "Controls the number of clusters used when constructing the"
+                            " conformational microstates. Increase this to resolve"
+                            " additional transition states."
+                        ),
+                        key="conf_n_clusters_input",
+                    )
+                    conf_cluster_mode = conf_cluster_col2.selectbox(
+                        "Clustering method",
+                        options=["kmeans", "minibatchkmeans", "auto"],
+                        index=["kmeans", "minibatchkmeans", "auto"].index(
+                            conf_cluster_mode if conf_cluster_mode in {"kmeans", "minibatchkmeans", "auto"} else "kmeans"
+                        ),
+                        key="conf_cluster_mode",
+                        help="Algorithm for partitioning CV space"
+                    )
+
+                    conf_cluster_col3, conf_cluster_col4 = st.columns(2)
+                    conf_cluster_seed = conf_cluster_col3.number_input(
+                        "Clustering seed (-1 for random)",
+                        min_value=-1,
+                        value=int(conf_cluster_seed),
+                        step=1,
+                        key="conf_cluster_seed",
+                        help="Random seed for reproducible clustering"
+                    )
+                    conf_kmeans_n_init = conf_cluster_col4.number_input(
+                        "K-means n_init",
+                        min_value=1,
+                        value=int(conf_kmeans_n_init),
+                        step=1,
+                        key="conf_kmeans_n_init",
+                        help="Number of k-means initializations"
+                    )
+
+                    st.divider()
+
+                    # TPT Configuration
+                    st.markdown(" Transition Path Theory (TPT) Configuration")
+                    conf_col4, conf_col5, conf_col6 = st.columns(3)
+                    conf_n_metastable = conf_col4.number_input(
+                        "N metastable states",
+                        min_value=2,
+                        value=int(conf_n_metastable),
+                        step=1,
+                        key="conf_n_metastable_form",
+                        on_change=_sync_form_metastable_states,
+                        help="Number of metastable states to identify"
+                    )
+                    st.session_state["conf_n_metastable"] = int(conf_n_metastable)
+                    conf_n_paths = conf_col5.number_input(
+                        "Max pathways",
+                        min_value=1,
+                        value=int(conf_n_paths),
+                        step=1,
+                        key="conf_n_paths",
+                        help="Maximum number of transition pathways to compute"
+                    )
+                    conf_compute_kis = conf_col6.checkbox(
+                        "Compute Kinetic Importance Score",
+                        value=bool(conf_compute_kis),
+                        key="conf_compute_kis",
+                        help="Calculate kinetic importance for each state"
+                    )
+
+                    conf_auto_detect = st.checkbox(
+                        "Auto-detect source/sink states",
+                        value=bool(conf_auto_detect),
+                        key="conf_auto_detect",
+                        help="Automatically identify source and sink states from metastable populations"
+                    )
+
+                    st.divider()
+
+                    # Uncertainty Analysis
+                    st.markdown(" Uncertainty Analysis")
+                    conf_col9, conf_col10 = st.columns(2)
+                    conf_uncertainty = conf_col9.checkbox(
+                        "Perform uncertainty analysis",
+                        value=bool(conf_uncertainty),
+                        help="Run bootstrap estimates for TPT observables and free energies.",
+                        key="conf_uncertainty_analysis",
+                    )
+                    conf_bootstrap_samples = conf_col10.number_input(
+                        "Bootstrap samples",
+                        min_value=1,
+                        value=int(conf_bootstrap_samples),
+                        step=5,
+                        help="Number of bootstrap resamples used during uncertainty analysis.",
+                        key="conf_bootstrap_samples",
+                        disabled=not conf_uncertainty,
+                    )
+
+                    st.divider()
+
+                    # CV Method Selection
+                    st.markdown(" Collective Variable (CV) Method")
+                    conf_cv_col1, conf_cv_col2 = st.columns(2)
+                    conf_cv_method = conf_cv_col1.selectbox(
+                        "CV method",
+                        options=["tica", "deeptica"],
+                        index=0 if conf_cv_method != "deeptica" else 1,
+                        key="conf_cv_method",
+                        help="Choose between classical TICA or Deep-TICA for dimensionality reduction"
+                    )
+                    conf_deeptica_projection = None
+                    conf_deeptica_metadata = None
+                    if conf_cv_method == "deeptica":
+                        projection_str = conf_cv_col2.text_input(
+                            "DeepTICA projection path",
+                            value="",
+                            key="conf_deeptica_projection",
+                            help="Path to a .npz/.npy file containing precomputed DeepTICA CVs.",
                         )
-                        _show_build_outputs(artifact)
-                        summary = (
-                            artifact.build_result.artifacts.get("mlcv_deeptica")
-                            if artifact.build_result
+                        conf_deeptica_projection = Path(projection_str) if projection_str else None
+                        metadata_str = st.text_input(
+                            "DeepTICA whitening metadata (optional)",
+                            value="",
+                            key="conf_deeptica_metadata",
+                            help="Optional JSON file describing the whitening transform for the DeepTICA outputs.",
+                        )
+                        conf_deeptica_metadata = Path(metadata_str) if metadata_str else None
+
+            if st.button(
+                "Run Conformations Analysis",
+                type="primary",
+                disabled=(
+                    len(selected_paths) == 0
+                    or not topology_path_str
+                    or (
+                        conf_cv_method == "deeptica" and conf_deeptica_projection is None
+                    )
+                ),
+                key="conformations_button",
+            ):
+                try:
+                    conf_config = ConformationsConfig(
+                        lag=int(conf_lag),
+                        n_clusters=int(conf_n_clusters),
+                        cluster_mode=str(conf_cluster_mode),
+                        cluster_seed=(
+                            int(conf_cluster_seed)
+                            if int(conf_cluster_seed) >= 0
                             else None
+                        ),
+                        kmeans_n_init=int(conf_kmeans_n_init),
+                        n_components=int(conf_n_components),
+                        n_metastable=int(conf_n_metastable),
+                        temperature=float(conf_temperature),
+                        auto_detect_states=bool(conf_auto_detect),
+                        n_paths=int(conf_n_paths),
+                        compute_kis=bool(conf_compute_kis),
+                        uncertainty_analysis=bool(conf_uncertainty),
+                        bootstrap_samples=int(conf_bootstrap_samples),
+                        topology_pdb=Path(topology_path_str),
+                        cv_method=str(conf_cv_method),
+                        deeptica_projection_path=conf_deeptica_projection,
+                        deeptica_metadata_path=conf_deeptica_metadata,
+                        committor_thresholds=tuple(conf_committor_thresholds),
+                    )
+
+                    with st.spinner("Running conformations analysis..."):
+                        conf_result = backend.run_conformations_analysis(
+                            selected_paths, conf_config
                         )
-                        if summary:
-                            _render_deeptica_summary(summary)
+
+                    st.session_state[_LAST_CONFORMATIONS] = conf_result
+                    if conf_result.error:
+                        st.session_state[_CONFORMATIONS_FEEDBACK] = (
+                            "error",
+                            f"Conformations analysis failed: {conf_result.error}",
+                        )
+                    else:
+                        st.session_state[_CONFORMATIONS_FEEDBACK] = (
+                            "success",
+                            f"Conformations analysis complete! Output saved to {conf_result.output_dir.name}",
+                        )
                 except Exception as exc:
-                    print(f"--- DEBUG: Analysis failed with exception: {exc}")
                     traceback.print_exc()
-                    st.error(f"Analysis failed: {exc}")
-
-    with tab_model_preview:
-        st.header("Model Preview & Inspection")
-
-        # Allow user to select a trained model to inspect
-        models = backend.list_models()
-        if not models:
-            st.info("No trained models available. Train a model in the 'Model Training' tab first.")
-        else:
-            indices = list(range(len(models)))
-
-            def _model_preview_label(idx: int) -> str:
-                entry = models[idx]
-                bundle_raw = entry.get("bundle", "")
-                bundle_name = Path(bundle_raw).name if bundle_raw else f"model-{idx}"
-                created = entry.get("created_at", "unknown")
-                return f"{bundle_name} (created {created})"
-
-            selected_model_idx = st.selectbox(
-                "Select model to inspect",
-                options=indices,
-                format_func=_model_preview_label,
-                key="model_preview_select",
-            )
-
-            if st.button("Load Model Details", key="model_preview_load_button"):
-                loaded = backend.load_model(int(selected_model_idx))
-                if loaded is not None:
-                    st.session_state["_model_preview_data"] = loaded
-                    st.rerun()
-
-            # Display loaded model
-            preview_data = st.session_state.get("_model_preview_data")
-            if preview_data is not None:
-                st.success(f"Model: {preview_data.bundle_path.name}")
-
-                # Model Configuration
-                with st.expander("Model Configuration", expanded=True):
-                    model_entry = models[selected_model_idx]
-                    config_data = {
-                        "Dataset Hash": model_entry.get("dataset_hash", "N/A"),
-                        "Lag": model_entry.get("lag", "N/A"),
-                        "Temperature (K)": model_entry.get("temperature", "N/A"),
-                        "Seed": model_entry.get("seed", "N/A"),
-                        "Max Epochs": model_entry.get("max_epochs", "N/A"),
-                        "Early Stopping Patience": model_entry.get("early_stopping", "N/A"),
-                        "Created At": model_entry.get("created_at", "N/A"),
-                    }
-
-                    bins = model_entry.get("bins", {})
-                    if bins:
-                        config_data["Bins (Rg)"] = bins.get("Rg", "N/A")
-                        config_data["Bins (RMSD)"] = bins.get("RMSD_ref", "N/A")
-
-                    hidden = model_entry.get("hidden", [])
-                    if hidden:
-                        config_data["Hidden Layers"] = " → ".join(str(h) for h in hidden)
-
-                    tau_schedule = model_entry.get("tau_schedule", [])
-                    if tau_schedule:
-                        config_data["Tau Schedule"] = ", ".join(str(t) for t in tau_schedule)
-
-                    config_data["Val Tau"] = model_entry.get("val_tau", "N/A")
-                    config_data["Epochs per Tau"] = model_entry.get("epochs_per_tau", "N/A")
-
-                    for key, value in config_data.items():
-                        st.write(f"**{key}**: {value}")
-
-                # Model Architecture
-                with st.expander("Model Architecture", expanded=True):
-                    st.write("**Network Structure:**")
-                    hidden_layers = model_entry.get("hidden", [])
-                    if hidden_layers:
-                        # Visualize network architecture
-                        layers = ["Input"] + [f"Hidden {i+1} ({h})" for i, h in enumerate(hidden_layers)] + ["Output (2)"]
-                        st.write(" → ".join(layers))
-
-                        # Calculate approximate parameter count
-                        # Assuming input dimension from bins
-                        bins_dict = model_entry.get("bins", {})
-                        input_dim = 2  # Default: Rg + RMSD
-
-                        total_params = 0
-                        prev_dim = input_dim
-                        for h in hidden_layers:
-                            total_params += prev_dim * h + h  # weights + biases
-                            prev_dim = h
-                        total_params += prev_dim * 2 + 2  # output layer
-
-                        st.metric("Approximate Total Parameters", f"{total_params:,}")
-                    else:
-                        st.info("Hidden layer configuration not available")
-
-                # Training Metrics
-                with st.expander("Training Metrics", expanded=True):
-                    metrics = model_entry.get("metrics", {})
-                    if metrics:
-                        # Display key metrics
-                        key_metrics = {
-                            "Best Val Score": metrics.get("best_val_score", "N/A"),
-                            "Best Epoch": metrics.get("best_epoch", "N/A"),
-                            "Best Tau": metrics.get("best_tau", "N/A"),
-                            "Wall Time (s)": metrics.get("wall_time_s", "N/A"),
-                        }
-
-                        cols = st.columns(len(key_metrics))
-                        for col, (key, value) in zip(cols, key_metrics.items()):
-                            col.metric(key, value if value != "N/A" else "N/A")
-
-                        # Plot training curves
-                        val_score = metrics.get("val_score_curve", [])
-                        if val_score:
-                            st.write("**Validation Score Curve:**")
-                            import pandas as pd
-                            epochs = list(range(1, len(val_score) + 1))
-                            df = pd.DataFrame({"Epoch": epochs, "Val Score": val_score})
-                            st.line_chart(df.set_index("Epoch"))
-                    else:
-                        st.info("Training metrics not available for this model")
-
-                # Model Files
-                with st.expander("Model Files & Checkpoints"):
-                    st.write(f"**Bundle Path**: `{preview_data.bundle_path}`")
-
-                    if preview_data.checkpoint_dir and preview_data.checkpoint_dir.exists():
-                        st.write(f"**Checkpoint Directory**: `{preview_data.checkpoint_dir}`")
-
-                        # List checkpoint files
-                        checkpoint_files = list(preview_data.checkpoint_dir.glob("*"))
-                        if checkpoint_files:
-                            st.write("**Available Files:**")
-                            for f in sorted(checkpoint_files):
-                                st.write(f"- `{f.name}`")
-                    else:
-                        st.info("No checkpoint directory available")
-
-    with tab_assets:
-        st.header("Recorded assets")
-
-        # Simulations section
-        st.subheader("Simulations")
-        runs = backend.state.runs
-        if runs:
-            for i, run in enumerate(runs):
-                col1, col2 = st.columns([8, 1])
-                with col1:
-                    st.write(
-                        f"**{run.get('run_id', 'Unknown')}** - {run.get('steps', 0)} steps - {run.get('created_at', 'Unknown date')}"
+                    st.session_state[_CONFORMATIONS_FEEDBACK] = (
+                        "error",
+                        f"Conformations analysis failed: {exc}",
                     )
-                    st.caption(f"Temperatures: {run.get('temperatures', [])} K")
-                with col2:
-                    if st.button(
-                        "❌", key=f"delete_run_{i}", help="Delete this simulation"
-                    ):
-                        if backend.delete_simulation(i):
-                            st.success(
-                                f"Deleted simulation {run.get('run_id', 'Unknown')}"
-                            )
-                            st.rerun()
-                        else:
-                            st.error("Failed to delete simulation")
-                st.divider()
-        else:
-            st.info("No simulations recorded yet.")
 
-        # Shard batches section
-        st.subheader("Shard batches")
-        shards = backend.state.shards
-        if shards:
-            for i, shard in enumerate(shards):
-                col1, col2 = st.columns([8, 1])
-                with col1:
-                    st.write(
-                        f"**{shard.get('run_id', 'Unknown')}** - {shard.get('n_shards', 0)} shards ({shard.get('n_frames', 0)} frames)"
-                    )
-                    st.caption(
-                        f"Temperature: {shard.get('temperature', 0)} K, Stride: {shard.get('stride', 0)} - {shard.get('created_at', 'Unknown date')}"
-                    )
-                with col2:
-                    if st.button(
-                        "❌", key=f"delete_shard_{i}", help="Delete this shard batch"
-                    ):
-                        if backend.delete_shard_batch(i):
-                            st.success(
-                                f"Deleted shard batch from {shard.get('run_id', 'Unknown')}"
-                            )
-                            st.rerun()
-                        else:
-                            st.error("Failed to delete shard batch")
-                st.divider()
-        else:
-            st.info("No shard batches recorded yet.")
+            feedback = st.session_state.get(_CONFORMATIONS_FEEDBACK)
+            if isinstance(feedback, tuple) and len(feedback) == 2:
+                level, message = feedback
+                if level == "success":
+                    st.success(message)
+                elif level == "warning":
+                    st.warning(message)
+                elif level == "info":
+                    st.info(message)
+                else:
+                    st.error(message)
 
-        # Models section
-        st.subheader("Models")
-        last_train: TrainingResult | None = st.session_state.get(_LAST_TRAIN)
-        if last_train is not None:
-            _show_build_outputs(last_train)
-            summary = (
-                last_train.build_result.artifacts.get("mlcv_deeptica")
-                if last_train.build_result
-                else None
-            )
-            if summary:
-                _render_deeptica_summary(summary)
+            last_conf = st.session_state.get(_LAST_CONFORMATIONS)
+            if isinstance(last_conf, ConformationsResult):
+                _render_conformations_result(last_conf)
 
-        models = backend.list_models()
-        if models:
-            for i, model in enumerate(models):
-                col1, col2 = st.columns([8, 1])
-                with col1:
-                    bundle_name = Path(model.get("bundle", "")).name
-                    st.write(
-                        f"**{bundle_name}** - Lag: {model.get('lag', 0)}, Temperature: {model.get('temperature', 0)} K"
-                    )
-                    st.caption(
-                        f"Bins: Rg={model.get('bins', {}).get('Rg', 0)}, RMSD={model.get('bins', {}).get('RMSD_ref', 0)} - {model.get('created_at', 'Unknown date')}"
-                    )
-                with col2:
-                    if st.button(
-                        "❌", key=f"delete_model_{i}", help="Delete this model"
-                    ):
-                        if backend.delete_model(i):
-                            st.success(f"Deleted model {bundle_name}")
-                            st.rerun()
-                        else:
-                            st.error("Failed to delete model")
-                st.divider()
-        else:
-            st.info("No models recorded yet.")
+        with tab_validation:
+            st.header("Free Energy Validation")
 
-        # Analysis bundles section
-        st.subheader("Analysis bundles")
-        builds = backend.list_builds()
-        if builds:
-            for i, build in enumerate(builds):
-                col1, col2 = st.columns([8, 1])
-                with col1:
-                    bundle_name = Path(build.get("bundle", "")).name
-                    st.write(
-                        f"**{bundle_name}** - Lag: {build.get('lag', 0)}, Temperature: {build.get('temperature', 0)} K"
-                    )
-                    st.caption(
-                        f"Learn CV: {build.get('learn_cv', False)} - {build.get('created_at', 'Unknown date')}"
-                    )
-                with col2:
-                    if st.button(
-                        "❌",
-                        key=f"delete_build_{i}",
-                        help="Delete this analysis bundle",
-                    ):
-                        if backend.delete_analysis_bundle(i):
-                            st.success(f"Deleted analysis bundle {bundle_name}")
-                            st.rerun()
-                        else:
-                            st.error("Failed to delete analysis bundle")
-                st.divider()
-        else:
-            st.info("No analysis bundles recorded yet.")
+            shard_groups = backend.shard_summaries()
+            if not shard_groups:
+                st.info("Emit shards first to generate validation plots.")
+            else:
+                run_ids = [str(entry.get("run_id")) for entry in shard_groups]
+                selected_runs = st.multiselect(
+                    "Select shard groups for validation",
+                    options=run_ids,
+                    default=run_ids,
+                    key="validation_selected_runs",
+                )
+                selected_paths = _select_shard_paths(shard_groups, selected_runs)
 
+                if not selected_paths:
+                    st.warning("Select at least one shard group to generate validation plots.")
+                else:
+                    try:
+                        _, shard_summary = _summarize_selected_shards(selected_paths)
+                        st.caption(f"Using {len(selected_paths)} shards: {shard_summary}")
+                    except ValueError as exc:
+                        st.error(f"Invalid shard selection: {exc}")
+                        st.stop()
+
+                    # TICA Parameters
+                    st.subheader("TICA Projection Parameters")
+                    col1, col2, col3 = st.columns(3)
+                    val_n_components = col1.number_input(
+                        "TICA components",
+                        min_value=2,
+                        max_value=20,
+                        value=3,
+                        key="validation_n_components",
+                    )
+                    val_lag = col2.number_input(
+                        "TICA lag",
+                        min_value=1,
+                        max_value=100,
+                        value=10,
+                        key="validation_lag",
+                    )
+                    val_temperature = col3.number_input(
+                        "Temperature (K)",
+                        min_value=0.0,
+                        value=300.0,
+                        step=10.0,
+                        key="validation_temperature",
+                    )
+
+                    st.divider()
+
+                    # --- Sampling Plot Controls ---
+                    st.subheader("Sampling Plot Appearance Controls")
+                    st.markdown(
+                        """
+                        Adjust visualization parameters for the trajectory sampling validation plot (1D histogram on TICA 1).
+                        """
+                    )
+                    col_samp1, col_samp2, col_samp3 = st.columns(3)
+                    with col_samp1:
+                        st.number_input(
+                            "Max Trajectory Length to Plot",
+                            min_value=100,
+                            max_value=20000,
+                            value=st.session_state.get("val_plot_max_len", 1000),
+                            step=100,
+                            key="val_plot_max_len",
+                            help="Maximum number of frames per shard to visualize."
+                        )
+                    with col_samp2:
+                        st.number_input(
+                            "Histogram Bins",
+                            min_value=10,
+                            max_value=500,
+                            value=st.session_state.get("val_plot_hist_bins", 150),
+                            step=10,
+                            key="val_plot_hist_bins",
+                            help="Number of bins for the 1D histogram."
+                        )
+                    with col_samp3:
+                        st.number_input(
+                            "Trajectory Point Stride",
+                            min_value=1,
+                            max_value=100,
+                            value=st.session_state.get("val_plot_stride", 10),
+                            step=1,
+                            key="val_plot_stride",
+                            help="Plot every N-th point of the trajectory path for clarity."
+                        )
+
+                    st.divider()
+
+                    # --- FES Plot Controls ---
+                    st.subheader("Free Energy Surface (FES) Plot Controls")
+                    st.markdown(
+                        """
+                        Customize the 2D Free Energy Surface visualization on TICA 1 vs TICA 2.
+                        """
+                    )
+                    col_fes1, col_fes2, col_fes3 = st.columns(3)
+                    with col_fes1:
+                        st.slider(
+                            "Max Free Energy (kT)",
+                            min_value=1.0,
+                            max_value=20.0,
+                            value=st.session_state.get("fes_plot_max_kt", 7.0),
+                            step=0.5,
+                            key="fes_plot_max_kt",
+                            help="Cap the color scale at this energy value (in kT)."
+                        )
+                    with col_fes2:
+                        st.number_input(
+                            "Contour Levels",
+                            min_value=5,
+                            max_value=100,
+                            value=st.session_state.get("fes_plot_levels", 25),
+                            step=5,
+                            key="fes_plot_levels",
+                            help="Number of levels for the contour plot."
+                        )
+                    with col_fes3:
+                        # Get list of available colormaps
+                        available_colormaps = sorted([
+                            'viridis', 'plasma', 'inferno', 'magma', 'cividis',
+                            'coolwarm', 'RdYlBu', 'seismic', 'twilight', 'jet'
+                        ])
+                        default_cmap = st.session_state.get("fes_plot_cmap", "viridis")
+                        if default_cmap not in available_colormaps:
+                            default_cmap = "viridis"
+                        cmap_index = available_colormaps.index(default_cmap)
+
+                        st.selectbox(
+                            "Colormap",
+                            available_colormaps,
+                            index=cmap_index,
+                            key="fes_plot_cmap"
+                        )
+
+                    st.checkbox(
+                        "Show Contour Lines",
+                        value=st.session_state.get("fes_plot_lines", True),
+                        key="fes_plot_lines"
+                    )
+
+                    st.divider()
+
+                    if st.button("Generate Validation Plots", key="run_validation", type="primary"):
+                        try:
+                            from pmarlo.data.aggregate import load_shards_as_dataset
+                            from pmarlo.markov_state_model.reduction import reduce_features
+                            from pmarlo.markov_state_model.free_energy import generate_2d_fes
+
+                            with st.spinner("Loading shard data..."):
+                                dataset = load_shards_as_dataset(selected_paths)
+                                X_list = dataset.get("X", [])
+                                if X_list is None or (isinstance(X_list, list) and len(X_list) == 0):
+                                    st.error("No feature data found in shards.")
+                                    st.stop()
+
+                            with st.spinner("Computing TICA projection..."):
+                                projection = reduce_features(
+                                    X_list,
+                                    method="tica",
+                                    lag=int(val_lag),
+                                    n_components=int(val_n_components),
+                                )
+                                if projection is None:
+                                    st.error("TICA projection failed.")
+                                    st.stop()
+
+                            st.success(f"Computed TICA projection with shape {projection.shape}")
+
+                            col_left, col_right = st.columns(2)
+
+                            with col_left:
+                                st.subheader("Sampling Connectivity")
+                                with st.spinner("Generating sampling plot..."):
+                                    try:
+                                        # Get trajectory lengths from the dataset
+                                        traj_lengths = [len(traj) for traj in X_list]
+                                        # Split projection back into per-trajectory arrays
+                                        projection_list = []
+                                        start_idx = 0
+                                        for length in traj_lengths:
+                                            projection_list.append(projection[start_idx:start_idx + length])
+                                            start_idx += length
+
+                                        # Create a mock app_state object with projection data
+                                        class MockAppState:
+                                            def __init__(self, proj_list):
+                                                self.projection_data = proj_list
+
+                                        mock_state = MockAppState(projection_list)
+                                        sampling_fig = create_sampling_validation_plot(mock_state)
+
+                                        if sampling_fig and hasattr(sampling_fig, 'axes'):
+                                            st.pyplot(sampling_fig, clear_figure=True, use_container_width=True)
+                                        else:
+                                            st.warning("Could not generate sampling validation plot.")
+                                    except Exception as sampling_err:
+                                        st.warning(f"Could not generate sampling plot: {sampling_err}")
+                                        import traceback
+                                        with st.expander("Show error details"):
+                                            st.code(traceback.format_exc())
+
+                            with col_right:
+                                st.subheader("Free Energy Surface")
+                                with st.spinner("Computing FES..."):
+                                    try:
+                                        if projection.ndim == 2 and projection.shape[1] >= 2:
+                                            fes_result = generate_2d_fes(
+                                                cv1=projection[:, 0],
+                                                cv2=projection[:, 1],
+                                                temperature=float(val_temperature),
+                                                bins=(50, 50),
+                                            )
+
+                                            # Create a mock app_state object with FES data
+                                            class MockAppStateFES:
+                                                def __init__(self, fes_result):
+                                                    # Extract bin centers from edges
+                                                    x_centers = 0.5 * (fes_result.xedges[:-1] + fes_result.xedges[1:])
+                                                    y_centers = 0.5 * (fes_result.yedges[:-1] + fes_result.yedges[1:])
+
+                                                    # Create meshgrid
+                                                    xx, yy = np.meshgrid(x_centers, y_centers)
+                                                    self.fes_grid = [xx, yy]
+
+                                                    # Extract free energy values
+                                                    self.fes_data = fes_result.F
+
+                                            mock_state_fes = MockAppStateFES(fes_result)
+                                            fes_fig = create_fes_validation_plot(mock_state_fes)
+
+                                            if fes_fig and hasattr(fes_fig, 'axes'):
+                                                st.pyplot(fes_fig, clear_figure=True, use_container_width=True)
+                                            else:
+                                                st.warning("Could not generate Free Energy Surface plot.")
+                                        else:
+                                            st.warning("Need at least 2 TICA components for FES.")
+                                    except Exception as fes_err:
+                                        st.warning(f"Could not generate FES plot: {fes_err}")
+                                        import traceback
+                                        with st.expander("Show error details"):
+                                            st.code(traceback.format_exc())
+
+                        except Exception as e:
+                            st.error(f"Validation failed: {e}")
+                            import traceback
+                            with st.expander("Show error details"):
+                                st.code(traceback.format_exc())
     st.caption(
         "Run this app with: poetry run streamlit run example_programs/app_usecase/app/app.py"
     )

@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import numpy as np
-from deeptime.markov.tools.analysis import (
-    timescales_from_eigenvalues as _dt_timescales_from_eigenvalues,
-)
 from numpy.typing import NDArray
 
 from pmarlo import constants as const
@@ -41,7 +38,10 @@ def safe_timescales(
         np.float64, copy=False
     )
     flat_clipped = clipped.reshape(-1).astype(np.complex128, copy=False)
-    ts_flat = _dt_timescales_from_eigenvalues(flat_clipped, tau=float(lag))
+    abs_clipped = np.abs(flat_clipped)
+    abs_clipped = np.clip(abs_clipped, eps, 1 - eps)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ts_flat = -float(lag) / np.log(abs_clipped)
     timescales = np.asarray(ts_flat, dtype=np.float64).reshape(clipped.shape)
 
     invalid: NDArray[np.bool_] = (~np.isfinite(eig)) | (eig <= 0) | (eig >= 1)

@@ -29,18 +29,12 @@ from .core.model import strip_batch_norm as core_strip_batch_norm
 from .core.model import (
     wrap_with_preprocessing_layers as core_wrap_with_preprocessing_layers,
 )
-from .core.trainer_api import train_deeptica_mlcolvar, train_deeptica_pipeline
+from .core.trainer_api import (
+    train_deeptica_deeptime,
+    train_deeptica_mlcolvar,
+    train_deeptica_pipeline,
+)
 from .core.utils import safe_float as core_safe_float
-
-_DEEPTICA_IMPORT_ERROR: Exception | None = None
-try:  # pragma: no cover - optional extra
-    from mlcolvar.cvs import DeepTICA  # type: ignore
-except Exception as exc:  # pragma: no cover - optional extra
-    DeepTICA = None  # type: ignore
-    _DEEPTICA_IMPORT_ERROR = exc
-else:  # pragma: no cover - optional extra
-    _DEEPTICA_IMPORT_ERROR = None
-
 
 logger = logging.getLogger(__name__)
 
@@ -48,21 +42,8 @@ _TRAINING_BACKENDS: dict[str, Any] = {
     "lightning": train_deeptica_pipeline,
     "curriculum": train_deeptica_pipeline,
     "mlcolvar": train_deeptica_mlcolvar,
+    "deeptime": train_deeptica_deeptime,
 }
-
-
-class PmarloApiIncompatibilityError(RuntimeError):
-    """Raised when mlcolvar API layout does not expose expected classes."""
-
-
-if DeepTICA is None:
-    if isinstance(_DEEPTICA_IMPORT_ERROR, ImportError):
-        raise ImportError(
-            "Install optional extra pmarlo[mlcv] to use Deep-TICA"
-        ) from _DEEPTICA_IMPORT_ERROR
-    raise PmarloApiIncompatibilityError(
-        "mlcolvar installed but DeepTICA not found in expected locations"
-    ) from _DEEPTICA_IMPORT_ERROR
 
 
 def set_all_seeds(seed: int = 2024) -> None:

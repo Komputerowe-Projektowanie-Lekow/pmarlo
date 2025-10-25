@@ -45,11 +45,24 @@ class FeaturesMixin:
         strided_frames = sum(traj.n_frames for traj in proc_trajs)
 
         all_features: List[np.ndarray] = []
-        for traj in proc_trajs:
+        for i, traj in enumerate(proc_trajs):
             traj_features = self._compute_features_for_traj(
                 traj, feature_type, n_features
             )
+
+            # Log shape immediately after featurizing this shard
+            logger.info(
+                "Shard %d featurized: shape = (%d frames, %d features)",
+                i + 1,
+                traj_features.shape[0],
+                traj_features.shape[1],
+            )
+
             all_features.append(traj_features)
+
+        # Log total number of feature arrays stored
+        logger.info("Total feature arrays stored: %d", len(all_features))
+
         self.features = self._combine_all_features(all_features)
 
         # Optional: apply TICA projection when requested
@@ -171,6 +184,13 @@ class FeaturesMixin:
         if self.features is None or n_components_hint is None:
             return
         n_components = int(max(2, min(5, n_components_hint)))
+
+        logger = getattr(self, "logger", None)
+        if logger is None:
+            import logging as _logging
+
+            logger = _logging.getLogger("pmarlo")
+
         Xs: List[np.ndarray] = []
         start = 0
         for traj in self.trajectories:
@@ -180,6 +200,17 @@ class FeaturesMixin:
         tica = _DT_TICA(lagtime=int(max(1, lag or 1)), dim=n_components)
         tica_model = tica.fit(Xs).fetch_model()
         Ys = [tica_model.transform(x) for x in Xs]
+
+        # Log shapes after dimension reduction for each shard
+        for idx, projected_array in enumerate(Ys):
+            logger.info(
+                "Shard %d after TICA projection: shape = %s",
+                idx,
+                projected_array.shape,
+            )
+
+        # Log total number of arrays in projection
+        logger.info("Total projected arrays stored: %d", len(Ys))
 
         # Apply TICA transformation and drop lag frames from each trajectory
         drop = int(max(0, lag))

@@ -8,7 +8,7 @@ from scipy.sparse import csc_matrix, issparse, save_npz
 
 from pmarlo import constants as const
 
-from ._msm_utils import _row_normalize, _stationary_from_T, ensure_connected_counts
+from ._msm_utils import ensure_connected_counts
 
 
 class _HasEstimationAttrs(Protocol):
@@ -38,13 +38,8 @@ class _HasEstimationAttrs(Protocol):
 
     def _initialize_empty_msm(self) -> None: ...
 
-    def _should_use_deeptime(self) -> bool: ...
-
+    def _ensure_deeptime_backend(self) -> None: ...
     def _count_transitions_deeptime(
-        self, *, lag: int, count_mode: str
-    ) -> np.ndarray: ...
-
-    def _count_transitions_locally(
         self, *, lag: int, count_mode: str
     ) -> np.ndarray: ...
 
@@ -105,11 +100,8 @@ class EstimationMixin:
             self._initialize_empty_msm()
             return
 
-        use_deeptime = self._should_use_deeptime()
-        if use_deeptime:
-            counts = self._count_transitions_deeptime(lag=lag, count_mode=count_mode)
-        else:
-            counts = self._count_transitions_locally(lag=lag, count_mode=count_mode)
+        self._ensure_deeptime_backend()
+        counts = self._count_transitions_deeptime(lag=lag, count_mode=count_mode)
 
         self._finalize_transition_and_stationary(counts)
 
@@ -132,46 +124,64 @@ class EstimationMixin:
     ) -> np.ndarray:
         from deeptime.markov import TransitionCountEstimator  # type: ignore
 
+        filtered_dtrajs: list[np.ndarray] = []
+        for dtraj in self.dtrajs:
+            arr = np.asarray(dtraj, dtype=int)
+            if arr.size == 0:
+                continue
+            valid_mask = (arr >= 0) & (arr < self.n_states)
+            if not np.any(valid_mask):
+                continue
+            if np.all(valid_mask):
+                filtered_dtrajs.append(arr)
+                continue
+            start = None
+            for idx, is_valid in enumerate(valid_mask):
+                if is_valid:
+                    if start is None:
+                        start = idx
+                elif start is not None:
+                    segment = arr[start:idx]
+                    if segment.size:
+                        filtered_dtrajs.append(segment)
+                    start = None
+            if start is not None:
+                segment = arr[start:]
+                if segment.size:
+                    filtered_dtrajs.append(segment)
+
+        if not filtered_dtrajs:
+            return np.zeros((self.n_states, self.n_states), dtype=float)
+
         tce = TransitionCountEstimator(
-            lagtime=lag,
+            lagtime=int(max(1, lag)),
             count_mode="sliding" if count_mode == "strided" else str(count_mode),
             sparse=False,
         )
-        count_model = tce.fit(self.dtrajs).fetch_model()
+        count_model = tce.fit(filtered_dtrajs).fetch_model()
         return np.asarray(count_model.count_matrix, dtype=float)
-
-    def _count_transitions_locally(
-        self: _HasEstimationAttrs, *, lag: int, count_mode: str
-    ) -> np.ndarray:
-        """Count transitions using vectorized numpy operations."""
-        counts = np.zeros((self.n_states, self.n_states), dtype=float)
-        step = lag if count_mode == "strided" else 1
-        for dtraj in self.dtrajs:
-            arr = np.asarray(dtraj, dtype=int)
-            if arr.size <= lag:
-                continue
-            i_states = arr[:-lag:step]
-            j_states = arr[lag::step]
-            valid = (
-                (i_states >= 0)
-                & (j_states >= 0)
-                & (i_states < self.n_states)
-                & (j_states < self.n_states)
-            )
-            if not np.any(valid):
-                continue
-            np.add.at(counts, (i_states[valid], j_states[valid]), 1.0)
-        return counts
 
     def _finalize_transition_and_stationary(
         self: _HasEstimationAttrs, counts: np.ndarray
     ) -> None:
+        from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
+
         res = ensure_connected_counts(counts)
         cm = np.zeros((self.n_states, self.n_states), dtype=float)
         if res.counts.size:
             cm[np.ix_(res.active, res.active)] = res.counts
-            T_active = _row_normalize(res.counts)
-            pi_active = _stationary_from_T(T_active)
+            ml = MaximumLikelihoodMSM(
+                lagtime=int(max(1, getattr(self, "lag_time", 1))),
+                reversible=True,
+            )
+            try:
+                msm_model = ml.fit(res.counts).fetch_model()
+            except Exception as exc:  # pragma: no cover - defensive
+                raise RuntimeError(
+                    "deeptime failed to fit maximum-likelihood MSM"
+                ) from exc
+            T_active = np.asarray(msm_model.transition_matrix, dtype=float)
+            pi_active = np.asarray(msm_model.stationary_distribution, dtype=float)
             T_full = np.eye(self.n_states, dtype=float)
             T_full[np.ix_(res.active, res.active)] = T_active
             pi_full = np.zeros((self.n_states,), dtype=float)
@@ -189,13 +199,20 @@ class EstimationMixin:
         self.transition_matrix = np.eye(self.n_states, dtype=float)
         self.stationary_distribution = np.zeros((self.n_states,), dtype=float)
 
-    def _should_use_deeptime(self: _HasEstimationAttrs) -> bool:
+    def _ensure_deeptime_backend(self: _HasEstimationAttrs) -> None:
         if getattr(self, "estimator_backend", "deeptime") != "deeptime":
-            return False
-        from deeptime.markov import TransitionCountEstimator  # type: ignore
+            raise RuntimeError(
+                "Only the 'deeptime' backend is supported for MSM estimation."
+            )
+        try:
+            from deeptime.markov import TransitionCountEstimator  # type: ignore
+            from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
+        except ImportError as exc:  # pragma: no cover - exercised in integration tests
+            raise RuntimeError(
+                "deeptime>=0.4.5 is required for MSM estimation."
+            ) from exc
 
-        _ = TransitionCountEstimator
-        return True
+        _ = (TransitionCountEstimator, MaximumLikelihoodMSM)
 
     def _compute_free_energies(self: _HasEstimationAttrs, temperature: float = 300.0):
         from scipy import constants
