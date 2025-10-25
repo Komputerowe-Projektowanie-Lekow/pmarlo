@@ -1317,7 +1317,7 @@ class ReplicaExchange:
             # Console output
             print("\n" + "=" * 80, flush=True)
             print("EQUILIBRATION COMPLETE", flush=True)
-            print("=" * 80 + "\n", flush=True)
+            print("=" * 80, flush=True)
             if equilibration_elapsed > 0.0:
                 equil_summary = (
                     f"Equilibration duration: {format_duration(equilibration_elapsed)}"
@@ -1477,92 +1477,95 @@ class ReplicaExchange:
                 return True
         return False
 
-    def _run_gradual_heating(
-        self,
-        equilibration_steps: int,
-        checkpoint_manager,
-        reporter: ProgressReporter | None,
-        should_cancel: Callable[[], bool] | None,
-    ) -> bool:
-        if checkpoint_manager:
-            checkpoint_manager.mark_step_started("gradual_heating")
+    def _calculate_heating_parameters(
+        self, equilibration_steps: int
+    ) -> Tuple[int, float, float]:
+        """Calculate heating phase parameters.
+
+        Returns:
+            Tuple of (heating_steps, temp_min, temp_max)
+        """
         heating_steps = max(100, equilibration_steps * 40 // 100)
         temp_min = min(self.temperatures) if self.temperatures else 0.0
         temp_max = max(self.temperatures) if self.temperatures else 0.0
-        phase_start = time.perf_counter()
-        announce_stage_start(
-            "REMD Sub-stage: Gradual Heating",
-            logger=logger,
-            details=[
-                f"Gradual heating span: {heating_steps} steps",
-                f"Replica count: {self.n_replicas}",
-                f"Temperature ladder: {temp_min:.1f}K -> {temp_max:.1f}K",
-            ],
-        )
-        heat_progress = ProgressPrinter(heating_steps)
-        heating_chunk_size = max(10, heating_steps // 20)
-        milestones_logged: set[int] = set()
-        for heat_step in range(0, heating_steps, heating_chunk_size):
-            if should_cancel is not None and should_cancel():
-                announce_stage_cancelled(
-                    "REMD Sub-stage: Gradual Heating",
-                    logger=logger,
-                    details=["Cancellation requested during heating ramp."],
+        return heating_steps, temp_min, temp_max
+
+    def _log_heating_milestone(
+        self,
+        progress_percent: int,
+        milestones_logged: set[int],
+        current_steps: int,
+        total_steps: int,
+    ) -> None:
+        """Log heating milestone if threshold is reached."""
+        for threshold in (25, 50, 75, 100):
+            if progress_percent >= threshold and threshold not in milestones_logged:
+                milestone_message = (
+                    f"Gradual heating progress {threshold}% "
+                    f"({current_steps}/{total_steps} steps)"
                 )
-                return True
-            current_steps = min(heating_chunk_size, heating_steps - heat_step)
-            progress_fraction = (heat_step + current_steps) / heating_steps
-            progress_fraction = min(max(progress_fraction, 0.0), 1.0)
-            for replica_idx, replica in enumerate(self.replicas):
-                target_temp = self.temperatures[self.replica_states[replica_idx]]
-                current_temp = 50.0 + (target_temp - 50.0) * progress_fraction
-                replica.integrator.setTemperature(current_temp * unit.kelvin)
-                self._step_with_recovery(
-                    replica, current_steps, replica_idx, current_temp
-                )
-            progress = min(40, (heat_step + current_steps) * 40 // heating_steps)
-            heat_progress.draw(heat_step + current_steps)
-            heat_progress.newline_if_active()
-            progress_percent = int(round(progress_fraction * 100))
-            for threshold in (25, 50, 75, 100):
-                if progress_percent >= threshold and threshold not in milestones_logged:
-                    milestone_message = (
-                        f"Gradual heating progress {threshold}% "
-                        f"({heat_step + current_steps}/{heating_steps} steps)"
-                    )
-                    print(milestone_message, flush=True)
-                    logger.info(milestone_message)
-                    milestones_logged.add(threshold)
-            # Report unified equilibrate progress as fraction of total equilibration
-            if reporter is not None:
-                cur = min(equilibration_steps, heat_step + current_steps)
-                reporter.emit(
-                    "equilibrate",
-                    {"current_step": cur, "total_steps": int(equilibration_steps)},
-                )
-            temps_preview = [
-                50.0
-                + (self.temperatures[self.replica_states[i]] - 50.0) * progress_fraction
-                for i in range(len(self.replicas))
-            ]
-            logger.info(
-                f"   Heating Progress: {progress}% - Current temps: {temps_preview}"
+                print(milestone_message, flush=True)
+                logger.info(milestone_message)
+                milestones_logged.add(threshold)
+
+    def _perform_heating_step(
+        self,
+        heat_step: int,
+        heating_chunk_size: int,
+        heating_steps: int,
+        progress_fraction: float,
+    ) -> None:
+        """Perform a single heating step for all replicas."""
+        for replica_idx, replica in enumerate(self.replicas):
+            target_temp = self.temperatures[self.replica_states[replica_idx]]
+            current_temp = 50.0 + (target_temp - 50.0) * progress_fraction
+            replica.integrator.setTemperature(current_temp * unit.kelvin)
+            self._step_with_recovery(
+                replica,
+                min(heating_chunk_size, heating_steps - heat_step),
+                replica_idx,
+                current_temp,
             )
-        heat_progress.close()
-        elapsed = time.perf_counter() - phase_start
+
+    def _report_heating_progress(
+        self,
+        reporter: ProgressReporter | None,
+        equilibration_steps: int,
+        current_step: int,
+        progress_fraction: float,
+    ) -> None:
+        """Report heating progress to reporter and logger."""
+        if reporter is not None:
+            cur = min(equilibration_steps, current_step)
+            reporter.emit(
+                "equilibrate",
+                {"current_step": cur, "total_steps": int(equilibration_steps)},
+            )
+
+        temps_preview = [
+            50.0
+            + (self.temperatures[self.replica_states[i]] - 50.0) * progress_fraction
+            for i in range(len(self.replicas))
+        ]
+        logger.info(
+            f"   Heating Progress: {int(progress_fraction * 40)}% - Current temps: {temps_preview}"
+        )
+
+    def _complete_heating_phase(
+        self,
+        checkpoint_manager,
+        heating_steps: int,
+        elapsed: float,
+        milestones_logged: set[int],
+    ) -> None:
+        """Complete the heating phase with final logging and checkpoint."""
         if 100 not in milestones_logged:
             milestone_message = (
                 f"Gradual heating progress 100% ({heating_steps}/{heating_steps} steps)"
             )
             print(milestone_message, flush=True)
             logger.info(milestone_message)
-        if should_cancel is not None and should_cancel():
-            announce_stage_cancelled(
-                "REMD Sub-stage: Gradual Heating",
-                logger=logger,
-                details=["Cancellation requested during heating wrap-up."],
-            )
-            return True
+
         if checkpoint_manager:
             checkpoint_manager.mark_step_completed(
                 "gradual_heating",
@@ -1573,6 +1576,7 @@ class ReplicaExchange:
                     ],
                 },
             )
+
         announce_stage_complete(
             "REMD Sub-stage: Gradual Heating",
             logger=logger,
@@ -1581,13 +1585,205 @@ class ReplicaExchange:
                 f"Duration: {format_duration(elapsed)}",
             ],
         )
-        # Completed without cancellation
+
+    def _run_gradual_heating(
+        self,
+        equilibration_steps: int,
+        checkpoint_manager,
+        reporter: ProgressReporter | None,
+        should_cancel: Callable[[], bool] | None,
+    ) -> bool:
+        if checkpoint_manager:
+            checkpoint_manager.mark_step_started("gradual_heating")
+
+        heating_steps, temp_min, temp_max = self._calculate_heating_parameters(
+            equilibration_steps
+        )
+        phase_start = time.perf_counter()
+
+        announce_stage_start(
+            "REMD Sub-stage: Gradual Heating",
+            logger=logger,
+            details=[
+                f"Gradual heating span: {heating_steps} steps",
+                f"Replica count: {self.n_replicas}",
+                f"Temperature ladder: {temp_min:.1f}K -> {temp_max:.1f}K",
+            ],
+        )
+
+        heat_progress = ProgressPrinter(heating_steps)
+        heating_chunk_size = max(10, heating_steps // 20)
+        milestones_logged: set[int] = set()
+
+        for heat_step in range(0, heating_steps, heating_chunk_size):
+            if should_cancel is not None and should_cancel():
+                announce_stage_cancelled(
+                    "REMD Sub-stage: Gradual Heating",
+                    logger=logger,
+                    details=["Cancellation requested during heating ramp."],
+                )
+                return True
+
+            current_steps = min(heating_chunk_size, heating_steps - heat_step)
+            progress_fraction = (heat_step + current_steps) / heating_steps
+            progress_fraction = min(max(progress_fraction, 0.0), 1.0)
+
+            self._perform_heating_step(
+                heat_step, heating_chunk_size, heating_steps, progress_fraction
+            )
+
+            heat_progress.draw(heat_step + current_steps)
+            heat_progress.newline_if_active()
+
+            progress_percent = int(round(progress_fraction * 100))
+            self._log_heating_milestone(
+                progress_percent, milestones_logged, heat_step + current_steps, heating_steps
+            )
+
+            self._report_heating_progress(
+                reporter, equilibration_steps, heat_step + current_steps, progress_fraction
+            )
+
+        heat_progress.close()
+        elapsed = time.perf_counter() - phase_start
+
+        if should_cancel is not None and should_cancel():
+            announce_stage_cancelled(
+                "REMD Sub-stage: Gradual Heating",
+                logger=logger,
+                details=["Cancellation requested during heating wrap-up."],
+            )
+            return True
+
+        self._complete_heating_phase(
+            checkpoint_manager, heating_steps, elapsed, milestones_logged
+        )
+
         return False
 
     def _step_with_recovery(
         self, replica: Simulation, steps: int, replica_idx: int, temp_k: float
     ) -> None:
         replica.step(steps)
+
+    def _initialize_temperature_equilibration(
+        self, equilibration_steps: int
+    ) -> Tuple[int, ProgressPrinter, set[int]]:
+        """Initialize temperature equilibration phase parameters.
+
+        Returns:
+            Tuple of (temp_equil_steps, temp_progress, milestones_logged)
+        """
+        temp_equil_steps = max(100, equilibration_steps * 60 // 100)
+        temp_progress = ProgressPrinter(temp_equil_steps)
+        milestones_logged: set[int] = set()
+        return temp_equil_steps, temp_progress, milestones_logged
+
+    def _set_target_temperatures(self) -> None:
+        """Set integrators to target temperatures for all replicas."""
+        for replica_idx, replica in enumerate(self.replicas):
+            target_temp = self.temperatures[self.replica_states[replica_idx]]
+            replica.integrator.setTemperature(target_temp * unit.kelvin)
+
+    def _perform_equilibration_step(
+        self, replica_idx: int, replica: Simulation, current_steps: int
+    ) -> None:
+        """Perform equilibration step with error handling.
+
+        Raises:
+            RuntimeError: If simulation becomes unstable (NaN detected)
+        """
+        try:
+            replica.step(current_steps)
+        except Exception as exc:
+            if "nan" in str(exc).lower():
+                logger.error(
+                    f"   NaN detected in replica {replica_idx} during "
+                    "equilibration - simulation unstable"
+                )
+                raise RuntimeError(
+                    f"Simulation became unstable for replica {replica_idx}. "
+                    "Try: 1) Better initial structure, 2) Smaller timestep, "
+                    "3) More minimization"
+                )
+            else:
+                raise
+
+    def _log_equilibration_milestone(
+        self,
+        progress_percent: int,
+        milestones_logged: set[int],
+        current_steps: int,
+        total_steps: int,
+    ) -> None:
+        """Log equilibration milestone if threshold is reached."""
+        for threshold in (25, 50, 75, 100):
+            if progress_percent >= threshold and threshold not in milestones_logged:
+                milestone_message = (
+                    f"Temperature equilibration progress {threshold}% "
+                    f"({current_steps}/{total_steps} steps)"
+                )
+                print(milestone_message, flush=True)
+                logger.info(milestone_message)
+                milestones_logged.add(threshold)
+
+    def _report_equilibration_progress(
+        self,
+        reporter: ProgressReporter | None,
+        equilibration_steps: int,
+        temp_equil_steps: int,
+        current_step: int,
+        progress: int,
+    ) -> None:
+        """Report equilibration progress to reporter and logger."""
+        if reporter is not None:
+            heating_steps = max(100, equilibration_steps * 40 // 100)
+            cur = min(equilibration_steps, heating_steps + current_step)
+            reporter.emit(
+                "equilibrate",
+                {"current_step": cur, "total_steps": int(equilibration_steps)},
+            )
+
+        logger.info(
+            f"   Equilibration Progress: {progress}% "
+            f"({equilibration_steps - temp_equil_steps + current_step}/"
+            f"{equilibration_steps} steps)"
+        )
+
+    def _complete_equilibration_phase(
+        self,
+        checkpoint_manager,
+        temp_equil_steps: int,
+        equilibration_steps: int,
+        elapsed: float,
+        milestones_logged: set[int],
+    ) -> None:
+        """Complete the equilibration phase with final logging and checkpoint."""
+        if 100 not in milestones_logged:
+            milestone_message = (
+                f"Temperature equilibration progress 100% "
+                f"({temp_equil_steps}/{temp_equil_steps} steps)"
+            )
+            print(milestone_message, flush=True)
+            logger.info(milestone_message)
+
+        if checkpoint_manager:
+            checkpoint_manager.mark_step_completed(
+                "equilibration",
+                {
+                    "equilibration_steps": temp_equil_steps,
+                    "total_equilibration": equilibration_steps,
+                },
+            )
+
+        announce_stage_complete(
+            "REMD Sub-stage: Temperature Equilibration",
+            logger=logger,
+            details=[
+                f"Executed {temp_equil_steps} temperature-hold steps.",
+                f"Duration: {format_duration(elapsed)}",
+            ],
+        )
 
     def _run_temperature_equilibration(
         self,
@@ -1598,8 +1794,12 @@ class ReplicaExchange:
     ) -> bool:
         if checkpoint_manager:
             checkpoint_manager.mark_step_started("equilibration")
-        temp_equil_steps = max(100, equilibration_steps * 60 // 100)
+
+        temp_equil_steps, temp_progress, milestones_logged = (
+            self._initialize_temperature_equilibration(equilibration_steps)
+        )
         phase_start = time.perf_counter()
+
         announce_stage_start(
             "REMD Sub-stage: Temperature Equilibration",
             logger=logger,
@@ -1609,91 +1809,57 @@ class ReplicaExchange:
                 "Integrators set to target temperatures for all replicas.",
             ],
         )
-        for replica_idx, replica in enumerate(self.replicas):
-            target_temp = self.temperatures[self.replica_states[replica_idx]]
-            replica.integrator.setTemperature(target_temp * unit.kelvin)
-            # Avoid stochastic velocity reseeding here to preserve determinism across
-            # repeated runs with the same random_seed. Velocities will continue to
-            # evolve deterministically from prior steps under a seeded integrator.
-            # replica.context.setVelocitiesToTemperature(target_temp * unit.kelvin)
+
+        self._set_target_temperatures()
+
         equil_chunk_size = max(1, temp_equil_steps // 10)
-        temp_progress = ProgressPrinter(temp_equil_steps)
-        milestones_logged: set[int] = set()
+
         for i in range(0, temp_equil_steps, equil_chunk_size):
             if should_cancel is not None and should_cancel():
                 return True
+
             current_steps = min(equil_chunk_size, temp_equil_steps - i)
+
+            # Perform equilibration steps for all replicas
             for replica_idx, replica in enumerate(self.replicas):
                 try:
-                    replica.step(current_steps)
-                except Exception as exc:
-                    if "nan" in str(exc).lower():
-                        logger.error(
-                            (
-                                f"   NaN detected in replica {replica_idx} during "
-                                "equilibration - simulation unstable"
-                            )
+                    self._perform_equilibration_step(replica_idx, replica, current_steps)
+                except RuntimeError:
+                    if checkpoint_manager:
+                        checkpoint_manager.mark_step_failed(
+                            "equilibration",
+                            f"NaN detected in replica {replica_idx}"
                         )
-                        if checkpoint_manager:
-                            checkpoint_manager.mark_step_failed(
-                                "equilibration", str(exc)
-                            )
-                        announce_stage_failed(
-                            "REMD Sub-stage: Temperature Equilibration",
-                            logger=logger,
-                            details=[
-                                f"Replica {replica_idx} encountered non-finite state.",
-                                "Halting equilibration phase.",
-                            ],
-                        )
-                        raise RuntimeError(
-                            (
-                                "Simulation became unstable for replica "
-                                f"{replica_idx}. Try: 1) Better initial structure, "
-                                "2) Smaller timestep, 3) More minimization"
-                            )
-                        )
-                    else:
-                        raise
+                    announce_stage_failed(
+                        "REMD Sub-stage: Temperature Equilibration",
+                        logger=logger,
+                        details=[
+                            f"Replica {replica_idx} encountered non-finite state.",
+                            "Halting equilibration phase.",
+                        ],
+                    )
+                    raise
+
             progress = min(100, 40 + (i + current_steps) * 60 // temp_equil_steps)
             temp_progress.draw(i + current_steps)
             temp_progress.newline_if_active()
+
             progress_fraction = min(
                 max((i + current_steps) / max(1, temp_equil_steps), 0.0), 1.0
             )
             progress_percent = int(round(progress_fraction * 100))
-            for threshold in (25, 50, 75, 100):
-                if progress_percent >= threshold and threshold not in milestones_logged:
-                    milestone_message = (
-                        f"Temperature equilibration progress {threshold}% "
-                        f"({i + current_steps}/{temp_equil_steps} steps)"
-                    )
-                    print(milestone_message, flush=True)
-                    logger.info(milestone_message)
-                    milestones_logged.add(threshold)
-            if reporter is not None:
-                heating_steps = max(100, equilibration_steps * 40 // 100)
-                cur = min(equilibration_steps, heating_steps + i + current_steps)
-                reporter.emit(
-                    "equilibrate",
-                    {"current_step": cur, "total_steps": int(equilibration_steps)},
-                )
-            logger.info(
-                (
-                    f"   Equilibration Progress: {progress}% "
-                    f"({equilibration_steps - temp_equil_steps + i + current_steps}/"
-                    f"{equilibration_steps} steps)"
-                )
+
+            self._log_equilibration_milestone(
+                progress_percent, milestones_logged, i + current_steps, temp_equil_steps
             )
+
+            self._report_equilibration_progress(
+                reporter, equilibration_steps, temp_equil_steps, i + current_steps, progress
+            )
+
         temp_progress.close()
         elapsed = time.perf_counter() - phase_start
-        if 100 not in milestones_logged:
-            milestone_message = (
-                f"Temperature equilibration progress 100% "
-                f"({temp_equil_steps}/{temp_equil_steps} steps)"
-            )
-            print(milestone_message, flush=True)
-            logger.info(milestone_message)
+
         if should_cancel is not None and should_cancel():
             announce_stage_cancelled(
                 "REMD Sub-stage: Temperature Equilibration",
@@ -1701,22 +1867,11 @@ class ReplicaExchange:
                 details=["Cancellation requested during temperature equilibration."],
             )
             return True
-        if checkpoint_manager:
-            checkpoint_manager.mark_step_completed(
-                "equilibration",
-                {
-                    "equilibration_steps": temp_equil_steps,
-                    "total_equilibration": equilibration_steps,
-                },
-            )
-        announce_stage_complete(
-            "REMD Sub-stage: Temperature Equilibration",
-            logger=logger,
-            details=[
-                f"Executed {temp_equil_steps} temperature-hold steps.",
-                f"Duration: {format_duration(elapsed)}",
-            ],
+
+        self._complete_equilibration_phase(
+            checkpoint_manager, temp_equil_steps, equilibration_steps, elapsed, milestones_logged
         )
+
         return False
 
     def _skip_production_if_completed(self, checkpoint_manager) -> bool:

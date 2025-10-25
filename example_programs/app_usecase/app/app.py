@@ -667,67 +667,6 @@ def main() -> None:
         cols[1].metric("Bundles", summary.get("builds", 0))
         cols[2].metric("Conformation Sets", summary.get("conformations", 0))
         st.divider()
-        st.number_input(
-            "Number of Clusters",
-            min_value=50,
-            max_value=1000,
-            value=int(st.session_state.get("conf_n_clusters", 200)),
-            step=10,
-            help=(
-                "Controls the number of clusters used when constructing the"
-                " conformational microstates. Increase this to resolve"
-                " additional transition states."
-            ),
-            key="conf_n_clusters",
-        )
-        st.number_input(
-            "Number of TICA Dimensions",
-            min_value=2,
-            max_value=50,
-            value=int(st.session_state.get("conf_tica_dim", 10)),
-            step=1,
-            help=(
-                "Sets the dimensionality of the TICA projection used when"
-                " constructing conformations. Higher values can reveal"
-                " additional transition pathways."
-            ),
-            key="conf_tica_dim",
-            on_change=_sync_sidebar_tica_dim,
-        )
-        st.number_input(
-            "Number of Metastable States (PCCA+)",
-            min_value=2,
-            max_value=50,
-            value=int(st.session_state.get("conf_n_metastable", 10)),
-            step=1,
-            help=(
-                "Sets the number of macrostates identified by the PCCA+"
-                " decomposition during conformations analysis."
-            ),
-            key="conf_n_metastable_sidebar",
-            on_change=_sync_sidebar_metastable_states,
-        )
-        st.number_input(
-            "MSM Lag Time (steps)",
-            min_value=1,
-            max_value=1000,
-            value=int(st.session_state.get("conf_msm_lag_time", 75)),
-            step=5,
-            key="conf_msm_lag_time",
-        )
-        committor_thresholds = st.slider(
-            "Committor Thresholds",
-            min_value=0.0,
-            max_value=1.0,
-            value=tuple(st.session_state.get("conf_committor_thresholds", (0.1, 0.9))),
-            step=0.05,
-            help=(
-                "Define the committor probability range treated as transition "
-                "states. Values below the lower bound are classified as sources "
-                "and values above the upper bound as sinks."
-            ),
-            key="conf_committor_thresholds",
-        )
         inputs = layout.available_inputs()
         if inputs:
             st.write("Available inputs:")
@@ -768,108 +707,115 @@ def main() -> None:
             if not inputs:
                 st.warning("No prepared proteins found. Place a PDB under app_intputs/.")
             else:
-                default_index = 0
-                input_choice = st.selectbox(
-                    "Protein input (PDB)",
-                    options=inputs,
-                    format_func=lambda p: p.name,
-                    index=default_index,
-                    key="sim_input_choice",
-                )
-                temps_raw = st.text_input(
-                    "Temperature ladder (K)",
-                    "300, 320, 340",
-                    key="sim_temperature_ladder",
-                )
-                steps = st.number_input(
-                    "Total MD steps",
-                    min_value=1000,
-                    max_value=5_000_000,
-                    value=50_000,
-                    step=5_000,
-                    key="sim_total_steps",
-                )
-                quick = st.checkbox(
-                    "Quick preset (short equilibration)",
-                    value=True,
-                    key="sim_quick_preset",
-                )
-                save_restart = st.checkbox(
-                    "Save last frame as restart input",
-                    value=True,
-                    help=(
-                        "When enabled, the final MD frame is stored in the run directory and "
-                        "copied into app_intputs/ so it becomes available as a protein input."
-                    ),
-                    key="sim_save_restart_snapshot",
-                )
-                random_seed_str = st.text_input(
-                    "Random seed (blank = auto)",
-                    "",
-                    key="sim_random_seed",
-                )
-                run_label = st.text_input(
-                    "Run label (optional)",
-                    "",
-                    key="sim_run_label",
-                )
-
-                # CV Model Selection
-                st.subheader("CV-Informed Sampling (Optional)")
-                models = backend.list_models()
-                cv_model_path = None
-                if models:
-                    use_cv_model = st.checkbox(
-                        "Use trained CV model to inform sampling",
-                        value=False,
-                        help="Select a trained Deep-TICA model. Model parameters will be saved with simulation metadata for future CV-guided analysis.",
-                        key="sim_use_cv_model",
+                # Basic Simulation Settings
+                with st.expander("Basic Simulation Settings", expanded=True):
+                    default_index = 0
+                    input_choice = st.selectbox(
+                        "Protein input (PDB)",
+                        options=inputs,
+                        format_func=lambda p: p.name,
+                        index=default_index,
+                        key="sim_input_choice",
                     )
-                    if use_cv_model:
-                        model_indices = list(range(len(models)))
+                    temps_raw = st.text_input(
+                        "Temperature ladder (K)",
+                        "300, 320, 340",
+                        key="sim_temperature_ladder",
+                        help="Comma-separated temperatures for replica exchange MD"
+                    )
+                    steps = st.number_input(
+                        "Total MD steps",
+                        min_value=1000,
+                        max_value=5_000_000,
+                        value=50_000,
+                        step=5_000,
+                        key="sim_total_steps",
+                    )
+                    col_quick, col_restart = st.columns(2)
+                    quick = col_quick.checkbox(
+                        "Quick preset (short equilibration)",
+                        value=True,
+                        key="sim_quick_preset",
+                    )
+                    save_restart = col_restart.checkbox(
+                        "Save last frame as restart input",
+                        value=True,
+                        help=(
+                            "When enabled, the final MD frame is stored in the run directory and "
+                            "copied into app_intputs/ so it becomes available as a protein input."
+                        ),
+                        key="sim_save_restart_snapshot",
+                    )
+                    col_seed, col_label = st.columns(2)
+                    random_seed_str = col_seed.text_input(
+                        "Random seed (blank = auto)",
+                        "",
+                        key="sim_random_seed",
+                    )
+                    run_label = col_label.text_input(
+                        "Run label (optional)",
+                        "",
+                        key="sim_run_label",
+                    )
 
-                        def _cv_model_label(idx: int) -> str:
-                            entry = models[idx]
-                            bundle_raw = entry.get("bundle", "")
-                            bundle_name = Path(bundle_raw).name if bundle_raw else f"model-{idx}"
-                            return bundle_name
-
-                        selected_cv_idx = st.selectbox(
-                            "Select CV model",
-                            options=model_indices,
-                            format_func=_cv_model_label,
-                            key="sim_cv_model_select",
+                # CV-Informed Sampling
+                with st.expander("CV-Informed Sampling (Optional)", expanded=False):
+                    st.write("Use a trained Deep-TICA model to bias the simulation and explore diverse conformations.")
+                    models = backend.list_models()
+                    cv_model_path = None
+                    if models:
+                        use_cv_model = st.checkbox(
+                            "Use trained CV model to inform sampling",
+                            value=False,
+                            help="Select a trained Deep-TICA model. Model parameters will be saved with simulation metadata for future CV-guided analysis.",
+                            key="sim_use_cv_model",
                         )
-                        # Get checkpoint_dir where exported .pt files are, not the .pbz bundle
-                        model_entry = models[selected_cv_idx]
-                        checkpoint_dir_str = model_entry.get("checkpoint_dir")
-                        cv_model_path = Path(checkpoint_dir_str) if checkpoint_dir_str else None
+                        if use_cv_model:
+                            model_indices = list(range(len(models)))
 
-                        if cv_model_path and cv_model_path.exists():
-                            st.success(f"✓ Selected CV model from: {cv_model_path.name}")
-                            st.info(
-                                "**CV-Informed Sampling ENABLED** 🚀\n\n"
-                                "The trained Deep-TICA model will be used to bias the simulation:\n"
-                                "- **Bias type**: Harmonic expansion (E = k * Σ(cv²))\n"
-                                "- **Effect**: Repulsive forces in CV space → explore diverse conformations\n"
-                                "- **Implementation**: OpenMM computes forces via F = -∇E\n\n"
-                                "⚠️ **Requirements**:\n"
-                                "- `openmm-torch` must be installed (`conda install -c conda-forge openmm-torch`)\n"
-                                "- CUDA-enabled PyTorch recommended (CPU is ~10-20x slower)\n\n"
-                                "⚠️ **Note**: The model expects **molecular features** (distances, angles) as input. "
-                                "Feature extraction is automatically configured in the OpenMM system."
+                            def _cv_model_label(idx: int) -> str:
+                                entry = models[idx]
+                                bundle_raw = entry.get("bundle", "")
+                                bundle_name = Path(bundle_raw).name if bundle_raw else f"model-{idx}"
+                                return bundle_name
+
+                            selected_cv_idx = st.selectbox(
+                                "Select CV model",
+                                options=model_indices,
+                                format_func=_cv_model_label,
+                                key="sim_cv_model_select",
                             )
-                        elif cv_model_path:
-                            st.error(f"⚠️ Model checkpoint directory not found: {cv_model_path}")
-                else:
-                    st.info("No trained CV models available. Train a model in the 'Model Training' tab to enable CV-informed sampling.")
+                            # Get checkpoint_dir where exported .pt files are, not the .pbz bundle
+                            model_entry = models[selected_cv_idx]
+                            checkpoint_dir_str = model_entry.get("checkpoint_dir")
+                            cv_model_path = Path(checkpoint_dir_str) if checkpoint_dir_str else None
 
-                col_extra = st.expander("Advanced options", expanded=False)
-                with col_extra:
+                            if cv_model_path and cv_model_path.exists():
+                                st.success(f"✓ Selected CV model from: {cv_model_path.name}")
+                                st.info(
+                                    "**CV-Informed Sampling ENABLED**\n\n"
+                                    "The trained Deep-TICA model will be used to bias the simulation:\n"
+                                    "- **Bias type**: Harmonic expansion (E = k * Σ(cv²))\n"
+                                    "- **Effect**: Repulsive forces in CV space → explore diverse conformations\n"
+                                    "- **Implementation**: OpenMM computes forces via F = -∇E\n\n"
+                                    "**Requirements**:\n"
+                                    "- `openmm-torch` must be installed (`conda install -c conda-forge openmm-torch`)\n"
+                                    "- CUDA-enabled PyTorch recommended (CPU is ~10-20x slower)\n\n"
+                                    "**Note**: The model expects **molecular features** (distances, angles) as input. "
+                                    "Feature extraction is automatically configured in the OpenMM system."
+                                )
+                            elif cv_model_path:
+                                st.error(f"Model checkpoint directory not found: {cv_model_path}")
+                    else:
+                        st.info("No trained CV models available. Train a model in the 'Model Training' tab to enable CV-informed sampling.")
+
+                # Advanced Options
+                with st.expander("Advanced Simulation Options", expanded=False):
                     jitter = st.checkbox(
                         "Jitter starting structure",
                         value=False,
                         key="sim_jitter_toggle",
+                        help="Add small random perturbations to initial atomic positions"
                     )
                     jitter_sigma = st.number_input(
                         "Jitter sigma (Angstrom)",
@@ -891,6 +837,7 @@ def main() -> None:
                         options=["auto", "exponential", "geometric", "linear"],
                         index=0,
                         key="sim_temperature_schedule",
+                        help="Method for distributing replicas across the temperature ladder"
                     )
                     schedule_mode = None if temp_schedule == "auto" else temp_schedule
 
@@ -1451,144 +1398,184 @@ def main() -> None:
                 st.write(f"Using {len(selected_paths)} shard files for analysis.")
                 if analysis_text:
                     st.caption(analysis_text)
-                col_a, col_b, col_c = st.columns(3)
-                lag = col_a.number_input(
-                    "Lag (steps)", min_value=1, value=10, step=1, key="analysis_lag"
-                )
-                bins_rg = col_b.number_input(
-                    "Bins for Rg", min_value=8, value=72, step=4, key="analysis_bins_rg"
-                )
-                bins_rmsd = col_c.number_input(
-                    "Bins for RMSD", min_value=8, value=72, step=4, key="analysis_bins_rmsd"
-                )
-                col_d, col_e = st.columns(2)
-                seed = col_d.number_input(
-                    "Build seed", min_value=0, value=2025, step=1, key="analysis_seed"
-                )
-                temperature = col_e.number_input(
-                    "Reference temperature (K)",
-                    min_value=0.0,
-                    value=300.0,
-                    step=5.0,
-                    key="analysis_temperature",
-                )
-                learn_cv = st.checkbox(
-                    "Re-learn Deep-TICA during build",
-                    value=False,
-                    key="analysis_learn_cv",
-                )
-                apply_whitening = st.checkbox(
-                    "Apply CV whitening",
-                    value=True,
-                    key="analysis_apply_whitening",
-                )
-                col_cluster, col_micro = st.columns(2)
-                cluster_mode = col_cluster.selectbox(
-                    "Discretization mode",
-                    options=["kmeans", "grid"],
-                    index=(
-                        0
-                        if str(
-                            st.session_state.get("analysis_cluster_mode", "kmeans")
-                        ).lower()
-                        != "grid"
-                        else 1
-                    ),
-                    key="analysis_cluster_mode",
-                )
-                n_microstates = col_micro.number_input(
-                    "Number of microstates",
-                    min_value=2,
-                    value=int(st.session_state.get("analysis_n_microstates", 20)),
-                    step=1,
-                    key="analysis_n_microstates",
-                )
-                reweight_default = str(
-                    st.session_state.get("analysis_reweight_mode", "MBAR")
-                )
-                reweight_index = 0
-                if reweight_default.upper() == "TRAM":
-                    reweight_index = 1
-                elif reweight_default.lower() == "none":
-                    reweight_index = 2
-                reweight_mode = st.selectbox(
-                    "Reweighting mode",
-                    options=["MBAR", "TRAM", "none"],
-                    index=reweight_index,
-                    key="analysis_reweight_mode",
-                )
-                col_fes_method, col_bw, col_min = st.columns(3)
-                fes_method = col_fes_method.selectbox(
-                    "FES method",
-                    options=["kde", "grid"],
-                    index=(
-                        0
-                        if str(st.session_state.get("analysis_fes_method", "kde")).lower()
-                        != "grid"
-                        else 1
-                    ),
-                    key="analysis_fes_method",
-                )
-                fes_bandwidth = col_bw.text_input(
-                    "FES bandwidth",
-                    value=str(st.session_state.get("analysis_fes_bandwidth", "scott")),
-                    help="Use 'scott', 'silverman', or a positive float (only for KDE).",
-                    key="analysis_fes_bandwidth",
-                )
-                min_count_per_bin = col_min.number_input(
-                    "Min count per bin",
-                    min_value=0,
-                    value=int(st.session_state.get("analysis_min_count_per_bin", 1)),
-                    step=1,
-                    key="analysis_min_count_per_bin",
-                )
-                deeptica_params = None
-                if learn_cv:
-                    reuse = st.checkbox(
-                        "Reuse last training hyperparameters",
-                        value=st.session_state.get(_LAST_TRAIN_CONFIG) is not None,
-                        key="analysis_reuse_train_cfg",
+
+                # General Settings
+                with st.expander("⚙️ General Settings", expanded=True):
+                    col_seed, col_temp = st.columns(2)
+                    seed = col_seed.number_input(
+                        "Build seed",
+                        min_value=0,
+                        value=2025,
+                        step=1,
+                        key="analysis_seed",
+                        help="Random seed for reproducibility"
                     )
-                    if reuse and st.session_state.get(_LAST_TRAIN_CONFIG) is not None:
-                        cfg: TrainingConfig = st.session_state[_LAST_TRAIN_CONFIG]
-                        deeptica_params = cfg.deeptica_params()
-                    else:
-                        lag_ml = st.number_input(
-                            "Deep-TICA lag",
-                            min_value=1,
-                            value=int(lag),
-                            key="analysis_lag_ml",
+                    temperature = col_temp.number_input(
+                        "Reference temperature (K)",
+                        min_value=0.0,
+                        value=300.0,
+                        step=5.0,
+                        key="analysis_temperature",
+                        help="Temperature for free energy calculations"
+                    )
+
+                # MSM Configuration
+                with st.expander("🔄 MSM Configuration", expanded=True):
+                    lag = st.number_input(
+                        "Lag time (steps)",
+                        min_value=1,
+                        value=10,
+                        step=1,
+                        key="analysis_lag",
+                        help="Time delay for building the Markov State Model"
+                    )
+                    col_cluster, col_micro = st.columns(2)
+                    cluster_mode = col_cluster.selectbox(
+                        "Discretization mode",
+                        options=["kmeans", "grid"],
+                        index=(
+                            0
+                            if str(
+                                st.session_state.get("analysis_cluster_mode", "kmeans")
+                            ).lower()
+                            != "grid"
+                            else 1
+                        ),
+                        key="analysis_cluster_mode",
+                        help="Method for partitioning CV space into microstates"
+                    )
+                    n_microstates = col_micro.number_input(
+                        "Number of microstates",
+                        min_value=2,
+                        value=int(st.session_state.get("analysis_n_microstates", 20)),
+                        step=1,
+                        key="analysis_n_microstates",
+                        help="Number of discrete states for MSM construction"
+                    )
+                    reweight_default = str(
+                        st.session_state.get("analysis_reweight_mode", "TRAM")
+                    )
+                    reweight_index = 0
+                    if reweight_default.upper() == "MBAR":
+                        reweight_index = 1
+                    reweight_mode = st.selectbox(
+                        "Reweighting mode",
+                        options=["TRAM", "MBAR"],
+                        index=reweight_index,
+                        key="analysis_reweight_mode",
+                        help="Statistical reweighting method for enhanced sampling"
+                    )
+
+                # Collective Variable Settings
+                with st.expander("📊 Collective Variable (CV) Settings", expanded=True):
+                    col_rg, col_rmsd = st.columns(2)
+                    bins_rg = col_rg.number_input(
+                        "Bins for Rg",
+                        min_value=8,
+                        value=72,
+                        step=4,
+                        key="analysis_bins_rg",
+                        help="Number of bins for radius of gyration"
+                    )
+                    bins_rmsd = col_rmsd.number_input(
+                        "Bins for RMSD",
+                        min_value=8,
+                        value=72,
+                        step=4,
+                        key="analysis_bins_rmsd",
+                        help="Number of bins for RMSD from reference"
+                    )
+                    apply_whitening = st.checkbox(
+                        "Apply CV whitening",
+                        value=True,
+                        key="analysis_apply_whitening",
+                        help="Standardize CVs to have zero mean and unit variance"
+                    )
+                    learn_cv = st.checkbox(
+                        "Re-learn Deep-TICA during build",
+                        value=False,
+                        key="analysis_learn_cv",
+                        help="Train a new Deep-TICA model for dimensionality reduction"
+                    )
+                    deeptica_params = None
+                    if learn_cv:
+                        st.markdown("**Deep-TICA Parameters**")
+                        reuse = st.checkbox(
+                            "Reuse last training hyperparameters",
+                            value=st.session_state.get(_LAST_TRAIN_CONFIG) is not None,
+                            key="analysis_reuse_train_cfg",
                         )
-                        hidden_ml = st.text_input(
-                            "Deep-TICA hidden layers",
-                            value="128,128",
-                            key="analysis_hidden_layers",
-                        )
-                        hidden_layers = tuple(
-                            int(v.strip()) for v in hidden_ml.split(",") if v.strip()
-                        ) or (128, 128)
-                        max_epochs = st.number_input(
-                            "Deep-TICA max epochs",
-                            min_value=20,
-                            value=200,
-                            step=10,
-                            key="analysis_max_epochs",
-                        )
-                        patience = st.number_input(
-                            "Deep-TICA patience",
-                            min_value=5,
-                            value=25,
-                            step=5,
-                            key="analysis_patience",
-                        )
-                        deeptica_params = {
-                            "lag": int(lag_ml),
-                            "n_out": 2,
-                            "hidden": hidden_layers,
-                            "max_epochs": int(max_epochs),
-                            "early_stopping": int(patience),
-                            "reweight_mode": "scaled_time",
-                        }
+                        if reuse and st.session_state.get(_LAST_TRAIN_CONFIG) is not None:
+                            cfg: TrainingConfig = st.session_state[_LAST_TRAIN_CONFIG]
+                            deeptica_params = cfg.deeptica_params()
+                        else:
+                            lag_ml = st.number_input(
+                                "Deep-TICA lag",
+                                min_value=1,
+                                value=int(lag),
+                                key="analysis_lag_ml",
+                            )
+                            hidden_ml = st.text_input(
+                                "Deep-TICA hidden layers",
+                                value="128,128",
+                                key="analysis_hidden_layers",
+                            )
+                            hidden_layers = tuple(
+                                int(v.strip()) for v in hidden_ml.split(",") if v.strip()
+                            ) or (128, 128)
+                            max_epochs = st.number_input(
+                                "Deep-TICA max epochs",
+                                min_value=20,
+                                value=200,
+                                step=10,
+                                key="analysis_max_epochs",
+                            )
+                            patience = st.number_input(
+                                "Deep-TICA patience",
+                                min_value=5,
+                                value=25,
+                                step=5,
+                                key="analysis_patience",
+                            )
+                            deeptica_params = {
+                                "lag": int(lag_ml),
+                                "n_out": 2,
+                                "hidden": hidden_layers,
+                                "max_epochs": int(max_epochs),
+                                "early_stopping": int(patience),
+                                "reweight_mode": "scaled_time",
+                            }
+
+                # FES Configuration
+                with st.expander("🗺️ Free Energy Surface (FES) Configuration", expanded=True):
+                    col_fes_method, col_bw, col_min = st.columns(3)
+                    fes_method = col_fes_method.selectbox(
+                        "FES method",
+                        options=["kde", "grid"],
+                        index=(
+                            0
+                            if str(st.session_state.get("analysis_fes_method", "kde")).lower()
+                            != "grid"
+                            else 1
+                        ),
+                        key="analysis_fes_method",
+                        help="Method for computing the free energy surface: KDE (kernel density) or grid-based"
+                    )
+                    fes_bandwidth = col_bw.text_input(
+                        "FES bandwidth",
+                        value=str(st.session_state.get("analysis_fes_bandwidth", "scott")),
+                        help="Use 'scott', 'silverman', or a positive float (only for KDE).",
+                        key="analysis_fes_bandwidth",
+                    )
+                    min_count_per_bin = col_min.number_input(
+                        "Min count per bin",
+                        min_value=0,
+                        value=int(st.session_state.get("analysis_min_count_per_bin", 1)),
+                        step=1,
+                        key="analysis_min_count_per_bin",
+                        help="Minimum number of samples required per bin for FES computation"
+                    )
+
                 disabled = len(selected_paths) == 0
                 if st.button(
                     "Build MSM/FES bundle",
@@ -1792,8 +1779,19 @@ def main() -> None:
                     conf_lag = conf_col1.number_input(
                         "Lag (steps)", min_value=1, value=int(conf_lag), step=1, key="conf_lag"
                     )
-                    conf_col2.metric("N microstates", conf_n_clusters)
-                    conf_col2.caption("Configured in the sidebar.")
+                    conf_n_clusters = conf_col2.number_input(
+                        "N microstates (clusters)",
+                        min_value=50,
+                        max_value=1000,
+                        value=int(conf_n_clusters),
+                        step=10,
+                        help=(
+                            "Controls the number of clusters used when constructing the"
+                            " conformational microstates. Increase this to resolve"
+                            " additional transition states."
+                        ),
+                        key="conf_n_clusters_input",
+                    )
                     conf_n_components = conf_col3.number_input(
                         "TICA components", min_value=2, value=int(conf_n_components), step=1, key="conf_n_components"
                     )
@@ -1867,6 +1865,7 @@ def main() -> None:
                         key="conf_bootstrap_samples",
                     )
 
+                    # Committor thresholds slider
                     conf_cv_col1, conf_cv_col2 = st.columns(2)
                     conf_cv_method = conf_cv_col1.selectbox(
                         "CV method",
