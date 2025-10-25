@@ -1494,7 +1494,7 @@ class WorkflowBackend:
             })
         if zero_rows > 0:
             warnings.append({
-                "code": "ZERO_ROW_STATES_PRESENT",
+                "code": "ZERO_ROW_STATES PRESENT",
                 "message": "States with zero outgoing counts detected before regularisation."
             })
 
@@ -2389,6 +2389,7 @@ class WorkflowBackend:
                 trajectory_locator=locator,
                 tica__dim=tica_dim,
                 committor_thresholds=tuple(config.committor_thresholds),
+                n_metastable=config.n_metastable,  # Pass the n_metastable parameter
             )
 
             macro_memberships_data = conf_result.metadata.get("macrostate_memberships")
@@ -2835,7 +2836,6 @@ class WorkflowBackend:
             fes_method=fes_method,
             fes_bandwidth=fes_bandwidth,
             fes_min_count_per_bin=min_count,
-            kmeans_kwargs=kmeans_kwargs,
         )
 
     def training_config_from_entry(self, entry: Dict[str, Any]) -> TrainingConfig:

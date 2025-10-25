@@ -596,7 +596,7 @@ def _render_conformations_result(conf_result: ConformationsResult) -> None:
     st.info(f"All conformations saved to: {conf_result.output_dir}")
     if conf_result.representative_pdbs:
         st.write(
-            f"📁 {len(conf_result.representative_pdbs)} representative PDB files saved"
+            f"{len(conf_result.representative_pdbs)} representative PDB files saved"
         )
 
 def _ensure_session_defaults() -> None:
@@ -791,7 +791,7 @@ def main() -> None:
                             cv_model_path = Path(checkpoint_dir_str) if checkpoint_dir_str else None
 
                             if cv_model_path and cv_model_path.exists():
-                                st.success(f"✓ Selected CV model from: {cv_model_path.name}")
+                                st.success(f"Selected CV model from: {cv_model_path.name}")
                                 st.info(
                                     "**CV-Informed Sampling ENABLED**\n\n"
                                     "The trained Deep-TICA model will be used to bias the simulation:\n"
@@ -1036,83 +1036,110 @@ def main() -> None:
             if not shard_groups:
                 st.info("Emit shards before training a CV model.")
             else:
-                run_ids = [str(entry.get("run_id")) for entry in shard_groups]
-                selected_runs = st.multiselect(
-                    "Shard groups",
-                    options=run_ids,
-                    default=run_ids[-1:] if run_ids else [],
-                )
-                selected_paths = _select_shard_paths(shard_groups, selected_runs)
-                try:
-                    _selection_runs, selection_text = _summarize_selected_shards(
-                        selected_paths
+                # Data Selection
+                with st.expander("Data Selection", expanded=True):
+                    run_ids = [str(entry.get("run_id")) for entry in shard_groups]
+                    selected_runs = st.multiselect(
+                        "Shard groups",
+                        options=run_ids,
+                        default=run_ids[-1:] if run_ids else [],
                     )
-                except ValueError as exc:
-                    st.error(f"Shard selection invalid: {exc}")
-                    st.stop()
-                st.write(f"Using {len(selected_paths)} shard files for training.")
-                if selection_text:
-                    st.caption(selection_text)
-                col_a, col_b, col_c = st.columns(3)
-                lag = col_a.number_input(
-                    "Lag (steps)", min_value=1, value=5, step=1, key="train_lag"
-                )
-                bins_rg = col_b.number_input(
-                    "Bins for Rg", min_value=8, value=64, step=4, key="train_bins_rg"
-                )
-                bins_rmsd = col_c.number_input(
-                    "Bins for RMSD", min_value=8, value=64, step=4, key="train_bins_rmsd"
-                )
-                col_d, col_e, col_f = st.columns(3)
-                seed = col_d.number_input(
-                    "Training seed", min_value=0, value=1337, step=1, key="train_seed"
-                )
-                max_epochs = col_e.number_input(
-                    "Max epochs", min_value=20, value=200, step=10, key="train_max_epochs"
-                )
-                patience = col_f.number_input(
-                    "Early stopping patience",
-                    min_value=5,
-                    value=25,
-                    step=5,
-                    key="train_patience",
-                )
-                temperature = st.number_input(
-                    "Reference temperature (K)",
-                    min_value=0.0,
-                    value=300.0,
-                    step=5.0,
-                    key="train_temperature",
-                )
-                hidden = st.text_input(
-                    "Hidden layer widths",
-                    value=st.session_state.get("train_hidden_layers", "128,128"),
-                    help="Comma-separated integers for the Deep-TICA network.",
-                    key="train_hidden_layers",
-                )
-                col_tau, col_val, col_ep = st.columns(3)
-                tau_raw = col_tau.text_input(
-                    "Tau schedule (steps)",
-                    value=st.session_state.get("train_tau_schedule", "2,5,10,20"),
-                    key="train_tau_schedule",
-                )
-                val_tau = col_val.number_input(
-                    "Validation tau (steps)",
-                    min_value=1,
-                    value=int(st.session_state.get("train_val_tau", 20)),
-                    step=1,
-                    key="train_val_tau",
-                )
-                epochs_per_tau = col_ep.number_input(
-                    "Epochs per tau",
-                    min_value=1,
-                    value=int(st.session_state.get("train_epochs_per_tau", 15)),
-                    step=1,
-                    key="train_epochs_per_tau",
-                )
-                hidden_layers = tuple(
-                    int(v.strip()) for v in hidden.split(",") if v.strip()
-                ) or (128, 128)
+                    selected_paths = _select_shard_paths(shard_groups, selected_runs)
+                    try:
+                        _selection_runs, selection_text = _summarize_selected_shards(
+                            selected_paths
+                        )
+                    except ValueError as exc:
+                        st.error(f"Shard selection invalid: {exc}")
+                        st.stop()
+                    st.write(f"Using {len(selected_paths)} shard files for training.")
+                    if selection_text:
+                        st.caption(selection_text)
+
+                # Basic Training Parameters
+                with st.expander("Basic Training Parameters", expanded=True):
+                    col_a, col_b = st.columns(2)
+                    lag = col_a.number_input(
+                        "Lag (steps)", min_value=1, value=5, step=1, key="train_lag",
+                        help="Time delay for computing time-lagged correlations"
+                    )
+                    temperature = col_b.number_input(
+                        "Reference temperature (K)",
+                        min_value=0.0,
+                        value=300.0,
+                        step=5.0,
+                        key="train_temperature",
+                        help="Temperature for reweighting calculations"
+                    )
+                    col_c, col_d = st.columns(2)
+                    seed = col_c.number_input(
+                        "Training seed", min_value=0, value=1337, step=1, key="train_seed",
+                        help="Random seed for reproducibility"
+                    )
+                    max_epochs = col_d.number_input(
+                        "Max epochs", min_value=20, value=200, step=10, key="train_max_epochs",
+                        help="Maximum number of training epochs"
+                    )
+                    patience = st.number_input(
+                        "Early stopping patience",
+                        min_value=5,
+                        value=25,
+                        step=5,
+                        key="train_patience",
+                        help="Number of epochs without improvement before stopping"
+                    )
+
+                # Feature Binning
+                with st.expander("Feature Binning", expanded=False):
+                    col_bins_a, col_bins_b = st.columns(2)
+                    bins_rg = col_bins_a.number_input(
+                        "Bins for Rg", min_value=8, value=64, step=4, key="train_bins_rg",
+                        help="Number of bins for radius of gyration"
+                    )
+                    bins_rmsd = col_bins_b.number_input(
+                        "Bins for RMSD", min_value=8, value=64, step=4, key="train_bins_rmsd",
+                        help="Number of bins for RMSD from reference"
+                    )
+
+                # Network Architecture
+                with st.expander("Network Architecture", expanded=False):
+                    hidden = st.text_input(
+                        "Hidden layer widths",
+                        value=st.session_state.get("train_hidden_layers", "128,128"),
+                        help="Comma-separated integers for the Deep-TICA network (e.g., 128,128 for two hidden layers)",
+                        key="train_hidden_layers",
+                    )
+                    hidden_layers = tuple(
+                        int(v.strip()) for v in hidden.split(",") if v.strip()
+                    ) or (128, 128)
+
+                # Curriculum Learning
+                with st.expander("Curriculum Learning", expanded=False):
+                    st.write("Configure the multi-tau curriculum training strategy")
+                    col_tau_a, col_tau_b, col_tau_c = st.columns(3)
+                    tau_raw = col_tau_a.text_input(
+                        "Tau schedule (steps)",
+                        value=st.session_state.get("train_tau_schedule", "2,5,10,20"),
+                        key="train_tau_schedule",
+                        help="Comma-separated lag times for curriculum learning"
+                    )
+                    val_tau = col_tau_b.number_input(
+                        "Validation tau (steps)",
+                        min_value=1,
+                        value=int(st.session_state.get("train_val_tau", 20)),
+                        step=1,
+                        key="train_val_tau",
+                        help="Lag time used for validation scoring"
+                    )
+                    epochs_per_tau = col_tau_c.number_input(
+                        "Epochs per tau",
+                        min_value=1,
+                        value=int(st.session_state.get("train_epochs_per_tau", 15)),
+                        step=1,
+                        key="train_epochs_per_tau",
+                        help="Number of epochs to train at each tau value"
+                    )
+
                 disabled = len(selected_paths) == 0
                 if st.button(
                     "Train Deep-TICA model",
@@ -1141,14 +1168,14 @@ def main() -> None:
 
                             # Use st.status to show progress during training
                             with st.status("Training Deep-TICA model...", expanded=True) as status:
-                                st.write("📊 Loading and preparing shard data...")
+                                st.write("Loading and preparing shard data...")
                                 st.write(f"- Using {len(selected_paths)} shard files")
                                 if selection_text:
                                     st.write(f"  Runs: {selection_text}")
                                 st.write(f"- Lag: {lag}, Bins: Rg={bins_rg}, RMSD={bins_rmsd}")
                                 st.write(f"- Max epochs: {max_epochs}, Patience: {patience}")
                                 st.write("")
-                                st.write("⚙️ Starting training pipeline...")
+                                st.write("Starting training pipeline...")
                                 st.caption("Note: Initial data loading may take several minutes for large datasets.")
 
                                 result = backend.train_model(selected_paths, train_cfg)
@@ -1400,7 +1427,7 @@ def main() -> None:
                     st.caption(analysis_text)
 
                 # General Settings
-                with st.expander("⚙️ General Settings", expanded=True):
+                with st.expander(" General Settings", expanded=True):
                     col_seed, col_temp = st.columns(2)
                     seed = col_seed.number_input(
                         "Build seed",
@@ -1420,7 +1447,7 @@ def main() -> None:
                     )
 
                 # MSM Configuration
-                with st.expander("🔄 MSM Configuration", expanded=True):
+                with st.expander(" MSM Configuration", expanded=True):
                     lag = st.number_input(
                         "Lag time (steps)",
                         min_value=1,
@@ -1467,7 +1494,7 @@ def main() -> None:
                     )
 
                 # Collective Variable Settings
-                with st.expander("📊 Collective Variable (CV) Settings", expanded=True):
+                with st.expander(" Collective Variable (CV) Settings", expanded=True):
                     col_rg, col_rmsd = st.columns(2)
                     bins_rg = col_rg.number_input(
                         "Bins for Rg",
@@ -1547,7 +1574,7 @@ def main() -> None:
                             }
 
                 # FES Configuration
-                with st.expander("🗺️ Free Energy Surface (FES) Configuration", expanded=True):
+                with st.expander(" Free Energy Surface (FES) Configuration", expanded=True):
                     col_fes_method, col_bw, col_min = st.columns(3)
                     fes_method = col_fes_method.selectbox(
                         "FES method",
@@ -1735,6 +1762,8 @@ def main() -> None:
                 with st.expander(
                     "Configure Conformations Analysis", expanded=False
                 ):
+                    # Topology Selection
+                    st.markdown(" Topology Selection")
                     available_topologies = layout.available_inputs()
                     topology_select_col, topology_manual_col = st.columns(2)
                     selected_topology: Optional[Path] = None
@@ -1775,11 +1804,42 @@ def main() -> None:
                                 f"Topology PDB {topology_path_str!s} does not exist. The analysis run will fail until a valid file is provided."
                             )
 
+                    st.divider()
+
+                    # Basic Analysis Parameters
+                    st.markdown(" Basic Analysis Parameters")
                     conf_col1, conf_col2, conf_col3 = st.columns(3)
                     conf_lag = conf_col1.number_input(
-                        "Lag (steps)", min_value=1, value=int(conf_lag), step=1, key="conf_lag"
+                        "Lag (steps)",
+                        min_value=1,
+                        value=int(conf_lag),
+                        step=1,
+                        key="conf_lag",
+                        help="Time delay for MSM construction"
                     )
-                    conf_n_clusters = conf_col2.number_input(
+                    conf_n_components = conf_col2.number_input(
+                        "TICA components",
+                        min_value=2,
+                        value=int(conf_n_components),
+                        step=1,
+                        key="conf_n_components",
+                        help="Number of TICA dimensions for dimensionality reduction"
+                    )
+                    conf_temperature = conf_col3.number_input(
+                        "Temperature (K)",
+                        min_value=0.0,
+                        value=float(conf_temperature),
+                        step=5.0,
+                        key="conf_temperature",
+                        help="Reference temperature for free energy calculations"
+                    )
+
+                    st.divider()
+
+                    # Clustering Configuration
+                    st.markdown(" Clustering Configuration")
+                    conf_cluster_col1, conf_cluster_col2 = st.columns(2)
+                    conf_n_clusters = conf_cluster_col1.number_input(
                         "N microstates (clusters)",
                         min_value=50,
                         max_value=1000,
@@ -1792,34 +1852,38 @@ def main() -> None:
                         ),
                         key="conf_n_clusters_input",
                     )
-                    conf_n_components = conf_col3.number_input(
-                        "TICA components", min_value=2, value=int(conf_n_components), step=1, key="conf_n_components"
-                    )
-
-                    conf_cluster_col1, conf_cluster_col2, conf_cluster_col3 = st.columns(3)
-                    conf_cluster_mode = conf_cluster_col1.selectbox(
+                    conf_cluster_mode = conf_cluster_col2.selectbox(
                         "Clustering method",
                         options=["kmeans", "minibatchkmeans", "auto"],
                         index=["kmeans", "minibatchkmeans", "auto"].index(
                             conf_cluster_mode if conf_cluster_mode in {"kmeans", "minibatchkmeans", "auto"} else "kmeans"
                         ),
                         key="conf_cluster_mode",
+                        help="Algorithm for partitioning CV space"
                     )
-                    conf_cluster_seed = conf_cluster_col2.number_input(
+
+                    conf_cluster_col3, conf_cluster_col4 = st.columns(2)
+                    conf_cluster_seed = conf_cluster_col3.number_input(
                         "Clustering seed (-1 for random)",
                         min_value=-1,
                         value=int(conf_cluster_seed),
                         step=1,
                         key="conf_cluster_seed",
+                        help="Random seed for reproducible clustering"
                     )
-                    conf_kmeans_n_init = conf_cluster_col3.number_input(
+                    conf_kmeans_n_init = conf_cluster_col4.number_input(
                         "K-means n_init",
                         min_value=1,
                         value=int(conf_kmeans_n_init),
                         step=1,
                         key="conf_kmeans_n_init",
+                        help="Number of k-means initializations"
                     )
 
+                    st.divider()
+
+                    # TPT Configuration
+                    st.markdown(" Transition Path Theory (TPT) Configuration")
                     conf_col4, conf_col5, conf_col6 = st.columns(3)
                     conf_n_metastable = conf_col4.number_input(
                         "N metastable states",
@@ -1828,27 +1892,35 @@ def main() -> None:
                         step=1,
                         key="conf_n_metastable_form",
                         on_change=_sync_form_metastable_states,
+                        help="Number of metastable states to identify"
                     )
                     st.session_state["conf_n_metastable"] = int(conf_n_metastable)
-                    conf_temperature = conf_col5.number_input(
-                        "Temperature (K)",
-                        min_value=0.0,
-                        value=float(conf_temperature),
-                        step=5.0,
-                        key="conf_temperature",
+                    conf_n_paths = conf_col5.number_input(
+                        "Max pathways",
+                        min_value=1,
+                        value=int(conf_n_paths),
+                        step=1,
+                        key="conf_n_paths",
+                        help="Maximum number of transition pathways to compute"
                     )
-                    conf_n_paths = conf_col6.number_input(
-                        "Max pathways", min_value=1, value=int(conf_n_paths), step=1, key="conf_n_paths"
-                    )
-
-                    conf_col7, conf_col8 = st.columns(2)
-                    conf_auto_detect = conf_col7.checkbox(
-                        "Auto-detect source/sink states", value=bool(conf_auto_detect), key="conf_auto_detect"
-                    )
-                    conf_compute_kis = conf_col8.checkbox(
-                        "Compute Kinetic Importance Score", value=bool(conf_compute_kis), key="conf_compute_kis"
+                    conf_compute_kis = conf_col6.checkbox(
+                        "Compute Kinetic Importance Score",
+                        value=bool(conf_compute_kis),
+                        key="conf_compute_kis",
+                        help="Calculate kinetic importance for each state"
                     )
 
+                    conf_auto_detect = st.checkbox(
+                        "Auto-detect source/sink states",
+                        value=bool(conf_auto_detect),
+                        key="conf_auto_detect",
+                        help="Automatically identify source and sink states from metastable populations"
+                    )
+
+                    st.divider()
+
+                    # Uncertainty Analysis
+                    st.markdown(" Uncertainty Analysis")
                     conf_col9, conf_col10 = st.columns(2)
                     conf_uncertainty = conf_col9.checkbox(
                         "Perform uncertainty analysis",
@@ -1863,15 +1935,20 @@ def main() -> None:
                         step=5,
                         help="Number of bootstrap resamples used during uncertainty analysis.",
                         key="conf_bootstrap_samples",
+                        disabled=not conf_uncertainty,
                     )
 
-                    # Committor thresholds slider
+                    st.divider()
+
+                    # CV Method Selection
+                    st.markdown(" Collective Variable (CV) Method")
                     conf_cv_col1, conf_cv_col2 = st.columns(2)
                     conf_cv_method = conf_cv_col1.selectbox(
                         "CV method",
                         options=["tica", "deeptica"],
                         index=0 if conf_cv_method != "deeptica" else 1,
                         key="conf_cv_method",
+                        help="Choose between classical TICA or Deep-TICA for dimensionality reduction"
                     )
                     conf_deeptica_projection = None
                     conf_deeptica_metadata = None
@@ -2234,77 +2311,92 @@ def main() -> None:
         if not shard_groups:
             st.info("Emit shards before computing implied timescales.")
         else:
-            run_ids = [str(entry.get("run_id")) for entry in shard_groups]
-            default_runs = st.session_state.get("its_selected_runs")
-            if not default_runs:
-                default_runs = run_ids[-1:] if run_ids else []
-            selected_runs = st.multiselect(
-                "Shard groups",
-                options=run_ids,
-                default=default_runs,
-                key="its_selected_runs",
-            )
-            selected_paths = _select_shard_paths(shard_groups, selected_runs)
-            try:
-                _, its_summary_text = _summarize_selected_shards(selected_paths)
-            except ValueError as exc:
-                st.error(f"Shard selection invalid: {exc}")
-                its_summary_text = ""
-            st.write(f"Using {len(selected_paths)} shard files for ITS.")
-            if its_summary_text:
-                st.caption(its_summary_text)
-            available_topologies = layout.available_inputs()
-            topo_col_select, topo_col_manual = st.columns(2)
-            selected_topology = None
-            if available_topologies:
-                selected_topology = topo_col_select.selectbox(
-                    "Topology PDB (from app_intputs/)",
-                    options=available_topologies,
-                    format_func=lambda p: p.name,
-                    key="its_topology_select",
+            # Data Selection
+            with st.expander("Data Selection", expanded=True):
+                run_ids = [str(entry.get("run_id")) for entry in shard_groups]
+                default_runs = st.session_state.get("its_selected_runs")
+                if not default_runs:
+                    default_runs = run_ids[-1:] if run_ids else []
+                selected_runs = st.multiselect(
+                    "Shard groups",
+                    options=run_ids,
+                    default=default_runs,
+                    key="its_selected_runs",
                 )
-            else:
-                topo_col_select.warning("No topology PDB files detected in app_intputs/.")
-            topology_manual_entry = topo_col_manual.text_input(
-                "Custom topology PDB path",
-                value=st.session_state.get("its_topology_manual", ""),
-                key="its_topology_manual",
-            ).strip()
-            topology_path_str = topology_manual_entry or (str(selected_topology) if selected_topology is not None else "")
-            if topology_path_str:
-                topology_candidate = Path(topology_path_str)
-                if not topology_candidate.is_absolute():
-                    topology_candidate = (layout.workspace_dir / topology_candidate).resolve()
-                if not topology_candidate.exists():
-                    st.warning(f"Topology PDB {topology_candidate} does not exist.")
-            col_clusters, col_tica = st.columns(2)
-            n_clusters = col_clusters.number_input(
-                "Number of Clusters for ITS",
-                min_value=50,
-                max_value=1000,
-                value=int(st.session_state.get("its_n_clusters", 200)),
-                step=50,
-                key="its_n_clusters",
-            )
-            tica_dim = col_tica.number_input(
-                "Number of TICA Dimensions for ITS",
-                min_value=2,
-                max_value=50,
-                value=int(st.session_state.get("its_tica_dim", 10)),
-                step=1,
-                key="its_tica_dim",
-            )
-            lag_options = [1, 2, 5, 10, 20, 50, 100, 200, 500]
-            lag_default = st.session_state.get("its_lag_times", [1, 5, 10, 50, 100, 200])
-            lag_times = st.multiselect(
-                "Lag Times to Test (steps)",
-                options=lag_options,
-                default=lag_default,
-                key="its_lag_times",
-            )
-            feature_spec_path = layout.app_root / "app" / "feature_spec.yaml"
-            st.caption(f"Feature specification: {feature_spec_path}")
-            if st.button("Calculate Implied Timescales", key="its_calculate"):
+                selected_paths = _select_shard_paths(shard_groups, selected_runs)
+                try:
+                    _, its_summary_text = _summarize_selected_shards(selected_paths)
+                except ValueError as exc:
+                    st.error(f"Shard selection invalid: {exc}")
+                    its_summary_text = ""
+                st.write(f"Using {len(selected_paths)} shard files for ITS.")
+                if its_summary_text:
+                    st.caption(its_summary_text)
+
+            # Topology Configuration
+            with st.expander("Topology Configuration", expanded=True):
+                available_topologies = layout.available_inputs()
+                topo_col_select, topo_col_manual = st.columns(2)
+                selected_topology = None
+                if available_topologies:
+                    selected_topology = topo_col_select.selectbox(
+                        "Topology PDB (from app_intputs/)",
+                        options=available_topologies,
+                        format_func=lambda p: p.name,
+                        key="its_topology_select",
+                    )
+                else:
+                    topo_col_select.warning("No topology PDB files detected in app_intputs/.")
+                topology_manual_entry = topo_col_manual.text_input(
+                    "Custom topology PDB path",
+                    value=st.session_state.get("its_topology_manual", ""),
+                    key="its_topology_manual",
+                    help="Provide an absolute or relative path to override the topology selection"
+                ).strip()
+                topology_path_str = topology_manual_entry or (str(selected_topology) if selected_topology is not None else "")
+                if topology_path_str:
+                    topology_candidate = Path(topology_path_str)
+                    if not topology_candidate.is_absolute():
+                        topology_candidate = (layout.workspace_dir / topology_candidate).resolve()
+                    if not topology_candidate.exists():
+                        st.warning(f"Topology PDB {topology_candidate} does not exist.")
+
+            # Analysis Parameters
+            with st.expander("Analysis Parameters", expanded=True):
+                col_clusters, col_tica = st.columns(2)
+                n_clusters = col_clusters.number_input(
+                    "Number of Clusters for ITS",
+                    min_value=50,
+                    max_value=1000,
+                    value=int(st.session_state.get("its_n_clusters", 200)),
+                    step=50,
+                    key="its_n_clusters",
+                    help="Number of microstates for MSM discretization"
+                )
+                tica_dim = col_tica.number_input(
+                    "Number of TICA Dimensions for ITS",
+                    min_value=2,
+                    max_value=50,
+                    value=int(st.session_state.get("its_tica_dim", 10)),
+                    step=1,
+                    key="its_tica_dim",
+                    help="Dimensionality reduction via TICA before clustering"
+                )
+
+                lag_options = [1, 2, 5, 10, 20, 50, 100, 200, 500]
+                lag_default = st.session_state.get("its_lag_times", [1, 5, 10, 50, 100, 200])
+                lag_times = st.multiselect(
+                    "Lag Times to Test (steps)",
+                    options=lag_options,
+                    default=lag_default,
+                    key="its_lag_times",
+                    help="Multiple lag times to compute and compare implied timescales"
+                )
+
+                feature_spec_path = layout.app_root / "app" / "feature_spec.yaml"
+                st.caption(f"Feature specification: {feature_spec_path}")
+
+            if st.button("Calculate Implied Timescales", type="primary", key="its_calculate"):
                 if not selected_paths:
                     st.error("Select at least one shard group to compute ITS.")
                 elif not lag_times:
@@ -2313,36 +2405,46 @@ def main() -> None:
                     st.error("Provide a topology PDB file for ITS computation.")
                 else:
                     try:
-                        its_result = calculate_its(
-                            data_directory=layout.shards_dir,
-                            topology_path=topology_path_str,
-                            feature_spec_path=feature_spec_path,
-                            n_clusters=int(n_clusters),
-                            tica_dim=int(tica_dim),
-                            lag_times=lag_times,
-                            shard_paths=selected_paths,
-                        )
+                        with st.spinner("Computing implied timescales... This may take several minutes."):
+                            its_result = calculate_its(
+                                data_directory=layout.shards_dir,
+                                topology_path=topology_path_str,
+                                feature_spec_path=feature_spec_path,
+                                n_clusters=int(n_clusters),
+                                tica_dim=int(tica_dim),
+                                lag_times=lag_times,
+                                shard_paths=selected_paths,
+                            )
                     except Exception as exc:
                         st.error(f"Failed to compute implied timescales: {exc}")
+                        traceback.print_exc()
                     else:
                         lag_list = its_result.get("lag_times", [])
                         timescales = its_result.get("timescales", [])
                         metadata = its_result.get("metadata", {})
                         errors = its_result.get("errors", {})
-                        try:
-                            fig = backend_plot_its(lag_list, timescales)
-                        except Exception as exc:
-                            st.error(f"Unable to render implied timescales plot: {exc}")
+
+                        if timescales:
+                            try:
+                                fig = backend_plot_its(lag_list, timescales)
+                            except Exception as exc:
+                                st.error(f"Unable to render implied timescales plot: {exc}")
+                            else:
+                                st.pyplot(fig, clear_figure=True, width="stretch")
+
+                                if metadata:
+                                    st.subheader("Analysis Metadata")
+                                    meta_cols = st.columns(3)
+                                    meta_cols[0].metric("Frames", metadata.get("n_frames", "n/a"))
+                                    meta_cols[1].metric("Features", metadata.get("n_features", "n/a"))
+                                    meta_cols[2].metric("Clusters", metadata.get("n_states", "n/a"))
+
+                                if errors:
+                                    st.warning("⚠️ Some lag times encountered errors:")
+                                    for lag, message in errors.items():
+                                        st.warning(f"Lag {lag}: {message}")
                         else:
-                            st.pyplot(fig, clear_figure=True, width="stretch")
-                            if metadata:
-                                meta_cols = st.columns(3)
-                                meta_cols[0].metric("Frames", metadata.get("n_frames", "n/a"))
-                                meta_cols[1].metric("Features", metadata.get("n_features", "n/a"))
-                                meta_cols[2].metric("Clusters", metadata.get("n_states", "n/a"))
-                            if errors:
-                                for lag, message in errors.items():
-                                    st.warning(f"Lag {lag}: {message}")
+                            st.warning("No timescales were computed. Check the error messages above.")
     st.caption(
         "Run this app with: poetry run streamlit run example_programs/app_usecase/app/app.py"
     )

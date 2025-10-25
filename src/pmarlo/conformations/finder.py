@@ -49,6 +49,7 @@ def find_conformations(
     output_dir: Optional[str] = None,
     save_structures: bool = False,
     committor_thresholds: Tuple[float, float] = (0.05, 0.95),
+    n_metastable: int = 2,
     **kwargs: Any,
 ) -> ConformationSet:
     """Find protein conformations using Transition Path Theory.
@@ -82,6 +83,9 @@ def find_conformations(
         save_structures: Save representative structures as PDB files
         committor_thresholds: (lower, upper) thresholds for committor-based
             classification of source, sink, and transition microstates
+        n_metastable: Number of metastable macrostates to identify using PCCA+.
+            This controls how many clusters PCCA+ will create. Must be at least 2
+            and cannot exceed the number of microstates. Default is 2.
         **kwargs: Additional options
 
     Returns:
@@ -92,6 +96,10 @@ def find_conformations(
         >>> results = find_conformations(msm_data, trajectories=traj, compute_kis=True)
         >>> ts_conformations = results.get_transition_states()
         >>> print(f"Found {len(ts_conformations)} transition states")
+
+        >>> # To get more PCCA+ clusters, increase n_metastable:
+        >>> results = find_conformations(msm_data, trajectories=traj, n_metastable=10)
+        >>> print(f"Found {len(results.get_metastable_states())} metastable states")
     """
     logger.info("Starting conformations finder with TPT analysis")
 
@@ -118,7 +126,7 @@ def find_conformations(
     committor_transition_set: Set[int] = set()
 
     # Step 1: Lump microstates into metastable macrostates with PCCA+
-    n_macrostates = int(kwargs.get("n_metastable", 2))
+    n_macrostates = int(kwargs.get("n_metastable", n_metastable))
     (
         macrostate_labels,
         macrostate_memberships,
@@ -320,7 +328,7 @@ def find_conformations(
         "n_conformations": len(conformations),
         "n_pathway_intermediates": pathway_count,
         "n_transition_state_ensemble": tse_count,
-        "auto_detected": auto_detect,
+        "auto_detect": auto_detect,
         "temperature_K": temperature_K,
         "uncertainty_analysis": uncertainty_analysis,
         "macrostate_populations": macrostate_populations.tolist(),
