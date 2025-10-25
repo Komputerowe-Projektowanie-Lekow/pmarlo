@@ -269,24 +269,26 @@ def plot_sampling_validation(
     # --- 2. Plot Trajectory Traces ---
     num_shards_to_label = min(15, len(projected_data_1d)) # Limit legend entries
     for i, traj in enumerate(projected_data_1d):
-        print(f"[DEBUG] Shard {i}: traj length = {len(traj)}")
+        logger.debug(f"Shard {i}: traj length = {len(traj)}")
 
         if len(traj) == 0:
-            print(f"[DEBUG] Shard {i}: SKIPPED - empty trajectory")
+            logger.debug(f"Shard {i}: SKIPPED - empty trajectory")
+            # TEMPORARY DEBUG CHECK: Verify logger configuration
+            print(f"DEBUG_CHECK: Logger name='{logger.name}', Effective level={logger.getEffectiveLevel()}, Handler count={len(logger.handlers)}, Root handler count={len(logging.getLogger().handlers)}")
             continue
 
         plot_len = min(len(traj), max_traj_length_plot)
-        print(f"[DEBUG] Shard {i}: plot_len = {plot_len}, max_traj_length_plot = {max_traj_length_plot}")
+        logger.debug(f"Shard {i}: plot_len = {plot_len}, max_traj_length_plot = {max_traj_length_plot}")
 
         traj_segment = traj[:plot_len:stride]
         actual_plot_len = len(traj_segment)
 
-        print(f"[DEBUG] Shard {i}: stride = {stride}, actual_plot_len = {actual_plot_len}")
-        print(f"[DEBUG] Shard {i}: traj_segment shape = {traj_segment.shape}, dtype = {traj_segment.dtype}")
+        logger.debug(f"Shard {i}: stride = {stride}, actual_plot_len = {actual_plot_len}")
+        logger.debug(f"Shard {i}: traj_segment shape = {traj_segment.shape}, dtype = {traj_segment.dtype}")
 
-        # Print first few values for the first 3 shards
+        # Log first few values for the first 3 shards
         if i < 3:
-            print(f"[DEBUG] Shard {i}: traj_segment[:10] = {traj_segment[:10]}")
+            logger.debug(f"Shard {i}: traj_segment[:10] = {traj_segment[:10]}")
 
         if actual_plot_len > 1:
             y_time = np.linspace(ylims[0], ylims[1] * 0.9, actual_plot_len)
@@ -299,9 +301,11 @@ def plot_sampling_validation(
                 lw=lw_traj,
                 label=label,
             )
-            print(f"[DEBUG] Shard {i}: PLOTTED with y_time range [{y_time[0]:.4f}, {y_time[-1]:.4f}]")
+            logger.debug(f"Shard {i}: PLOTTED with y_time range [{y_time[0]:.4f}, {y_time[-1]:.4f}]")
         else:
-            print(f"[DEBUG] Shard {i}: SKIPPED - actual_plot_len <= 1")
+            logger.debug(f"Shard {i}: SKIPPED - actual_plot_len <= 1")
+            # TEMPORARY DEBUG CHECK: Verify logger configuration
+            print(f"DEBUG_CHECK: Logger name='{logger.name}', Effective level={logger.getEffectiveLevel()}, Handler count={len(logger.handlers)}, Root handler count={len(logging.getLogger().handlers)}")
 
     # --- 3. Add Time Arrow ---
     # Ensure arrow/text are placed reasonably within potentially changed xlims
