@@ -306,6 +306,7 @@ class BuildOpts:
     msm_mode: str = "kmeans+msm"
     enable_fes: bool = True
     fes_temperature: float = 300.0
+    fes_bins: Optional[Tuple[int, int]] = None
     enable_tram: bool = False
     tram_lag: int = 1
     tram_n_iter: int = 100
@@ -326,6 +327,14 @@ class BuildOpts:
             )
         if self.temperature is not None:
             object.__setattr__(self, "fes_temperature", float(self.temperature))
+        if self.fes_bins is not None:
+            if not isinstance(self.fes_bins, tuple) or len(self.fes_bins) != 2:
+                raise ValueError("fes_bins must be a tuple of two integers")
+            if any(not isinstance(b, int) or b <= 0 for b in self.fes_bins):
+                raise ValueError("fes_bins must contain two positive integers")
+            object.__setattr__(
+                self, "fes_bins", tuple(int(x) for x in self.fes_bins)
+            )
 
     def with_plan(self, plan: TransformPlan) -> "BuildOpts":
         return replace(self, plan=plan)

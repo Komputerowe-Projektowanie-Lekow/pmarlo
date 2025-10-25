@@ -33,6 +33,7 @@ import numpy as np
 
 
 from pmarlo.utils.path_utils import ensure_directory
+from pmarlo.markov_state_model.free_energy import FESCalculator
 
 try:
     import deeptime as dt
@@ -1870,9 +1871,7 @@ class WorkflowBackend:
                 }
                 artifacts["analysis_discretizer_fingerprint"] = fingerprint
                 artifacts["analysis_tau_frames"] = int(tau_frames)
-                artifacts["analysis_effective_tau_frames"] = int(
-                    effective_tau_frames
-                )
+                artifacts["analysis_effective_tau_frames"] = int(effective_tau_frames)
                 artifacts["analysis_effective_stride_max"] = int(stride_max)
                 if stride_map:
                     artifacts["analysis_effective_stride_map"] = stride_map

@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 
 import matplotlib.pyplot as plt
 import numpy as np
+import streamlit as st
 
 from pmarlo.reporting import plots as pmarlo_plots
 
@@ -82,13 +83,74 @@ def format_warnings(diagnostics: Dict[str, Any]) -> list[str]:
     return []
 
 
-def create_sampling_validation_plot(projection_data: List[np.ndarray]) -> plt.Figure:
-    """Generate the sampling validation plot from projection data.
+def create_sampling_validation_plot(app_state) -> plt.Figure:
+    """Generate the sampling validation plot using parameters from session state if available.
 
     Parameters
     ----------
-    projection_data
-        List of 2D projection arrays (n_frames, n_components) for each shard.
+    app_state
+        Application state object containing projection_data.
+
+    Returns
+    -------
+    plt.Figure
+        Matplotlib figure ready for display.
+    """
+    projection = app_state.projection_data
+
+    # Debug: Check projection data
+    print(f"[DEBUG] projection is None: {projection is None}")
+    if projection is not None:
+        print(f"[DEBUG] projection type: {type(projection)}")
+        print(f"[DEBUG] projection length: {len(projection)}")
+
+    if projection is None:
+        raise ValueError("Projection data not found - cannot create sampling plot")
+
+    # Debug: Check each trajectory shape before filtering
+    print(f"[DEBUG] Number of trajectories in projection: {len(projection)}")
+    for i, traj in enumerate(projection):
+        print(f"[DEBUG] Trajectory {i}: shape={traj.shape}, dtype={traj.dtype}")
+
+    projected_data_1d = [traj[:, 0] for traj in projection if traj.shape[1] > 0]
+
+    # Debug: Check filtered results
+    print(f"[DEBUG] Length of projected_data_1d after filtering: {len(projected_data_1d)}")
+    for i, arr in enumerate(projected_data_1d):
+        print(f"[DEBUG] projected_data_1d[{i}]: shape={arr.shape}, length={len(arr)}, dtype={arr.dtype}")
+
+    if not projected_data_1d:
+        raise ValueError("No valid 1D projection data found - projection data has insufficient dimensions")
+
+    # Get parameters from session state (set by UI widgets in app.py)
+    # Provide sensible defaults if not found in state
+    max_len = st.session_state.get("val_plot_max_len", 1000)
+    bins = st.session_state.get("val_plot_hist_bins", 150)
+    stride = st.session_state.get("val_plot_stride", 10)
+
+    print(f"[DEBUG] Parameters: max_len={max_len}, bins={bins}, stride={stride}")
+
+    # Call the updated library function with parameters
+    fig = pmarlo_plots.plot_sampling_validation(
+        projected_data_1d=projected_data_1d,
+        max_traj_length_plot=max_len,
+        bins=bins,
+        stride=stride,
+        alpha_hist=0.15,  # Keep alpha/lw/cmap fixed or add widgets too
+        alpha_traj=0.4,
+        lw_traj=0.3,
+        cmap_name='viridis'
+    )
+    return fig
+
+
+def create_fes_validation_plot(app_state) -> plt.Figure:
+    """Generate the 2D FES plot using parameters from session state if available.
+
+    Parameters
+    ----------
+    app_state
+        Application state object containing fes_grid and fes_data.
 
     Returns
     -------
@@ -96,69 +158,37 @@ def create_sampling_validation_plot(projection_data: List[np.ndarray]) -> plt.Fi
         Matplotlib figure ready for display.
     """
     try:
-        if not projection_data:
-            fig, ax = plt.subplots(figsize=(10, 6))
-            ax.text(0.5, 0.5, "No projection data available", ha="center", va="center")
-            ax.axis("off")
-            return fig
+        grid = app_state.fes_grid
+        fes = app_state.fes_data
 
-        projected_data_1d = [traj[:, 0] for traj in projection_data if traj.shape[1] >= 1]
-
-        if not projected_data_1d:
-            fig, ax = plt.subplots(figsize=(10, 6))
-            ax.text(0.5, 0.5, "Projection data has insufficient dimensions", ha="center", va="center")
-            ax.axis("off")
-            return fig
-
-        fig, ax = pmarlo_plots.plot_sampling_validation(projected_data_1d)
-        return fig
-
-    except Exception as e:
-        fig, ax = plt.subplots(figsize=(10, 6))
-        ax.text(0.5, 0.5, f"Error creating sampling plot:\n{e}", ha="center", va="center")
-        ax.axis("off")
-        return fig
-
-
-def create_fes_validation_plot(fes_result: Any) -> plt.Figure:
-    """Generate the 2D FES plot from FES result data.
-
-    Parameters
-    ----------
-    fes_result
-        FESResult object or dict-like containing F, xedges, yedges.
-
-    Returns
-    -------
-    plt.Figure
-        Matplotlib figure ready for display.
-    """
-    try:
-        if fes_result is None:
+        if grid is None or fes is None:
+            st.warning("FES data not found. Cannot create FES plot.")
             fig, ax = plt.subplots(figsize=(8, 6))
             ax.text(0.5, 0.5, "No FES data available", ha="center", va="center")
             ax.axis("off")
             return fig
 
-        try:
-            F = np.asarray(getattr(fes_result, "F"))
-            xedges = np.asarray(getattr(fes_result, "xedges"))
-            yedges = np.asarray(getattr(fes_result, "yedges"))
-        except Exception:
-            F = np.asarray(fes_result.get("F"))
-            xedges = np.asarray(fes_result.get("xedges"))
-            yedges = np.asarray(fes_result.get("yedges"))
+        # Get parameters from session state
+        max_energy_kt = st.session_state.get("fes_plot_max_kt", 7.0)
+        levels = st.session_state.get("fes_plot_levels", 25)
+        cmap = st.session_state.get("fes_plot_cmap", "viridis")
+        add_lines = st.session_state.get("fes_plot_lines", True)
 
-        Xc = 0.5 * (xedges[:-1] + xedges[1:])
-        Yc = 0.5 * (yedges[:-1] + yedges[1:])
-        XX, YY = np.meshgrid(Xc, Yc, indexing="ij")
-        grid = (XX, YY)
-
-        fig, ax = pmarlo_plots.plot_free_energy_2d(grid, F)
+        # Call the updated library function with parameters
+        fig = pmarlo_plots.plot_free_energy_2d(
+            grid=grid,
+            fes=fes,
+            max_energy_kt=max_energy_kt,
+            levels=levels,
+            cmap=cmap,
+            add_contour_lines=add_lines
+        )
         return fig
 
     except Exception as e:
+        st.error(f"Error creating FES plot: {e}")
+        # Ensure a figure object is always returned
         fig, ax = plt.subplots(figsize=(8, 6))
-        ax.text(0.5, 0.5, f"Error creating FES plot:\n{e}", ha="center", va="center")
+        ax.text(0.5, 0.5, "Error generating plot", ha='center', va='center')
         ax.axis("off")
         return fig
