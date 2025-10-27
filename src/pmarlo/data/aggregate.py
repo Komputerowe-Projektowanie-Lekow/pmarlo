@@ -82,6 +82,9 @@ class AggregatedShards:
 def _aggregate_shard_contents(shard_jsons: Sequence[Path]) -> AggregatedShards:
     """Load shards, enforce safety rails, and build the dataset payload."""
 
+    import logging
+    logger = logging.getLogger("pmarlo")
+
     paths = _normalise_shard_paths(shard_jsons)
 
     cv_names_ref: tuple[str, ...] | None = None
@@ -92,7 +95,7 @@ def _aggregate_shard_contents(shard_jsons: Sequence[Path]) -> AggregatedShards:
     kinds: list[str] = []
     temps: list[float] = []
 
-    for path in paths:
+    for idx, path in enumerate(paths):
         meta_info = load_shard_meta(path)
         kinds.append(meta_info.kind)
         if isinstance(meta_info, DemuxShard):
@@ -107,6 +110,10 @@ def _aggregate_shard_contents(shard_jsons: Sequence[Path]) -> AggregatedShards:
         )
 
         X_np = np.asarray(X, dtype=np.float64)
+
+        # Log shape immediately after loading the shard data
+        logger.info(f"Loaded shard {idx} ({path.name}): raw shape={X_np.shape}")
+
         X_parts.append(X_np)
         dtrajs.append(None if dtraj is None else np.asarray(dtraj, dtype=np.int32))
 
@@ -118,6 +125,10 @@ def _aggregate_shard_contents(shard_jsons: Sequence[Path]) -> AggregatedShards:
     cv_names = tuple(cv_names_ref or tuple())
     periodic = tuple(periodic_ref or tuple())
     X_all = np.vstack(X_parts).astype(np.float64, copy=False)
+
+    # Log featurized/concatenated shape
+    logger.info(f"Featurized all shards: concatenated shape={X_all.shape}")
+
     _fill_shard_offsets(shards_info)
 
     dataset = {

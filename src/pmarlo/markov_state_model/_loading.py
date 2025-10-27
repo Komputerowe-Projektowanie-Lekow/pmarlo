@@ -192,7 +192,8 @@ class LoadingMixin:
             return None
         import logging as _logging
 
-        _logging.getLogger("pmarlo").info(
+        logger = _logging.getLogger("pmarlo")
+        logger.info(
             "Streaming trajectory %s with stride=%d, chunk=%d%s",
             resolved_traj,
             stride,
@@ -213,13 +214,25 @@ class LoadingMixin:
                 joined = chunk if joined is None else joined.join(chunk)
         except Exception as exc:
             if getattr(self, "ignore_trajectory_errors", False):
-                _logging.getLogger("pmarlo").error(
+                logger.error(
                     "Failed to read trajectory %s: %s", resolved_traj, exc
                 )
                 return None
             raise
+
+        # Log shape immediately after loading completes
+        if joined is not None:
+            logger.info(
+                "Loaded shard %s: %d frames, %d atoms",
+                traj_file,
+                joined.n_frames,
+                joined.n_atoms,
+            )
+        else:
+            logger.info("Loaded shard %s: No frames (None returned)", traj_file)
+
         if joined is None:
-            _logging.getLogger("pmarlo").warning(f"No frames loaded from {traj_file}")
+            logger.warning(f"No frames loaded from {traj_file}")
         return joined
 
     def _maybe_load_demux_metadata(self, traj_path: Path) -> None:
