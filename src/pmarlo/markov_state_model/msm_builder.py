@@ -44,6 +44,14 @@ class MSMBuilder:
         """Cluster embeddings and return a skeletal MSM result."""
 
         features, weights_coll = self._prepare_features(Y_list, weights_list)
+
+        # Log projection shapes for each shard after dimension reduction/preparation
+        import logging as _logging
+
+        logger = _logging.getLogger("pmarlo")
+        for i, projected_array in enumerate(features):
+            logger.info(f"Projected shard {i}: projection shape={projected_array.shape}")
+
         concatenated, concatenated_weights = self._concatenate_data(
             features, weights_coll
         )
@@ -83,10 +91,18 @@ class MSMBuilder:
         if not Y_list:
             raise ValueError("Y_list must contain at least one trajectory array")
 
+        import logging as _logging
+
+        logger = _logging.getLogger("pmarlo")
+
         features: List[np.ndarray] = []
         weights_coll: List[np.ndarray] = []
         for idx, arr in enumerate(Y_list):
             feature_matrix = np.asarray(arr)
+
+            # Log shape immediately after obtaining the feature array for this shard
+            logger.debug(f"Featurized shard {idx}: features shape={feature_matrix.shape}")
+
             self._validate_feature_matrix(feature_matrix)
             if feature_matrix.size == 0:
                 continue

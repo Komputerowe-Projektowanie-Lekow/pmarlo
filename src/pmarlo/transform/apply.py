@@ -808,6 +808,19 @@ def _store_transformed_features(dataset: Dict[str, Any], Y: np.ndarray) -> int:
     dataset["X"] = Y
     dataset["cv_names"] = tuple(f"DeepTICA_{i+1}" for i in range(n_out))
     dataset["periodic"] = tuple(False for _ in range(n_out))
+
+    # Log per-shard shapes after dimension reduction
+    import logging as _logging
+
+    shards_info = dataset.get("__shards__", [])
+    if shards_info:
+        for idx, shard_info in enumerate(shards_info):
+            start = int(shard_info.get("start", 0))
+            stop = int(shard_info.get("stop", start))
+            if stop > start:
+                shard_shape = (stop - start, n_out)
+                logger.info(f"Projected shard {idx}: projection shape={shard_shape}")
+
     return n_out
 
 

@@ -51,7 +51,7 @@ class FeaturesMixin:
             )
 
             # Log shape immediately after featurizing this shard
-            logger.info(
+            logger.debug(
                 "Shard %d featurized: shape = (%d frames, %d features)",
                 i + 1,
                 traj_features.shape[0],

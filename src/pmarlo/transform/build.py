@@ -1289,12 +1289,17 @@ def _cluster_continuous_trajectories(
     shards_info = dataset.get("__shards__", [])
     if shards_info:
         dtrajs: List[np.ndarray] = []
-        for shard_info in shards_info:
+        for idx, shard_info in enumerate(shards_info):
             start = int(shard_info.get("start", 0))
             stop = int(shard_info.get("stop", start))
             if stop > start:
                 shard_labels = labels[start:stop]
-                dtrajs.append(shard_labels.astype(np.int32))
+                dtraj_array = shard_labels.astype(np.int32)
+                dtrajs.append(dtraj_array)
+
+                # Log shape after clustering/featurization for this shard
+                logger.info(f"Featurized shard {idx}: features shape={dtraj_array.shape}")
+
         logger.info("Created %d discrete trajectories from clustering", len(dtrajs))
         return dtrajs
     logger.info("Created 1 discrete trajectory from clustering")
@@ -1306,7 +1311,15 @@ def _prepare_dtrajs(dataset: Any, opts: BuildOpts) -> Optional[List[np.ndarray]]
     if isinstance(dataset, dict):
         raw = dataset.get("dtrajs")
     if raw and not (isinstance(raw, list) and all(d is None for d in raw)):
-        return list(raw) if isinstance(raw, list) else [np.asarray(raw)]
+        dtrajs_list = list(raw) if isinstance(raw, list) else [np.asarray(raw)]
+
+        # Log shape after loading pre-computed discrete trajectories for each shard
+        logger.info("Using pre-computed discrete trajectories (dtrajs)")
+        for idx, dtraj in enumerate(dtrajs_list):
+            dtraj_array = np.asarray(dtraj, dtype=np.int32)
+            logger.info(f"Featurized shard {idx}: features shape={dtraj_array.shape}")
+
+        return dtrajs_list
     if isinstance(dataset, dict):
         return _cluster_continuous_trajectories(dataset, opts)
     logger.warning("No dtrajs or continuous data available for MSM building")
