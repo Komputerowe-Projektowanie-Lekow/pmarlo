@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import warnings
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
 import numpy as np
 
@@ -268,7 +268,7 @@ class TPTAnalysis:
         source_states: np.ndarray,
         sink_states: np.ndarray,
         sets: List[List[int]],
-    ) -> Tuple[List[set], any]:
+    ) -> Tuple[List[set[int]], Any]:
         """Coarse-grain reactive flux onto sets of states.
 
         Uses deeptime's ReactiveFlux.coarse_grain() method.

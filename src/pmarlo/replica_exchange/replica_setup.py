@@ -306,10 +306,14 @@ class ReplicaSetup:
             resume_pdb, resume_jitter_sigma_nm
         )
 
+        cv_model_path_str = (
+            str(cv_model_path) if cv_model_path is not None else None
+        )
+
         system = create_system(
             pdb,
             forcefield,
-            cv_model_path=cv_model_path,
+            cv_model_path=cv_model_path_str,
             cv_scaler_mean=cv_scaler_mean,
             cv_scaler_scale=cv_scaler_scale,
         )

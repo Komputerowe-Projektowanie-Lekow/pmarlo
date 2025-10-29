@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import warnings
 from dataclasses import dataclass
+from collections.abc import Sequence
 from typing import Any, ClassVar, List, Optional, Tuple
 
 import numpy as np
@@ -690,12 +691,21 @@ class FESCalculator:
         # Try to get dtrajs from MSM object if not provided
         if dtrajs is None:
             if hasattr(msm, 'discrete_trajectories'):
-                dtrajs = msm.discrete_trajectories
+                dtrajs = getattr(msm, 'discrete_trajectories')  # type: ignore[attr-defined]
             elif hasattr(msm, '_dtrajs'):  # Common private attribute name
-                dtrajs = msm._dtrajs
+                dtrajs = getattr(msm, '_dtrajs')  # type: ignore[attr-defined]
             else:
                 logger.error("Discrete trajectories (dtrajs) not provided and not found on MSM object.")
                 return None, None
+
+        dtraj_arrays: List[np.ndarray]
+        if isinstance(dtrajs, np.ndarray):
+            dtraj_arrays = [np.asarray(dtrajs, dtype=int)]
+        elif isinstance(dtrajs, Sequence):
+            dtraj_arrays = [np.asarray(traj, dtype=int) for traj in dtrajs]  # type: ignore[arg-type]
+        else:
+            logger.error("Discrete trajectories must be a sequence of arrays.")
+            return None, None
 
         # Validate dimensions
         if projection[0].shape[1] <= max(dim_x, dim_y):
@@ -709,17 +719,22 @@ class FESCalculator:
             # Concatenate data for selected dimensions
             x_data = np.concatenate([p[:, dim_x] for p in projection])
             y_data = np.concatenate([p[:, dim_y] for p in projection])
-            concatenated_dtrajs = np.concatenate(dtrajs)
+            concatenated_dtrajs = np.concatenate(dtraj_arrays)
 
             # --- Weighting using stationary distribution ---
-            pi = msm.stationary_distribution
-            if pi is None or len(pi) == 0:
+            pi_raw = getattr(msm, 'stationary_distribution', None)
+            if pi_raw is None:
+                logger.error("MSM stationary distribution is empty or invalid.")
+                return None, None
+
+            pi = np.asarray(pi_raw, dtype=float)
+            if pi.size == 0:
                 logger.error("MSM stationary distribution is empty or invalid.")
                 return None, None
 
             # Check consistency
             n_frames_proj = sum(len(p) for p in projection)
-            n_frames_dtrajs = sum(len(d) for d in dtrajs)
+            n_frames_dtrajs = sum(len(d) for d in dtraj_arrays)
             if n_frames_proj != n_frames_dtrajs:
                 logger.error(f"Frame count mismatch: Projection ({n_frames_proj}) vs Dtrajs ({n_frames_dtrajs}).")
                 return None, None

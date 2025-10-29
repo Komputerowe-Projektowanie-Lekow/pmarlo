@@ -285,7 +285,7 @@ class UncertaintyQuantifier:
             f"{len(n_clusters_list)} cluster sizes"
         )
 
-        ensemble = {"T": [], "pi": [], "dtrajs": [], "params": []}
+        ensemble: Dict[str, List[Any]] = {"T": [], "pi": [], "dtrajs": [], "params": []}
 
         for lag in lag_times:
             for n_clusters in n_clusters_list:
@@ -369,12 +369,22 @@ class UncertaintyQuantifier:
             return {"converged": False, "reason": "insufficient_iterations"}
 
         # Extract timescales if available
-        its_list = [r.get("its") for r in iteration_results if r.get("its") is not None]
+        its_list: List[np.ndarray] = []
+        for iteration in iteration_results:
+            its_value = iteration.get("its")
+            if its_value is None:
+                continue
+            its_list.append(np.asarray(its_value, dtype=float))
 
         # Extract populations if available
-        pi_list = [r.get("pi") for r in iteration_results if r.get("pi") is not None]
+        pi_list: List[np.ndarray] = []
+        for iteration in iteration_results:
+            pi_value = iteration.get("pi")
+            if pi_value is None:
+                continue
+            pi_list.append(np.asarray(pi_value, dtype=float))
 
-        diagnostics = {"n_iterations": len(iteration_results)}
+        diagnostics: Dict[str, Any] = {"n_iterations": len(iteration_results)}
 
         # Check ITS convergence
         if len(its_list) >= 2:
@@ -455,7 +465,7 @@ class UncertaintyQuantifier:
         macro_dtrajs = [labels[dtraj] for dtraj in dtrajs]
 
         # Compute predicted and estimated macrostate transitions
-        results = []
+        results: List[Dict[str, Any]] = []
 
         for test_lag in test_lags:
             actual_lag = lag * test_lag

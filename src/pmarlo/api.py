@@ -132,31 +132,34 @@ except Exception:  # pragma: no cover - executed without sklearn
 
     pca_reduce = tica_reduce = vamp_reduce = _missing_reduction  # type: ignore
 
+_CONFORMATIONS_IMPORT_ERROR: Exception | None
+_CONFORMATIONS_IMPORT_MESSAGE = (
+    "Conformations analysis requires deeptime and scikit-learn. "
+    "Install with `pip install 'pmarlo[analysis]'`."
+)
+
 try:  # pragma: no cover - optional conformations analysis
     from .conformations import ConformationSet as _ConformationSet
     from .conformations import KineticImportanceScore as _KineticImportanceScore
     from .conformations import StateDetector as _StateDetector
     from .conformations import TPTAnalysis as _TPTAnalysis
-    from .conformations import find_conformations as _find_conformations
 
-    find_conformations = _find_conformations
+    _CONFORMATIONS_IMPORT_ERROR = None
     TPTAnalysis = _TPTAnalysis
     StateDetector = _StateDetector
     KineticImportanceScore = _KineticImportanceScore
     ConformationSet = _ConformationSet
-except Exception:  # pragma: no cover - executed without deeptime/sklearn
-
-    def _find_conformations_stub(*_args: object, **_kwargs: object) -> Any:
-        raise ImportError(
-            "Conformations analysis requires deeptime and scikit-learn. "
-            "Install with `pip install 'pmarlo[analysis]'`."
-        )
-
-    find_conformations = _find_conformations_stub  # type: ignore
+except Exception as exc:  # pragma: no cover - executed without deeptime/sklearn
+    _CONFORMATIONS_IMPORT_ERROR = exc
     TPTAnalysis = Any  # type: ignore
     StateDetector = Any  # type: ignore
     KineticImportanceScore = Any  # type: ignore
     ConformationSet = Any  # type: ignore
+
+
+def _ensure_conformations_dependencies() -> None:
+    if _CONFORMATIONS_IMPORT_ERROR is not None:
+        raise ImportError(_CONFORMATIONS_IMPORT_MESSAGE) from _CONFORMATIONS_IMPORT_ERROR
 
 try:  # pragma: no cover - optional OpenMM dependency
     from .replica_exchange.config import RemdConfig
@@ -244,24 +247,30 @@ def _align_trajectory(
     """Return an aligned copy of the trajectory using the provided atom selection.
 
     For invariance across frames, we superpose all frames to the first frame
-    on C-alpha atoms by default. If the selection fails, the input trajectory
-    is returned unchanged.
+    on C-alpha atoms by default. Failures to determine the atom selection or to
+    perform the alignment raise errors instead of silently returning the
+    unaligned trajectory so that issues can be detected early in the pipeline.
     """
+    top = traj.topology
+    if isinstance(atom_selection, str):
+        atom_indices = top.select(atom_selection)
+    elif atom_selection is None:
+        atom_indices = top.select("name CA")
+    else:
+        atom_indices = list(atom_selection)
+
+    if atom_indices is None or len(atom_indices) == 0:
+        raise ValueError(
+            "No atoms were selected for trajectory alignment; check the atom selection."
+        )
+
+    ref = traj[0]
     try:
-        top = traj.topology
-        if isinstance(atom_selection, str):
-            atom_indices = top.select(atom_selection)
-        elif atom_selection is None:
-            atom_indices = top.select("name CA")
-        else:
-            atom_indices = list(atom_selection)
-        if atom_indices is None or len(atom_indices) == 0:
-            return traj
-        ref = traj[0]
-        aligned = traj.superpose(ref, atom_indices=atom_indices)
-        return aligned
-    except Exception:
-        return traj
+        return traj.superpose(ref, atom_indices=atom_indices)
+    except Exception as exc:  # pragma: no cover - passes through mdtraj errors
+        raise RuntimeError(
+            "Failed to align trajectory with the provided atom selection."
+        ) from exc
 
 
 def _trig_expand_periodic(
@@ -1584,6 +1593,8 @@ def find_conformations(  # noqa: C901
     Path
         The output directory path.
     """
+    _ensure_conformations_dependencies()
+
     out = Path(output_dir)
 
     atom_indices: Sequence[int] | None = None

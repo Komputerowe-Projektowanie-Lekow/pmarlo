@@ -123,7 +123,7 @@ class KineticImportanceScore:
             # Default: use up to 5 slow modes or n_states/10, whichever is smaller
             default_k = min(5, max(2, self.n_states // 10))
             logger.debug(f"Using default k_slow={default_k}")
-            return default_k
+            return int(default_k)
 
     def _select_by_timescale_gap(self, its: np.ndarray, gap_threshold: float) -> int:
         """Select k_slow based on timescale gap.
@@ -142,7 +142,7 @@ class KineticImportanceScore:
         ratios = its[:-1] / np.maximum(its[1:], 1e-10)
 
         # Find largest gap
-        gap_idx = np.argmax(ratios)
+        gap_idx = int(np.argmax(ratios))
 
         if ratios[gap_idx] >= gap_threshold:
             # Use number of modes before the gap
@@ -153,12 +153,12 @@ class KineticImportanceScore:
             )
         else:
             # No clear gap, use default
-            k_slow = min(5, len(its))
+            k_slow = int(min(5, len(its)))
             logger.debug(
                 f"No clear gap (max ratio: {ratios[gap_idx]:.2f}), k_slow={k_slow}"
             )
 
-        return max(2, k_slow)
+        return int(max(2, k_slow))
 
     def _select_by_variance_explained(self, variance_threshold: float = 0.9) -> int:
         """Select k_slow based on variance explained.
@@ -185,9 +185,9 @@ class KineticImportanceScore:
         else:
             k_slow = 2
 
-        k_slow = max(2, min(k_slow, self.n_states - 1))
+        k_slow = int(max(2, min(k_slow, self.n_states - 1)))
         logger.debug(f"Variance-based selection: k_slow={k_slow}")
-        return k_slow
+        return int(k_slow)
 
     def _compute_eigenvectors(self, n_vecs: int) -> Tuple[np.ndarray, np.ndarray]:
         """Compute top eigenvectors of transition matrix.
