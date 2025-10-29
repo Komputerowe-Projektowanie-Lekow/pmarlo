@@ -54,7 +54,9 @@ class Simulation:
     pressure : float, optional
         Simulation pressure in bar (default: 1.0)
     platform : str, optional
-        OpenMM platform to use ("CUDA", "OpenCL", "CPU", "Reference")
+        OpenMM platform to use ("CUDA" for GPU or "CPU" for CPU). The value must be
+        provided explicitly—no automatic fallback or heuristic selection is
+        performed.
     steps : int, optional
         Default number of production steps when :meth:`run_production` is called
         without an explicit value.  Defaults to 100000 for backwards compatibility.
@@ -218,28 +220,20 @@ class Simulation:
         self.pdb = fixer
 
     def _setup_platform(self):
-        """Set up the OpenMM platform, preferring GPU when available."""
+        """Set up the OpenMM platform using the explicitly requested backend."""
+        supported_platforms = {"CPU", "CUDA"}
+        if self.platform_name not in supported_platforms:
+            raise ValueError(
+                "Unsupported OpenMM platform '%s'. Supported platforms are: %s"
+                % (self.platform_name, ", ".join(sorted(supported_platforms)))
+            )
+
         try:
             self.platform = openmm.Platform.getPlatformByName(self.platform_name)
         except Exception as exc:
-            logger = logging.getLogger(__name__)
-            logger.warning(
-                "Requested OpenMM platform '%s' unavailable (%s); falling back to CPU.",
-                self.platform_name,
-                exc,
-            )
-            fallback_order = [
-                name for name in ("CPU", "Reference") if name != self.platform_name
-            ]
-            for candidate in fallback_order:
-                try:
-                    self.platform = openmm.Platform.getPlatformByName(candidate)
-                    self.platform_name = candidate
-                    break
-                except Exception:
-                    continue
-            else:
-                raise
+            raise RuntimeError(
+                "Requested OpenMM platform '%s' is unavailable" % self.platform_name
+            ) from exc
         if self.platform_name == "CUDA":
             self.platform.setPropertyDefaultValue("Precision", "mixed")
 
@@ -505,8 +499,6 @@ class Simulation:
         topology_file = self.pdb_file
 
         traj = self._load_trajectory(trajectory_file, topology_file)
-        if traj is None:
-            return {}
 
         features: Dict[str, Any] = {}
         handlers: Dict[
@@ -540,9 +532,11 @@ class Simulation:
     def _load_trajectory(self, trajectory_file: str, topology_file: str):
         try:
             return md.load(trajectory_file, top=topology_file)
-        except Exception as e:  # pragma: no cover - log-and-continue path
-            print(f"Warning: Could not load trajectory: {e}")
-            return None
+        except Exception as exc:  # pragma: no cover - log path
+            raise RuntimeError(
+                "Failed to load trajectory for feature extraction "
+                f"from '{trajectory_file}' with topology '{topology_file}'."
+            ) from exc
 
     def _extract_distance_features(
         self, traj: md.Trajectory, spec: Dict[str, Any]

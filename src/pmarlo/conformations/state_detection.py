@@ -212,7 +212,7 @@ class StateDetector:
         sorted_indices = np.argsort(flat_F)
 
         # Take n_basins lowest points that are separated
-        selected = []
+        selected: List[Tuple[int, ...]] = []
         min_distance = max(2, F.shape[0] // (n_basins * 2))
 
         for idx in sorted_indices:

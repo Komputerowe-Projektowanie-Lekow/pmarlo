@@ -60,7 +60,11 @@ def prepare_batch(
         )
         x_t_list.append(xt_tensor)
         x_tau_list.append(xtau_tensor)
-        if use_weights and weights is not None:
+        if use_weights:
+            if weights is None:
+                raise ValueError(
+                    "batch requires weights but a batch element provided None"
+                )
             weight_tensor = torch.as_tensor(
                 np.asarray(weights, dtype=np.float32), device=dev
             ).reshape(-1)
@@ -79,8 +83,8 @@ def prepare_batch(
         if weights_tensor.numel() != total_frames:
             raise ValueError("weights length does not match batch size")
     else:
-        weights_tensor = torch.full(
-            (total_frames,), 1.0 / float(max(1, total_frames)), device=dev
+        raise ValueError(
+            "batch requires weights but none were provided in any batch element"
         )
 
     return x_t, x_tau, weights_tensor
@@ -123,9 +127,24 @@ def make_metrics(
 ) -> dict[str, float]:
     """Package scalar training metrics into a serialisable mapping."""
 
-    lr = 0.0
-    if optimizer.param_groups:
-        lr = float(optimizer.param_groups[0].get("lr", 0.0))
+    if not optimizer.param_groups:
+        raise ValueError(
+            "optimizer has no parameter groups; cannot determine learning rate"
+        )
+
+    first_group = optimizer.param_groups[0]
+    if "lr" not in first_group:
+        raise ValueError(
+            "optimizer parameter group 0 does not define a 'lr' value"
+        )
+
+    lr_value = first_group["lr"]
+    if not isinstance(lr_value, numbers.Real):
+        raise TypeError(
+            "optimizer parameter group 0 contains a non-numeric learning rate"
+        )
+
+    lr = float(lr_value)
 
     return {
         "loss": float(loss.detach().cpu().item()),

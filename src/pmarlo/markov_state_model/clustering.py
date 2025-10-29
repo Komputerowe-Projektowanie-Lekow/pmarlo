@@ -28,6 +28,7 @@ Examples
 from __future__ import annotations
 
 import logging
+import numbers
 from dataclasses import dataclass
 from typing import Any, Dict, Literal, Mapping, cast
 
@@ -112,7 +113,7 @@ def _select_clustering_method(
     method: Literal["auto", "minibatchkmeans", "kmeans"],
     Y: np.ndarray,
     minibatch_threshold: int,
-) -> str:
+) -> Literal["minibatchkmeans", "kmeans"]:
     """Select the appropriate clustering algorithm based on method and data size.
 
     Parameters
@@ -143,9 +144,8 @@ def _select_clustering_method(
                 minibatch_threshold,
             )
             return "minibatchkmeans"
-        else:
-            return "kmeans"
-    elif method in ("kmeans", "minibatchkmeans"):
+        return "kmeans"
+    if method in ("kmeans", "minibatchkmeans"):
         return method
     else:
         raise ValueError(f"Unsupported clustering method: {method}")
@@ -288,14 +288,25 @@ def _resolve_fixed_seed(
     random_state: int | None, attribute_kwargs: Dict[str, Any]
 ) -> int | bool:
     if "fixed_seed" in attribute_kwargs:
-        return attribute_kwargs.pop("fixed_seed")
+        fixed = attribute_kwargs.pop("fixed_seed")
+        if isinstance(fixed, bool):
+            return fixed
+        if isinstance(fixed, numbers.Integral):
+            return int(fixed)
+        raise TypeError(
+            "'fixed_seed' must be an integer or boolean, "
+            f"received type {type(fixed)!r}."
+        )
     if random_state is None:
         return False
     return int(random_state)
 
 
 def _create_clustering_estimator(
-    method: str, n_states: int, random_state: int | None, **kwargs
+    method: Literal["minibatchkmeans", "kmeans"],
+    n_states: int,
+    random_state: int | None,
+    **kwargs: Any,
 ) -> KMeans | MiniBatchKMeans:
     """Create the appropriate clustering estimator.
 
@@ -315,9 +326,6 @@ def _create_clustering_estimator(
     KMeans | MiniBatchKMeans
         Configured clustering estimator.
     """
-    if method not in {"minibatchkmeans", "kmeans"}:
-        raise ValueError(f"Unsupported method: {method}")
-
     init_kwargs, attribute_kwargs = _split_kwargs_for_method(method, kwargs)
     fixed_seed = _resolve_fixed_seed(random_state, attribute_kwargs)
 

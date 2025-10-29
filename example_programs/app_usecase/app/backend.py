@@ -1613,16 +1613,30 @@ class WorkflowBackend:
             )
 
             def _safe_int(value: Any, default: int) -> int:
+                if value is None:
+                    raise ValueError(
+                        "Missing integer value; received None and fallback to"
+                        f" {default!r} is not permitted."
+                    )
                 try:
                     return int(value)
-                except (TypeError, ValueError):
-                    return default
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"Invalid integer value {value!r}; cannot fall back to {default!r}."
+                    ) from exc
 
             def _safe_float(value: Any, default: float = float("nan")) -> float:
+                if value is None:
+                    raise ValueError(
+                        "Missing float value; received None and fallback to"
+                        f" {default!r} is not permitted."
+                    )
                 try:
                     return float(value)
-                except (TypeError, ValueError):
-                    return default
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"Invalid float value {value!r}; cannot fall back to {default!r}."
+                    ) from exc
 
             # Extract metadata from the dataset shards (not from discretization yet)
             shards_meta = dataset.get("__shards__", []) if isinstance(dataset, Mapping) else []

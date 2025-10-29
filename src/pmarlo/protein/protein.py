@@ -285,9 +285,11 @@ class Protein:
         """
         try:
             import mdtraj as md
-        except Exception as e:
-            print(f"Warning: MDTraj not available: {e}")
-            return
+        except Exception as e:  # pragma: no cover - optional dependency missing
+            raise ImportError(
+                "MDTraj is required to compute protein properties when auto_prepare="
+                "False. Install MDTraj or enable automatic preparation."
+            ) from e
 
         try:
             traj = md.load(self.pdb_file)

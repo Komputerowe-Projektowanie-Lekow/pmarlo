@@ -170,6 +170,7 @@ class ITSMixin:
             n_timescales=n_timescales,
             n_samples=n_samples,
             ci=ci,
+            dirichlet_alpha=dirichlet_alpha,
             _logging=_logging,
         )
 
