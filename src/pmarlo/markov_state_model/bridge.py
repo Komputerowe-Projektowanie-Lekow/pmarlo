@@ -167,8 +167,10 @@ def _canonicalize_macro_labels(labels: np.ndarray, T: np.ndarray) -> np.ndarray:
     pops = compute_macro_populations(pi_micro, labels)
     unique = np.unique(labels)
     order = np.argsort(-pops[unique])
-    mapping = {int(unique[idx]): int(i) for i, idx in enumerate(order)}
-    return np.asarray([mapping[int(lbl)] for lbl in labels], dtype=int)
+    # Use vectorized lookup instead of list comprehension
+    mapping = np.empty(unique.max() + 1, dtype=int)
+    mapping[unique[order]] = np.arange(len(unique))
+    return mapping[labels]
 
 
 def compute_macro_populations(
@@ -176,11 +178,7 @@ def compute_macro_populations(
 ) -> np.ndarray:
     """Aggregate micro stationary distribution into macro populations."""
     n_macro = int(np.max(micro_to_macro)) + 1 if micro_to_macro.size else 0
-    pi_macro = np.zeros((n_macro,), dtype=float)
-    for m in range(n_macro):
-        idx = np.where(micro_to_macro == m)[0]
-        if idx.size:
-            pi_macro[m] = float(np.sum(pi_micro[idx]))
+    pi_macro = np.bincount(micro_to_macro, weights=pi_micro, minlength=n_macro)
     s = float(np.sum(pi_macro))
     if s > 0:
         pi_macro /= s
@@ -196,11 +194,9 @@ def lump_micro_to_macro_T(
     """
     n_macro = int(np.max(micro_to_macro)) + 1 if micro_to_macro.size else 0
     F = np.zeros((n_macro, n_macro), dtype=float)
-    for i in range(T_micro.shape[0]):
-        A = int(micro_to_macro[i])
-        for j in range(T_micro.shape[1]):
-            B = int(micro_to_macro[j])
-            F[A, B] += float(pi_micro[i] * T_micro[i, j])
+    # Vectorized computation: multiply each row by pi, then aggregate by macro states
+    weighted_T = pi_micro[:, np.newaxis] * T_micro
+    np.add.at(F, (micro_to_macro[:, np.newaxis], micro_to_macro[np.newaxis, :]), weighted_T)
     rows = F.sum(axis=1)
     rows[rows == 0] = 1.0
     return cast(np.ndarray, F / rows[:, None])
@@ -233,7 +229,7 @@ def compute_macro_mfpt(T_macro: np.ndarray) -> np.ndarray:
 
 def serialize_macro_mapping(micro_to_macro: np.ndarray) -> str:
     """Serialize micro→macro mapping to a JSON string."""
-    data = {"micro_to_macro": [int(x) for x in micro_to_macro.tolist()]}
+    data = {"micro_to_macro": micro_to_macro.astype(int).tolist()}
     return json.dumps(data)
 
 

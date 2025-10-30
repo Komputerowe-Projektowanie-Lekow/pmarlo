@@ -196,13 +196,16 @@ def _detect_reducibility(T: np.ndarray) -> bool:
     )
     if n_components <= 1:
         return False
+    # Vectorized check: for each component, check if any state has outgoing edges to other components
     recurrent = np.ones(n_components, dtype=bool)
-    for state in range(T.shape[0]):
-        comp_idx = labels[state]
+    for comp_idx in range(n_components):
         if not recurrent[comp_idx]:
             continue
-        mask = labels != comp_idx
-        if np.any((T[state] > const.NUMERIC_MIN_RATE) & mask):
+        comp_states = labels == comp_idx
+        other_states = ~comp_states
+        # Check if any state in this component has edges to other components
+        sub_T = T[comp_states, :]
+        if np.any((sub_T[:, other_states] > const.NUMERIC_MIN_RATE)):
             recurrent[comp_idx] = False
     return bool(np.sum(recurrent) > 1)
 
