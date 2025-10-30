@@ -262,6 +262,18 @@ class TestValidateFesQuality:
         assert validation["is_valid"] is True
         assert any("Narrow FES range" in msg for msg in validation["warnings"])
 
+    def test_accepts_msm_artifact_key(self):
+        """FES validation should handle MSM artifact dictionaries."""
+
+        fes_values = np.arange(100, dtype=float).reshape(10, 10)
+        fes_data = {"F": fes_values}
+
+        validation = validate_fes_quality(fes_data)
+
+        assert validation["is_valid"] is True
+        assert validation["errors"] == []
+        assert "fes_range" in validation["metrics"]
+
 
 class TestFormatValidationReport:
     """Test format_validation_report function."""

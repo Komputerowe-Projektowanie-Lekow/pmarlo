@@ -404,6 +404,7 @@ class Reweighter:
             )
 
         bias_matrices: list[np.ndarray] = []
+        therm_state_count: int | None = None
         for idx, bias in enumerate(raw_bias):
             arr = np.asarray(bias, dtype=np.float64, order="C")
             if arr.ndim != 2:
@@ -412,6 +413,13 @@ class Reweighter:
                 raise ValueError(
                     f"TRAM bias matrix {idx} length mismatch: {arr.shape[0]}"
                     f" != {dtrajs[idx].shape[0]}"
+                )
+            if therm_state_count is None:
+                therm_state_count = int(arr.shape[1])
+            elif arr.shape[1] != therm_state_count:
+                raise ValueError(
+                    "TRAM bias matrices must all share the same number of "
+                    "thermodynamic states"
                 )
             bias_matrices.append(arr)
 
@@ -449,8 +457,12 @@ class Reweighter:
                 raise ValueError("TRAM 'n_therm_states' must be an integer") from exc
             if n_therm_states <= 0:
                 raise ValueError("TRAM 'n_therm_states' must be positive")
+            if therm_state_count is not None and n_therm_states != therm_state_count:
+                raise ValueError(
+                    "TRAM 'n_therm_states' does not match bias matrix column count"
+                )
         else:
-            n_therm_states = int(bias_matrices[0].shape[1]) if bias_matrices else None
+            n_therm_states = therm_state_count
 
         if n_therm_states is None or n_therm_states <= 0:
             raise ValueError(

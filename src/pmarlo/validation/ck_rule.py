@@ -56,7 +56,7 @@ def _multinomial_rms_se(P: np.ndarray, counts: np.ndarray) -> float:
         Ni = max(1, int(counts[i]))
         pi = P[i]
         sesq_rows.append(np.sum(pi * (1.0 - pi) / Ni) / n)
-    return float(np.sqrt(np.mean(sesq_rows) / n))
+    return float(np.sqrt(np.mean(sesq_rows)))
 
 
 def _ess_adjusted_threshold(noise_rms: float, cap: float, sigma_mult: float) -> float:

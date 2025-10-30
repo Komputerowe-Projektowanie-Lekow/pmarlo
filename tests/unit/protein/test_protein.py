@@ -138,6 +138,31 @@ class TestProtein:
             with pytest.raises(ImportError, match="PDBFixer is required"):
                 protein.prepare()
 
+    def test_prepare_defaults_to_instance_ph(self, test_pdb_file):
+        """Manual preparation reuses the stored pH when none is provided."""
+
+        ph_value = 5.5
+
+        with (
+            patch("pmarlo.protein.protein.HAS_PDBFIXER", True),
+            patch("pmarlo.protein.protein.PDBFixer") as mock_fix,
+            patch.object(Protein, "_load_basic_properties_without_preparation"),
+            patch.object(Protein, "_load_protein_data"),
+            patch.object(Protein, "_calculate_properties"),
+        ):
+            fixer_instance = mock_fix.return_value
+
+            protein = Protein(str(test_pdb_file), ph=ph_value, auto_prepare=False)
+
+            protein.prepare()
+            fixer_instance.addMissingHydrogens.assert_called_once_with(ph_value)
+
+            fixer_instance.addMissingHydrogens.reset_mock()
+            protein.prepared = False
+            protein.prepare(ph=6.0)
+            fixer_instance.addMissingHydrogens.assert_called_once_with(6.0)
+            assert protein.ph == 6.0
+
     def test_system_creation_without_pdbfixer(self, test_fixed_pdb_file):
         """Test system creation functionality without PDBFixer."""
         with patch("pmarlo.protein.protein.HAS_PDBFIXER", False):

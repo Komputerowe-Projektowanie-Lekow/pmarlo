@@ -96,13 +96,8 @@ def geometric_ladder(
         raise ValueError("n must be >= 2")
     if not (tmin > 0.0 and tmax > 0.0 and tmax > tmin):
         raise ValueError("Require 0 < tmin < tmax")
-    k = n - 1
-    r = (tmax / tmin) ** (1.0 / k)
-    idx = _np.arange(n, dtype=float)
-    vals = tmin * (r**idx)
-    if not endpoint:
-        vals = tmin * (r ** (_np.arange(n) * (k / n)))
-    return _np.array(vals, dtype=float)
+    vals = _np.geomspace(tmin, tmax, num=n, endpoint=endpoint)
+    return _np.asarray(vals, dtype=float)
 
 
 def power_of_two_temperature_ladder(

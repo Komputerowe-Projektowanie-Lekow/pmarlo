@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from pmarlo.samplers import BalancedTempSampler
 from pmarlo.shards.pair_builder import PairBuilder
@@ -35,3 +36,13 @@ def test_balanced_sampler_instantiation():
     sampler = BalancedTempSampler(shards_by_temp, PairBuilder(tau_steps=1))
     batch = sampler.sample_batch(pairs_per_temperature=1)
     assert len(batch) == 2
+
+
+def test_balanced_sampler_raises_on_mismatched_frame_weights():
+    shard = make_shard(300.0, n_frames=5)
+    sampler = BalancedTempSampler({300.0: [shard]}, PairBuilder(tau_steps=1))
+    weights = np.linspace(1.0, 2.0, shard.meta.n_frames - 1, dtype=np.float64)
+    sampler.set_frame_weights(shard.meta.shard_id, weights)
+
+    with pytest.raises(ValueError, match="frame weights length mismatch"):
+        sampler.sample_batch(pairs_per_temperature=1)

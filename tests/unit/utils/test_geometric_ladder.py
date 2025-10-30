@@ -16,6 +16,16 @@ def test_geometric_ladder_monotone_and_endpoints():
     assert np.allclose(ratios, np.full_like(ratios, ratios[0]))
 
 
+def test_geometric_ladder_without_endpoint_matches_geomspace():
+    arr = geometric_ladder(300.0, 600.0, 5, endpoint=False)
+    assert isinstance(arr, np.ndarray)
+    assert arr.shape[0] == 5
+    assert np.all(np.diff(arr) > 0)
+    assert arr[-1] < 600.0
+    expected = np.geomspace(300.0, 600.0, num=5, endpoint=False)
+    assert np.allclose(arr, expected)
+
+
 def test_geometric_ladder_invalid():
     import pytest
 

@@ -219,24 +219,31 @@ def _prepare_learn_cv_arrays(dataset: Dict[str, Any]) -> Tuple[
     return X_all, shards_meta, shard_ranges, X_list
 
 
-def _collect_lag_candidates(params: Dict[str, Any], tau_requested: int) -> List[int]:
-    def _coerce_positive_int(value: Any, *, source: str) -> int:
-        if value is None:
-            raise ValueError(
-                f"LEARN_CV requires a positive integer lag value; {source} is missing"
-            )
-        try:
-            coerced = int(value)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"LEARN_CV requires a positive integer lag value; {source}={value!r} is not an integer"
-            ) from exc
-        if coerced <= 0:
-            raise ValueError(
-                f"LEARN_CV requires a positive integer lag value; {source}={value!r} is not positive"
-            )
-        return coerced
+def _coerce_positive_int(value: Any, *, source: str) -> int:
+    if value is None:
+        raise ValueError(
+            f"LEARN_CV requires a positive integer lag value; {source} is missing"
+        )
+    try:
+        coerced = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"LEARN_CV requires a positive integer lag value; {source}={value!r} is not an integer"
+        ) from exc
+    if coerced <= 0:
+        raise ValueError(
+            f"LEARN_CV requires a positive integer lag value; {source}={value!r} is not positive"
+        )
+    return coerced
 
+
+def _resolve_requested_lag(params: Dict[str, Any]) -> int:
+    if "lag" in params:
+        return _coerce_positive_int(params.get("lag"), source="params['lag']")
+    return _coerce_positive_int(params.get("lag", 5), source="requested lag")
+
+
+def _collect_lag_candidates(params: Dict[str, Any], tau_requested: int) -> List[int]:
     if "lag" in params:
         primary = _coerce_positive_int(params.get("lag"), source="params['lag']")
     else:
@@ -671,7 +678,7 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
         total_frames,
     )
 
-    tau_requested = int(max(1, params.get("lag", 5)))
+    tau_requested = _resolve_requested_lag(params)
     per_shard_info, pairs_estimate, warnings = _compute_pairs_metadata(
         tau_requested, shard_ranges, shards_meta, total_frames
     )

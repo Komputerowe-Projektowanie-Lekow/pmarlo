@@ -756,7 +756,12 @@ def _process_split_assignment(
         dataset, split_name, split, X.shape[0]
     )
     stats["segment_lengths"] = list(split_lengths)
-    stats["expected_pairs"] = expected_pairs(split_lengths, lag_time, 1)
+    stride_for_pairs: Sequence[int] | int
+    if split_strides:
+        stride_for_pairs = split_strides
+    else:
+        stride_for_pairs = 1
+    stats["expected_pairs"] = expected_pairs(split_lengths, lag_time, stride_for_pairs)
     stats["segment_strides"] = list(split_strides)
 
     labels = discretizer.transform(
@@ -960,8 +965,8 @@ def discretize_dataset(
         )
         assignments[name] = labels
         assignment_masks[name] = valid_mask
-        segment_lengths_by_split[name] = split_lengths
-        segment_strides_by_split[name] = split_strides
+        segment_lengths_by_split[name] = list(split_lengths)
+        segment_strides_by_split[name] = list(split_strides)
         if labels.size:
             max_state = max(max_state, int(labels.max()))
 
@@ -987,6 +992,7 @@ def discretize_dataset(
     weights = _coerce_weights(frame_weights, train_labels.size, train_key)
 
     train_lengths = segment_lengths_by_split.get(train_key) or [train_labels.size]
+    train_strides = segment_strides_by_split.get(train_key) or []
     train_segments = _lengths_to_segments(train_lengths, train_labels.size)
 
     counts, counted_pairs_train = _weighted_counts(
@@ -998,7 +1004,12 @@ def discretize_dataset(
     )
     counts_before_prune = counts.copy()
     counted_pairs_before = counted_pairs_train
-    expected_pairs_train = expected_pairs(train_lengths, lag_time, 1)
+    stride_for_pairs: Sequence[int] | int
+    if train_strides:
+        stride_for_pairs = train_strides
+    else:
+        stride_for_pairs = 1
+    expected_pairs_train = expected_pairs(train_lengths, lag_time, stride_for_pairs)
 
     state_counts_before = _compute_state_counts(
         train_labels,

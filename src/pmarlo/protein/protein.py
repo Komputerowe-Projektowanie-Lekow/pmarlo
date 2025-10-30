@@ -276,7 +276,7 @@ class Protein:
 
     def prepare(
         self,
-        ph: float = 7.0,
+        ph: float | None = None,
         remove_heterogens: bool = True,
         keep_water: bool = True,
         add_missing_atoms: bool = True,
@@ -291,7 +291,8 @@ class Protein:
         Prepare the protein structure with specified options.
 
         Args:
-            ph (float): pH value for protonation state (default: 7.0)
+            ph (float | None): pH value for protonation state. When ``None`` the
+                instance's stored ``self.ph`` is used (default behavior).
             remove_heterogens (bool): Remove non-protein molecules (default: True)
             keep_water (bool): Keep water molecules if True (default: True)
             add_missing_atoms (bool): Add missing atoms to residues (default: True)
@@ -312,6 +313,13 @@ class Protein:
         Raises:
             ImportError: If PDBFixer is not installed
         """
+        if ph is None:
+            ph_to_use = self.ph
+        else:
+            self._validate_ph(ph)
+            self.ph = ph
+            ph_to_use = ph
+
         if not HAS_PDBFIXER:
             _raise_pdbfixer_missing(
                 "PDBFixer is required for protein preparation but is not installed. "
@@ -342,7 +350,7 @@ class Protein:
 
         # Add missing hydrogens with specified pH
         if add_missing_hydrogens:
-            self.fixer.addMissingHydrogens(ph)
+            self.fixer.addMissingHydrogens(ph_to_use)
 
         # Optionally solvate the system if no waters are present
         if solvate:

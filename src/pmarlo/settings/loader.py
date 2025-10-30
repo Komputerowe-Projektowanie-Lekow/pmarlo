@@ -69,7 +69,23 @@ def load_defaults() -> Dict[str, Any]:
             + ", ".join(sorted(missing))
         )
 
-    enable_bias = bool(payload["enable_cv_bias"])
+    truthy = {"true", "yes", "1"}
+    falsy = {"false", "no", "0"}
+
+    def _coerce_boolean(value: Any, key: str) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in truthy:
+                return True
+            if normalized in falsy:
+                return False
+        raise ConfigurationError(
+            f"{key} must be a boolean or one of: {', '.join(sorted(truthy | falsy))}."
+        )
+
+    enable_bias = _coerce_boolean(payload["enable_cv_bias"], "enable_cv_bias")
     bias_mode = str(payload["bias_mode"]).strip().lower()
     if bias_mode not in ALLOWED_BIAS_MODES:
         raise ConfigurationError(
