@@ -135,9 +135,7 @@ def make_metrics(
 
     first_group = optimizer.param_groups[0]
     if "lr" not in first_group:
-        raise ValueError(
-            "optimizer parameter group 0 does not define a 'lr' value"
-        )
+        raise ValueError("optimizer parameter group 0 does not define a 'lr' value")
 
     lr_value = first_group["lr"]
     if not isinstance(lr_value, numbers.Real):

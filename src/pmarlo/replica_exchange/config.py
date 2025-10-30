@@ -36,7 +36,7 @@ class RemdConfig:
         default_factory=lambda: ["amber14-all.xml", "amber14/tip3pfb.xml"]
     )
     temperatures: Optional[List[float]] = None
-    output_dir: Path | str = Path("output/replica_exchange")
+    output_dir: Path | str | None = None
     exchange_frequency: int = 50
     dcd_stride: int = 1
     use_metadynamics: bool = True
@@ -76,3 +76,9 @@ class RemdConfig:
             object.__setattr__(self, "input_pdb", resolved_str)
         else:
             object.__setattr__(self, "input_pdb", resolved_str)
+
+        if self.output_dir is None:
+            raise TypeError(
+                "RemdConfig requires `output_dir` to be provided explicitly."
+            )
+        object.__setattr__(self, "output_dir", Path(self.output_dir))

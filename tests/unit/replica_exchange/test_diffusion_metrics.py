@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pmarlo.replica_exchange.diagnostics import compute_diffusion_metrics
 

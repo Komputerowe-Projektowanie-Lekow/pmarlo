@@ -62,7 +62,9 @@ def adaptive_bandwidth(
     return np.clip(h, h_min, h_max)
 
 
-def _blend_two(F: np.ndarray, F_lo: np.ndarray, F_hi: np.ndarray, w: np.ndarray) -> np.ndarray:
+def _blend_two(
+    F: np.ndarray, F_lo: np.ndarray, F_hi: np.ndarray, w: np.ndarray
+) -> np.ndarray:
     """Linear blend per element: (1-w)*F_lo + w*F_hi, where w in [0,1]."""
     return (1.0 - w) * F_lo + w * F_hi
 

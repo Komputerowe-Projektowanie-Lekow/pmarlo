@@ -1,4 +1,4 @@
-import warnings
+﻿import warnings
 
 import numpy as np
 import pytest
@@ -50,7 +50,7 @@ def test_plotting_with_nans(tmp_path):
         msm.plot_implied_timescales()
     legend_texts = [t.get_text() for t in plt.gca().get_legend().get_texts()]
     assert any(
-        "NaNs indicate unstable eigenvalues at this τ" in t for t in legend_texts
+        "NaNs indicate unstable eigenvalues at this Ï„" in t for t in legend_texts
     )
     plt.close()
 

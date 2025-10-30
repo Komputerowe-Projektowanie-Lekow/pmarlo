@@ -1,4 +1,4 @@
-import numpy as np
+﻿import numpy as np
 import pytest
 
 from pmarlo.analysis.msm import ensure_msm_inputs_whitened

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional, Tuple, List
+from typing import List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -66,7 +66,13 @@ def save_fes_contour(
         )
 
     F_for_plot = np.where(finite_mask, F, np.nan)
-    c = plt.contourf(x_centers, y_centers, F_for_plot.T, levels=const.PLOT_CONTOUR_LEVELS, cmap="viridis")
+    c = plt.contourf(
+        x_centers,
+        y_centers,
+        F_for_plot.T,
+        levels=const.PLOT_CONTOUR_LEVELS,
+        cmap="viridis",
+    )
     plt.colorbar(c, label="Free Energy (kJ/mol)")
     title_warn = ""
     if mask is not None:
@@ -188,7 +194,10 @@ def fes2d(
                 )
                 H = np.zeros((len(xe) - 1, len(ye) - 1), dtype=float)
                 return np.full_like(H, np.nan), xe, ye, "Invalid FES ranges"
-        nb = max(const.FES_ADAPTIVE_MIN_BINS, int(np.sqrt(len(x)) / const.FES_ADAPTIVE_BIN_DIVISOR))
+        nb = max(
+            const.FES_ADAPTIVE_MIN_BINS,
+            int(np.sqrt(len(x)) / const.FES_ADAPTIVE_BIN_DIVISOR),
+        )
         H, xe, ye = np.histogram2d(x, y, bins=nb, range=[[x_lo, x_hi], [y_lo, y_hi]])
     else:
         nb = int(bins)
@@ -245,7 +254,9 @@ def plot_sampling_validation(
     if not projected_data_1d:
         raise ValueError("projected_data_1d must contain at least one trajectory")
 
-    empty_trajectories = [idx for idx, traj in enumerate(projected_data_1d) if len(traj) == 0]
+    empty_trajectories = [
+        idx for idx, traj in enumerate(projected_data_1d) if len(traj) == 0
+    ]
     if empty_trajectories:
         raise ValueError(
             "projected_data_1d contains empty trajectories at indices: "
@@ -267,24 +278,37 @@ def plot_sampling_validation(
     # --- 1. Plot Histograms ---
     # Combine all data for a single representative histogram
     all_data_1d = np.concatenate(projected_data_1d)
-    ax.hist(all_data_1d, bins=bins, alpha=alpha_hist, density=True, color='grey', label='Overall Distribution')
+    ax.hist(
+        all_data_1d,
+        bins=bins,
+        alpha=alpha_hist,
+        density=True,
+        color="grey",
+        label="Overall Distribution",
+    )
 
     ylims = ax.get_ylim()
     xlims = ax.get_xlim()
 
     # --- 2. Plot Trajectory Traces ---
-    num_shards_to_label = min(15, len(projected_data_1d)) # Limit legend entries
+    num_shards_to_label = min(15, len(projected_data_1d))  # Limit legend entries
     for i, traj in enumerate(projected_data_1d):
         logger.debug(f"Shard {i}: traj length = {len(traj)}")
 
         plot_len = min(len(traj), max_traj_length_plot)
-        logger.debug(f"Shard {i}: plot_len = {plot_len}, max_traj_length_plot = {max_traj_length_plot}")
+        logger.debug(
+            f"Shard {i}: plot_len = {plot_len}, max_traj_length_plot = {max_traj_length_plot}"
+        )
 
         traj_segment = traj[:plot_len:stride]
         actual_plot_len = len(traj_segment)
 
-        logger.debug(f"Shard {i}: stride = {stride}, actual_plot_len = {actual_plot_len}")
-        logger.debug(f"Shard {i}: traj_segment shape = {traj_segment.shape}, dtype = {traj_segment.dtype}")
+        logger.debug(
+            f"Shard {i}: stride = {stride}, actual_plot_len = {actual_plot_len}"
+        )
+        logger.debug(
+            f"Shard {i}: traj_segment shape = {traj_segment.shape}, dtype = {traj_segment.dtype}"
+        )
 
         # Log first few values for the first 3 shards
         if i < 3:
@@ -301,7 +325,9 @@ def plot_sampling_validation(
                 lw=lw_traj,
                 label=label,
             )
-            logger.debug(f"Shard {i}: PLOTTED with y_time range [{y_time[0]:.4f}, {y_time[-1]:.4f}]")
+            logger.debug(
+                f"Shard {i}: PLOTTED with y_time range [{y_time[0]:.4f}, {y_time[-1]:.4f}]"
+            )
 
     # --- 3. Add Time Arrow ---
     # Ensure arrow/text are placed reasonably within potentially changed xlims
@@ -331,11 +357,17 @@ def plot_sampling_validation(
     handles, labels = ax.get_legend_handles_labels()
     # Only show legend if there are labels
     if labels:
-         # Place legend outside plot area
-        ax.legend(handles, labels, loc="upper left", bbox_to_anchor=(1.02, 1), title=f"Shards (Top {num_shards_to_label})")
+        # Place legend outside plot area
+        ax.legend(
+            handles,
+            labels,
+            loc="upper left",
+            bbox_to_anchor=(1.02, 1),
+            title=f"Shards (Top {num_shards_to_label})",
+        )
 
     try:
-        fig.tight_layout(rect=(0, 0, 0.85, 1)) # Adjust layout to make space for legend
+        fig.tight_layout(rect=(0, 0, 0.85, 1))  # Adjust layout to make space for legend
     except ValueError:
         logger.warning("Could not adjust layout for sampling validation plot legend.")
         fig.tight_layout()
@@ -348,10 +380,10 @@ def plot_free_energy_2d(
     fes: np.ndarray,
     ax: Optional[plt.Axes] = None,
     cmap: str = "viridis",
-    levels: int = 25, # Increased levels for smoother look
-    max_energy_kt: float = 7.0, # Reduced default cap
+    levels: int = 25,  # Increased levels for smoother look
+    max_energy_kt: float = 7.0,  # Reduced default cap
     add_contour_lines: bool = True,
-    line_color: str = 'black',
+    line_color: str = "black",
     line_width: float = 0.5,
     line_alpha: float = 0.6,
 ) -> Figure:
@@ -397,7 +429,9 @@ def plot_free_energy_2d(
     finite_min = float(fes_array[finite_mask].min())
     max_energy_kt = float(max_energy_kt)
     if not np.isfinite(max_energy_kt) or max_energy_kt <= finite_min:
-        raise ValueError("max_energy_kt must be finite and greater than the minimum fes value")
+        raise ValueError(
+            "max_energy_kt must be finite and greater than the minimum fes value"
+        )
 
     capped_fes = np.clip(fes_array, a_min=finite_min, a_max=max_energy_kt)
 
@@ -419,8 +453,13 @@ def plot_free_energy_2d(
 
     if add_contour_lines:
         ax.contour(
-            xx, yy, capped_fes.T, levels=levels, colors=line_color,
-            linewidths=line_width, alpha=line_alpha
+            xx,
+            yy,
+            capped_fes.T,
+            levels=levels,
+            colors=line_color,
+            linewidths=line_width,
+            alpha=line_alpha,
         )
 
     ax.set_xlabel("TICA Component 1")

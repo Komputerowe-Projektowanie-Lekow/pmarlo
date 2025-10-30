@@ -50,7 +50,9 @@ class MSMBuilder:
 
         logger = _logging.getLogger("pmarlo")
         for i, projected_array in enumerate(features):
-            logger.info(f"Projected shard {i}: projection shape={projected_array.shape}")
+            logger.info(
+                f"Projected shard {i}: projection shape={projected_array.shape}"
+            )
 
         concatenated, concatenated_weights = self._concatenate_data(
             features, weights_coll
@@ -101,7 +103,9 @@ class MSMBuilder:
             feature_matrix = np.asarray(arr)
 
             # Log shape immediately after obtaining the feature array for this shard
-            logger.debug(f"Featurized shard {idx}: features shape={feature_matrix.shape}")
+            logger.debug(
+                f"Featurized shard {idx}: features shape={feature_matrix.shape}"
+            )
 
             self._validate_feature_matrix(feature_matrix)
             if feature_matrix.size == 0:

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import sys
 import types
@@ -7,6 +7,7 @@ from typing import Iterator, Sequence
 
 if "numpy" not in sys.modules:
     numpy_stub = types.ModuleType("numpy")
+
     class _StubFloating:
         def __class_getitem__(cls, item: object) -> type:
             return float
@@ -162,6 +163,7 @@ if "deeptime" not in sys.modules:
     )
     decomposition_mod.TICA = _StubEstimator
     decomposition_mod.VAMP = _StubEstimator
+
     class _StubKMeans(_StubEstimator):  # pragma: no cover - minimal stub
         def predict(self, X: Sequence[object]) -> list[int]:
             return [0 for _ in X]

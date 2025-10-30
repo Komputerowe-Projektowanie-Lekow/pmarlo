@@ -1,4 +1,4 @@
-"""Unit tests for Kinetic Importance Score."""
+﻿"""Unit tests for Kinetic Importance Score."""
 
 from __future__ import annotations
 

@@ -22,4 +22,3 @@
 - Reduced cognitive complexity of equilibration workflow
 - Preserved all existing functionality and values without introducing fallbacks
 - Improved code readability by extracting complex nested logic into named methods
-

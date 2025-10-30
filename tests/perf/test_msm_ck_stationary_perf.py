@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 """Performance benchmarks for CK diagnostics and stationary distribution."""
 
@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 
 def _build_cycle_msm(tmp_path: Path) -> "EnhancedMSM":
-    """Create a simple three-state MSM cycling 0→1→2→0."""
+    """Create a simple three-state MSM cycling 0â†’1â†’2â†’0."""
     from pmarlo.markov_state_model.enhanced_msm import EnhancedMSM
 
     traj = np.tile(np.array([0, 1, 2], dtype=int), 1_000)
@@ -44,7 +44,7 @@ def _build_cycle_msm(tmp_path: Path) -> "EnhancedMSM":
 
 
 def test_ck_micro_benchmark(tmp_path: Path, benchmark: pytest.BenchmarkFixture) -> None:
-    """Benchmark the Chapman–Kolmogorov microstate test."""
+    """Benchmark the Chapmanâ€“Kolmogorov microstate test."""
     msm = _build_cycle_msm(tmp_path)
 
     def _compute() -> CKTestResult:

@@ -1,4 +1,4 @@
-"""Tests for :mod:`pmarlo.utils.validation`."""
+﻿"""Tests for :mod:`pmarlo.utils.validation`."""
 
 from __future__ import annotations
 
@@ -11,9 +11,15 @@ import pytest
 
 def _load_validation_module():
     module_path = (
-        Path(__file__).resolve().parents[3] / "src" / "pmarlo" / "utils" / "validation.py"
+        Path(__file__).resolve().parents[3]
+        / "src"
+        / "pmarlo"
+        / "utils"
+        / "validation.py"
     )
-    spec = importlib.util.spec_from_file_location("pmarlo.utils.validation", module_path)
+    spec = importlib.util.spec_from_file_location(
+        "pmarlo.utils.validation", module_path
+    )
     if spec is None or spec.loader is None:
         raise RuntimeError("Unable to load validation module for testing")
     module = importlib.util.module_from_spec(spec)

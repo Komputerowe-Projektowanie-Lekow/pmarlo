@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import importlib.util
 import sys
@@ -52,7 +52,9 @@ class _ImportStubPlatformModule:
     def getNumPlatforms(self) -> int:
         return 0
 
-    def getPlatformByName(self, name: str) -> _DummyPlatform:  # pragma: no cover - unused
+    def getPlatformByName(
+        self, name: str
+    ) -> _DummyPlatform:  # pragma: no cover - unused
         raise RuntimeError("no platforms stubbed")
 
 
@@ -78,7 +80,9 @@ def platform_selector_module(monkeypatch):
     return module
 
 
-def test_selects_first_available_when_preferred_missing(platform_selector_module, monkeypatch):
+def test_selects_first_available_when_preferred_missing(
+    platform_selector_module, monkeypatch
+):
     dummy_module = _DummyPlatformModule(["OpenCL"])
     monkeypatch.setattr(platform_selector_module, "Platform", dummy_module)
 

@@ -22,9 +22,9 @@ from .results import (
     TPTResult,
     UncertaintyResult,
 )
+from .state_detection import StateDetector
 from .tpt_analysis import TPTAnalysis
 from .uncertainty import UncertaintyQuantifier
-from .state_detection import StateDetector
 
 logger = logging.getLogger("pmarlo.conformations")
 

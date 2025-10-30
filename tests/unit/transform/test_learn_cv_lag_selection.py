@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import numpy as np
 import pytest
@@ -77,7 +77,8 @@ def test_collect_lag_candidates_rejects_non_integer_values():
     from pmarlo.transform import apply as apply_mod
 
     with pytest.raises(
-        ValueError, match=r"LEARN_CV requires a positive integer lag value; params\['lag']='abc' is not an integer"
+        ValueError,
+        match=r"LEARN_CV requires a positive integer lag value; params\['lag']='abc' is not an integer",
     ):
         apply_mod._collect_lag_candidates({"lag": "abc"}, 5)
 
@@ -92,7 +93,8 @@ def test_collect_lag_candidates_requires_positive_requested_lag():
     from pmarlo.transform import apply as apply_mod
 
     with pytest.raises(
-        ValueError, match=r"LEARN_CV requires a positive integer lag value; requested lag=0 is not positive"
+        ValueError,
+        match=r"LEARN_CV requires a positive integer lag value; requested lag=0 is not positive",
     ):
         apply_mod._collect_lag_candidates({}, 0)
 
@@ -101,6 +103,7 @@ def test_collect_lag_candidates_flags_missing_lag_entry():
     from pmarlo.transform import apply as apply_mod
 
     with pytest.raises(
-        ValueError, match=r"LEARN_CV requires a positive integer lag value; params\['lag'] is missing"
+        ValueError,
+        match=r"LEARN_CV requires a positive integer lag value; params\['lag'] is missing",
     ):
         apply_mod._collect_lag_candidates({"lag": None}, 5)

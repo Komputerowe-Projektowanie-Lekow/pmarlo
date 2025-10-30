@@ -1,4 +1,4 @@
-"""Unit tests for the high-level conformations finder."""
+﻿"""Unit tests for the high-level conformations finder."""
 
 from __future__ import annotations
 

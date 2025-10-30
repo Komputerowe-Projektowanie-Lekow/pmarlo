@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import math
+from typing import Any
 
 __all__ = ["coerce_finite_float", "coerce_finite_float_with_default"]
 

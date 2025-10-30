@@ -1,4 +1,4 @@
-"""Tests for the metric vector extraction helper."""
+﻿"""Tests for the metric vector extraction helper."""
 
 from __future__ import annotations
 
@@ -17,7 +17,9 @@ def _ensure_mdtraj_stub() -> None:
     stub = types.ModuleType("mdtraj")
     stub.Trajectory = type("Trajectory", (), {})
 
-    def _unavailable(*args: object, **kwargs: object) -> None:  # pragma: no cover - defensive
+    def _unavailable(
+        *args: object, **kwargs: object
+    ) -> None:  # pragma: no cover - defensive
         raise RuntimeError("mdtraj functionality is not available in unit tests")
 
     stub.compute_phi = _unavailable

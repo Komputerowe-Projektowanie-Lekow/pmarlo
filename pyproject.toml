@@ -94,7 +94,7 @@ description = "Protein Markov State Model Analysis with Replica Exchange"
 authors = ["PMARLO Development Team <konrad.jan.gorzelanczyk@gmail.com>"]
 readme = "README.md"
 packages = [{include = "pmarlo", from = "src"}]
-version = "0.0.0"  # placeholder for Poetry; real version comes from poetry-dynamic-versioning
+version = "0.1.1.dev46"  # placeholder for Poetry; real version comes from poetry-dynamic-versioning
 
 [[tool.poetry.source]]
 name = "pytorch-cpu"
@@ -270,7 +270,7 @@ version = "literal"
 
 # ────────────────────── Poetry dynamic versioning ─────────────────────
 [tool.poetry-dynamic-versioning]
-enable = true
+enable = false
 vcs = "git"
 style = "pep440"
 pattern = "^v(?P<base>\\d+\\.\\d+\\.\\d+)"

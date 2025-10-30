@@ -3,8 +3,8 @@ from __future__ import annotations
 """Utilities for consistent console-and-log banners and timing helpers."""
 
 import logging
-from datetime import timedelta
 from dataclasses import dataclass, field
+from datetime import timedelta
 from time import perf_counter
 from types import TracebackType
 from typing import Literal, Optional, Sequence

@@ -112,4 +112,6 @@ def decide_ck(
         f"{passes}/{total} lags within threshold (pass_fraction={pass_fraction:.2f}, "
         f"mode={cfg.mode}, cap={cfg.per_lag_cap})."
     )
-    return CKDecision(pass_fraction=pass_fraction, per_lag=per_lag, passed=passed, reason=reason)
+    return CKDecision(
+        pass_fraction=pass_fraction, per_lag=per_lag, passed=passed, reason=reason
+    )

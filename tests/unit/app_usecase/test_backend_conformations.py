@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 from pathlib import Path
@@ -9,12 +9,12 @@ import pytest
 
 np = pytest.importorskip("numpy")
 
-from example_programs.app_usecase.app.backend import (
+from pmarlo.conformations.results import Conformation, ConformationSet, TPTResult
+from pmarlo_webapp.app.backend import (
     ConformationsConfig,
     WorkflowBackend,
     WorkspaceLayout,
 )
-from pmarlo.conformations.results import Conformation, ConformationSet, TPTResult
 
 
 @pytest.fixture
@@ -63,18 +63,18 @@ def _patch_common_conformation_dependencies(
         return dataset
 
     monkeypatch.setattr(
-        "example_programs.app_usecase.app.backend.load_shards_as_dataset",
+        "pmarlo_webapp.app.backend.load_shards_as_dataset",
         fake_load_shards_as_dataset,
     )
 
     if patch_reduce:
         monkeypatch.setattr(
-            "example_programs.app_usecase.app.backend.reduce_features",
+            "pmarlo_webapp.app.backend.reduce_features",
             lambda feats, method, lag, n_components: feats,
         )
 
     monkeypatch.setattr(
-        "example_programs.app_usecase.app.backend.cluster_microstates",
+        "pmarlo_webapp.app.backend.cluster_microstates",
         lambda *_args, **_kwargs: SimpleNamespace(
             labels=np.array([0, 1, 0, 1, 0, 1], dtype=int)
         ),
@@ -97,11 +97,11 @@ def _patch_common_conformation_dependencies(
         return _FakeTraj(total)
 
     monkeypatch.setattr(
-        "example_programs.app_usecase.app.backend.md.load",
+        "pmarlo_webapp.app.backend.md.load",
         fake_md_load,
     )
     monkeypatch.setattr(
-        "example_programs.app_usecase.app.backend.md.join",
+        "pmarlo_webapp.app.backend.md.join",
         fake_md_join,
     )
 
@@ -113,7 +113,7 @@ def _patch_common_conformation_dependencies(
             (out / f"{name}.png").write_bytes(b"png")
 
     monkeypatch.setattr(
-        "example_programs.app_usecase.app.backend.plot_tpt_summary",
+        "pmarlo_webapp.app.backend.plot_tpt_summary",
         fake_plot_tpt_summary,
     )
 
@@ -138,7 +138,7 @@ def test_conformations_requires_topology_path(
     _patch_common_conformation_dependencies(monkeypatch, _workspace, _fake_dataset)
 
     monkeypatch.setattr(
-        "example_programs.app_usecase.app.backend.build_simple_msm",
+        "pmarlo_webapp.app.backend.build_simple_msm",
         lambda *_args, **_kwargs: (
             np.array([[0.8, 0.2], [0.2, 0.8]], dtype=float),
             np.array([0.5, 0.5], dtype=float),
@@ -151,7 +151,7 @@ def test_conformations_requires_topology_path(
         )
 
     monkeypatch.setattr(
-        "example_programs.app_usecase.app.backend.find_conformations",
+        "pmarlo_webapp.app.backend.find_conformations",
         fake_find_conformations,
     )
 
@@ -178,7 +178,7 @@ def test_conformations_rejects_non_reversible_transition_matrix(
     )
 
     monkeypatch.setattr(
-        "example_programs.app_usecase.app.backend.build_simple_msm",
+        "pmarlo_webapp.app.backend.build_simple_msm",
         lambda *_args, **_kwargs: (
             np.array([[0.9, 0.1], [0.4, 0.6]], dtype=float),
             np.array([0.6, 0.4], dtype=float),
@@ -186,7 +186,7 @@ def test_conformations_rejects_non_reversible_transition_matrix(
     )
 
     monkeypatch.setattr(
-        "example_programs.app_usecase.app.backend.find_conformations",
+        "pmarlo_webapp.app.backend.find_conformations",
         lambda **_kwargs: None,
     )
 
@@ -214,7 +214,7 @@ def test_conformations_successful_run_uses_conformation_set_api(
     )
 
     monkeypatch.setattr(
-        "example_programs.app_usecase.app.backend.build_simple_msm",
+        "pmarlo_webapp.app.backend.build_simple_msm",
         lambda *_args, **_kwargs: (
             np.array([[0.85, 0.15], [0.2, 0.8]], dtype=float),
             np.array([0.5, 0.5], dtype=float),
@@ -272,7 +272,7 @@ def test_conformations_successful_run_uses_conformation_set_api(
         )
 
     monkeypatch.setattr(
-        "example_programs.app_usecase.app.backend.find_conformations",
+        "pmarlo_webapp.app.backend.find_conformations",
         fake_find_conformations,
     )
 
@@ -303,7 +303,7 @@ def test_conformations_config_controls_uncertainty_options(
     _patch_common_conformation_dependencies(monkeypatch, _workspace, _fake_dataset)
 
     monkeypatch.setattr(
-        "example_programs.app_usecase.app.backend.build_simple_msm",
+        "pmarlo_webapp.app.backend.build_simple_msm",
         lambda *_args, **_kwargs: (
             np.array([[0.85, 0.15], [0.2, 0.8]], dtype=float),
             np.array([0.5, 0.5], dtype=float),
@@ -354,7 +354,7 @@ def test_conformations_config_controls_uncertainty_options(
         )
 
     monkeypatch.setattr(
-        "example_programs.app_usecase.app.backend.find_conformations",
+        "pmarlo_webapp.app.backend.find_conformations",
         fake_find_conformations,
     )
 
@@ -399,12 +399,12 @@ def test_conformations_respects_tica_dimension(
         return features
 
     monkeypatch.setattr(
-        "example_programs.app_usecase.app.backend.reduce_features",
+        "pmarlo_webapp.app.backend.reduce_features",
         fake_reduce_features,
     )
 
     monkeypatch.setattr(
-        "example_programs.app_usecase.app.backend.build_simple_msm",
+        "pmarlo_webapp.app.backend.build_simple_msm",
         lambda *_args, **_kwargs: (
             np.array([[0.85, 0.15], [0.2, 0.8]], dtype=float),
             np.array([0.5, 0.5], dtype=float),
@@ -455,7 +455,7 @@ def test_conformations_respects_tica_dimension(
         )
 
     monkeypatch.setattr(
-        "example_programs.app_usecase.app.backend.find_conformations",
+        "pmarlo_webapp.app.backend.find_conformations",
         fake_find_conformations,
     )
 
@@ -495,7 +495,7 @@ def test_conformations_uses_precomputed_deeptica_features(
         raise AssertionError("reduce_features should not be called for DeepTICA inputs")
 
     monkeypatch.setattr(
-        "example_programs.app_usecase.app.backend.reduce_features",
+        "pmarlo_webapp.app.backend.reduce_features",
         _raise_reduce,
     )
 
@@ -519,12 +519,12 @@ def test_conformations_uses_precomputed_deeptica_features(
         return SimpleNamespace(labels=np.array([0, 1, 0, 1, 0, 1], dtype=int))
 
     monkeypatch.setattr(
-        "example_programs.app_usecase.app.backend.cluster_microstates",
+        "pmarlo_webapp.app.backend.cluster_microstates",
         fake_cluster,
     )
 
     monkeypatch.setattr(
-        "example_programs.app_usecase.app.backend.build_simple_msm",
+        "pmarlo_webapp.app.backend.build_simple_msm",
         lambda *_args, **_kwargs: (
             np.array([[0.9, 0.1], [0.2, 0.8]], dtype=float),
             np.array([0.5, 0.5], dtype=float),
@@ -532,7 +532,7 @@ def test_conformations_uses_precomputed_deeptica_features(
     )
 
     monkeypatch.setattr(
-        "example_programs.app_usecase.app.backend.find_conformations",
+        "pmarlo_webapp.app.backend.find_conformations",
         lambda **_kwargs: SimpleNamespace(
             tpt_result=SimpleNamespace(
                 rate=0.1,
@@ -576,7 +576,7 @@ def test_conformations_deeptica_requires_projection_path(
     _patch_common_conformation_dependencies(monkeypatch, _workspace, _fake_dataset)
 
     monkeypatch.setattr(
-        "example_programs.app_usecase.app.backend.build_simple_msm",
+        "pmarlo_webapp.app.backend.build_simple_msm",
         lambda *_args, **_kwargs: (
             np.array([[0.85, 0.15], [0.2, 0.8]], dtype=float),
             np.array([0.5, 0.5], dtype=float),
@@ -584,7 +584,7 @@ def test_conformations_deeptica_requires_projection_path(
     )
 
     monkeypatch.setattr(
-        "example_programs.app_usecase.app.backend.find_conformations",
+        "pmarlo_webapp.app.backend.find_conformations",
         lambda **_kwargs: None,
     )
 

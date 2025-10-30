@@ -14,4 +14,3 @@
 
 - Enhanced API clarity by promoting `n_metastable` from hidden kwargs to explicit parameter with default value of 2.
 - Users can now easily control PCCA+ clustering granularity without needing to know about the hidden kwargs interface.
-

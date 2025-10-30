@@ -311,6 +311,7 @@ class BuildOpts:
     output_format: str = "json"
     save_trajectories: bool = False
     save_plots: bool = True
+    diagnostics_dir: Optional[str] = None
     n_jobs: int = 1
     memory_limit_gb: Optional[float] = None
     chunk_size: int = 1000
@@ -330,9 +331,7 @@ class BuildOpts:
                 raise ValueError("fes_bins must be a tuple of two integers")
             if any(not isinstance(b, int) or b <= 0 for b in self.fes_bins):
                 raise ValueError("fes_bins must contain two positive integers")
-            object.__setattr__(
-                self, "fes_bins", tuple(int(x) for x in self.fes_bins)
-            )
+            object.__setattr__(self, "fes_bins", tuple(int(x) for x in self.fes_bins))
 
         mode = str(self.fes_smoothing_mode).lower()
         if mode not in {"never", "auto", "always"}:
@@ -346,6 +345,18 @@ class BuildOpts:
             if target <= 0:
                 raise ValueError("fes_target_sd_kT must be positive when provided")
             object.__setattr__(self, "fes_target_sd_kT", target)
+
+        diag_dir_raw = getattr(self, "diagnostics_dir", None)
+        if diag_dir_raw:
+            try:
+                resolved_diag = str(Path(diag_dir_raw).expanduser())
+            except Exception as exc:
+                raise ValueError(
+                    "diagnostics_dir must be a valid path-like value"
+                ) from exc
+            object.__setattr__(self, "diagnostics_dir", resolved_diag)
+        else:
+            object.__setattr__(self, "diagnostics_dir", None)
 
         def _coerce_positive(name: str) -> float:
             value = float(getattr(self, name))
@@ -1112,30 +1123,193 @@ def _locate_shard(
 def _resolve_diagnostics_dir(
     dataset: Mapping[str, Any], opts: BuildOpts
 ) -> Path | None:
+    project_root = Path.cwd().resolve()
+    project_diagnostics = project_root / "diagnostics"
+
     candidates: list[Path] = []
+    seen_candidates: set[Path] = set()
+
+    def _add_candidate(
+        raw_path: Any, *, ensure_subdir: bool = False, label: str = ""
+    ) -> None:
+        if not raw_path:
+            return
+        try:
+            base = Path(raw_path).expanduser()
+        except Exception:
+            logger.debug(
+                "Discarding diagnostics directory candidate %r (%s)",
+                raw_path,
+                label,
+                exc_info=True,
+            )
+            return
+        candidate = base / "diagnostics" if ensure_subdir else base
+        try:
+            candidate = candidate.resolve(strict=False)
+        except Exception:
+            logger.debug(
+                "Failed to normalise diagnostics directory candidate %r (%s)",
+                raw_path,
+                label,
+                exc_info=True,
+            )
+            candidate = Path(candidate)
+        if candidate == project_diagnostics:
+            logger.debug(
+                "Skipping repository root diagnostics directory candidate (%s)",
+                label,
+            )
+            return
+        if candidate in seen_candidates:
+            return
+        seen_candidates.add(candidate)
+        candidates.append(candidate)
+
+    def _dataset_output_dirs(data: Mapping[str, Any]) -> list[Any]:
+        keys = ("output_dir", "output_path", "output_directory")
+
+        def _extract(mapping: Mapping[str, Any], store: list[Any]) -> None:
+            for key in keys:
+                value = mapping.get(key)
+                if isinstance(value, (str, os.PathLike)):
+                    store.append(value)
+
+        found: list[Any] = []
+        _extract(data, found)
+        meta = data.get("metadata")
+        if isinstance(meta, Mapping):
+            _extract(meta, found)
+        context = data.get("__context__")
+        if isinstance(context, Mapping):
+            _extract(context, found)
+        return found
+
     custom_dir = getattr(opts, "diagnostics_dir", None)
     if custom_dir:
-        try:
-            candidates.append(Path(custom_dir))
-        except Exception:
-            pass
-    shards = dataset.get("__shards__") if isinstance(dataset, Mapping) else None
-    if isinstance(shards, Sequence) and shards:
-        first = shards[0]
-        if isinstance(first, Mapping):
-            source_path = first.get("source_path")
-            if source_path:
-                try:
-                    candidates.append(Path(source_path).parent / "diagnostics")
-                except Exception:
-                    pass
-    candidates.append(Path.cwd() / "pmarlo_diagnostics")
+        _add_candidate(custom_dir, label="opts")
+
+    env_override = os.getenv("PMARLO_DIAGNOSTICS_DIR")
+    if env_override:
+        _add_candidate(env_override, label="env")
+
+    if isinstance(dataset, Mapping):
+        for output_dir in _dataset_output_dirs(dataset):
+            _add_candidate(output_dir, ensure_subdir=True, label="dataset")
+
+        shards = dataset.get("__shards__")
+        if isinstance(shards, Sequence) and shards:
+            first = shards[0]
+            if isinstance(first, Mapping):
+                source_path = first.get("source_path")
+                if source_path:
+                    try:
+                        raw_source = Path(source_path)
+                    except Exception:
+                        logger.debug(
+                            "Ignoring shard diagnostics root %r; could not coerce to Path",
+                            source_path,
+                            exc_info=True,
+                        )
+                    else:
+                        if raw_source.is_absolute():
+                            resolved_source = raw_source.resolve(strict=False)
+                        else:
+                            resolved_source = (project_root / raw_source).resolve(
+                                strict=False
+                            )
+                        source_parent = resolved_source.parent
+                        try:
+                            relative = resolved_source.relative_to(project_root)
+                        except ValueError:
+                            _add_candidate(
+                                source_parent,
+                                ensure_subdir=True,
+                                label="shard_parent_abs",
+                            )
+                        else:
+                            parts = relative.parts
+                            if len(parts) >= 2:
+                                top_anchor = project_root / parts[0]
+                                _add_candidate(
+                                    top_anchor,
+                                    ensure_subdir=True,
+                                    label="shard_top",
+                                )
+                                if len(parts) >= 3:
+                                    sub_anchor = top_anchor / parts[1]
+                                    _add_candidate(
+                                        sub_anchor,
+                                        ensure_subdir=True,
+                                        label="shard_sub",
+                                    )
+                            elif len(parts) == 1:
+                                examples_root = project_root / "example_programs"
+                                if examples_root.exists():
+                                    _add_candidate(
+                                        examples_root,
+                                        ensure_subdir=True,
+                                        label="shard_example_root",
+                                    )
+                                tests_root = project_root / "tests"
+                                if tests_root.exists():
+                                    _add_candidate(
+                                        tests_root,
+                                        ensure_subdir=True,
+                                        label="shard_tests_root",
+                                    )
+                            _add_candidate(
+                                source_parent,
+                                ensure_subdir=True,
+                                label="shard_parent",
+                            )
+
+    example_programs_root = project_root / "example_programs"
+    if example_programs_root.exists():
+        _add_candidate(
+            example_programs_root,
+            ensure_subdir=True,
+            label="examples_root",
+        )
+        programs_output_root = example_programs_root / "programs_outputs"
+        if programs_output_root.exists():
+            _add_candidate(
+                programs_output_root,
+                ensure_subdir=True,
+                label="examples_output",
+            )
+
+    tests_root = project_root / "tests"
+    if tests_root.exists():
+        _add_candidate(tests_root, ensure_subdir=True, label="tests_root")
+
+    output_root_env = os.getenv("PMARLO_OUTPUT_ROOT")
+    if output_root_env:
+        _add_candidate(output_root_env, ensure_subdir=True, label="output_root_env")
+    else:
+        _add_candidate(
+            Path.cwd() / "experiments_output",
+            ensure_subdir=True,
+            label="default_output_root",
+        )
+
+    _add_candidate(Path.cwd() / "output", ensure_subdir=True, label="cwd_output")
+
+    seen: set[str] = set()
     for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
         try:
             ensure_directory(candidate)
             return candidate
         except Exception:
-            continue
+            logger.debug(
+                "Failed to prepare diagnostics directory at %s",
+                candidate,
+                exc_info=True,
+            )
     return None
 
 
@@ -1329,7 +1503,9 @@ def _cluster_continuous_trajectories(
                 dtrajs.append(dtraj_array)
 
                 # Log shape after clustering/featurization for this shard
-                logger.info(f"Featurized shard {idx}: features shape={dtraj_array.shape}")
+                logger.info(
+                    f"Featurized shard {idx}: features shape={dtraj_array.shape}"
+                )
 
         logger.info("Created %d discrete trajectories from clustering", len(dtrajs))
         return dtrajs
@@ -1570,12 +1746,16 @@ def _fes_metadata_summary(meta: Dict[str, Any]) -> Dict[str, Any]:
             smoothing_summary["mode"] = str(mode)
         target = smoothing_meta.get("target_sd_kT")
         try:
-            smoothing_summary["target_sd_kT"] = float(target) if target is not None else None
+            smoothing_summary["target_sd_kT"] = (
+                float(target) if target is not None else None
+            )
         except Exception:
             smoothing_summary["target_sd_kT"] = None
         applied = smoothing_meta.get("applied_fraction")
         try:
-            smoothing_summary["applied_fraction"] = float(applied) if applied is not None else 0.0
+            smoothing_summary["applied_fraction"] = (
+                float(applied) if applied is not None else 0.0
+            )
         except Exception:
             smoothing_summary["applied_fraction"] = 0.0
         for key in ("alpha", "h0", "ess_ref", "h_min", "h_max"):
@@ -1681,9 +1861,7 @@ def estimate_memory_usage(dataset: Any, opts: BuildOpts) -> float:
 
     feature_names = _extract_feature_names(dataset)
     if not feature_names:
-        raise ValueError(
-            "Cannot estimate memory usage: dataset has no feature names"
-        )
+        raise ValueError("Cannot estimate memory usage: dataset has no feature names")
 
     n_features = len(feature_names)
     dataset_gb = (n_frames * n_features * 8) / (1024**3)

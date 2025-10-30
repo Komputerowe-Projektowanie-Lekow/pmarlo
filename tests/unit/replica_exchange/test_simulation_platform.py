@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+﻿# SPDX-License-Identifier: GPL-3.0-or-later
 
 """Tests for explicit OpenMM platform selection in :mod:`pmarlo.replica_exchange`."""
 
@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from pmarlo.replica_exchange import _simulation_full
-
 
 ASSET_PDB = Path("tests/_assets/3gd8-fixed.pdb")
 

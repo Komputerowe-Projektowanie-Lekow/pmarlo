@@ -1,4 +1,4 @@
-"""Unit tests for state detection."""
+﻿"""Unit tests for state detection."""
 
 from __future__ import annotations
 

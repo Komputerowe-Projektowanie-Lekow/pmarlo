@@ -14,7 +14,9 @@ from typing import Any, Dict, Tuple
 from .base import (
     FEATURE_REGISTRY,
     FeatureComputer,
-    get_feature as _base_get_feature,
+)
+from .base import get_feature as _base_get_feature
+from .base import (
     register_feature,
 )
 

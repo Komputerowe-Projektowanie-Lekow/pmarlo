@@ -10,14 +10,16 @@ This script demonstrates the main PMARLO API usage patterns including:
 For production use, see the other example programs.
 """
 
-from _example_support import assets_path, ensure_src_on_path, project_root
+from pathlib import Path
+
+from _example_support import assets_path, ensure_src_on_path
 
 ensure_src_on_path()
 
 from pmarlo import Pipeline, Protein, run_pmarlo
 
-BASE_DIR = project_root()
 TESTS_DIR = assets_path()
+OUTPUT_ROOT = Path(__file__).resolve().parent / "programs_outputs" / "demo_pipeline"
 
 
 def test_protein():
@@ -58,7 +60,7 @@ def run_simple_example():
             steps=100,  # Very short for demo
             n_states=10,  # Fewer states for demo
             use_replica_exchange=False,  # Simpler for demo
-            output_dir=str(BASE_DIR / "output" / "demo"),
+            output_dir=str(OUTPUT_ROOT / "simple_run"),
             auto_continue=True,
         )
 
@@ -98,18 +100,19 @@ results = run_pmarlo(
     "protein.pdb",
     temperatures=[300, 310, 320],
     steps=1000,
+    output_dir="/path/to/pmarlo/run",
     auto_continue=True,
 )
 
 # Programmatic pipeline control
 from pmarlo import Pipeline
-pipeline = Pipeline("protein.pdb", auto_continue=True)
+pipeline = Pipeline("protein.pdb", output_dir="/path/to/pmarlo/run", auto_continue=True)
 results = pipeline.run()
 
 # Manual component setup
 from pmarlo import Protein, ReplicaExchange, MarkovStateModel
 protein = Protein("protein.pdb", ph=7.0)
-pipeline = Pipeline("protein.pdb")
+pipeline = Pipeline("protein.pdb", output_dir="/path/to/pmarlo/run")
 results = pipeline.run()
     """
     )

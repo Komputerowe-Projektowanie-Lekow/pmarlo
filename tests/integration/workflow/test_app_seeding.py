@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
@@ -13,8 +13,8 @@ pytestmark = pytest.mark.integration
     reason="Requires OpenMM",
 )
 def test_fixed_seed_determinism_two_runs(test_fixed_pdb_file: Path, tmp_path: Path):
-    from example_programs.app_usecase.app.backend import run_short_sim
     from pmarlo.io.trajectory_reader import MDTrajReader
+    from pmarlo_webapp.app.backend import run_short_sim
 
     ws = tmp_path
     temps = [300.0, 320.0, 340.0]
@@ -50,8 +50,8 @@ def test_fixed_seed_determinism_two_runs(test_fixed_pdb_file: Path, tmp_path: Pa
     reason="Requires OpenMM",
 )
 def test_auto_seed_varies_trajectories(test_fixed_pdb_file: Path, tmp_path: Path):
-    from example_programs.app_usecase.app.backend import choose_sim_seed, run_short_sim
     from pmarlo.io.trajectory_reader import MDTrajReader
+    from pmarlo_webapp.app.backend import choose_sim_seed, run_short_sim
 
     ws = tmp_path
     temps = [300.0, 320.0, 340.0]

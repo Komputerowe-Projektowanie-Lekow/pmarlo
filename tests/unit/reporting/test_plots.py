@@ -1,13 +1,13 @@
-from pathlib import Path
+﻿from pathlib import Path
 
 import numpy as np
 import pytest
 
 from pmarlo.reporting.plots import (
+    plot_free_energy_2d,
+    plot_sampling_validation,
     save_fes_contour,
     save_transition_matrix_heatmap,
-    plot_sampling_validation,
-    plot_free_energy_2d,
 )
 
 

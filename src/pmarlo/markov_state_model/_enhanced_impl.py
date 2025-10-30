@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     List,
@@ -49,7 +50,7 @@ class EnhancedMSM(
 def run_complete_msm_analysis(
     trajectory_files: Union[str, List[str]],
     topology_file: str,
-    output_dir: str = "output/msm_analysis",
+    output_dir: str | Path,
     n_states: int | Literal["auto"] = 100,
     lag_time: int = 20,
     feature_type: str = "phi_psi",

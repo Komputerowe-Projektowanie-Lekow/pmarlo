@@ -30,7 +30,7 @@ class HarmonicExpansionBias(nn.Module):
     This is a restraint, not an exploration bias—it encourages non-zero CV values but
     does not guarantee better conformational sampling.
 
-    See example_programs/app_usecase/app/CV_REQUIREMENTS.md for physics discussion.
+    See pmarlo_webapp/app/CV_REQUIREMENTS.md for physics discussion.
 
     Parameters
     ----------
@@ -62,7 +62,7 @@ class CVBiasPotential(nn.Module):
         4. Apply harmonic restraint: E = k·Σ(cv_i²)
         5. Return energy in kJ/mol (OpenMM computes forces via automatic differentiation)
 
-    See example_programs/app_usecase/app/CV_INTEGRATION_GUIDE.md for usage guide.
+    See pmarlo_webapp/app/CV_INTEGRATION_GUIDE.md for usage guide.
     """
 
     def __init__(

@@ -88,7 +88,10 @@ class _CachedWeights:
         energy_signature = _array_signature(thermo.energy)
         bias_signature = _array_signature(thermo.bias)
         base_signature = _array_signature(thermo.base_weights)
-        if self.energy_signature != energy_signature or self.bias_signature != bias_signature:
+        if (
+            self.energy_signature != energy_signature
+            or self.bias_signature != bias_signature
+        ):
             return False
 
         if self.base_signature is None:
@@ -171,9 +174,7 @@ class Reweighter:
                     w = cached.weights
                 else:
                     w = self._compute_split_weights(thermo)
-                    self._cache[thermo.shard_id] = _CachedWeights.from_split(
-                        thermo, w
-                    )
+                    self._cache[thermo.shard_id] = _CachedWeights.from_split(thermo, w)
 
                 weights[split_name] = w
                 self._store_split_weights(dataset, split_name, thermo.shard_id, w)
@@ -394,9 +395,7 @@ class Reweighter:
 
             normalized = (base / total).astype(np.float64, copy=False)
             weights[split_name] = normalized
-            self._cache[thermo.shard_id] = _CachedWeights.from_split(
-                thermo, normalized
-            )
+            self._cache[thermo.shard_id] = _CachedWeights.from_split(thermo, normalized)
             self._store_split_weights(dataset, split_name, thermo.shard_id, normalized)
 
         return weights

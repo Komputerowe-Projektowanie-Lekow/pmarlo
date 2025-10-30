@@ -1,4 +1,4 @@
-import base64
+﻿import base64
 from typing import Any, Dict, Tuple
 
 import pytest

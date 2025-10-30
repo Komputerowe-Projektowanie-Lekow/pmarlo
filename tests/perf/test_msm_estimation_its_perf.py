@@ -1,4 +1,4 @@
-"""Performance benchmarks for MSM estimation and ITS calculations."""
+﻿"""Performance benchmarks for MSM estimation and ITS calculations."""
 
 from __future__ import annotations
 

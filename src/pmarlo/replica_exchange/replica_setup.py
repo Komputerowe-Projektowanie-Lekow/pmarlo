@@ -103,9 +103,7 @@ class ReplicaSetup:
             )
 
     @staticmethod
-    def perform_stage1_minimization(
-        simulation: Simulation, replica_index: int
-    ) -> bool:
+    def perform_stage1_minimization(simulation: Simulation, replica_index: int) -> bool:
         """Perform stage 1 minimization with multiple attempts."""
         minimization_success = False
         schedule = [(50, 100.0), (100, 50.0), (200, 10.0)]
@@ -152,8 +150,8 @@ class ReplicaSetup:
             ReplicaSetup._validate_positions(positions, replica_index)
             logger.info(f"  Final energy for replica {replica_index}: {energy}")
             if shared_minimized_positions is None:
-                shared_minimized_positions = ReplicaSetup._cache_minimized_positions_safe(
-                    state
+                shared_minimized_positions = (
+                    ReplicaSetup._cache_minimized_positions_safe(state)
                 )
             return shared_minimized_positions
         except Exception as exc:
@@ -235,7 +233,10 @@ class ReplicaSetup:
 
     @staticmethod
     def add_dcd_reporter(
-        simulation: Simulation, replica_index: int, output_dir: Path, reporter_stride: int
+        simulation: Simulation,
+        replica_index: int,
+        output_dir: Path,
+        reporter_stride: int,
     ) -> Path:
         """Add DCD reporter to simulation."""
         traj_file = output_dir / f"replica_{replica_index:02d}.dcd"
@@ -266,9 +267,7 @@ class ReplicaSetup:
             logger.info("CV monitoring initialized")
             return cv_monitor_module, bias_energy_stats, bias_cv_stats
         except Exception as exc:
-            logger.warning(
-                "Unable to initialise CV monitoring for logging: %s", exc
-            )
+            logger.warning("Unable to initialise CV monitoring for logging: %s", exc)
             return None, None, None
 
     @staticmethod
@@ -306,9 +305,7 @@ class ReplicaSetup:
             resume_pdb, resume_jitter_sigma_nm
         )
 
-        cv_model_path_str = (
-            str(cv_model_path) if cv_model_path is not None else None
-        )
+        cv_model_path_str = str(cv_model_path) if cv_model_path is not None else None
 
         system = create_system(
             pdb,
@@ -468,9 +465,7 @@ class ReplicaSetup:
         # Optional velocity reseed on start
         if reseed_velocities:
             try:
-                simulation.context.setVelocitiesToTemperature(
-                    temperature * unit.kelvin
-                )
+                simulation.context.setVelocitiesToTemperature(temperature * unit.kelvin)
             except Exception:
                 pass
 
@@ -488,4 +483,3 @@ class ReplicaSetup:
             if last is not None and float(t) <= float(last):
                 raise ValueError("Temperature ladder must be strictly increasing")
             last = t
-

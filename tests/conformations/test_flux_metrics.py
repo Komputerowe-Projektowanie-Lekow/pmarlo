@@ -1,4 +1,4 @@
-"""Tests for reactive flux utilities in the conformations module."""
+﻿"""Tests for reactive flux utilities in the conformations module."""
 
 from __future__ import annotations
 

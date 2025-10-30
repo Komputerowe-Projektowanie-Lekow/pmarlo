@@ -376,7 +376,9 @@ def _write_additional_metadata(
     diagnostics = getattr(build_result, "diagnostics", None)
     if isinstance(diagnostics, Mapping):
         diag_path = output_dir / "diagnostics.json"
-        diag_path.write_text(json.dumps(diagnostics, cls=_AnalysisJSONEncoder, indent=2))
+        diag_path.write_text(
+            json.dumps(diagnostics, cls=_AnalysisJSONEncoder, indent=2)
+        )
         summary_payload["diagnostics_file"] = diag_path.name
 
     flags = getattr(build_result, "flags", None)
@@ -761,7 +763,7 @@ _UNSAFE_FILENAME_CHARS = re.compile(r"[^\w\-.]", flags=re.UNICODE)
 
 
 def _sanitise_name(name: str) -> str:
-    """Return a filesystem-safe representation of ``name``.
+    r"""Return a filesystem-safe representation of ``name``.
 
     Unicode compatibility characters are first normalised (NFKC) so that visually
     identical glyphs map to the same code points. Any remaining character outside

@@ -201,8 +201,8 @@ def create_system(
 ) -> openmm.System:
     """Create an OpenMM system with optional TorchForce-based CV biasing.
 
-    See example_programs/app_usecase/app/CV_INTEGRATION_GUIDE.md for usage guide.
-    See example_programs/app_usecase/app/CV_REQUIREMENTS.md for technical details.
+    See pmarlo_webapp/app/CV_INTEGRATION_GUIDE.md for usage guide.
+    See pmarlo_webapp/app/CV_REQUIREMENTS.md for technical details.
     """
 
     config = _load_bias_config()

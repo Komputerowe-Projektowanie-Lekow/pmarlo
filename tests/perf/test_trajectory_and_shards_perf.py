@@ -1,4 +1,4 @@
-"""Micro-benchmarks for trajectory I/O, topology parsing, and shard utilities."""
+﻿"""Micro-benchmarks for trajectory I/O, topology parsing, and shard utilities."""
 
 from __future__ import annotations
 

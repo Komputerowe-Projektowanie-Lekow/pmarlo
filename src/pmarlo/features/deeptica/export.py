@@ -75,7 +75,7 @@ def export_cv_bias_potential(
     """Export a Deep-TICA network wrapped with TorchScript feature extraction and bias.
 
     Creates a single TorchScript module: positions+box → features → CVs → bias energy.
-    See example_programs/app_usecase/app/CV_INTEGRATION_GUIDE.md for usage.
+    See pmarlo_webapp/app/CV_INTEGRATION_GUIDE.md for usage.
     """
 
     from pmarlo.features.deeptica.cv_bias_potential import create_cv_bias_potential

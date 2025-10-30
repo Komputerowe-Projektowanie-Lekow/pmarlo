@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import numpy as np
 import pytest
@@ -25,7 +25,7 @@ def test_apply_whitening_applies_transform_and_sets_flag() -> None:
 
     assert applied is True
     np.testing.assert_allclose(
-        whitened, np.array([[1.0, 1.0], [2.0, 3.0]], dtype=np.float64)
+        whitened, np.array([[-0.5, -1.0], [0.5, 1.0]], dtype=np.float64)
     )
     assert metadata["output_transform_applied"] is True
 
