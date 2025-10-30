@@ -1,0 +1,139 @@
+2025-10-30 11:12:47 | INFO     | root | Logging initialized. Log file: C:\Users\konrad_guest\Documents\GitHub\pmarlo\example_programs\app_usecase\app_outputs\app_logs\app_log_20251030_111247.log
+2025-10-30 11:12:47 | INFO     | root | App directory: C:\Users\konrad_guest\Documents\GitHub\pmarlo\example_programs\app_usecase\app
+2025-10-30 11:13:21 | INFO     | pmarlo | Loaded shard 0 (T300K_seg0001_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:21 | INFO     | pmarlo | Loaded shard 1 (T300K_seg0002_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:21 | INFO     | pmarlo | Loaded shard 2 (T300K_seg0001_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:21 | INFO     | pmarlo | Loaded shard 3 (T300K_seg0002_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:21 | INFO     | pmarlo | Loaded shard 4 (T300K_seg0000_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:21 | INFO     | pmarlo | Loaded shard 5 (T300K_seg0001_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:21 | INFO     | pmarlo | Loaded shard 6 (T300K_seg0000_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:21 | INFO     | pmarlo | Loaded shard 7 (T300K_seg0001_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:21 | INFO     | pmarlo | Loaded shard 8 (T300K_seg0002_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:22 | INFO     | pmarlo | Loaded shard 9 (T300K_seg0003_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:22 | INFO     | pmarlo | Loaded shard 10 (T300K_seg0000_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:22 | INFO     | pmarlo | Loaded shard 11 (T300K_seg0001_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:22 | INFO     | pmarlo | Loaded shard 12 (T300K_seg0002_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:22 | INFO     | pmarlo | Loaded shard 13 (T300K_seg0000_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:22 | INFO     | pmarlo | Loaded shard 14 (T300K_seg0001_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:22 | INFO     | pmarlo | Featurized all shards: concatenated shape=(15000, 2)
+2025-10-30 11:13:22 | INFO     | backend | [ANALYSIS_DEBUG] Pre-build config: lag=10 shard_count=15 dataset_frames=15000 dataset_shards=15
+2025-10-30 11:13:22 | INFO     | pmarlo | Loaded shard 0 (T300K_seg0001_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:22 | INFO     | pmarlo | Loaded shard 1 (T300K_seg0002_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:22 | INFO     | pmarlo | Loaded shard 2 (T300K_seg0001_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:22 | INFO     | pmarlo | Loaded shard 3 (T300K_seg0002_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:22 | INFO     | pmarlo | Loaded shard 4 (T300K_seg0000_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:22 | INFO     | pmarlo | Loaded shard 5 (T300K_seg0001_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:22 | INFO     | pmarlo | Loaded shard 6 (T300K_seg0000_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:22 | INFO     | pmarlo | Loaded shard 7 (T300K_seg0001_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:22 | INFO     | pmarlo | Loaded shard 8 (T300K_seg0002_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:22 | INFO     | pmarlo | Loaded shard 9 (T300K_seg0003_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:22 | INFO     | pmarlo | Loaded shard 10 (T300K_seg0000_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:22 | INFO     | pmarlo | Loaded shard 11 (T300K_seg0001_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:22 | INFO     | pmarlo | Loaded shard 12 (T300K_seg0002_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:22 | INFO     | pmarlo | Loaded shard 13 (T300K_seg0000_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:22 | INFO     | pmarlo | Loaded shard 14 (T300K_seg0001_rep000.json): raw shape=(1000, 2)
+2025-10-30 11:13:22 | INFO     | pmarlo | Featurized all shards: concatenated shape=(15000, 2)
+2025-10-30 11:13:22 | INFO     | pmarlo | Applying transform plan with 1 steps
+2025-10-30 11:13:22 | INFO     | pmarlo | Building MSM...
+2025-10-30 11:13:22 | INFO     | pmarlo | No discrete trajectories found, clustering continuous CV data for MSM...
+2025-10-30 11:13:22 | INFO     | pmarlo | CV 'Rg' stats over 15000 finite frames: mean=1.711473 std=0.010381 min=1.680656 max=1.735399
+2025-10-30 11:13:22 | INFO     | pmarlo | CV 'RMSD_ref' stats over 15000 finite frames: mean=0.176623 std=0.057821 min=0.041426 max=0.318982
+2025-10-30 11:13:22 | INFO     | pmarlo | Saved CV distribution plot to 'C:\Users\konrad_guest\Documents\GitHub\pmarlo\example_programs\app_usecase\app_output\sims\run-20251015-210259\replica_exchange\diagnostics\cv_distribution.png'
+2025-10-30 11:13:22 | INFO     | pmarlo | Starting clustering with kmeans algorithm: 50 states, 15000 samples, 2 features
+2025-10-30 11:13:22 | INFO     | pmarlo | Clustering completed: requested=50, actual=50
+2025-10-30 11:13:22 | INFO     | pmarlo | Featurized shard 0: features shape=(1000,)
+2025-10-30 11:13:22 | INFO     | pmarlo | Featurized shard 1: features shape=(1000,)
+2025-10-30 11:13:22 | INFO     | pmarlo | Featurized shard 2: features shape=(1000,)
+2025-10-30 11:13:22 | INFO     | pmarlo | Featurized shard 3: features shape=(1000,)
+2025-10-30 11:13:22 | INFO     | pmarlo | Featurized shard 4: features shape=(1000,)
+2025-10-30 11:13:22 | INFO     | pmarlo | Featurized shard 5: features shape=(1000,)
+2025-10-30 11:13:22 | INFO     | pmarlo | Featurized shard 6: features shape=(1000,)
+2025-10-30 11:13:22 | INFO     | pmarlo | Featurized shard 7: features shape=(1000,)
+2025-10-30 11:13:22 | INFO     | pmarlo | Featurized shard 8: features shape=(1000,)
+2025-10-30 11:13:22 | INFO     | pmarlo | Featurized shard 9: features shape=(1000,)
+2025-10-30 11:13:22 | INFO     | pmarlo | Featurized shard 10: features shape=(1000,)
+2025-10-30 11:13:22 | INFO     | pmarlo | Featurized shard 11: features shape=(1000,)
+2025-10-30 11:13:22 | INFO     | pmarlo | Featurized shard 12: features shape=(1000,)
+2025-10-30 11:13:22 | INFO     | pmarlo | Featurized shard 13: features shape=(1000,)
+2025-10-30 11:13:22 | INFO     | pmarlo | Featurized shard 14: features shape=(1000,)
+2025-10-30 11:13:22 | INFO     | pmarlo | Created 15 discrete trajectories from clustering
+2025-10-30 11:13:22 | DEBUG    | pmarlo | infer_n_states: States provided, using 50
+2025-10-30 11:13:22 | INFO     | pmarlo | build_simple_msm: Using 50 states
+2025-10-30 11:13:23 | INFO     | pmarlo | build_simple_msm: Transition matrix shape: (50, 50)
+2025-10-30 11:13:23 | INFO     | pmarlo | build_simple_msm: Stationary distribution shape: (50,)
+2025-10-30 11:13:23 | DEBUG    | pmarlo | MSM diagnostics:
+state row_err min_T pi_diff
+    0 2.22e-16 3.08e-14 9.51e-14
+    1 4.44e-16 5.73e-14 1.79e-14
+    2 0.00e+00 1.80e-14 2.79e-14
+    3 2.22e-16 1.74e-05 4.98e-17
+    4 2.22e-16 3.02e-14 5.08e-14
+    5 2.22e-16 5.50e-14 1.87e-14
+    6 4.44e-16 1.51e-14 6.63e-14
+    7 0.00e+00 1.49e-14 7.07e-14
+    8 0.00e+00 1.59e-13 4.65e-14
+    9 0.00e+00 4.38e-14 4.09e-14
+   10 2.22e-16 1.62e-14 2.01e-14
+   11 4.44e-16 4.82e-14 2.07e-14
+   12 4.44e-16 1.57e-14 4.84e-14
+   13 3.33e-16 2.49e-14 1.76e-13
+   14 0.00e+00 2.73e-14 6.00e-14
+   15 3.33e-16 2.34e-14 3.89e-14
+   16 4.44e-16 5.90e-14 8.66e-14
+   17 1.11e-16 3.21e-14 2.75e-14
+   18 2.22e-16 2.13e-14 2.56e-14
+   19 1.11e-16 2.46e-07 1.70e-14
+   20 2.22e-16 1.16e-14 9.45e-14
+   21 0.00e+00 1.22e-14 5.09e-14
+   22 0.00e+00 2.52e-14 1.08e-13
+   23 0.00e+00 3.52e-14 2.46e-14
+   24 5.55e-16 2.65e-14 2.55e-14
+   25 2.22e-16 1.08e-14 3.65e-15
+   26 2.22e-16 8.44e-14 5.21e-14
+   27 4.44e-16 1.43e-14 8.38e-14
+   28 0.00e+00 2.67e-14 7.03e-14
+   29 4.44e-16 2.33e-14 6.63e-14
+   30 0.00e+00 1.48e-14 5.37e-14
+   31 2.22e-16 1.67e-14 4.29e-14
+   32 0.00e+00 5.95e-14 7.17e-14
+   33 0.00e+00 1.10e-13 8.21e-14
+   34 2.22e-16 1.75e-14 5.53e-14
+   35 1.11e-16 2.64e-14 4.09e-14
+   36 2.22e-16 3.80e-13 3.36e-14
+   37 0.00e+00 3.12e-14 3.16e-14
+   38 0.00e+00 2.02e-14 5.03e-14
+   39 2.22e-16 1.70e-14 3.28e-14
+   40 0.00e+00 1.33e-14 7.90e-14
+   41 0.00e+00 1.44e-05 2.86e-16
+   42 0.00e+00 8.28e-14 5.60e-15
+   43 0.00e+00 2.81e-09 4.92e-15
+   44 1.11e-16 2.40e-14 4.66e-14
+   45 1.11e-16 8.95e-14 5.99e-15
+   46 0.00e+00 1.21e-14 3.65e-14
+   47 0.00e+00 2.26e-14 4.46e-14
+   48 2.22e-16 3.95e-14 5.12e-16
+   49 0.00e+00 2.18e-14 3.16e-14
+2025-10-30 11:13:23 | INFO     | pmarlo | Building FES...
+2025-10-30 11:13:23 | DEBUG    | pmarlo | Failed to apply CV whitening before FES build
+Traceback (most recent call last):
+  File "C:\Users\konrad_guest\Documents\GitHub\pmarlo\src\pmarlo\transform\build.py", line 1519, in default_fes_builder
+    ensure_fes_inputs_whitened(dataset)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "C:\Users\konrad_guest\Documents\GitHub\pmarlo\src\pmarlo\analysis\fes.py", line 236, in ensure_fes_inputs_whitened
+    raise KeyError("Dataset artifacts are required for whitening metadata")
+KeyError: 'Dataset artifacts are required for whitening metadata'
+2025-10-30 11:13:23 | INFO     | pmarlo.markov_state_model.free_energy | FES masked fraction=0.733
+2025-10-30 11:13:23 | INFO     | pmarlo.analysis.diagnostics | Derived taus [2, 6, 21, 68, 220, 714, 2315, 7500] (strategy=geometric, min_length=15000, n_splits=1)
+2025-10-30 11:13:23 | DEBUG    | pmarlo | Failed to compute diagnostics
+Traceback (most recent call last):
+  File "C:\Users\konrad_guest\Documents\GitHub\pmarlo\src\pmarlo\transform\build.py", line 905, in _compute_diagnostics_safe
+    diagnostics = compute_diagnostics(dataset, diag_mass=diag_mass_val)
+  File "C:\Users\konrad_guest\Documents\GitHub\pmarlo\src\pmarlo\analysis\diagnostics.py", line 514, in compute_diagnostics
+    processed = _compute_split_diagnostics(name, split, taus_used)
+  File "C:\Users\konrad_guest\Documents\GitHub\pmarlo\src\pmarlo\analysis\diagnostics.py", line 551, in _compute_split_diagnostics
+    whitened, _ = apply_whitening_from_metadata(X, metadata)
+                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "C:\Users\konrad_guest\Documents\GitHub\pmarlo\src\pmarlo\analysis\project_cv.py", line 38, in apply_whitening_from_metadata
+    raise ValueError("Whitening metadata is required to transform outputs")
+ValueError: Whitening metadata is required to transform outputs
+2025-10-30 11:13:23 | INFO     | backend | Analysis lag requested=10, applied=10, effective_tau=10 (max stride=1, stride values=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])
