@@ -45,6 +45,13 @@ class MSMConfig:
     stride: int = 1
     atom_selection: str | None = None
     seed: int | None = None
+    fes_smoothing_mode: str = "never"
+    fes_target_sd_kT: float | None = None
+    fes_alpha: float = 1e-6
+    fes_h0: float = 1.2
+    fes_ess_ref: float = 50.0
+    fes_h_min: float = 0.4
+    fes_h_max: float = 3.0
 
 
 def _create_run_directory(output_dir: str) -> Path:

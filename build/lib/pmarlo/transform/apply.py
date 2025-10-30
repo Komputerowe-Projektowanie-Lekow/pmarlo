@@ -220,16 +220,27 @@ def _prepare_learn_cv_arrays(dataset: Dict[str, Any]) -> Tuple[
 
 
 def _collect_lag_candidates(params: Dict[str, Any], tau_requested: int) -> List[int]:
-    def _coerce_one(value: Any) -> Optional[int]:
+    def _coerce_positive_int(value: Any, *, source: str) -> int:
+        if value is None:
+            raise ValueError(
+                f"LEARN_CV requires a positive integer lag value; {source} is missing"
+            )
         try:
             coerced = int(value)
-        except Exception:
-            return None
-        return coerced if coerced > 0 else None
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"LEARN_CV requires a positive integer lag value; {source}={value!r} is not an integer"
+            ) from exc
+        if coerced <= 0:
+            raise ValueError(
+                f"LEARN_CV requires a positive integer lag value; {source}={value!r} is not positive"
+            )
+        return coerced
 
-    primary = _coerce_one(params.get("lag", tau_requested))
-    if primary is None:
-        raise ValueError("LEARN_CV requires a positive integer lag value")
+    if "lag" in params:
+        primary = _coerce_positive_int(params.get("lag"), source="params['lag']")
+    else:
+        primary = _coerce_positive_int(tau_requested, source="requested lag")
     return [primary]
 
 
