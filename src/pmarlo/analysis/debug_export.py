@@ -3,13 +3,16 @@ from __future__ import annotations
 """Utilities for emitting detailed debugging artifacts for MSM analysis builds."""
 
 import json
+import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple, cast
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, Sequence, Tuple, cast
 
 import numpy as np
 
 from pmarlo.markov_state_model.free_energy import FESResult
+from pmarlo.utils.coercion import coerce_finite_float
 from pmarlo.utils.path_utils import ensure_directory
 
 from .counting import expected_pairs
@@ -318,12 +321,12 @@ def _prepare_summary_payload(
 ) -> Dict[str, Any]:
     summary_payload = debug_data.to_summary_dict()
     if summary_overrides:
-        summary_payload.update(_make_json_ready(summary_overrides))
+        summary_payload.update({str(k): v for k, v in summary_overrides.items()})
     if fingerprint is not None:
-        summary_payload.setdefault("fingerprint", _make_json_ready(fingerprint))
+        summary_payload.setdefault("fingerprint", fingerprint)
     summary_payload["dataset_hash"] = str(dataset_hash)
     if config is not None:
-        summary_payload["config"] = _make_json_ready(config)
+        summary_payload["config"] = config
     return summary_payload
 
 
@@ -373,25 +376,29 @@ def _write_additional_metadata(
     diagnostics = getattr(build_result, "diagnostics", None)
     if isinstance(diagnostics, Mapping):
         diag_path = output_dir / "diagnostics.json"
-        diag_path.write_text(json.dumps(_make_json_ready(diagnostics), indent=2))
+        diag_path.write_text(json.dumps(diagnostics, cls=_AnalysisJSONEncoder, indent=2))
         summary_payload["diagnostics_file"] = diag_path.name
 
     flags = getattr(build_result, "flags", None)
     if isinstance(flags, Mapping):
         flags_path = output_dir / "flags.json"
-        flags_path.write_text(json.dumps(_make_json_ready(flags), indent=2))
+        flags_path.write_text(json.dumps(flags, cls=_AnalysisJSONEncoder, indent=2))
         summary_payload["flags_file"] = flags_path.name
 
     feature_stats = _extract_feature_stats(build_result)
     if isinstance(feature_stats, Mapping) and feature_stats:
         stats_path = output_dir / "feature_stats.json"
-        stats_path.write_text(json.dumps(_make_json_ready(feature_stats), indent=2))
+        stats_path.write_text(
+            json.dumps(feature_stats, cls=_AnalysisJSONEncoder, indent=2)
+        )
         summary_payload["feature_stats_file"] = stats_path.name
 
 
 def _write_summary(output_dir: Path, summary_payload: Mapping[str, Any]) -> Path:
     summary_path = output_dir / "summary.json"
-    summary_path.write_text(json.dumps(_make_json_ready(summary_payload), indent=2))
+    summary_path.write_text(
+        json.dumps(summary_payload, cls=_AnalysisJSONEncoder, indent=2)
+    )
     return summary_path
 
 
@@ -410,7 +417,7 @@ def _normalise_shard_info(shards: Iterable[Mapping[str, Any]]) -> List[Dict[str,
             "start": start,
             "stop": stop,
             "length": length,
-            "temperature": _coerce_float(raw.get("temperature")),
+            "temperature": coerce_finite_float(raw.get("temperature")),
         }
         for key in (
             "frames_declared",
@@ -621,16 +628,16 @@ def _maybe_export_fes(
             payload["levels_kJmol"] = np.asarray(fes.levels_kJmol, dtype=float)
         meta = getattr(fes, "metadata", None)
         if meta:
-            payload["metadata"] = _make_json_ready(meta)
+            payload["metadata"] = meta
     elif isinstance(fes, Mapping):
         payload = {key: value for key, value in fes.items() if key != "result"}
         if "result" in fes and isinstance(fes["result"], Mapping):
-            payload["result"] = _make_json_ready(fes["result"])
+            payload["result"] = fes["result"]
     else:
-        payload = {"raw": _make_json_ready(fes)}
+        payload = {"raw": fes}
 
     fes_path = output_dir / "fes.json"
-    fes_path.write_text(json.dumps(_make_json_ready(payload), indent=2))
+    fes_path.write_text(json.dumps(payload, cls=_AnalysisJSONEncoder, indent=2))
     return {"fes": fes_path.name}
 
 
@@ -750,35 +757,51 @@ def _maybe_export_assignments(
     return written, sorted(splits)
 
 
+_UNSAFE_FILENAME_CHARS = re.compile(r"[^\w\-.]", flags=re.UNICODE)
+
+
 def _sanitise_name(name: str) -> str:
-    safe_chars = []
-    for ch in str(name):
-        if ch.isalnum() or ch in ("-", "_", "."):
-            safe_chars.append(ch)
-        else:
-            safe_chars.append("_")
-    return "".join(safe_chars)
+    """Return a filesystem-safe representation of ``name``.
+
+    Unicode compatibility characters are first normalised (NFKC) so that visually
+    identical glyphs map to the same code points. Any remaining character outside
+    of the ``[\w\-.]`` class is replaced with ``"_"``. This mirrors the previous
+    behaviour while relying on :mod:`unicodedata` for the heavy lifting instead of
+    a hand-rolled filter.
+    """
+
+    normalised = unicodedata.normalize("NFKC", str(name))
+    return _UNSAFE_FILENAME_CHARS.sub("_", normalised)
 
 
-def _make_json_ready(obj: Any) -> Any:
+class _AnalysisJSONEncoder(json.JSONEncoder):
+    """JSON encoder capable of handling the objects produced by analysis exports."""
+
+    def default(self, obj: Any) -> Any:  # noqa: D401 - See class docstring.
+        if isinstance(obj, np.generic):
+            return obj.item()
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, Path):
+            return str(obj)
+        if isinstance(obj, set):
+            return list(obj)
+        return super().default(obj)
+
+    def encode(self, o: Any) -> str:
+        return super().encode(_ensure_str_keys(o))
+
+    def iterencode(self, o: Any, _one_shot: bool = False) -> Iterator[str]:
+        return super().iterencode(_ensure_str_keys(o), _one_shot=_one_shot)
+
+
+def _ensure_str_keys(obj: Any) -> Any:
     if isinstance(obj, Mapping):
-        return {str(k): _make_json_ready(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple, set)):
-        return [_make_json_ready(v) for v in obj]
-    if isinstance(obj, (np.generic,)):
-        return obj.item()
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    if isinstance(obj, Path):
-        return str(obj)
+        return {str(k): _ensure_str_keys(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_ensure_str_keys(v) for v in obj]
+    if isinstance(obj, tuple):
+        return [_ensure_str_keys(v) for v in obj]
+    if isinstance(obj, set):
+        return [_ensure_str_keys(v) for v in obj]
     return obj
-
-
-def _coerce_float(value: Any) -> float | None:
-    try:
-        number = float(value)
-    except Exception:
-        return None
-    if not np.isfinite(number):
-        return None
-    return float(number)

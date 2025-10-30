@@ -22,7 +22,9 @@ while keeping the logic reusable for non-UI automation in the future.
 import json
 import logging
 import math
+import re
 import shutil
+import unicodedata
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import lru_cache
@@ -201,12 +203,20 @@ def _coerce_path_list(paths: Iterable[str | Path]) -> List[Path]:
     return [Path(p).resolve() for p in paths]
 
 
+_UNSAFE_SLUG_CHARS = re.compile(r"[^a-z0-9_-]")
+
+
 def _slugify(label: Optional[str]) -> Optional[str]:
+    """Return a deterministic slug for ``label`` suitable for filenames."""
+
     if not label:
         return None
-    safe = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in str(label))
-    safe = safe.strip("_").lower()
-    return safe or None
+
+    normalised = unicodedata.normalize("NFKD", str(label)).strip()
+    ascii_label = normalised.encode("ascii", "ignore").decode("ascii")
+    slug = _UNSAFE_SLUG_CHARS.sub("_", ascii_label.lower())
+    slug = slug.strip("_")
+    return slug or None
 
 
 def _normalize_training_metrics(

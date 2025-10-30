@@ -19,6 +19,7 @@ from typing import Any, Dict, Iterable, Mapping, MutableMapping, Sequence, Tuple
 
 import numpy as np
 
+from pmarlo.utils.coercion import coerce_finite_float
 from pmarlo.utils.path_utils import ensure_directory
 
 from ..backend import BuildConfig, WorkflowBackend
@@ -372,15 +373,6 @@ def _collect_artifact_paths(
     return entries
 
 
-def _coerce_float(value: Any) -> float | None:
-    try:
-        if value is None:
-            return None
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _evaluate_guardrails(
     bundle: ExperimentBundle,
     artifact: Any,
@@ -388,11 +380,13 @@ def _evaluate_guardrails(
     guard_cfg = bundle.configs.msm.get("guardrails", {}) if bundle.configs.msm else {}
     summary = artifact.debug_summary or {}
 
-    largest_scc = _coerce_float(
+    largest_scc = coerce_finite_float(
         summary.get("analysis_largest_scc_fraction")
         or summary.get("largest_scc_frame_fraction")
     )
-    diag_mass = _coerce_float(summary.get("analysis_diag_mass") or summary.get("diag_mass"))
+    diag_mass = coerce_finite_float(
+        summary.get("analysis_diag_mass") or summary.get("diag_mass")
+    )
 
     counts_shape = summary.get("counts_shape") or []
     total_states = int(counts_shape[0]) if counts_shape else 0

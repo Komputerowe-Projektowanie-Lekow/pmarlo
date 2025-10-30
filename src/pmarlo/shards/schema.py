@@ -8,7 +8,6 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
 from pmarlo import constants as const
-from pmarlo.utils.validation import require as _require
 
 __all__ = [
     "FeatureSpec",
@@ -49,15 +48,18 @@ class ShardMeta:
     provenance: Dict[str, Any]
 
     def __post_init__(self) -> None:  # pragma: no cover - dataclass hook
-        _require(bool(self.schema_version), "schema_version is required")
-        _require(self.temperature_K > 0.0, "temperature_K must be positive")
-        _require(self.beta > 0.0, "beta must be positive")
-        _require(self.n_frames > 0, "n_frames must be positive")
-        _require(self.dt_ps > 0.0, "dt_ps must be positive")
-        _require(
-            isinstance(self.provenance, dict),
-            "provenance must be a dictionary",
-        )
+        if not self.schema_version:
+            raise ValueError("schema_version is required")
+        if self.temperature_K <= 0.0:
+            raise ValueError("temperature_K must be positive")
+        if self.beta <= 0.0:
+            raise ValueError("beta must be positive")
+        if self.n_frames <= 0:
+            raise ValueError("n_frames must be positive")
+        if self.dt_ps <= 0.0:
+            raise ValueError("dt_ps must be positive")
+        if not isinstance(self.provenance, dict):
+            raise ValueError("provenance must be a dictionary")
 
 
 @dataclass
@@ -80,23 +82,20 @@ def validate_invariants(shard: Shard) -> None:
     X = np.asarray(shard.X)
     t_index = np.asarray(shard.t_index)
 
-    _require(X.ndim == 2, "X must be a 2-D array")
-    _require(t_index.ndim == 1, "t_index must be 1-D")
-    _require(X.shape[0] == meta.n_frames, "X rows must equal meta.n_frames")
-    _require(
-        t_index.size == meta.n_frames,
-        "t_index length must equal meta.n_frames",
-    )
+    if X.ndim != 2:
+        raise ValueError("X must be a 2-D array")
+    if t_index.ndim != 1:
+        raise ValueError("t_index must be 1-D")
+    if X.shape[0] != meta.n_frames:
+        raise ValueError("X rows must equal meta.n_frames")
+    if t_index.size != meta.n_frames:
+        raise ValueError("t_index length must equal meta.n_frames")
 
-    _require(
-        np.array_equal(t_index, np.arange(meta.n_frames, dtype=t_index.dtype)),
-        "t_index must be contiguous starting at 0",
-    )
+    if not np.array_equal(t_index, np.arange(meta.n_frames, dtype=t_index.dtype)):
+        raise ValueError("t_index must be contiguous starting at 0")
 
-    _require(
-        abs(float(shard.dt_ps) - float(meta.dt_ps)) < const.NUMERIC_MIN_POSITIVE,
-        "dt_ps mismatch",
-    )
+    if abs(float(shard.dt_ps) - float(meta.dt_ps)) >= const.NUMERIC_MIN_POSITIVE:
+        raise ValueError("dt_ps mismatch")
 
     n = meta.n_frames
     for name, arr in {
@@ -107,20 +106,18 @@ def validate_invariants(shard: Shard) -> None:
         if arr is None:
             continue
         arr_np = np.asarray(arr)
-        _require(
-            arr_np.ndim == 1 and arr_np.size == n,
-            f"{name} must be 1-D with length n_frames",
-        )
+        if not (arr_np.ndim == 1 and arr_np.size == n):
+            raise ValueError(f"{name} must be 1-D with length n_frames")
 
-    _require(
-        X.shape[1] == len(meta.feature_spec.columns),
-        "feature_spec.columns must match number of feature dimensions",
-    )
+    if X.shape[1] != len(meta.feature_spec.columns):
+        raise ValueError(
+            "feature_spec.columns must match number of feature dimensions"
+        )
 
     from .id import canonical_shard_id  # late import to avoid cycle
 
     expected_id = canonical_shard_id(meta)
-    _require(
-        meta.shard_id == expected_id,
-        f"shard_id '{meta.shard_id}' does not match canonical '{expected_id}'",
-    )
+    if meta.shard_id != expected_id:
+        raise ValueError(
+            f"shard_id '{meta.shard_id}' does not match canonical '{expected_id}'"
+        )
