@@ -8,6 +8,7 @@ instead of substituting uniform weights.
 
 from __future__ import annotations
 
+import hashlib
 import math
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, MutableMapping, Sequence
@@ -70,6 +71,57 @@ class _TRAMInputs:
     therm_state_indices: Dict[str, int]
 
 
+@dataclass(slots=True)
+class _CachedWeights:
+    weights: np.ndarray
+    n_frames: int
+    beta_sim: float
+    energy_signature: tuple[int, str]
+    bias_signature: tuple[int, str] | None
+    base_signature: tuple[int, str] | None
+
+    def matches(self, thermo: _SplitThermo) -> bool:
+        if self.n_frames != thermo.n_frames:
+            return False
+        if not math.isclose(self.beta_sim, thermo.beta_sim, rel_tol=1e-12, abs_tol=0.0):
+            return False
+        energy_signature = _array_signature(thermo.energy)
+        bias_signature = _array_signature(thermo.bias)
+        base_signature = _array_signature(thermo.base_weights)
+        if self.energy_signature != energy_signature or self.bias_signature != bias_signature:
+            return False
+
+        if self.base_signature is None:
+            if base_signature is None:
+                return True
+            if thermo.base_weights is None:
+                return True
+            return np.array_equal(thermo.base_weights, self.weights)
+
+        return self.base_signature == base_signature
+
+    @classmethod
+    def from_split(cls, thermo: _SplitThermo, weights: np.ndarray) -> "_CachedWeights":
+        return cls(
+            weights=weights,
+            n_frames=thermo.n_frames,
+            beta_sim=float(thermo.beta_sim),
+            energy_signature=_array_signature(thermo.energy),
+            bias_signature=_array_signature(thermo.bias),
+            base_signature=_array_signature(thermo.base_weights),
+        )
+
+
+def _array_signature(array: np.ndarray | None) -> tuple[int, str] | None:
+    if array is None:
+        return None
+    data = array
+    if data.dtype != np.float64 or not data.flags.c_contiguous:
+        data = np.ascontiguousarray(data, dtype=np.float64)
+    digest = hashlib.sha256(data.view(np.uint8).tobytes()).hexdigest()
+    return (int(data.shape[0]), digest)
+
+
 class Reweighter:
     """Compute per-frame analysis weights relative to a reference temperature.
 
@@ -86,7 +138,7 @@ class Reweighter:
         self.beta_ref = 1.0 / (
             const.BOLTZMANN_CONSTANT_KJ_PER_MOL * self.temperature_ref_K
         )
-        self._cache: Dict[str, np.ndarray] = {}
+        self._cache: Dict[str, _CachedWeights] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -115,11 +167,13 @@ class Reweighter:
             weights = {}
             for split_name, thermo in splits.items():
                 cached = self._cache.get(thermo.shard_id)
-                if cached is not None and cached.shape[0] == thermo.n_frames:
-                    w = cached
+                if cached is not None and cached.matches(thermo):
+                    w = cached.weights
                 else:
                     w = self._compute_split_weights(thermo)
-                    self._cache[thermo.shard_id] = w
+                    self._cache[thermo.shard_id] = _CachedWeights.from_split(
+                        thermo, w
+                    )
 
                 weights[split_name] = w
                 self._store_split_weights(dataset, split_name, thermo.shard_id, w)
@@ -340,7 +394,9 @@ class Reweighter:
 
             normalized = (base / total).astype(np.float64, copy=False)
             weights[split_name] = normalized
-            self._cache[thermo.shard_id] = normalized
+            self._cache[thermo.shard_id] = _CachedWeights.from_split(
+                thermo, normalized
+            )
             self._store_split_weights(dataset, split_name, thermo.shard_id, normalized)
 
         return weights

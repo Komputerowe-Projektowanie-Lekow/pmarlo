@@ -1,9 +1,9 @@
 """Helpers for reproducible naming of remaps and permutations.
 
 These functions provide small cached layers that convert array shapes and
-permutation mappings into deterministic strings.  By caching the results
-we ensure that repeated calls across a workflow yield identical objects,
-which simplifies logging and makes debugging across passes repeatable.
+permutation mappings into deterministic strings. By caching the results we
+ensure that repeated calls across a workflow yield identical objects, which
+simplifies logging and makes debugging across passes repeatable.
 """
 
 from __future__ import annotations

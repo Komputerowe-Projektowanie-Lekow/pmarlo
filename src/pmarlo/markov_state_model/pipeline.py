@@ -81,7 +81,7 @@ def _build_and_analyze(
     temperatures: Optional[List[float]],
     lag_time: int,
 ) -> None:
-    method = "tram" if temperatures and len(temperatures) > 1 else "standard"
+    method = "tram" if temperatures is not None and len(temperatures) > 1 else "standard"
     msm.build_msm(lag_time=lag_time, method=method)
     msm.compute_implied_timescales()
     msm.generate_free_energy_surface(cv1_name="CV1", cv2_name="CV2")

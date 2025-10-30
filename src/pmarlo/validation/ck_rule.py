@@ -53,7 +53,8 @@ def _multinomial_rms_se(P: np.ndarray, counts: np.ndarray) -> float:
         raise ValueError("counts length must equal number of states.")
     sesq_rows = []
     for i in range(n):
-        Ni = max(1, int(counts[i]))
+        Ni_raw = float(counts[i])
+        Ni = Ni_raw if np.isfinite(Ni_raw) and Ni_raw > 0.0 else 1.0
         pi = P[i]
         sesq_rows.append(np.sum(pi * (1.0 - pi) / Ni) / n)
     return float(np.sqrt(np.mean(sesq_rows)))

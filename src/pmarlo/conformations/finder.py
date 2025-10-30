@@ -371,7 +371,9 @@ def find_conformations(
 
 def _calculate_state_flux(flux_matrix: np.ndarray) -> np.ndarray:
     """Compute the total reactive flux through each state."""
-    return np.sum(flux_matrix, axis=1) + np.sum(flux_matrix, axis=0)
+    # Each reactive transition contributes to both the incoming and outgoing
+    # totals. Average them so we do not double-count flux through a state.
+    return 0.5 * (np.sum(flux_matrix, axis=1) + np.sum(flux_matrix, axis=0))
 
 
 def _compute_pcca_macrostates(

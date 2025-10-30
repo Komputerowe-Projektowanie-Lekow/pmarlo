@@ -416,9 +416,23 @@ class _EpochAccumulator:
     def _accumulate_vector(
         accumulator: np.ndarray | None, values: object, weight: float
     ) -> np.ndarray | None:
-        if not isinstance(values, list) or not values:
+        if isinstance(values, np.ndarray):
+            if values.size == 0:
+                return accumulator
+            arr = np.asarray(values, dtype=np.float64)
+        elif isinstance(values, Sequence) and not isinstance(
+            values, (str, bytes, bytearray)
+        ):
+            if not values:
+                return accumulator
+            arr = np.asarray(values, dtype=np.float64)
+        else:
             return accumulator
-        arr = np.asarray(values, dtype=np.float64) * weight
+
+        if arr.ndim != 1:
+            raise ValueError("condition metric vectors must be one-dimensional")
+
+        arr = arr * weight
         if accumulator is None:
             return arr
         return accumulator + arr

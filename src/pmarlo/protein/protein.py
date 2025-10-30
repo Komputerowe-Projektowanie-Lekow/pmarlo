@@ -106,7 +106,7 @@ class Protein:
         self._validate_readable_nonempty(pdb_path)
         self._validate_ph(ph)
         self._assign_basic_fields(pdb_path, ph)
-        self._initialize_fixer(auto_prepare, pdb_file)
+        self._initialize_fixer(auto_prepare)
         self._initialize_storage()
         self._initialize_properties_dict()
         self._maybe_prepare(auto_prepare, preparation_options, ph)
@@ -116,7 +116,8 @@ class Protein:
     # --- Initialization helpers to reduce complexity ---
 
     def _resolve_pdb_path(self, pdb_file: str) -> Path:
-        return Path(pdb_file)
+        expanded = os.path.expandvars(os.path.expanduser(pdb_file))
+        return Path(expanded).resolve(strict=False)
 
     def _validate_file_exists(self, pdb_path: Path) -> None:
         if not pdb_path.exists():
@@ -158,11 +159,11 @@ class Protein:
         self.pdb_file = str(pdb_path)
         self.ph = ph
 
-    def _initialize_fixer(self, auto_prepare: bool, pdb_file: str) -> None:
+    def _initialize_fixer(self, auto_prepare: bool) -> None:
         if not HAS_PDBFIXER:
             self._configure_state_no_fixer(auto_prepare)
         else:
-            self._initialize_fixer_instance(pdb_file)
+            self._initialize_fixer_instance()
 
     def _configure_state_no_fixer(self, auto_prepare: bool) -> None:
         # When not preparing automatically, ensure the file exists so
@@ -181,11 +182,11 @@ class Protein:
                 + " Set auto_prepare=False to skip preparation."
             )
 
-    def _initialize_fixer_instance(self, pdb_file: str) -> None:
+    def _initialize_fixer_instance(self) -> None:
         # PDBFixer will validate the file path and raise appropriately if invalid.
         if PDBFixer is None:  # Defensive check; should be unreachable when HAS_PDBFIXER
             raise RuntimeError("PDBFixer class reference is not available")
-        self.fixer = PDBFixer(filename=pdb_file)
+        self.fixer = PDBFixer(filename=self.pdb_file)
         self.prepared = False
 
     def _initialize_storage(self) -> None:

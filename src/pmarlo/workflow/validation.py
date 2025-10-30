@@ -1,5 +1,4 @@
-"""
-Workflow validation utilities for PMARLO analysis pipelines.
+"""Workflow validation utilities for PMARLO analysis pipelines.
 
 This module provides comprehensive validation functions for checking data
 consistency, shard usage, and analysis quality across the PMARLO workflow.

@@ -241,13 +241,15 @@ def ensure_fes_inputs_whitened(dataset: DatasetLike | Mapping[str, Any]) -> bool
             "Dataset artifacts must include 'mlcv_deeptica' whitening metadata"
         )
 
-    whitened, applied = apply_whitening_from_metadata(
-        np.asarray(X, dtype=np.float64), summary
-    )
-    if not applied:
-        raise RuntimeError("Expected whitening metadata to be applied")
+    coords = np.asarray(X, dtype=np.float64)
+    whitened, _applied = apply_whitening_from_metadata(coords, summary)
 
+    # ``apply_output_transform`` returns the original array unchanged when the
+    # metadata indicates that whitening was already performed.  In that case we
+    # still replace the dataset entry with the ``float64`` copy returned by the
+    # helper so downstream consumers observe consistent dtypes.
     dataset["X"] = whitened  # type: ignore[index]
+
     return True
 
 

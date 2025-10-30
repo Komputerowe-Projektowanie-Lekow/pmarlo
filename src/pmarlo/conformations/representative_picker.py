@@ -326,7 +326,9 @@ class RepresentativePicker:
     ) -> List[RepresentativeFrame]:
         """Pick representatives from high-flux bottleneck states."""
 
-        flux_through_state = np.sum(flux_matrix, axis=1) + np.sum(flux_matrix, axis=0)
+        flux_through_state = 0.5 * (
+            np.sum(flux_matrix, axis=1) + np.sum(flux_matrix, axis=0)
+        )
 
         bottleneck_states = np.argsort(flux_through_state)[::-1][:top_n]
 
