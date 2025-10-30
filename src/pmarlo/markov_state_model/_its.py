@@ -497,13 +497,12 @@ class ITSMixin:
             return np.empty((0, counts.shape[0], counts.shape[1]), dtype=float)
 
         rng = np.random.default_rng(self.random_state)
-        counts = np.asarray(counts, dtype=float)
         n_states = counts.shape[0]
         n_samples = int(max(1, n_samples))
         samples = np.zeros((n_samples, n_states, n_states), dtype=float)
         for sample_idx in range(n_samples):
             for i in range(n_states):
-                row = np.asarray(counts[i], dtype=float).reshape(-1)
+                row = counts[i]
                 total = float(np.sum(row))
                 if total <= 0.0:
                     samples[sample_idx, i] = np.full(

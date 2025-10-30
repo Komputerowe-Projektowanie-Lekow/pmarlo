@@ -133,8 +133,10 @@ class FeaturesMixin:
     ) -> np.ndarray:
         phi_psi = self._compute_phi_psi_features(traj)
         dists = self._compute_distance_features(traj, n_distance_features)
-        if phi_psi.shape[0] != dists.shape[0]:
-            min_len = min(phi_psi.shape[0], dists.shape[0])
+        n_phi_psi = phi_psi.shape[0]
+        n_dists = dists.shape[0]
+        if n_phi_psi != n_dists:
+            min_len = min(n_phi_psi, n_dists)
             phi_psi = phi_psi[:min_len]
             dists = dists[:min_len]
         return np.hstack([phi_psi, dists])
