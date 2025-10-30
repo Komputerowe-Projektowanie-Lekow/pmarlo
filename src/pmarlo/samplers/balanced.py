@@ -71,13 +71,16 @@ class BalancedTempSampler:
         for temperature, shards in self.shards_by_temperature.items():
             if not shards:
                 continue
-            shard = self._rng.choice(shards)
-            pairs = self.pair_builder.make_pairs(shard)
-            if pairs.size == 0:
-                continue
-            k = min(pairs_per_temperature, pairs.shape[0])
-            chosen = self._select_pairs(shard, temperature, pairs, k)
-            batch.append((shard, chosen))
+
+            for shard_idx in self._rng.permutation(len(shards)):
+                shard = shards[int(shard_idx)]
+                pairs = self.pair_builder.make_pairs(shard)
+                if pairs.size == 0:
+                    continue
+                k = min(pairs_per_temperature, pairs.shape[0])
+                chosen = self._select_pairs(shard, temperature, pairs, k)
+                batch.append((shard, chosen))
+                break
         return batch
 
     def _select_pairs(

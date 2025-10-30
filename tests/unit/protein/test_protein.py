@@ -5,6 +5,7 @@
 Tests for the Protein class.
 """
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -137,6 +138,23 @@ class TestProtein:
             protein = Protein(str(test_pdb_file), auto_prepare=False)
             with pytest.raises(ImportError, match="PDBFixer is required"):
                 protein.prepare()
+
+    def test_user_path_expansion(self, test_pdb_file, tmp_path, monkeypatch):
+        """Tilde paths should be expanded during initialization."""
+
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        destination = fake_home / "input.pdb"
+        destination.write_bytes(Path(test_pdb_file).read_bytes())
+
+        tilde_path = "~/input.pdb"
+
+        with patch("pmarlo.protein.protein.HAS_PDBFIXER", False):
+            protein = Protein(tilde_path, auto_prepare=False)
+
+        assert Path(protein.pdb_file) == destination.resolve()
 
     def test_prepare_defaults_to_instance_ph(self, test_pdb_file):
         """Manual preparation reuses the stored pH when none is provided."""

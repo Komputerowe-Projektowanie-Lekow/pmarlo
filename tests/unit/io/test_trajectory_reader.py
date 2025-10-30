@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 from pathlib import Path
 import sys
 
@@ -12,6 +13,7 @@ import types
 from pmarlo.io.trajectory_reader import (
     MDAnalysisReader,
     MDTrajReader,
+    TrajectoryIOError,
     TrajectoryMissingTopologyError,
 )
 
@@ -123,3 +125,20 @@ def test_mdanalysis_reader_respects_stride(monkeypatch):
     assert np.allclose(out[0], frames[1])
     assert np.allclose(out[1], frames[3])
     assert np.allclose(out[2], frames[5])
+
+
+def test_mdanalysis_reader_missing_dependency(monkeypatch):
+    monkeypatch.delitem(sys.modules, "MDAnalysis", raising=False)
+
+    real_import = builtins.__import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "MDAnalysis" or name.startswith("MDAnalysis."):
+            raise ModuleNotFoundError("No module named 'MDAnalysis'")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    reader = MDAnalysisReader(topology_path="topology.pdb")
+    with pytest.raises(TrajectoryIOError, match="MDAnalysis is required"):
+        list(reader.iter_frames("traj.dcd", start=0, stop=1, stride=1))

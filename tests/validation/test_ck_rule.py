@@ -80,3 +80,22 @@ def test_multinomial_noise_matches_uniform_expectation() -> None:
     dec = decide_ck({k: P}, {k: P}, {k: counts}, cfg)
     expected_noise = np.sqrt((1.0 - 1.0 / n) / (counts[0] * n))
     np.testing.assert_allclose(dec.per_lag[k]["noise_rms"], expected_noise, rtol=1e-8)
+
+
+def test_multinomial_noise_uses_fractional_counts() -> None:
+    n = 4
+    P = np.full((n, n), 1.0 / n)
+    k = 2
+    counts = np.full(n, 0.5)
+
+    cfg = CKConfig(
+        mode="ess_adjusted",
+        min_pass_fraction=1.0,
+        per_lag_cap=1.0,
+        k_steps=(k,),
+        sigma_mult=1.0,
+    )
+
+    dec = decide_ck({k: P}, {k: P}, {k: counts}, cfg)
+    expected_noise = np.sqrt((1.0 - 1.0 / n) / (counts[0] * n))
+    np.testing.assert_allclose(dec.per_lag[k]["noise_rms"], expected_noise, rtol=1e-8)

@@ -44,3 +44,11 @@ def test_build_pair_info_rejects_invalid_pairs():
     )
     with pytest.raises(ValueError):
         build_pair_info(blocks, [2], pairs=manual_pairs)
+
+
+def test_build_pair_info_handles_multi_tau_without_pairs():
+    blocks = [np.zeros((2, 1), dtype=np.float32)]
+    info = build_pair_info(blocks, [3, 5])
+    assert info.idx_t.size == 0
+    assert info.idx_tau.size == 0
+    assert info.weights.size == 0

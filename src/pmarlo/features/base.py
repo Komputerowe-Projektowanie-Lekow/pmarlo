@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Protocol, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Protocol, Tuple
 
-import mdtraj as md  # type: ignore
 import numpy as np
+
+if TYPE_CHECKING:  # pragma: no cover - typing only dependency
+    import mdtraj as md
 
 
 class FeatureComputer(Protocol):

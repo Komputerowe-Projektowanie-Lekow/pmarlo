@@ -27,7 +27,7 @@ def _default_config_path() -> Path:
 
 
 def _resolve_path(base: Path, value: str | Path) -> Path:
-    candidate = Path(value)
+    candidate = Path(value).expanduser()
     if candidate.is_absolute():
         return candidate
     return (base / candidate).resolve()

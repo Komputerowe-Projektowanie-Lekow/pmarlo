@@ -324,6 +324,8 @@ def _validate_or_set_refs(
 
 
 def _maybe_read_bias(npz_path: Path) -> np.ndarray | None:
+    if not npz_path.exists():
+        return None
     with np.load(npz_path) as f:
         if "bias_potential" not in getattr(f, "files", []):
             return None

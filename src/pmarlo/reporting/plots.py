@@ -371,25 +371,48 @@ def plot_free_energy_2d(
     :param line_alpha: Transparency for contour lines.
     :return: Matplotlib Figure.
     """
+    if not isinstance(grid, (list, tuple)) or len(grid) < 2:
+        raise ValueError("grid must contain two coordinate arrays (xx, yy)")
+
+    xx = np.asarray(grid[0], dtype=float)
+    yy = np.asarray(grid[1], dtype=float)
+    fes_array = np.asarray(fes, dtype=float)
+
+    if xx.ndim != 2 or yy.ndim != 2 or fes_array.ndim != 2:
+        raise ValueError("grid coordinates and fes must be 2-dimensional arrays")
+
+    if xx.shape != yy.shape:
+        raise ValueError("grid coordinate arrays must have the same shape")
+
+    if fes_array.shape != xx.shape:
+        raise ValueError("fes must have the same shape as the coordinate grid")
+
+    if not np.isfinite(xx).all() or not np.isfinite(yy).all():
+        raise ValueError("grid coordinates must be finite")
+
+    finite_mask = np.isfinite(fes_array)
+    if not finite_mask.any():
+        raise ValueError("fes contains no finite values; cannot plot surface")
+
+    finite_min = float(fes_array[finite_mask].min())
+    max_energy_kt = float(max_energy_kt)
+    if not np.isfinite(max_energy_kt) or max_energy_kt <= finite_min:
+        raise ValueError("max_energy_kt must be finite and greater than the minimum fes value")
+
+    capped_fes = np.clip(fes_array, a_min=finite_min, a_max=max_energy_kt)
+
     if ax is None:
         fig, ax = plt.subplots(figsize=(8, 6))
     else:
         fig = ax.get_figure()
 
-    if not grid or len(grid) < 2 or fes is None:
-        logger.warning("Invalid grid or FES data for 2D plot.")
-        ax.text(0.5, 0.5, "Invalid FES data", ha='center', va='center')
-        return fig
-
-    xx, yy = grid
-
-    # Cap the energy for better visualization
-    capped_fes = np.clip(fes, a_min=0, a_max=max_energy_kt)
-
-    # Note: Use fes.T because histogram2d/deeptime produce (x, y)
-    # but contourf expects (y, x)
     contour = ax.contourf(
-        xx, yy, capped_fes.T, levels=levels, cmap=cmap, extend="max"
+        xx,
+        yy,
+        capped_fes.T,
+        levels=levels,
+        cmap=cmap,
+        extend="max",
     )
     cbar = fig.colorbar(contour, ax=ax)
     cbar.set_label("Free Energy ($k_B T$)")

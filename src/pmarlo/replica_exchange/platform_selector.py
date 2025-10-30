@@ -34,6 +34,11 @@ def select_platform_and_properties(
             Platform.getPlatform(i).getName() for i in range(Platform.getNumPlatforms())
         ]
 
+        if not available_platforms:
+            raise RuntimeError(
+                "No OpenMM platforms are available. Install at least one backend (e.g. CPU or CUDA)."
+            )
+
         # Prefer CUDA > CPU > Reference (Reference is VERY slow, avoid if possible)
         if "CUDA" in available_platforms:
             platform_name = "CUDA"
@@ -54,11 +59,9 @@ def select_platform_and_properties(
                 "Install OpenMM with CPU support for better performance."
             )
         else:
-            # This should never happen but handle gracefully
-            platform_name = "CUDA"
-            logger.warning(
-                "No standard OpenMM platform found, attempting CUDA as fallback"
-            )
+            # Select the first available platform (e.g. OpenCL)
+            platform_name = available_platforms[0]
+            logger.info("Using available OpenMM platform: %s", platform_name)
 
     platform = Platform.getPlatformByName(platform_name)
 

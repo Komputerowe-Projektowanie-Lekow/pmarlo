@@ -1198,8 +1198,13 @@ def apply_transform_plan(dataset, plan: TransformPlan):
     for step in plan.steps:
         handler = _STEP_HANDLERS.get(step.name)
         if handler is None:
-            logger.warning(f"Unknown transform step: {step.name}")
-            continue
+            known = ", ".join(sorted(_STEP_HANDLERS))
+            message = (
+                f"Unknown transform step '{step.name}'."
+                + (f" Known steps: {known}" if known else "")
+            )
+            logger.error(message)
+            raise KeyError(message)
         context = handler(context, **step.params)
 
     if "data" in context and not isinstance(dataset, dict):

@@ -138,7 +138,7 @@ def _build_and_analyze_msm(
 
 
 def _select_estimation_method(temperatures: Optional[List[float]]) -> str:
-    if temperatures and len(temperatures) > 1:
+    if temperatures is not None and len(temperatures) > 1:
         return "tram"
     return "standard"
 

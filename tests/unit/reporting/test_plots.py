@@ -7,6 +7,7 @@ from pmarlo.reporting.plots import (
     save_fes_contour,
     save_transition_matrix_heatmap,
     plot_sampling_validation,
+    plot_free_energy_2d,
 )
 
 
@@ -49,3 +50,19 @@ def test_plot_sampling_validation_rejects_unknown_colormap():
     data = [np.linspace(0.0, 1.0, 10)]
     with pytest.raises(ValueError, match="Unknown colormap"):
         plot_sampling_validation(data, cmap_name="this_cmap_does_not_exist")
+
+
+def test_plot_free_energy_2d_rejects_mismatched_grid_and_fes_shapes():
+    grid = [np.zeros((4, 4)), np.zeros((4, 4))]
+    fes = np.zeros((5, 5))
+
+    with pytest.raises(ValueError, match="same shape"):
+        plot_free_energy_2d(grid=grid, fes=fes)
+
+
+def test_plot_free_energy_2d_rejects_non_finite_surface():
+    grid = [np.zeros((3, 3)), np.zeros((3, 3))]
+    fes = np.full((3, 3), np.nan)
+
+    with pytest.raises(ValueError, match="no finite values"):
+        plot_free_energy_2d(grid=grid, fes=fes)

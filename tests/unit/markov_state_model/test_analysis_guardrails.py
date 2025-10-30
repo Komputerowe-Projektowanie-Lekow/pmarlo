@@ -7,11 +7,25 @@ from typing import Iterator, Sequence
 
 if "numpy" not in sys.modules:
     numpy_stub = types.ModuleType("numpy")
+    class _StubFloating:
+        def __class_getitem__(cls, item: object) -> type:
+            return float
+
+    class _StubComplexFloating(_StubFloating):
+        def __class_getitem__(cls, item: object) -> type:
+            return complex
+
+    numpy_stub.array = lambda data, dtype=None: list(data)
+    numpy_stub.asarray = lambda data, dtype=None: list(data)
     numpy_stub.random = types.SimpleNamespace(seed=lambda _: None)
+    numpy_stub.complexfloating = _StubComplexFloating
+    numpy_stub.floating = _StubFloating
     numpy_typing = types.ModuleType("numpy.typing")
     numpy_typing.NDArray = object
     sys.modules["numpy"] = numpy_stub
     sys.modules["numpy.typing"] = numpy_typing
+
+import numpy as np
 
 if "mdtraj" not in sys.modules:
     mdtraj_stub = types.ModuleType("mdtraj")
@@ -105,6 +119,8 @@ if "deeptime" not in sys.modules:
     decomposition_mod.__path__ = []  # type: ignore[attr-defined]
     plots_mod = types.ModuleType("deeptime.plots")
     plots_mod.__path__ = []  # type: ignore[attr-defined]
+    clustering_mod = types.ModuleType("deeptime.clustering")
+    clustering_mod.__path__ = []  # type: ignore[attr-defined]
     util_mod = types.ModuleType("deeptime.util")
     util_mod.__path__ = []  # type: ignore[attr-defined]
     validation_mod = types.ModuleType("deeptime.util.validation")
@@ -146,6 +162,17 @@ if "deeptime" not in sys.modules:
     )
     decomposition_mod.TICA = _StubEstimator
     decomposition_mod.VAMP = _StubEstimator
+    class _StubKMeans(_StubEstimator):  # pragma: no cover - minimal stub
+        def predict(self, X: Sequence[object]) -> list[int]:
+            return [0 for _ in X]
+
+        @property
+        def cluster_centers_(self) -> None:
+            return None
+
+    clustering_mod.KMeans = _StubKMeans
+    clustering_mod.MiniBatchKMeans = _StubKMeans
+
     plots_mod.plot_ck_test = lambda *args, **kwargs: None
     validation_mod.ck_test = lambda *args, **kwargs: None
     util_mod.validation = validation_mod
@@ -164,13 +191,16 @@ if "deeptime" not in sys.modules:
     sys.modules["deeptime.markov.tools.estimation.dense.transition_matrix"] = tm_mod
     sys.modules["deeptime.decomposition"] = decomposition_mod
     sys.modules["deeptime.plots"] = plots_mod
+    sys.modules["deeptime.clustering"] = clustering_mod
     sys.modules["deeptime.util"] = util_mod
     sys.modules["deeptime.util.validation"] = validation_mod
 
 import pytest
 
+from pmarlo.markov_state_model._enhanced_impl import _select_estimation_method
 from pmarlo.markov_state_model._loading import LoadingMixin
 from pmarlo.markov_state_model.enhanced_msm import run_complete_msm_analysis
+from pmarlo.markov_state_model.pipeline import _build_and_analyze
 
 
 class _LoaderHarness(LoadingMixin):  # type: ignore[misc, valid-type]
@@ -312,3 +342,67 @@ def test_run_complete_pipeline_fails_when_no_frames(
             output_dir=str(tmp_path),
             ignore_trajectory_errors=True,
         )
+
+
+class _RecordingPipelineMSM:
+    def __init__(self) -> None:
+        self.built_lag: int | None = None
+        self.built_method: str | None = None
+
+    def build_msm(self, *, lag_time: int, method: str) -> None:
+        self.built_lag = lag_time
+        self.built_method = method
+
+    def compute_implied_timescales(self) -> None:  # pragma: no cover - stub
+        pass
+
+    def generate_free_energy_surface(self, **_: object) -> None:  # pragma: no cover
+        pass
+
+    def create_state_table(self) -> None:  # pragma: no cover
+        pass
+
+    def extract_representative_structures(self) -> None:  # pragma: no cover
+        pass
+
+    def save_analysis_results(self) -> None:  # pragma: no cover
+        pass
+
+    def plot_free_energy_surface(self, **_: object) -> None:  # pragma: no cover
+        pass
+
+    def plot_implied_timescales(self, **_: object) -> None:  # pragma: no cover
+        pass
+
+    def plot_implied_rates(self, **_: object) -> None:  # pragma: no cover
+        pass
+
+    def plot_free_energy_profile(self, **_: object) -> None:  # pragma: no cover
+        pass
+
+    def plot_ck_test(self, **_: object) -> None:  # pragma: no cover
+        pass
+
+
+def test_build_and_analyze_accepts_numpy_temperatures() -> None:
+    msm = _RecordingPipelineMSM()
+    temps = np.array([300.0, 310.0])
+
+    _build_and_analyze(msm, temperatures=temps, lag_time=7)
+
+    assert msm.built_lag == 7
+    assert msm.built_method == "tram"
+
+
+def test_build_and_analyze_single_temperature_array_defaults_to_standard() -> None:
+    msm = _RecordingPipelineMSM()
+    temps = np.array([300.0])
+
+    _build_and_analyze(msm, temperatures=temps, lag_time=5)
+
+    assert msm.built_method == "standard"
+
+
+def test_select_estimation_method_handles_numpy_sequences() -> None:
+    temps = np.array([300.0, 310.0])
+    assert _select_estimation_method(temps) == "tram"
