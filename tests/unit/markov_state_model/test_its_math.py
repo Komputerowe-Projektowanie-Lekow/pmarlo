@@ -59,16 +59,33 @@ def test_safe_timescales_matches_log_formula():
     eigvals = np.array([[0.2, 0.5], [0.8, 0.95]])
     ts = safe_timescales(25, eigvals)
 
+    magnitudes = np.abs(eigvals.astype(float))
     clipped = np.clip(
-        np.abs(eigvals.astype(float)),
+        magnitudes,
         const.NUMERIC_MIN_POSITIVE,
         1.0 - const.NUMERIC_MIN_POSITIVE,
     )
     with np.errstate(divide="ignore", invalid="ignore"):
         expected = -25.0 / np.log(clipped)
 
-    invalid = (~np.isfinite(eigvals)) | (eigvals <= 0) | (eigvals >= 1)
+    invalid = (~np.isfinite(magnitudes)) | (magnitudes <= 0) | (magnitudes >= 1)
     expected = expected.astype(float)
     expected[invalid] = np.nan
 
     np.testing.assert_allclose(ts, expected)
+
+
+def test_safe_timescales_handles_complex_eigenvalues():
+    complex_eigs = np.array([0.95 * np.exp(1j * np.pi / 4)], dtype=np.complex128)
+    ts = safe_timescales(5.0, complex_eigs)
+
+    magnitudes = np.abs(complex_eigs)
+    clipped = np.clip(
+        magnitudes,
+        const.NUMERIC_MIN_POSITIVE,
+        1.0 - const.NUMERIC_MIN_POSITIVE,
+    )
+    expected = -5.0 / np.log(clipped)
+
+    assert ts.shape == complex_eigs.shape
+    np.testing.assert_allclose(ts, expected.astype(float))

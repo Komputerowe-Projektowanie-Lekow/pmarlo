@@ -99,7 +99,7 @@ class MDAnalysisReader:
         stride = 1 if stride <= 0 else int(stride)
         try:
             u = mda.Universe(self.topology_path, path)
-            sel = slice(start, stop, 1)
+            sel = slice(start, stop, stride)
             for ts in u.trajectory[sel]:
                 # MDAnalysis uses Angstroms by default; we return raw arrays to avoid assumptions
                 yield np.array(ts.positions, copy=True)

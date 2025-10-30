@@ -208,3 +208,39 @@ def test_tram_mode_requires_dataset_payload():
 
     with pytest.raises(ValueError):
         rw.apply(ds, mode="TRAM")
+
+
+def test_tram_bias_matrix_state_mismatch_raises():
+    energy = np.array([1.0, 1.1, 0.9], dtype=np.float64)
+    ds = make_dataset(energy)
+    splits = ds["splits"]
+    split = splits["s1"]
+    split["tram"] = {"trajectory_index": 0, "therm_state_index": 0}
+
+    tram_dataset = {
+        "dtrajs": [np.array([0, 1, 0], dtype=np.int32)],
+        "bias_matrices": [
+            np.array(
+                [[0.0, 0.1], [0.2, 0.3], [0.1, 0.0]],
+                dtype=np.float64,
+            ),
+        ],
+    }
+
+    # Append a second bias matrix with a different thermodynamic-state count
+    tram_dataset["dtrajs"].append(np.array([1, 0, 1], dtype=np.int32))
+    tram_dataset["bias_matrices"].append(
+        np.array(
+            [[0.0, 0.1, 0.2], [0.1, 0.0, 0.1], [0.2, 0.1, 0.0]],
+            dtype=np.float64,
+        )
+    )
+
+    ds["tram_dataset"] = tram_dataset
+
+    rw = Reweighter(temperature_ref_K=300.0)
+
+    with pytest.raises(ValueError) as excinfo:
+        rw.apply(ds, mode="TRAM")
+
+    assert "bias matrices must all share" in str(excinfo.value)

@@ -31,3 +31,35 @@ def test_load_defaults_validates_bias_mode(monkeypatch, tmp_path):
     with pytest.raises(ConfigurationError):
         load_defaults()
     load_defaults.cache_clear()
+
+
+def test_load_defaults_accepts_string_boolean(monkeypatch, tmp_path):
+    cfg = {
+        "enable_cv_bias": "false",
+        "bias_mode": "harmonic",
+        "torch_threads": 2,
+        "precision": "single",
+    }
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    monkeypatch.setenv("PMARLO_CONFIG_FILE", str(cfg_path))
+    load_defaults.cache_clear()
+    cfg_out = load_defaults()
+    load_defaults.cache_clear()
+    assert cfg_out["enable_cv_bias"] is False
+
+
+def test_load_defaults_rejects_invalid_boolean(monkeypatch, tmp_path):
+    cfg = {
+        "enable_cv_bias": "definitely",
+        "bias_mode": "harmonic",
+        "torch_threads": 2,
+        "precision": "single",
+    }
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    monkeypatch.setenv("PMARLO_CONFIG_FILE", str(cfg_path))
+    load_defaults.cache_clear()
+    with pytest.raises(ConfigurationError):
+        load_defaults()
+    load_defaults.cache_clear()

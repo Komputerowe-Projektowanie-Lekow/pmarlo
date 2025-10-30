@@ -101,7 +101,11 @@ class BalancedTempSampler:
         n_pairs = pairs.shape[0]
         base = self._frame_weights.get(shard.meta.shard_id)
         if base is not None and base.shape[0] != shard.meta.n_frames:
-            base = None
+            raise ValueError(
+                "frame weights length mismatch for shard "
+                f"{shard.meta.shard_id}: expected {shard.meta.n_frames}, "
+                f"got {base.shape[0]}"
+            )
         base_weights = (
             base[pairs[:, 0]].astype(np.float64)
             if base is not None
@@ -140,6 +144,12 @@ class BalancedTempSampler:
         if embeddings is None or embeddings.shape[0] != shard.meta.n_frames:
             return
         base = self._frame_weights.get(shard.meta.shard_id)
+        if base is not None and base.shape[0] != shard.meta.n_frames:
+            raise ValueError(
+                "frame weights length mismatch for shard "
+                f"{shard.meta.shard_id}: expected {shard.meta.n_frames}, "
+                f"got {base.shape[0]}"
+            )
         occupancy = self._occupancy.setdefault(temperature, {})
         for i, _ in chosen_pairs:
             key = self._hash_embedding(embeddings[int(i)])

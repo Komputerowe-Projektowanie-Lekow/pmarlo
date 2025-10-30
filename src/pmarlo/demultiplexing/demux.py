@@ -416,6 +416,7 @@ def _probe_replica_info(remd: Any, reader: Any) -> tuple[list[str], list[int], b
                 str_path,
             )
             replica_frames.append(0)
+            had_reader_error = True
             continue
         except TrajectoryIOError as exc:
             if _missing_file_error(exc):
@@ -424,7 +425,9 @@ def _probe_replica_info(remd: Any, reader: Any) -> tuple[list[str], list[int], b
                     str_path,
                 )
                 replica_frames.append(0)
+                had_reader_error = True
                 continue
+            had_reader_error = True
             raise RuntimeError(
                 f"Failed to probe frame count for replica trajectory {str_path}"
             ) from exc

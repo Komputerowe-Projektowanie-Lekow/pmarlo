@@ -189,9 +189,11 @@ class StateDetector:
         source_idx = sorted_indices[0]
         sink_idx = sorted_indices[-1]
 
-        # Convert 2D FES positions to 1D state indices (simplified)
-        source_state = source_idx
-        sink_state = sink_idx
+        # Convert 2D FES positions to 1D state indices based on minima positions
+        source_state = np.ravel_multi_index(
+            minima_positions[source_idx], F.shape
+        )
+        sink_state = np.ravel_multi_index(minima_positions[sink_idx], F.shape)
 
         return np.array([source_state]), np.array([sink_state])
 

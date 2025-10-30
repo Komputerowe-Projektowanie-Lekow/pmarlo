@@ -82,6 +82,12 @@ def test_collect_lag_candidates_rejects_non_integer_values():
         apply_mod._collect_lag_candidates({"lag": "abc"}, 5)
 
 
+def test_resolve_requested_lag_accepts_string_value():
+    from pmarlo.transform import apply as apply_mod
+
+    assert apply_mod._resolve_requested_lag({"lag": "7"}) == 7
+
+
 def test_collect_lag_candidates_requires_positive_requested_lag():
     from pmarlo.transform import apply as apply_mod
 

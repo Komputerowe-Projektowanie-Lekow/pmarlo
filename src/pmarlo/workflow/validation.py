@@ -183,10 +183,12 @@ def validate_fes_quality(
 
 
 def _extract_fes_array(fes_data: Dict[str, Any]) -> np.ndarray:
-    fes_values = fes_data.get("fes", fes_data.get("values"))
-    if fes_values is None:
-        raise ValueError("No FES values found in data")
-    return np.asarray(fes_values)
+    """Return the numeric FES array from common artifact formats."""
+
+    for key in ("fes", "values", "F"):
+        if key in fes_data:
+            return np.asarray(fes_data[key])
+    raise ValueError("No FES values found in data")
 
 
 def _evaluate_nan_metrics(

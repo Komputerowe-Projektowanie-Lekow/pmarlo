@@ -142,7 +142,17 @@ class ReplicaExchange:
             "amber14-all.xml",
             "amber14/tip3pfb.xml",
         ]
-        self.temperatures = temperatures or self._generate_temperature_ladder()
+        if temperatures is None:
+            resolved_temps = self._generate_temperature_ladder()
+        else:
+            try:
+                resolved_temps = [float(t) for t in list(temperatures)]
+            except TypeError as exc:
+                raise TypeError(
+                    "temperatures must be an iterable of numeric values"
+                ) from exc
+
+        self.temperatures = resolved_temps
         # Validate temperature ladder when explicitly provided or generated
         self._validate_temperature_ladder(self.temperatures)
 

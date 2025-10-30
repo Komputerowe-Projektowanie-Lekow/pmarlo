@@ -243,8 +243,14 @@ def plot_sampling_validation(
     :return: Matplotlib Figure.
     """
     if not projected_data_1d:
-        logger.warning("No projected data provided for sampling validation plot.")
-        return plt.figure() # Return empty figure
+        raise ValueError("projected_data_1d must contain at least one trajectory")
+
+    empty_trajectories = [idx for idx, traj in enumerate(projected_data_1d) if len(traj) == 0]
+    if empty_trajectories:
+        raise ValueError(
+            "projected_data_1d contains empty trajectories at indices: "
+            + ", ".join(str(i) for i in empty_trajectories)
+        )
 
     if ax is None:
         fig, ax = plt.subplots(figsize=(10, 6))
@@ -253,10 +259,10 @@ def plot_sampling_validation(
 
     # Generate colors
     try:
-        colors = plt.get_cmap(cmap_name)(np.linspace(0, 1, len(projected_data_1d)))
-    except ValueError:
-        logger.warning(f"Colormap '{cmap_name}' not found, using 'viridis'.")
-        colors = plt.get_cmap("viridis")(np.linspace(0, 1, len(projected_data_1d)))
+        cmap = plt.get_cmap(cmap_name)
+    except ValueError as exc:
+        raise ValueError(f"Unknown colormap '{cmap_name}'") from exc
+    colors = cmap(np.linspace(0, 1, len(projected_data_1d)))
 
     # --- 1. Plot Histograms ---
     # Combine all data for a single representative histogram
@@ -270,12 +276,6 @@ def plot_sampling_validation(
     num_shards_to_label = min(15, len(projected_data_1d)) # Limit legend entries
     for i, traj in enumerate(projected_data_1d):
         logger.debug(f"Shard {i}: traj length = {len(traj)}")
-
-        if len(traj) == 0:
-            logger.debug(f"Shard {i}: SKIPPED - empty trajectory")
-            # TEMPORARY DEBUG CHECK: Verify logger configuration
-            print(f"DEBUG_CHECK: Logger name='{logger.name}', Effective level={logger.getEffectiveLevel()}, Handler count={len(logger.handlers)}, Root handler count={len(logging.getLogger().handlers)}")
-            continue
 
         plot_len = min(len(traj), max_traj_length_plot)
         logger.debug(f"Shard {i}: plot_len = {plot_len}, max_traj_length_plot = {max_traj_length_plot}")
@@ -302,10 +302,6 @@ def plot_sampling_validation(
                 label=label,
             )
             logger.debug(f"Shard {i}: PLOTTED with y_time range [{y_time[0]:.4f}, {y_time[-1]:.4f}]")
-        else:
-            logger.debug(f"Shard {i}: SKIPPED - actual_plot_len <= 1")
-            # TEMPORARY DEBUG CHECK: Verify logger configuration
-            print(f"DEBUG_CHECK: Logger name='{logger.name}', Effective level={logger.getEffectiveLevel()}, Handler count={len(logger.handlers)}, Root handler count={len(logging.getLogger().handlers)}")
 
     # --- 3. Add Time Arrow ---
     # Ensure arrow/text are placed reasonably within potentially changed xlims

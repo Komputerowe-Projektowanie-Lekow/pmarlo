@@ -5,8 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
 
-from pmarlo import constants as const
-
 from .format import read_shard_npz_json
 from .meta import load_shard_meta
 from .schema import Shard
@@ -22,12 +20,10 @@ def select_shards(root: Path, *, temperature_K: Optional[float] = None) -> List[
     if temperature_K is None:
         return jsons
     out: List[Path] = []
+    target_temperature = float(temperature_K)
     for json_path in jsons:
         meta = load_shard_meta(json_path)
-        if (
-            abs(meta.temperature_K - float(temperature_K))
-            < const.NUMERIC_ABSOLUTE_TOLERANCE
-        ):
+        if meta.temperature_K == target_temperature:
             out.append(json_path)
     return out
 

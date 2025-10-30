@@ -49,3 +49,10 @@ def test_contacts_pair_boundary_and_validation() -> None:
         feat.compute(traj, i=0, j=2, rcut=0.5)
     with pytest.raises(ValueError):
         feat.compute(traj, i=0, j=1, rcut=-1.0)
+
+
+def test_parse_feature_spec_preserves_suffix_case() -> None:
+    spec = "deeptica:model@MyModelDir/Model.pt"
+    name, kwargs = parse_feature_spec(spec)
+    assert name == spec
+    assert kwargs == {}

@@ -29,7 +29,7 @@ def test_ess_adjusted_catches_bias_beyond_noise() -> None:
     k = 4
     Pk_true = np.linalg.matrix_power(P, k)
     counts = np.full(n, 2000)
-    Pk_biased = np.clip(Pk_true + 0.02 * rng.normal(size=(n, n)), 1e-12, 1.0)
+    Pk_biased = np.clip(Pk_true + 0.05 * rng.normal(size=(n, n)), 1e-12, 1.0)
     Pk_biased /= Pk_biased.sum(axis=1, keepdims=True)
 
     cfg = CKConfig(
@@ -61,3 +61,22 @@ def test_ess_adjusted_allows_within_noise() -> None:
     )
     dec = decide_ck({k: P}, {k: Pk_noisy}, {k: counts}, cfg)
     assert dec.passed
+
+
+def test_multinomial_noise_matches_uniform_expectation() -> None:
+    n = 5
+    P = np.full((n, n), 1.0 / n)
+    k = 3
+    counts = np.full(n, 400)
+
+    cfg = CKConfig(
+        mode="ess_adjusted",
+        min_pass_fraction=1.0,
+        per_lag_cap=1.0,
+        k_steps=(k,),
+        sigma_mult=1.0,
+    )
+
+    dec = decide_ck({k: P}, {k: P}, {k: counts}, cfg)
+    expected_noise = np.sqrt((1.0 - 1.0 / n) / (counts[0] * n))
+    np.testing.assert_allclose(dec.per_lag[k]["noise_rms"], expected_noise, rtol=1e-8)

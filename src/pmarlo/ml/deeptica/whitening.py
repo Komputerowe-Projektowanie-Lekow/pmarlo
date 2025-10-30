@@ -2,10 +2,62 @@
 
 from __future__ import annotations
 
+import numbers
 from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
+
+
+def _coerce_bool_flag(value: Any) -> bool:
+    """Return a boolean flag from metadata without silently guessing.
+
+    The metadata attached to trained DeepTICA models is often serialised to JSON
+    before being reloaded.  Depending on the tooling, the ``already_applied``
+    flag may therefore reappear as strings (``"true"``/``"false"``), numeric
+    sentinels (``0``/``1``) or numpy scalar values.  The original implementation
+    delegated the conversion to :class:`bool` directly, which treated any
+    non-empty string as ``True``.  As a result the whitening step was skipped
+    entirely whenever the metadata stored ``"false"`` – an easy mistake to make
+    when constructing inputs manually.
+
+    To avoid these silent skips we accept a narrow range of scalar values and
+    raise on anything ambiguous, matching the "no fallbacks" policy from the
+    project guidelines.
+    """
+
+    if value is None:
+        return False
+
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+
+    if isinstance(value, numbers.Integral):
+        return bool(int(value))
+
+    if isinstance(value, numbers.Real):
+        return bool(float(value))
+
+    if isinstance(value, np.ndarray):
+        if value.ndim == 0:
+            return _coerce_bool_flag(value.item())
+        raise TypeError(
+            "already_applied flag must be a scalar value; arrays are unsupported",
+        )
+
+    if isinstance(value, str):
+        normalised = value.strip().lower()
+        if normalised in {"", "0", "false", "no", "off"}:
+            return False
+        if normalised in {"1", "true", "yes", "on"}:
+            return True
+        raise ValueError(
+            "already_applied flag string must be boolean-like (true/false)",
+        )
+
+    raise TypeError(
+        "already_applied flag must be a boolean, numeric, or string scalar",
+    )
 
 
 def apply_output_transform(
@@ -49,7 +101,7 @@ def apply_output_transform(
     """
 
     arr = np.asarray(Y, dtype=np.float64)
-    if bool(already_applied):
+    if _coerce_bool_flag(already_applied):
         return arr
 
     if mean is None or W is None:

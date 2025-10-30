@@ -109,6 +109,27 @@ def test_detect_from_fes_local_minima():
     assert len(sink) >= 1
 
 
+def test_detect_from_fes_watershed_returns_correct_indices() -> None:
+    """Watershed detection should map minima coordinates to state indices."""
+
+    detector = StateDetector()
+
+    fes_array = np.full((5, 5), 5.0)
+    fes_array[0, 3] = -1.0
+    fes_array[4, 1] = -0.5
+
+    class MockFES:
+        F = fes_array
+
+    source, sink = detector.detect_from_fes(MockFES(), n_basins=2, method="watershed")
+
+    expected_source = np.ravel_multi_index((0, 3), fes_array.shape)
+    expected_sink = np.ravel_multi_index((4, 1), fes_array.shape)
+
+    np.testing.assert_array_equal(source, np.array([expected_source]))
+    np.testing.assert_array_equal(sink, np.array([expected_sink]))
+
+
 def test_committor_classification_respects_thresholds() -> None:
     """Forward committor classification honours configured thresholds."""
 

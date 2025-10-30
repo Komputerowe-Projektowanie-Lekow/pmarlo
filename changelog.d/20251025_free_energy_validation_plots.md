@@ -14,3 +14,7 @@
 - Refactored Free Energy Validation tab to compute validation metrics independently rather than relying on pre-computed MSM/FES analysis results
 - Enhanced app workflow with standalone validation tool that allows users to verify sampling quality on-demand for any shard combination
 
+### Fixed
+- `plot_sampling_validation` now fails fast on missing trajectories, empty shards, or unknown colormaps instead of silently
+  falling back, aligning reporting behavior with deterministic output requirements.
+

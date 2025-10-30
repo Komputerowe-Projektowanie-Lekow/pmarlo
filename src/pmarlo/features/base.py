@@ -118,8 +118,14 @@ def parse_feature_spec(spec: str) -> Tuple[str, Dict[str, Any]]:
     if prefix in {"ssfrac", "secondary"}:
         return "ssfrac", {}
 
-    # Default: return normalized original spec (preserve unknown namespaces)
-    return spec.strip().lower(), {}
+    # Default: preserve the original suffix while normalising the namespace
+    # prefix.  Many higher-level specs include file paths or identifiers that
+    # are case-sensitive (e.g. ``deeptica:model@MyModel.pt``); lowercasing the
+    # payload would silently break those references.  Only the namespace prefix
+    # is normalised to keep lookups case-insensitive.
+    if rest is None:  # pragma: no cover - defensive, handled above
+        return prefix, {}
+    return f"{prefix}:{rest}", {}
 
 
 def _parse_name_args(s: str) -> Tuple[str, Tuple[str, ...]]:
