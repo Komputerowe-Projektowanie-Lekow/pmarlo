@@ -307,6 +307,13 @@ class BuildOpts:
     enable_fes: bool = True
     fes_temperature: float = 300.0
     fes_bins: Optional[Tuple[int, int]] = None
+    fes_smoothing_mode: str = "never"
+    fes_target_sd_kT: Optional[float] = None
+    fes_alpha: float = 1e-6
+    fes_h0: float = 1.2
+    fes_ess_ref: float = 50.0
+    fes_h_min: float = 0.4
+    fes_h_max: float = 3.0
     enable_tram: bool = False
     tram_lag: int = 1
     tram_n_iter: int = 100
@@ -335,6 +342,39 @@ class BuildOpts:
             object.__setattr__(
                 self, "fes_bins", tuple(int(x) for x in self.fes_bins)
             )
+
+        mode = str(self.fes_smoothing_mode).lower()
+        if mode not in {"never", "auto", "always"}:
+            raise ValueError(
+                "fes_smoothing_mode must be one of {'never', 'auto', 'always'}"
+            )
+        object.__setattr__(self, "fes_smoothing_mode", mode)
+
+        if self.fes_target_sd_kT is not None:
+            target = float(self.fes_target_sd_kT)
+            if target <= 0:
+                raise ValueError("fes_target_sd_kT must be positive when provided")
+            object.__setattr__(self, "fes_target_sd_kT", target)
+
+        def _coerce_positive(name: str) -> float:
+            value = float(getattr(self, name))
+            if value <= 0:
+                raise ValueError(f"{name} must be positive")
+            return value
+
+        alpha = _coerce_positive("fes_alpha")
+        h0 = _coerce_positive("fes_h0")
+        ess_ref = _coerce_positive("fes_ess_ref")
+        h_min = _coerce_positive("fes_h_min")
+        h_max = _coerce_positive("fes_h_max")
+        if h_min > h_max:
+            raise ValueError("fes_h_min must be <= fes_h_max")
+
+        object.__setattr__(self, "fes_alpha", alpha)
+        object.__setattr__(self, "fes_h0", h0)
+        object.__setattr__(self, "fes_ess_ref", ess_ref)
+        object.__setattr__(self, "fes_h_min", h_min)
+        object.__setattr__(self, "fes_h_max", h_max)
 
     def with_plan(self, plan: TransformPlan) -> "BuildOpts":
         return replace(self, plan=plan)
@@ -1473,6 +1513,7 @@ def _generate_fes(
         b,
         temperature=opts.temperature,
         periodic=periodic,
+        config=opts,
     )
     return {"result": fes, "cv1_name": names[0], "cv2_name": names[1]}
 
@@ -1530,8 +1571,30 @@ def _fes_metadata_summary(meta: Dict[str, Any]) -> Dict[str, Any]:
     method = meta.get("method")
     if method:
         summary["method"] = str(method)
-    if "adaptive" in meta:
-        summary["adaptive"] = meta.get("adaptive")
+    smoothing_meta = meta.get("smoothing")
+    if isinstance(smoothing_meta, Mapping):
+        smoothing_summary: Dict[str, Any] = {}
+        mode = smoothing_meta.get("mode")
+        if mode is not None:
+            smoothing_summary["mode"] = str(mode)
+        target = smoothing_meta.get("target_sd_kT")
+        try:
+            smoothing_summary["target_sd_kT"] = float(target) if target is not None else None
+        except Exception:
+            smoothing_summary["target_sd_kT"] = None
+        applied = smoothing_meta.get("applied_fraction")
+        try:
+            smoothing_summary["applied_fraction"] = float(applied) if applied is not None else 0.0
+        except Exception:
+            smoothing_summary["applied_fraction"] = 0.0
+        for key in ("alpha", "h0", "ess_ref", "h_min", "h_max"):
+            value = smoothing_meta.get(key)
+            if value is not None:
+                try:
+                    smoothing_summary[key] = float(value)
+                except Exception:
+                    continue
+        summary["smoothing"] = smoothing_summary
     return summary
 
 
@@ -1612,18 +1675,31 @@ def _sanitize_artifacts(obj: Any) -> Any:
 
 
 def estimate_memory_usage(dataset: Any, opts: BuildOpts) -> float:
-    try:
-        n_frames = _count_frames(dataset)
-        n_features = len(_extract_feature_names(dataset))
+    """Estimate the memory required to build the MSM pipeline.
 
-        dataset_gb = (n_frames * n_features * 8) / (1024**3)
-        msm_gb = (opts.n_clusters * n_features * 8) / (1024**3)
-        msm_gb += (opts.n_states * opts.n_states * 8) / (1024**3)
-        fes_gb = (100 * 100 * 8) / (1024**3) if opts.enable_fes else 0
+    The estimation relies on the dataset exposing both the number of frames and
+    a sequence of feature names.  The build process assumes these values are
+    present – if they are missing we raise an error instead of attempting to
+    continue with guessed defaults.
+    """
 
-        return (dataset_gb + msm_gb + fes_gb) * 1.5
-    except Exception:
-        return 1.0
+    n_frames = _count_frames(dataset)
+    if n_frames <= 0:
+        raise ValueError("Cannot estimate memory usage: dataset has no frames")
+
+    feature_names = _extract_feature_names(dataset)
+    if not feature_names:
+        raise ValueError(
+            "Cannot estimate memory usage: dataset has no feature names"
+        )
+
+    n_features = len(feature_names)
+    dataset_gb = (n_frames * n_features * 8) / (1024**3)
+    msm_gb = (opts.n_clusters * n_features * 8) / (1024**3)
+    msm_gb += (opts.n_states * opts.n_states * 8) / (1024**3)
+    fes_gb = (100 * 100 * 8) / (1024**3) if opts.enable_fes else 0.0
+
+    return dataset_gb + msm_gb + fes_gb
 
 
 def create_build_summary(result: BuildResult) -> Dict[str, Any]:

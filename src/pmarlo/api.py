@@ -754,6 +754,14 @@ def generate_free_energy_surface(
     inpaint: bool = False,
     min_count: int = 1,
     kde_bw_deg: Tuple[float, float] = (20.0, 20.0),
+    config: Any | None = None,
+    fes_smoothing_mode: str | None = None,
+    fes_target_sd_kT: float | None = None,
+    fes_alpha: float | None = None,
+    fes_h0: float | None = None,
+    fes_ess_ref: float | None = None,
+    fes_h_min: float | None = None,
+    fes_h_max: float | None = None,
 ) -> FESResult:
     """Generate a 2D free-energy surface.
 
@@ -776,12 +784,39 @@ def generate_free_energy_surface(
         is ``True``.
     kde_bw_deg
         Bandwidth in degrees for the periodic KDE when smoothing or inpainting.
+    config
+        Optional configuration object supplying ``fes_*`` smoothing parameters.
+    fes_smoothing_mode, fes_target_sd_kT, fes_alpha, fes_h0, fes_ess_ref,
+    fes_h_min, fes_h_max
+        Overrides for the corresponding smoothing options. ``None`` leaves the
+        value unchanged relative to ``config`` or the defaults.
 
     Returns
     -------
     FESResult
         Dataclass containing the free-energy surface and bin edges.
     """
+
+    config_payload: dict[str, Any] = {}
+    if isinstance(config, Mapping):
+        config_payload.update(config)
+    elif config is not None:
+        config_payload["__base_config__"] = config
+
+    overrides = {
+        "fes_smoothing_mode": fes_smoothing_mode,
+        "fes_target_sd_kT": fes_target_sd_kT,
+        "fes_alpha": fes_alpha,
+        "fes_h0": fes_h0,
+        "fes_ess_ref": fes_ess_ref,
+        "fes_h_min": fes_h_min,
+        "fes_h_max": fes_h_max,
+    }
+    for key, value in overrides.items():
+        if value is not None:
+            config_payload[key] = value
+
+    config_arg: Any | None = config_payload if config_payload else config
 
     out = _generate_2d_fes(
         cv1,
@@ -793,6 +828,7 @@ def generate_free_energy_surface(
         inpaint=inpaint,
         min_count=min_count,
         kde_bw_deg=kde_bw_deg,
+        config=config_arg,
     )
     return out
 

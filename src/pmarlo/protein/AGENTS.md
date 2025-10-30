@@ -18,7 +18,7 @@ This module is the Protein prep step at the very front of your pipeline (before 
 
 init.py exposes a single public class: Protein. The module docstring: “Handles protein preparation, cleanup, and property analysis.”
 
-Tries to import PDBFixer; if unavailable, it installs a minimal stub using OpenMM’s Modeller that can remove heterogens, add hydrogens, and (if forcefields are present) add solvent. Flags HAS_NATIVE_PDBFIXER / USING_PDBFIXER_STUB document which path is active.
+Tries to import PDBFixer; if unavailable the module raises an ImportError immediately so the workflow stops rather than falling back to a degraded implementation. HAS_NATIVE_PDBFIXER documents whether the import succeeded.
 
 Uses OpenMM (unit, PDBFile, Modeller, ForceField, PME, HBonds) and RDKit for descriptors when requested.
 

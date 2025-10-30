@@ -211,25 +211,46 @@ def _metric_scalar(metrics: MetricMapping, key: str, default: float = 0.0) -> fl
 
 
 def _metric_vector(metrics: MetricMapping, key: str) -> list[float]:
-    """Extract a sequence of floats from the metrics mapping when available."""
+    """Extract a sequence of floats from the metrics mapping when available.
 
-    value = metrics.get(key)
+    Raises:
+        KeyError: If the requested metric is missing.
+        ValueError: If the metric exists but contains non-numeric or empty data.
+        TypeError: If the metric exists but is not an array-like sequence.
+    """
+
+    if key not in metrics:
+        raise KeyError(f"Metric '{key}' is missing from the metrics collection.")
+
+    value = metrics[key]
     if isinstance(value, np.ndarray):
-        array = np.asarray(value, dtype=np.float64)
+        if value.size == 0:
+            raise ValueError(f"Metric '{key}' contains no values.")
+        try:
+            array = np.asarray(value, dtype=np.float64)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"Metric '{key}' contains data that cannot be converted to floats."
+            ) from error
         return cast(list[float], array.tolist())
+
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        if not value:
+            raise ValueError(f"Metric '{key}' contains no values.")
         result: list[float] = []
-        for item in value:
-            if isinstance(item, numbers.Real):
+        for index, item in enumerate(value):
+            try:
                 result.append(float(item))
-            elif isinstance(item, str):
-                try:
-                    result.append(float(item))
-                except ValueError:
-                    continue
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"Metric '{key}' contains non-numeric value at index {index}: {item!r}."
+                ) from error
         return result
-    empty: list[float] = []
-    return empty
+
+    raise TypeError(
+        f"Metric '{key}' must be an array or sequence of numeric values, "
+        f"received {type(value).__name__}."
+    )
 
 
 # inherit for the typeddict
