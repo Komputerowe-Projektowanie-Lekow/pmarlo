@@ -25,6 +25,7 @@ from typing import (
 import numpy as np
 
 from pmarlo import constants as const
+from pmarlo.utils.coercion import coerce_finite_float
 from pmarlo.utils.json_io import load_json_file
 from pmarlo.utils.path_utils import ensure_directory
 from pmarlo.utils.temperature import collect_temperature_values
@@ -104,16 +105,6 @@ def _is_demux_shard(path: Path, meta: Optional[Dict[str, Any]] = None) -> bool:
                 if isinstance(raw, str) and "demux" in raw.lower():
                     return True
     return "demux" in path.stem.lower()
-
-
-def _coerce_float(value: Any) -> Optional[float]:
-    try:
-        val = float(value)
-    except (TypeError, ValueError):
-        return None
-    if math.isnan(val):
-        return None
-    return val
 
 
 def _collect_demux_temperatures(meta: Mapping[str, Any] | None) -> List[float]:
@@ -1599,8 +1590,9 @@ def _fes_metadata_summary(meta: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _coerce_temperature(value: Any) -> Optional[float]:
-    coerced = _coerce_float(value) if value is not None else None
-    return coerced
+    if value is None:
+        return None
+    return coerce_finite_float(value)
 
 
 def _extract_fes_quality_artifact(fes_obj: Any) -> Dict[str, Any]:

@@ -14,7 +14,6 @@ from pmarlo.shards.format import read_shard_npz_json, write_shard_npz_json
 from pmarlo.shards.id import canonical_shard_id
 from pmarlo.shards.schema import FeatureSpec, Shard, ShardMeta
 from pmarlo.utils.path_utils import ensure_directory
-from pmarlo.utils.validation import require
 
 __all__ = ["write_shard", "read_shard", "_sha256_bytes"]
 
@@ -91,7 +90,8 @@ def _coerce_str(value: object, *, name: str) -> str:
 
 def _normalise_source_metadata(source_dict: Dict[str, object]) -> _SourceCore:
     for key in ("created_at", "kind", "run_id", "replica_id", "segment_id"):
-        require(key in source_dict, f"source missing required key '{key}'")
+        if key not in source_dict:
+            raise ValueError(f"source missing required key '{key}'")
 
     kind_raw = _coerce_str(source_dict["kind"], name="kind").strip().lower()
     if kind_raw not in {"demux", "replica"}:

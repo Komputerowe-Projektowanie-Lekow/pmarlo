@@ -20,6 +20,7 @@ from scipy import stats as scipy_stats
 
 from pmarlo import constants as const
 from pmarlo.utils.path_utils import ensure_directory
+from pmarlo.utils.validation import finite_or_none
 
 
 def _ordered(obj: Dict[str, Any]) -> "OrderedDict[str, Any]":
@@ -39,13 +40,13 @@ def default_kpi_metrics(
     """
     return _ordered(
         {
-            "conformational_coverage": _finite_or_none(conformational_coverage),
-            "transition_matrix_accuracy": _finite_or_none(transition_matrix_accuracy),
-            "replica_exchange_success_rate": _finite_or_none(
+            "conformational_coverage": finite_or_none(conformational_coverage),
+            "transition_matrix_accuracy": finite_or_none(transition_matrix_accuracy),
+            "replica_exchange_success_rate": finite_or_none(
                 replica_exchange_success_rate
             ),
-            "runtime_seconds": _finite_or_none(runtime_seconds),
-            "memory_mb": _finite_or_none(memory_mb),
+            "runtime_seconds": finite_or_none(runtime_seconds),
+            "memory_mb": finite_or_none(memory_mb),
         }
     )
 
@@ -202,19 +203,7 @@ def _get_process_rss_mb() -> Optional[float]:
 def _clamp01(x: Optional[float]) -> Optional[float]:
     if x is None or math.isnan(x) or math.isinf(x):
         return None
-    return max(0.0, min(1.0, float(x)))
-
-
-def _finite_or_none(x: Optional[float]) -> Optional[float]:
-    try:
-        if x is None:
-            return None
-        xf = float(x)
-        if math.isnan(xf) or math.isinf(xf):
-            return None
-        return xf
-    except Exception:
-        return None
+    return float(np.clip(float(x), 0.0, 1.0))
 
 
 # ---------- Additional KPI helpers for richer decisions ----------

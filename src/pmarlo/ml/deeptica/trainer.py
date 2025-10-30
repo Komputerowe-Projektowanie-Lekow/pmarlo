@@ -27,6 +27,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from pmarlo import constants as const
 from pmarlo.features.deeptica.losses import VAMP2Loss
+from pmarlo.utils.coercion import coerce_finite_float_with_default
 from pmarlo.utils.path_utils import ensure_directory
 
 logger = logging.getLogger(__name__)
@@ -1240,8 +1241,12 @@ class DeepTICACurriculumTrainer:
 
         # Update status to complete
         progress["status"] = "completed"
-        progress["wall_time_s"] = _coerce_float(history.get("wall_time_s", 0.0))
-        progress["best_val_score"] = _coerce_float(history.get("best_val_score", 0.0))
+        progress["wall_time_s"] = coerce_finite_float_with_default(
+            history.get("wall_time_s", 0.0), default=0.0
+        )
+        progress["best_val_score"] = coerce_finite_float_with_default(
+            history.get("best_val_score", 0.0), default=0.0
+        )
         progress["best_epoch"] = history.get("best_epoch")
         progress["best_tau"] = history.get("best_tau")
 
@@ -1337,14 +1342,3 @@ class _LossModule(Protocol):
         z_tau: torch.Tensor,
         weights: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor]: ...
-
-
-def _coerce_float(value: object, default: float = 0.0) -> float:
-    if isinstance(value, numbers.Real):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except ValueError:
-            return default
-    return default
