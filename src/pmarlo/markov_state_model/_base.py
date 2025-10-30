@@ -40,7 +40,7 @@ class MSMBase:
         trajectory_files: Optional[Union[str, List[str]]] = None,
         topology_file: Optional[str] = None,
         temperatures: Optional[List[float]] = None,
-        output_dir: str = "output/msm_analysis",
+        output_dir: str | Path = None,
         random_state: Optional[int] = 42,
         ignore_trajectory_errors: bool = False,
     ) -> None:
@@ -52,6 +52,8 @@ class MSMBase:
         )
         self.topology_file: Optional[str] = topology_file
         self.temperatures: List[float] = temperatures or [300.0]
+        if output_dir is None:
+            raise TypeError("MSMBase requires `output_dir` to be provided.")
         self.output_dir: Path = Path(output_dir)
         # Ensure parent directories exist to avoid FileNotFoundError on CI
         ensure_directory(self.output_dir)

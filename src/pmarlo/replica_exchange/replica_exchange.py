@@ -108,7 +108,7 @@ class ReplicaExchange:
         pdb_file: str,
         forcefield_files: Optional[List[str]] = None,
         temperatures: Optional[List[float]] = None,
-        output_dir: str = "output/replica_exchange",
+        output_dir: str | Path | None = None,
         exchange_frequency: int = 50,  # Very frequent exchanges for testing
         auto_setup: bool = False,
         dcd_stride: int = 1,
@@ -156,6 +156,8 @@ class ReplicaExchange:
         # Validate temperature ladder when explicitly provided or generated
         self._validate_temperature_ladder(self.temperatures)
 
+        if output_dir is None:
+            raise TypeError("ReplicaExchange requires `output_dir` to be provided.")
         self.output_dir: Path = ensure_directory(Path(output_dir))
         self.exchange_frequency = exchange_frequency
         self.dcd_stride = dcd_stride
@@ -1647,11 +1649,17 @@ class ReplicaExchange:
 
             progress_percent = int(round(progress_fraction * 100))
             self._log_heating_milestone(
-                progress_percent, milestones_logged, heat_step + current_steps, heating_steps
+                progress_percent,
+                milestones_logged,
+                heat_step + current_steps,
+                heating_steps,
             )
 
             self._report_heating_progress(
-                reporter, equilibration_steps, heat_step + current_steps, progress_fraction
+                reporter,
+                equilibration_steps,
+                heat_step + current_steps,
+                progress_fraction,
             )
 
         heat_progress.close()
@@ -1833,12 +1841,13 @@ class ReplicaExchange:
             # Perform equilibration steps for all replicas
             for replica_idx, replica in enumerate(self.replicas):
                 try:
-                    self._perform_equilibration_step(replica_idx, replica, current_steps)
+                    self._perform_equilibration_step(
+                        replica_idx, replica, current_steps
+                    )
                 except RuntimeError:
                     if checkpoint_manager:
                         checkpoint_manager.mark_step_failed(
-                            "equilibration",
-                            f"NaN detected in replica {replica_idx}"
+                            "equilibration", f"NaN detected in replica {replica_idx}"
                         )
                     announce_stage_failed(
                         "REMD Sub-stage: Temperature Equilibration",
@@ -1864,7 +1873,11 @@ class ReplicaExchange:
             )
 
             self._report_equilibration_progress(
-                reporter, equilibration_steps, temp_equil_steps, i + current_steps, progress
+                reporter,
+                equilibration_steps,
+                temp_equil_steps,
+                i + current_steps,
+                progress,
             )
 
         temp_progress.close()
@@ -1879,7 +1892,11 @@ class ReplicaExchange:
             return True
 
         self._complete_equilibration_phase(
-            checkpoint_manager, temp_equil_steps, equilibration_steps, elapsed, milestones_logged
+            checkpoint_manager,
+            temp_equil_steps,
+            equilibration_steps,
+            elapsed,
+            milestones_logged,
         )
 
         return False
@@ -2502,7 +2519,7 @@ def setup_bias_variables(pdb_file: str) -> List:
 # Example usage function
 def run_remd_simulation(
     pdb_file: str,
-    output_dir: str = "output/replica_exchange",
+    output_dir: str | Path,
     total_steps: int = 1000,  # VERY FAST for testing
     equilibration_steps: int = 100,  # Default equilibration steps
     temperatures: Optional[List[float]] = None,

@@ -55,4 +55,3 @@ def setup_bias_variables(pdb_file: str) -> List:
         logger.info(f"Added phi dihedral {i+1} as bias variable: atoms {phi_atoms}")
 
     return bias_variables
-

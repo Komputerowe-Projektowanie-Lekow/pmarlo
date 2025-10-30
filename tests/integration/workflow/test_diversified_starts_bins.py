@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
@@ -15,13 +15,13 @@ pytestmark = pytest.mark.integration
 def test_diversified_starts_increase_bin_coverage(
     test_fixed_pdb_file: Path, tmp_path: Path
 ):
-    from example_programs.app_usecase.app.backend import (
+    from pmarlo.data.shard import read_shard
+    from pmarlo_webapp.app.backend import (
         ShardRequest,
         SimulationConfig,
         WorkflowBackend,
         WorkspaceLayout,
     )
-    from pmarlo.data.shard import read_shard
 
     ws = tmp_path
     layout = WorkspaceLayout(

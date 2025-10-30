@@ -921,10 +921,14 @@ def replica_initialization(context: Dict[str, Any], **kwargs) -> Dict[str, Any]:
 
     prepared_pdb = context.get("prepared_pdb")
     temperatures = kwargs.get("temperatures") or context.get("temperatures", [300.0])
-    output_dir = kwargs.get("output_dir") or context.get("output_dir", "output")
+    output_dir = kwargs.get("output_dir") or context.get("output_dir")
 
     if not prepared_pdb:
         raise ValueError("prepared_pdb required for replica initialization")
+    if output_dir is None:
+        raise ValueError(
+            "replica_initialization requires an explicit `output_dir` value."
+        )
 
     config = RemdConfig(
         input_pdb=str(prepared_pdb),
@@ -982,8 +986,12 @@ def production_simulation(context: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         raise ValueError("prepared_pdb required for production simulation")
 
     steps = kwargs.get("steps") or context.get("steps", 1000)
-    output_dir = kwargs.get("output_dir") or context.get("output_dir", "output")
+    output_dir = kwargs.get("output_dir") or context.get("output_dir")
     temperatures = kwargs.get("temperatures") or context.get("temperatures", [300.0])
+    if output_dir is None:
+        raise ValueError(
+            "production_simulation requires an explicit `output_dir` value."
+        )
 
     trajectory_file = run_remd_simulation(
         pdb_file=str(prepared_pdb),
@@ -1036,7 +1044,9 @@ def msm_build(context: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         raise ValueError("trajectory_files required for MSM building")
 
     n_states = kwargs.get("n_states") or context.get("n_states", 50)
-    output_dir = kwargs.get("output_dir") or context.get("output_dir", "output")
+    output_dir = kwargs.get("output_dir") or context.get("output_dir")
+    if output_dir is None:
+        raise ValueError("msm_build requires an explicit `output_dir` value.")
 
     # Get topology file from context
     prepared_pdb = context.get("prepared_pdb")
@@ -1199,9 +1209,8 @@ def apply_transform_plan(dataset, plan: TransformPlan):
         handler = _STEP_HANDLERS.get(step.name)
         if handler is None:
             known = ", ".join(sorted(_STEP_HANDLERS))
-            message = (
-                f"Unknown transform step '{step.name}'."
-                + (f" Known steps: {known}" if known else "")
+            message = f"Unknown transform step '{step.name}'." + (
+                f" Known steps: {known}" if known else ""
             )
             logger.error(message)
             raise KeyError(message)

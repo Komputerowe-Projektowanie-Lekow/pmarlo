@@ -50,9 +50,7 @@ def safe_timescales(
         ~np.isfinite(magnitudes) | (magnitudes <= 0) | (magnitudes >= 1)
     )
     real_mask = np.isclose(eig_complex.imag, 0.0)
-    invalid_real = real_mask & (
-        (eig_complex.real <= 0.0) | (eig_complex.real >= 1.0)
-    )
+    invalid_real = real_mask & ((eig_complex.real <= 0.0) | (eig_complex.real >= 1.0))
     invalid: NDArray[np.bool_] = invalid_magnitude | invalid_real
     timescales = timescales.astype(np.float64, copy=False)
     timescales[invalid] = np.nan

@@ -1,8 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import builtins
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import mdtraj as md
 import numpy as np

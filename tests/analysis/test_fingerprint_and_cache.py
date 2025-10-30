@@ -7,13 +7,13 @@ from pathlib import Path
 
 import numpy as np
 
-from example_programs.app_usecase.app.backend import (
+from pmarlo.data.shard import write_shard
+from pmarlo_webapp.app.backend import (
     BuildArtifact,
     BuildConfig,
     WorkflowBackend,
     WorkspaceLayout,
 )
-from pmarlo.data.shard import write_shard
 
 _SEGMENT_COUNTER = count()
 

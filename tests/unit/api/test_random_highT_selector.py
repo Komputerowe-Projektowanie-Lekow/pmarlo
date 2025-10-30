@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
@@ -50,14 +50,14 @@ def test_random_highT_frame_differs_from_base(
         rng_seed=42,
     )
     assert p.exists()
-    # Compute RMSD vs base PDB (should be > 0.1 Å)
+    # Compute RMSD vs base PDB (should be > 0.1 Ã…)
     base = md.load(str(test_fixed_pdb_file))
     frame = md.load(str(p), top=str(test_fixed_pdb_file))
     # Align CA to reduce rigid-body effects
     ca = base.topology.select("name CA")
     if ca.size:
         frame = frame.superpose(base, atom_indices=ca)
-        rmsd = md.rmsd(frame, base, atom_indices=ca)[0] * 10.0  # nm->Å
+        rmsd = md.rmsd(frame, base, atom_indices=ca)[0] * 10.0  # nm->Ã…
     else:
         rmsd = md.rmsd(frame, base)[0] * 10.0
     assert rmsd > 0.1

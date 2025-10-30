@@ -119,7 +119,9 @@ class CheckpointManager:
             "random_seed": checkpoint_state.get("random_seed", None),
             "rng_state": checkpoint_state.get("rng_state"),
             "reporter_stride": checkpoint_state.get("reporter_stride"),
-            "replica_reporter_strides": checkpoint_state.get("replica_reporter_strides"),
+            "replica_reporter_strides": checkpoint_state.get(
+                "replica_reporter_strides"
+            ),
         }
 
         # Restore replica states from XML if available
@@ -146,4 +148,3 @@ class CheckpointManager:
         )
 
         return restored
-

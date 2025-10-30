@@ -538,7 +538,9 @@ class JointWorkflow:
                     k = int(key)
                 except Exception:
                     continue
-                counts_candidate = counts_raw.get(key) if isinstance(counts_raw, dict) else None
+                counts_candidate = (
+                    counts_raw.get(key) if isinstance(counts_raw, dict) else None
+                )
                 if counts_candidate is None and isinstance(counts_raw, dict):
                     counts_candidate = counts_raw.get(k)
                 if counts_candidate is None:

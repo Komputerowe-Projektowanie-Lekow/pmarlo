@@ -110,9 +110,7 @@ def validate_invariants(shard: Shard) -> None:
             raise ValueError(f"{name} must be 1-D with length n_frames")
 
     if X.shape[1] != len(meta.feature_spec.columns):
-        raise ValueError(
-            "feature_spec.columns must match number of feature dimensions"
-        )
+        raise ValueError("feature_spec.columns must match number of feature dimensions")
 
     from .id import canonical_shard_id  # late import to avoid cycle
 

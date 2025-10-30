@@ -16,6 +16,7 @@ final.xml
 /example_programs/app_usecase/app_output/state.json
 
 
+pmarlo_webapp/app_output/*
 
 /utilities/
 
@@ -94,3 +95,6 @@ typelog.txt
 /tests/checkpoints/
 
 changes.patch
+pmarlo_webapp/app_intputs/*
+pmarlo_webapp/app_output/*
+pmarlo_webapp/app_outputs/*

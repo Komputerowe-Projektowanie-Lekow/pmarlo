@@ -159,7 +159,10 @@ except Exception as exc:  # pragma: no cover - executed without deeptime/sklearn
 
 def _ensure_conformations_dependencies() -> None:
     if _CONFORMATIONS_IMPORT_ERROR is not None:
-        raise ImportError(_CONFORMATIONS_IMPORT_MESSAGE) from _CONFORMATIONS_IMPORT_ERROR
+        raise ImportError(
+            _CONFORMATIONS_IMPORT_MESSAGE
+        ) from _CONFORMATIONS_IMPORT_ERROR
+
 
 try:  # pragma: no cover - optional OpenMM dependency
     from .replica_exchange.config import RemdConfig
@@ -2204,6 +2207,7 @@ def build_from_shards(
     notes: dict | None = None,
     progress_callback=None,
     kmeans_kwargs: dict | None = None,
+    n_microstates: int | None = None,
 ):
     """Aggregate shard JSONs and build a bundle with an app-friendly API.
 
@@ -2211,6 +2215,8 @@ def build_from_shards(
     - Adds SMOOTH_FES step to the plan by default.
     - Computes and records global bin edges into notes["cv_bin_edges"].
     - Optional ``kmeans_kwargs`` are forwarded to the clustering step to tune K-means.
+    - ``n_microstates`` enforces the requested number of discrete microstates in the MSM
+      build when provided.
     - Returns (BuildResult, dataset_hash).
     """
     import numpy as _np
@@ -2224,7 +2230,13 @@ def build_from_shards(
 
     model_dir = _extract_model_dir(notes)
     plan = _build_transform_plan(learn_cv, deeptica_params, lag, model_dir)
-    opts = _build_opts(seed, temperature, lag, kmeans_kwargs)
+    opts = _build_opts(
+        seed,
+        temperature,
+        lag,
+        kmeans_kwargs,
+        n_microstates=n_microstates,
+    )
     all_notes = _merge_notes_with_edges(notes, edges)
     n_states = _determine_macrostates(n_macrostates, deeptica_params)
     applied = _AppliedOpts(
@@ -2337,14 +2349,39 @@ def _build_opts(
     temperature: float,
     lag: int,
     kmeans_kwargs: dict | None = None,
+    *,
+    n_microstates: int | None = None,
 ) -> _BuildOpts:
     """Create BuildOpts with a simple lag candidate ladder."""
+
+    DEFAULT_N_STATES = 50
+    DEFAULT_N_CLUSTERS = 200
+
+    microstate_kwargs = dict(kmeans_kwargs or {})
+    resolved_states: int
+    if n_microstates is not None:
+        try:
+            resolved_states = int(n_microstates)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"n_microstates must be an integer, received {n_microstates!r}."
+            ) from exc
+        if resolved_states <= 0:
+            raise ValueError("n_microstates must be a positive integer.")
+    else:
+        resolved_states = DEFAULT_N_STATES
+
+    resolved_clusters = (
+        resolved_states if n_microstates is not None else DEFAULT_N_CLUSTERS
+    )
 
     return _BuildOpts(
         seed=int(seed),
         temperature=float(temperature),
         lag_candidates=(int(lag), int(2 * lag), int(3 * lag)),
-        kmeans_kwargs=dict(kmeans_kwargs or {}),
+        n_clusters=int(resolved_clusters),
+        n_states=int(resolved_states),
+        kmeans_kwargs=microstate_kwargs,
     )
 
 

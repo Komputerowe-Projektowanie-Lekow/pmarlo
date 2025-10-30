@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GNU GPLv3
 
 import logging
+from pathlib import Path
 
 from _example_support import assets_path, ensure_src_on_path
 
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Use the bundled protein asset packaged with the tests
 protein_path = str(assets_path("3gd8-fixed.pdb"))
+OUTPUT_ROOT = Path(__file__).resolve().parent / "programs_outputs" / "verify_pmarlo"
 
 
 def verify_components():
@@ -34,7 +36,10 @@ def verify_components():
 
         replica_exchange = ReplicaExchange.from_config(
             RemdConfig(
-                pdb_file=protein_path, temperatures=[300, 310, 320], auto_setup=False
+                pdb_file=protein_path,
+                temperatures=[300, 310, 320],
+                auto_setup=False,
+                output_dir=OUTPUT_ROOT / "replica_exchange",
             )
         )
         # Plan stride minimally for short verification
@@ -44,10 +49,17 @@ def verify_components():
         replica_exchange.setup_replicas()
         print(" Replica Exchange component initialized")
 
-        simulation = Simulation(protein_path, temperature=300, steps=1000)
+        simulation = Simulation(
+            protein_path,
+            temperature=300,
+            steps=1000,
+            output_dir=str(OUTPUT_ROOT / "simulation"),
+        )
         print(" Simulation component initialized")
 
-        markov_state_model = MarkovStateModel()
+        markov_state_model = MarkovStateModel(
+            output_dir=str(OUTPUT_ROOT / "msm_analysis")
+        )
         print(" Markov State Model component initialized")
 
         print("\nAll components initialized successfully!")
@@ -62,7 +74,11 @@ def run_pipeline():
     print("\n=== Running PMARLO Pipeline ===")
     try:
         pipeline = Pipeline(
-            protein_path, temperatures=[300, 310, 320], steps=1000, auto_continue=False
+            protein_path,
+            temperatures=[300, 310, 320],
+            steps=1000,
+            auto_continue=False,
+            output_dir=str(OUTPUT_ROOT / "pipeline"),
         )
 
         print("Starting pipeline execution...")

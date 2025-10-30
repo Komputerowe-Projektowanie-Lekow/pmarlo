@@ -1,11 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import sys
 import types
 
 import numpy as np
 import pytest
-
 
 if "openmm" not in sys.modules:
     openmm_stub = types.ModuleType("openmm")
@@ -36,6 +35,7 @@ if "scipy" not in sys.modules:
         return 0.0
 
     ndimage_stub.gaussian_filter = _gaussian_filter
+
     def _mquantiles(data, prob=(0.25, 0.5, 0.75), alphap=0.5, betap=0.5):
         return data
 
@@ -137,9 +137,9 @@ if "deeptime" not in sys.modules:
     sys.modules["deeptime.markov.tools.analysis"] = analysis_stub
     sys.modules["deeptime.markov.tools.estimation"] = estimation_stub
     sys.modules["deeptime.markov.tools.estimation.dense"] = dense_stub
-    sys.modules[
-        "deeptime.markov.tools.estimation.dense.transition_matrix"
-    ] = transition_matrix_stub
+    sys.modules["deeptime.markov.tools.estimation.dense.transition_matrix"] = (
+        transition_matrix_stub
+    )
 
 if "pmarlo.analysis" not in sys.modules:
     analysis_stub = types.ModuleType("pmarlo.analysis")

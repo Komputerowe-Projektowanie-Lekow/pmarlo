@@ -17,4 +17,3 @@
 ### Fixed
 - `plot_sampling_validation` now fails fast on missing trajectories, empty shards, or unknown colormaps instead of silently
   falling back, aligning reporting behavior with deterministic output requirements.
-

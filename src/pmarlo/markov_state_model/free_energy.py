@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import logging
 import warnings
-from dataclasses import dataclass
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, ClassVar, List, Optional, Tuple
 
 import numpy as np
@@ -760,11 +760,15 @@ class FESCalculator:
                        like temperature or default bin numbers.
         """
         self.config = config
-        self.temperature = config.get("temperature", 300.0)  # Example: Get temp from config
+        self.temperature = config.get(
+            "temperature", 300.0
+        )  # Example: Get temp from config
         # Convert temperature to energy units (kT in kJ/mol)
         kb = 0.00831446261815324  # Boltzmann constant in kJ/(mol*K)
         self.kbt = kb * self.temperature
-        logger.info(f"FESCalculator initialized with T={self.temperature}K (kBT={self.kbt:.3f} kJ/mol)")
+        logger.info(
+            f"FESCalculator initialized with T={self.temperature}K (kBT={self.kbt:.3f} kJ/mol)"
+        )
 
     def calculate_fes(
         self,
@@ -798,18 +802,22 @@ class FESCalculator:
             logger.error("MSM object is required for FES calculation.")
             return None, None
 
-        if not hasattr(msm, 'stationary_distribution'):
-            logger.error("MSM object does not have 'stationary_distribution' attribute.")
+        if not hasattr(msm, "stationary_distribution"):
+            logger.error(
+                "MSM object does not have 'stationary_distribution' attribute."
+            )
             return None, None
 
         # Try to get dtrajs from MSM object if not provided
         if dtrajs is None:
-            if hasattr(msm, 'discrete_trajectories'):
-                dtrajs = getattr(msm, 'discrete_trajectories')  # type: ignore[attr-defined]
-            elif hasattr(msm, '_dtrajs'):  # Common private attribute name
-                dtrajs = getattr(msm, '_dtrajs')  # type: ignore[attr-defined]
+            if hasattr(msm, "discrete_trajectories"):
+                dtrajs = getattr(msm, "discrete_trajectories")  # type: ignore[attr-defined]
+            elif hasattr(msm, "_dtrajs"):  # Common private attribute name
+                dtrajs = getattr(msm, "_dtrajs")  # type: ignore[attr-defined]
             else:
-                logger.error("Discrete trajectories (dtrajs) not provided and not found on MSM object.")
+                logger.error(
+                    "Discrete trajectories (dtrajs) not provided and not found on MSM object."
+                )
                 return None, None
 
         dtraj_arrays: List[np.ndarray]
@@ -823,8 +831,10 @@ class FESCalculator:
 
         # Validate dimensions
         if projection[0].shape[1] <= max(dim_x, dim_y):
-            logger.error(f"Projection data has only {projection[0].shape[1]} dimensions, "
-                         f"but requested dimensions {dim_x} and {dim_y}.")
+            logger.error(
+                f"Projection data has only {projection[0].shape[1]} dimensions, "
+                f"but requested dimensions {dim_x} and {dim_y}."
+            )
             return None, None
 
         logger.info(f"Calculating FES with bins={bins}, dims=({dim_x}, {dim_y})...")
@@ -836,7 +846,7 @@ class FESCalculator:
             concatenated_dtrajs = np.concatenate(dtraj_arrays)
 
             # --- Weighting using stationary distribution ---
-            pi_raw = getattr(msm, 'stationary_distribution', None)
+            pi_raw = getattr(msm, "stationary_distribution", None)
             if pi_raw is None:
                 logger.error("MSM stationary distribution is empty or invalid.")
                 return None, None
@@ -850,27 +860,37 @@ class FESCalculator:
             n_frames_proj = sum(len(p) for p in projection)
             n_frames_dtrajs = sum(len(d) for d in dtraj_arrays)
             if n_frames_proj != n_frames_dtrajs:
-                logger.error(f"Frame count mismatch: Projection ({n_frames_proj}) vs Dtrajs ({n_frames_dtrajs}).")
+                logger.error(
+                    f"Frame count mismatch: Projection ({n_frames_proj}) vs Dtrajs ({n_frames_dtrajs})."
+                )
                 return None, None
             if len(x_data) != len(concatenated_dtrajs):
-                logger.error(f"Length mismatch after concatenation: Projection ({len(x_data)}) vs Dtrajs ({len(concatenated_dtrajs)}).")
+                logger.error(
+                    f"Length mismatch after concatenation: Projection ({len(x_data)}) vs Dtrajs ({len(concatenated_dtrajs)})."
+                )
                 return None, None
 
             # Map discrete states to weights (stationary probabilities)
             # Ensure indices are valid
             max_state_index = np.max(concatenated_dtrajs)
             if max_state_index >= len(pi):
-                logger.warning(f"Max discrete state index ({max_state_index}) >= length of pi ({len(pi)}). "
-                               "Some states might be unvisited or outside the core set. Proceeding cautiously.")
+                logger.warning(
+                    f"Max discrete state index ({max_state_index}) >= length of pi ({len(pi)}). "
+                    "Some states might be unvisited or outside the core set. Proceeding cautiously."
+                )
                 # Filter out invalid indices if necessary, though ideally clustering handles this
                 valid_mask = concatenated_dtrajs < len(pi)
                 if not np.all(valid_mask):
-                    logger.warning(f"Filtering {np.sum(~valid_mask)} frames with invalid state indices.")
+                    logger.warning(
+                        f"Filtering {np.sum(~valid_mask)} frames with invalid state indices."
+                    )
                     x_data = x_data[valid_mask]
                     y_data = y_data[valid_mask]
                     concatenated_dtrajs = concatenated_dtrajs[valid_mask]
                     if len(x_data) == 0:
-                        logger.error("No valid frames remaining after filtering invalid state indices.")
+                        logger.error(
+                            "No valid frames remaining after filtering invalid state indices."
+                        )
                         return None, None
 
             weights = pi[concatenated_dtrajs]
@@ -890,7 +910,9 @@ class FESCalculator:
 
             # --- Calculate Free Energy ---
             # Avoid log(0) - replace zero probabilities with a very small number
-            min_prob = np.finfo(hist.dtype).tiny  # Smallest representable positive number
+            min_prob = np.finfo(
+                hist.dtype
+            ).tiny  # Smallest representable positive number
             hist = np.maximum(hist, min_prob)
 
             # FES = -kT * ln(Probability)
@@ -917,4 +939,3 @@ class FESCalculator:
         except Exception as e:
             logger.exception(f"Error during FES calculation: {e}")
             return None, None
-

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pmarlo.transform.plan import TransformPlan, TransformStep
 from pmarlo.transform.runner import apply_plan

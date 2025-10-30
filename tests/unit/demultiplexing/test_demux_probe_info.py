@@ -1,4 +1,4 @@
-"""Tests for probing replica trajectory metadata during demultiplexing."""
+﻿"""Tests for probing replica trajectory metadata during demultiplexing."""
 
 from __future__ import annotations
 
@@ -14,6 +14,10 @@ sys.path.insert(0, str(SRC_ROOT))
 
 pmarlo_stub = types.ModuleType("pmarlo")
 pmarlo_stub.__path__ = [str(SRC_ROOT / "pmarlo")]
+pmarlo_spec = importlib.util.spec_from_loader("pmarlo", loader=None)
+if pmarlo_spec is not None:
+    pmarlo_spec.submodule_search_locations = [str(SRC_ROOT / "pmarlo")]
+    pmarlo_stub.__spec__ = pmarlo_spec
 sys.modules.setdefault("pmarlo", pmarlo_stub)
 
 pmarlo_demux_stub = types.ModuleType("pmarlo.demultiplexing")
@@ -32,7 +36,9 @@ class _ProgressReporter:
     def __init__(self, cb, min_interval_s: float = 0.4):  # pragma: no cover - stub
         self._cb = cb
 
-    def emit(self, event: str, info: dict | None = None) -> None:  # pragma: no cover - stub
+    def emit(
+        self, event: str, info: dict | None = None
+    ) -> None:  # pragma: no cover - stub
         if self._cb is not None:
             self._cb(event, info or {})
 
@@ -41,10 +47,20 @@ progress_stub.ProgressReporter = _ProgressReporter
 sys.modules.setdefault("pmarlo.transform.progress", progress_stub)
 
 replica_exchange_stub = types.ModuleType("pmarlo.replica_exchange")
+replica_exchange_stub.__path__ = [str(SRC_ROOT / "pmarlo" / "replica_exchange")]
+replica_exchange_spec = importlib.util.spec_from_loader(
+    "pmarlo.replica_exchange", loader=None
+)
+if replica_exchange_spec is not None:
+    replica_exchange_spec.submodule_search_locations = [
+        str(SRC_ROOT / "pmarlo" / "replica_exchange")
+    ]
+    replica_exchange_stub.__spec__ = replica_exchange_spec
 sys.modules.setdefault("pmarlo.replica_exchange", replica_exchange_stub)
 
 config_spec = importlib.util.spec_from_file_location(
-    "pmarlo.replica_exchange.config", SRC_ROOT / "pmarlo" / "replica_exchange" / "config.py"
+    "pmarlo.replica_exchange.config",
+    SRC_ROOT / "pmarlo" / "replica_exchange" / "config.py",
 )
 assert config_spec and config_spec.loader is not None
 config_module = importlib.util.module_from_spec(config_spec)
@@ -67,15 +83,21 @@ openmm_stub.Platform = _PlatformStub
 sys.modules.setdefault("openmm", openmm_stub)
 
 mdtraj_stub = types.ModuleType("mdtraj")
-mdtraj_stub.load_topology = lambda path: types.SimpleNamespace()  # pragma: no cover - stub
+mdtraj_stub.load_topology = (
+    lambda path: types.SimpleNamespace()
+)  # pragma: no cover - stub
 sys.modules.setdefault("mdtraj", mdtraj_stub)
 
 psutil_stub = types.ModuleType("psutil")
 sys.modules.setdefault("psutil", psutil_stub)
 
 openmm_app_stub = types.ModuleType("openmm.app")
-openmm_app_stub.PDBFile = object  # type: ignore[assignment]
+openmm_app_stub.PME = object  # type: ignore[assignment]
+openmm_app_stub.HBonds = object  # type: ignore[assignment]
+openmm_app_stub.ForceField = type("ForceField", (), {})  # type: ignore[assignment]
+openmm_app_stub.PDBFile = type("PDBFile", (), {})  # type: ignore[assignment]
 openmm_app_stub.Simulation = object  # type: ignore[assignment]
+openmm_app_stub.DCDReporter = type("DCDReporter", (), {})  # type: ignore[assignment]
 sys.modules.setdefault("openmm.app", openmm_app_stub)
 
 spec = importlib.util.spec_from_file_location(

@@ -108,17 +108,13 @@ class ExchangeOperations:
         """
         # Bounds checking
         if replica_i >= len(replica_states) or replica_j >= len(replica_states):
-            raise RuntimeError(
-                f"replica_states array too small: {len(replica_states)}"
-            )
+            raise RuntimeError(f"replica_states array too small: {len(replica_states)}")
 
         old_state_i = replica_states[replica_i]
         old_state_j = replica_states[replica_j]
 
         if old_state_i >= len(state_replicas) or old_state_j >= len(state_replicas):
-            raise RuntimeError(
-                f"Invalid state indices: {old_state_i}, {old_state_j}"
-            )
+            raise RuntimeError(f"Invalid state indices: {old_state_i}, {old_state_j}")
 
         # Swap states
         replica_states[replica_i] = old_state_j
@@ -135,12 +131,8 @@ class ExchangeOperations:
         state_replicas[old_state_j] = replica_i
 
         # Update integrator temperatures
-        integrators[replica_i].setTemperature(
-            temperatures[old_state_j] * unit.kelvin
-        )
-        integrators[replica_j].setTemperature(
-            temperatures[old_state_i] * unit.kelvin
-        )
+        integrators[replica_i].setTemperature(temperatures[old_state_j] * unit.kelvin)
+        integrators[replica_j].setTemperature(temperatures[old_state_i] * unit.kelvin)
 
         # Rescale velocities deterministically instead of redrawing
         Ti = temperatures[old_state_i]
@@ -186,15 +178,15 @@ class ExchangeOperations:
     def attempt_all_exchanges(
         n_replicas: int,
         contexts: List[openmm.Context],
-            replica_states: List[int],
-            state_replicas: List[int],
-            temperatures: List[float],
-            integrators: List[openmm.Integrator],
-            energies: List[Any],
-            exchange_engine: ExchangeEngine,
-            pair_attempt_counts: Dict[Tuple[int, int], int],
-            pair_accept_counts: Dict[Tuple[int, int], int],
-            acceptance_matrix: Optional[np.ndarray],
+        replica_states: List[int],
+        state_replicas: List[int],
+        temperatures: List[float],
+        integrators: List[openmm.Integrator],
+        energies: List[Any],
+        exchange_engine: ExchangeEngine,
+        pair_attempt_counts: Dict[Tuple[int, int], int],
+        pair_accept_counts: Dict[Tuple[int, int], int],
+        acceptance_matrix: Optional[np.ndarray],
     ) -> Tuple[int, int, np.ndarray]:
         """
         Attempt exchanges for all neighboring replica pairs.
@@ -298,4 +290,3 @@ class ExchangeOperations:
                 )
 
         return total_attempts, total_accepted, acceptance_matrix
-

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 """PCCA+ coarse-graining performance benchmarks.
 

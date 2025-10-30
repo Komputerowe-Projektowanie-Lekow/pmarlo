@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import List, Literal, Optional, Union
 
 # Runtime import for actual usage
@@ -11,7 +12,7 @@ SupportsMSMPipeline = EnhancedMSMProtocol
 def run_complete_msm_analysis(
     trajectory_files: Union[str, List[str]],
     topology_file: str,
-    output_dir: str = "output/msm_analysis",
+    output_dir: str | Path,
     n_states: int | Literal["auto"] = 100,
     lag_time: int = 20,
     feature_type: str = "phi_psi",
@@ -47,7 +48,7 @@ def _create_msm(
     trajectory_files: Union[str, List[str]],
     topology_file: str,
     temperatures: Optional[List[float]],
-    output_dir: str,
+    output_dir: str | Path,
     ignore_trajectory_errors: bool,
 ) -> SupportsMSMPipeline:
     return EnhancedMSM(
@@ -81,7 +82,9 @@ def _build_and_analyze(
     temperatures: Optional[List[float]],
     lag_time: int,
 ) -> None:
-    method = "tram" if temperatures is not None and len(temperatures) > 1 else "standard"
+    method = (
+        "tram" if temperatures is not None and len(temperatures) > 1 else "standard"
+    )
     msm.build_msm(lag_time=lag_time, method=method)
     msm.compute_implied_timescales()
     msm.generate_free_energy_surface(cv1_name="CV1", cv2_name="CV2")

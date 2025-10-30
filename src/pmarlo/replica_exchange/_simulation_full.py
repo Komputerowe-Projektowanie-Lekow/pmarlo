@@ -19,6 +19,7 @@ import numpy as np
 import openmm
 import openmm.app as app
 import openmm.unit as unit
+from openmm.unit.quantity import Quantity
 from openmm.app.metadynamics import BiasVariable, Metadynamics
 
 if not hasattr(openmm.XmlSerializer, "load"):  # pragma: no cover - compatibility
@@ -47,8 +48,8 @@ class Simulation:
     ----------
     pdb_file : str
         Path to PDB file for the system
-    output_dir : str, optional
-        Directory for output files (default: "output")
+    output_dir : str
+        Directory for output files.
     temperature : float, optional
         Simulation temperature in Kelvin (default: 300.0)
     pressure : float, optional
@@ -70,7 +71,7 @@ class Simulation:
     def __init__(
         self,
         pdb_file: str,
-        output_dir: str = "output",
+        output_dir: str | Path,
         temperature: float = 300.0,
         pressure: float = 1.0,
         platform: str = "CUDA",
@@ -80,7 +81,9 @@ class Simulation:
         random_seed: int | None = None,
     ):
         self.pdb_file = str(pdb_file)
-        self.output_dir = Path(output_dir or "output")
+        if output_dir is None:
+            raise TypeError("Simulation requires `output_dir` to be provided.")
+        self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.temperature = float(temperature)
         self.pressure = float(pressure)
@@ -108,13 +111,13 @@ class Simulation:
         self.meta = None
 
     @property
-    def temperature_quantity(self) -> unit.Quantity:
+    def temperature_quantity(self) -> Quantity:
         """OpenMM-compatible temperature quantity."""
 
         return self.temperature * unit.kelvin
 
     @property
-    def pressure_quantity(self) -> unit.Quantity:
+    def pressure_quantity(self) -> Quantity:
         """OpenMM-compatible pressure quantity."""
 
         return self.pressure * unit.bar
@@ -769,6 +772,7 @@ class Simulation:
 # Convenience functions for common workflows
 def prepare_system(
     pdb_file,
+    output_dir,
     forcefield_files=None,
     water_model="tip3p",
     pdb_file_name=None,
@@ -780,6 +784,8 @@ def prepare_system(
     ----------
     pdb_file : str
         Path to PDB file
+    output_dir : str or Path
+        Directory where simulation outputs should be written.
     forcefield_files : list, optional
         Force field XML files
     water_model : str, optional
@@ -796,7 +802,7 @@ def prepare_system(
     if pdb_path is None:
         raise ValueError("pdb_file or pdb_file_name must be provided")
 
-    sim = Simulation(pdb_path)
+    sim = Simulation(pdb_path, output_dir=output_dir)
     sim.prepare_system(forcefield_files, water_model)
     return sim
 

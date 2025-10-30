@@ -1,9 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from example_programs.app_usecase.app.backend import _compute_analysis_diag_mass
+from pmarlo_webapp.app.backend import _compute_analysis_diag_mass
 
 
 def test_compute_analysis_diag_mass_from_stochastic_matrix():

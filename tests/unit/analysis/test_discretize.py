@@ -1,4 +1,4 @@
-"""Tests for MSM discretisation feature schema validation."""
+﻿"""Tests for MSM discretisation feature schema validation."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-# Run with: pytest -m benchmark tests/perf/test_exchange_algorithms_perf.py
+﻿# Run with: pytest -m benchmark tests/perf/test_exchange_algorithms_perf.py
 """
 Micro-benchmarks for exchange-critical algorithms (energy evaluation and
 temperature ladder generation).

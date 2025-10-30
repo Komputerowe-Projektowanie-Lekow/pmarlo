@@ -47,4 +47,3 @@ class RunningStats:
         variance = self._m2 / max(1, self._count - 1)
         variance = np.clip(variance, a_min=0.0, a_max=None)
         return self._mean.copy(), np.sqrt(variance)
-

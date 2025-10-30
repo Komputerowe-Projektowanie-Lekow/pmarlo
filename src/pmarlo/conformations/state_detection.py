@@ -30,9 +30,7 @@ class StateDetector:
 
         lower, upper = committor_thresholds
         if not (0.0 <= lower < upper <= 1.0):
-            raise ValueError(
-                "committor_thresholds must satisfy 0 ≤ lower < upper ≤ 1"
-            )
+            raise ValueError("committor_thresholds must satisfy 0 ≤ lower < upper ≤ 1")
         self.committor_thresholds: Tuple[float, float] = (
             float(lower),
             float(upper),
@@ -99,9 +97,7 @@ class StateDetector:
         elif method == "timescale":
             if its is None:
                 raise ValueError("Implied timescales required for timescale method")
-            return self.detect_from_timescale_gap(
-                T, pi, its, n_states=target_states
-            )
+            return self.detect_from_timescale_gap(T, pi, its, n_states=target_states)
 
         elif method == "population":
             return self.detect_from_populations(pi, top_n=target_states)
@@ -190,9 +186,7 @@ class StateDetector:
         sink_idx = sorted_indices[-1]
 
         # Convert 2D FES positions to 1D state indices based on minima positions
-        source_state = np.ravel_multi_index(
-            minima_positions[source_idx], F.shape
-        )
+        source_state = np.ravel_multi_index(minima_positions[source_idx], F.shape)
         sink_state = np.ravel_multi_index(minima_positions[sink_idx], F.shape)
 
         return np.array([source_state]), np.array([sink_state])

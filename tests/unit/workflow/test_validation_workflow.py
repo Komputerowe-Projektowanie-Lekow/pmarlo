@@ -1,4 +1,4 @@
-"""
+﻿"""
 Tests for workflow validation functionality.
 
 This module tests the validation functions for build results, FES quality,

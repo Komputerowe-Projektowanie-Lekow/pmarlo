@@ -231,11 +231,15 @@ def plot_pcca_states(
     if coords.ndim != 2:
         raise ValueError("tica_coords must be a 2D array of cluster coordinates")
     if coords.shape[1] < 2:
-        raise ValueError("tica_coords must provide at least two dimensions for plotting")
+        raise ValueError(
+            "tica_coords must provide at least two dimensions for plotting"
+        )
 
     memberships = np.asarray(pcca_memberships, dtype=float)
     if memberships.ndim != 2:
-        raise ValueError("pcca_memberships must be a 2D array of macrostate memberships")
+        raise ValueError(
+            "pcca_memberships must be a 2D array of macrostate memberships"
+        )
     if memberships.shape[0] != coords.shape[0]:
         raise ValueError(
             "Number of PCCA membership rows must match the number of TICA coordinates"

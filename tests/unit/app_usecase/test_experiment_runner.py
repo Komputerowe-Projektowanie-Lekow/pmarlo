@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -6,14 +6,14 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from example_programs.app_usecase.app.experiment.runner import (
+from pmarlo.shards.schema import FeatureSpec, Shard, ShardMeta
+from pmarlo_webapp.app.experiment.runner import (
     WeightSummary,
     _collect_artifact_paths,
     _collect_deeptica_summary,
     _compute_weights_summary,
     _generate_acceptance_report,
 )
-from pmarlo.shards.schema import FeatureSpec, Shard, ShardMeta
 
 
 def _make_shard(shard_id: str, frames: int) -> Shard:

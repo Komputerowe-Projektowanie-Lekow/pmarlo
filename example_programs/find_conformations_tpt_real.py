@@ -1,6 +1,6 @@
 """Example: TPT conformations analysis on real shards data.
 
-Uses real trajectory shards from app_usecase to perform complete TPT analysis.
+Uses real trajectory shards from pmarlo_webapp to perform complete TPT analysis.
 User can specify which shards to analyze.
 
 Usage:
@@ -32,7 +32,8 @@ from pmarlo.shards.schema import Shard
 from pmarlo.utils.path_utils import ensure_directory
 
 # Configuration
-SHARDS_DIR = Path(__file__).parent / "app_usecase" / "app_intputs" / "experiments"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SHARDS_DIR = REPO_ROOT / "pmarlo_webapp" / "app_intputs" / "experiments"
 OUT_DIR = (
     Path(__file__).resolve().parent / "programs_outputs" / "conformations_tpt_real"
 )

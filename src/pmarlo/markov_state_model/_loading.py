@@ -214,9 +214,7 @@ class LoadingMixin:
                 joined = chunk if joined is None else joined.join(chunk)
         except Exception as exc:
             if getattr(self, "ignore_trajectory_errors", False):
-                logger.error(
-                    "Failed to read trajectory %s: %s", resolved_traj, exc
-                )
+                logger.error("Failed to read trajectory %s: %s", resolved_traj, exc)
                 return None
             raise
 

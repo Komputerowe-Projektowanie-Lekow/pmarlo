@@ -292,8 +292,23 @@ class ITSMixin:
         n_samples_int = int(max(1, n_samples))
 
         estimator = BayesianMSM(lagtime=lag_int, n_samples=n_samples_int)
+        ignore_counting_mode = False
+        count_mode = getattr(self, "count_mode", None)
+        if count_mode is not None:
+            mode_text = str(count_mode)
+            if "effective" not in mode_text.lower():
+                _logging.getLogger("pmarlo").warning(
+                    "Bayesian MSM confidence sampling expects effective counts; "
+                    "continuing with count_mode='%s' may yield correlated samples.",
+                    mode_text,
+                )
+                ignore_counting_mode = True
+
         posterior = estimator.fit(
-            self.dtrajs, lagtime=lag_int, count_mode=self.count_mode
+            self.dtrajs,
+            lagtime=lag_int,
+            count_mode=count_mode,
+            ignore_counting_mode=ignore_counting_mode,
         ).fetch_model()
 
         samples = getattr(posterior, "samples", None)
@@ -411,7 +426,28 @@ class ITSMixin:
         if lag_times is None:
             # Extended lag sweep for more comprehensive ITS analysis
             # Includes powers of 2 (20, 40, 80, 160, 320, 640, 1280) for physically meaningful times
-            return [1, 2, 3, 5, 8, 10, 15, 20, 30, 40, 50, 75, 80, 100, 150, 160, 200, 320, 640, 1280]
+            return [
+                1,
+                2,
+                3,
+                5,
+                8,
+                10,
+                15,
+                20,
+                30,
+                40,
+                50,
+                75,
+                80,
+                100,
+                150,
+                160,
+                200,
+                320,
+                640,
+                1280,
+            ]
         return [int(max(1, v)) for v in lag_times]
 
     def _validate_its_inputs(

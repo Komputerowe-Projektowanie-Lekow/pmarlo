@@ -1,14 +1,13 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import builtins
-from pathlib import Path
 import sys
+import types
+from pathlib import Path
 
 import mdtraj as md
 import numpy as np
 import pytest
-
-import types
 
 from pmarlo.io.trajectory_reader import (
     MDAnalysisReader,

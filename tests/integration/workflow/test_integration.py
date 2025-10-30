@@ -1,4 +1,4 @@
-# Copyright (c) 2025 PMARLO Development Team
+﻿# Copyright (c) 2025 PMARLO Development Team
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 """
@@ -91,7 +91,7 @@ class TestWorkflowIntegration:
             pytest.skip(f"Workflow test skipped due to missing dependencies: {e}")
 
     @pytest.mark.skipif(not HAS_PDBFIXER, reason="PDBFixer is required for this test")
-    def test_five_line_api_setup(self, test_pdb_file):
+    def test_five_line_api_setup(self, test_pdb_file, temp_output_dir):
         """Test the five-line API setup (without execution)."""
         from pmarlo import (
             MarkovStateModel,
@@ -106,11 +106,22 @@ class TestWorkflowIntegration:
 
         # These should not fail during initialization
         replica_exchange = ReplicaExchange(
-            str(test_pdb_file), temperatures=[300, 310, 320]
+            str(test_pdb_file),
+            temperatures=[300, 310, 320],
+            output_dir=str(temp_output_dir / "remd"),
         )
-        simulation = Simulation(str(test_pdb_file), temperature=300, steps=1000)
-        markov_state_model = MarkovStateModel()
-        pipeline = Pipeline(str(test_pdb_file))
+        simulation = Simulation(
+            str(test_pdb_file),
+            temperature=300,
+            steps=1000,
+            output_dir=str(temp_output_dir / "simulation"),
+        )
+        markov_state_model = MarkovStateModel(
+            output_dir=str(temp_output_dir / "msm_analysis")
+        )
+        pipeline = Pipeline(
+            str(test_pdb_file), output_dir=str(temp_output_dir / "pipeline")
+        )
 
         # Verify components are created
         assert protein is not None
@@ -123,7 +134,7 @@ class TestWorkflowIntegration:
 class TestErrorHandling:
     """Test error handling across components."""
 
-    def test_invalid_pdb_file_handling(self):
+    def test_invalid_pdb_file_handling(self, tmp_path):
         """Test handling of invalid PDB files across components."""
         invalid_pdb = "nonexistent_file.pdb"
 
@@ -140,7 +151,7 @@ class TestErrorHandling:
                 Protein(invalid_pdb)
 
         # Pipeline should also handle invalid files
-        pipeline = Pipeline(invalid_pdb)
+        pipeline = Pipeline(invalid_pdb, output_dir=str(tmp_path / "pipeline"))
         # Error should occur when trying to run, not during initialization
         assert pipeline.pdb_file == invalid_pdb
 

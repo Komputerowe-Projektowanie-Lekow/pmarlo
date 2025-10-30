@@ -83,6 +83,7 @@ def _aggregate_shard_contents(shard_jsons: Sequence[Path]) -> AggregatedShards:
     """Load shards, enforce safety rails, and build the dataset payload."""
 
     import logging
+
     logger = logging.getLogger("pmarlo")
 
     paths = _normalise_shard_paths(shard_jsons)
