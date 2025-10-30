@@ -827,7 +827,7 @@ def _render_conformations_result(conf_result: ConformationsResult) -> None:
                     ),
                 }
             )
-        st.dataframe(pd.DataFrame(meta_df_data), use_container_width=True)
+        st.dataframe(pd.DataFrame(meta_df_data), width="stretch")
 
     if conf_result.transition_states:
         st.subheader("Transition States")
@@ -844,7 +844,7 @@ def _render_conformations_result(conf_result: ConformationsResult) -> None:
                     ),
                 }
             )
-        st.dataframe(pd.DataFrame(ts_df_data), use_container_width=True)
+        st.dataframe(pd.DataFrame(ts_df_data), width="stretch")
 
     if conf_result.pathways:
         st.subheader("Dominant Pathways")
@@ -2451,7 +2451,7 @@ def main() -> None:
                     st.info("No recorded simulations yet.")
                 else:
                     df_runs = _runs_dataframe(runs)
-                    st.dataframe(df_runs, use_container_width=True)
+                    st.dataframe(df_runs, width="stretch")
                     indices = df_runs["Index"].tolist()
                     if (
                         st.session_state[_ASSET_RUN_SELECTION] is None
@@ -2499,7 +2499,7 @@ def main() -> None:
                     st.info("No shard batches recorded yet.")
                 else:
                     df_shards = _shards_dataframe(shards)
-                    st.dataframe(df_shards, use_container_width=True)
+                    st.dataframe(df_shards, width="stretch")
                     indices = df_shards["Index"].tolist()
                     if (
                         st.session_state[_ASSET_SHARD_SELECTION] is None
@@ -2529,7 +2529,7 @@ def main() -> None:
                     st.info("No Deep-TICA models available.")
                 else:
                     df_models = _models_dataframe(models)
-                    st.dataframe(df_models, use_container_width=True)
+                    st.dataframe(df_models, width="stretch")
                     indices = df_models["Index"].tolist()
                     if (
                         st.session_state[_ASSET_MODEL_SELECTION] is None
@@ -2561,7 +2561,7 @@ def main() -> None:
                     st.info("No MSM/FES analyses recorded yet.")
                 else:
                     df_builds = _builds_dataframe(builds)
-                    st.dataframe(df_builds, use_container_width=True)
+                    st.dataframe(df_builds, width="stretch")
                     indices = df_builds["Index"].tolist()
                     if (
                         st.session_state[_ASSET_BUILD_SELECTION] is None
@@ -2618,7 +2618,7 @@ def main() -> None:
                     st.info("No conformations analyses recorded yet.")
                 else:
                     df_confs = _conformations_dataframe(conformations)
-                    st.dataframe(df_confs, use_container_width=True)
+                    st.dataframe(df_confs, width="stretch")
                     indices = df_confs["Index"].tolist()
                     if (
                         st.session_state[_ASSET_CONF_SELECTION] is None
@@ -2861,7 +2861,11 @@ def main() -> None:
                                         sampling_fig = create_sampling_validation_plot(mock_state)
 
                                         if sampling_fig and hasattr(sampling_fig, 'axes'):
-                                            st.pyplot(sampling_fig, clear_figure=True, use_container_width=True)
+                                            st.pyplot(
+                                                sampling_fig,
+                                                clear_figure=True,
+                                                width="stretch",
+                                            )
                                         else:
                                             st.warning("Could not generate sampling validation plot.")
                                     except Exception as sampling_err:
@@ -2900,7 +2904,11 @@ def main() -> None:
                                             fes_fig = create_fes_validation_plot(mock_state_fes)
 
                                             if fes_fig and hasattr(fes_fig, 'axes'):
-                                                st.pyplot(fes_fig, clear_figure=True, use_container_width=True)
+                                                st.pyplot(
+                                                    fes_fig,
+                                                    clear_figure=True,
+                                                    width="stretch",
+                                                )
                                             else:
                                                 st.warning("Could not generate Free Energy Surface plot.")
                                         else:
@@ -3100,12 +3108,12 @@ def main() -> None:
                     st.warning(f"Could not render implied timescale plot: {exc}")
                 else:
                     st.subheader("Implied Timescales Plot")
-                    st.pyplot(fig, clear_figure=True, use_container_width=True)
+                    st.pyplot(fig, clear_figure=True, width="stretch")
 
                 table = _timescales_dataframe(lag_series, times_series)
                 if not table.empty:
                     st.subheader("Implied Timescale Table")
-                    st.dataframe(table, use_container_width=True)
+                    st.dataframe(table, width="stretch")
 
                 errors = its_result.get("errors") or {}
                 if errors:
