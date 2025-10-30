@@ -82,10 +82,11 @@ def finalize_dataset(dataset: DatasetLike, cfg: AnalysisConfig) -> Dict[str, Any
     counts = np.asarray(msm.counts, dtype=np.float64)
     row_sums = counts.sum(axis=1)
     total = float(np.sum(row_sums))
-    if total > 0 and counts.shape[0] > 0:
+    n_states = counts.shape[0]
+    if total > 0 and n_states > 0:
         pi = row_sums / total
-    elif counts.shape[0] > 0:
-        pi = np.full((counts.shape[0],), 1.0 / counts.shape[0], dtype=np.float64)
+    elif n_states > 0:
+        pi = np.full((n_states,), 1.0 / n_states, dtype=np.float64)
     else:
         pi = np.asarray([], dtype=np.float64)
 

@@ -6,3 +6,4 @@
 - Removed redundant array conversion in `_bayesian_transition_samples` in `_its.py`.
 - Optimized `_detect_reducibility` in `msm_utils.py` to reduce per-state iteration overhead.
 - Optimized `serialize_macro_mapping` in `bridge.py` to avoid explicit list comprehension during array to list conversion.
+- Cached array shape queries in `finalize.py` and `_features.py` to avoid redundant attribute access.
