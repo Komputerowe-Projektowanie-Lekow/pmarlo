@@ -126,6 +126,73 @@ def _sanitize_artifacts(data: Any) -> Any:
     return _pmarlo_handles()["_sanitize_artifacts"](data)
 
 
+def _compute_analysis_diag_mass(
+    transition_matrix: Any,
+) -> tuple[float, np.ndarray | None, dict[str, Any] | None]:
+    """Compute the mean diagonal mass of a transition matrix.
+
+    Parameters
+    ----------
+    transition_matrix:
+        Final MSM transition matrix or an object convertible to an array.
+
+    Returns
+    -------
+    diag_mass, matrix, guardrail
+        A tuple containing the diagonal mass as a float (``nan`` when
+        unavailable), the normalised transition matrix (or ``None`` if it could
+        not be coerced), and an optional guardrail violation to record.
+    """
+
+    if transition_matrix is None:
+        return (
+            float("nan"),
+            None,
+            {"code": "diag_mass_unavailable", "actual": "missing_transition_matrix"},
+        )
+
+    try:
+        matrix = np.asarray(transition_matrix, dtype=np.float64)
+    except Exception:
+        return (
+            float("nan"),
+            None,
+            {"code": "diag_mass_unavailable", "actual": "non_numeric_transition_matrix"},
+        )
+
+    if matrix.size == 0:
+        return (
+            float("nan"),
+            None,
+            {"code": "diag_mass_unavailable", "actual": "empty_transition_matrix"},
+        )
+
+    if not np.all(np.isfinite(matrix)):
+        return (
+            float("nan"),
+            matrix,
+            {"code": "diag_mass_unavailable", "actual": "nonfinite_transition_matrix"},
+        )
+
+    diag = np.diag(matrix)
+    if diag.size == 0:
+        return (
+            float("nan"),
+            matrix,
+            {"code": "diag_mass_unavailable", "actual": "empty_diagonal"},
+        )
+
+    diag_mass = float(np.nanmean(diag))
+    if not np.isfinite(diag_mass):
+        return (
+            float("nan"),
+            matrix,
+            {"code": "diag_mass_unavailable", "actual": "nonfinite_diag_mass"},
+        )
+
+    return diag_mass, matrix, None
+
+
 def _resolve_workspace_path(base: Path, candidate: Path) -> Path:
     if candidate.is_absolute():
         return candidate.expanduser().resolve()
@@ -783,6 +850,14 @@ class BuildArtifact:
     guardrail_violations: Optional[List[Dict[str, Any]]] = None
 
 
+@dataclass(frozen=True)
+class _AnalysisMSMStats:
+    total_pairs: int
+    zero_rows: int
+    largest_scc_fraction: float | None
+    diag_mass: float
+
+
 @dataclass
 class ConformationsConfig:
     """Configuration for TPT conformations analysis."""
@@ -1438,7 +1513,7 @@ class WorkflowBackend:
         stride_values: list[int],
         stride_map: dict,
         preview_truncated: list,
-    ) -> Any:
+    ) -> tuple[Any, _AnalysisMSMStats]:
         """Extract debug data from the build result after discretization."""
         import numpy as np
         from pmarlo.analysis.debug_export import AnalysisDebugData
@@ -1450,7 +1525,7 @@ class WorkflowBackend:
             # No MSM data available
             shards_meta = dataset.get("__shards__", [])
             n_frames = sum(int(s.get("length", 0)) for s in shards_meta if isinstance(s, Mapping))
-            return AnalysisDebugData(
+            debug_data = AnalysisDebugData(
                 summary={
                     "tau_frames": int(lag),
                     "count_mode": "sliding",
@@ -1467,12 +1542,18 @@ class WorkflowBackend:
                 state_counts=np.zeros((0,), dtype=float),
                 component_labels=np.zeros((0,), dtype=int),
             )
+            stats = _AnalysisMSMStats(
+                total_pairs=0,
+                zero_rows=0,
+                largest_scc_fraction=None,
+                diag_mass=float("nan"),
+            )
+            return debug_data, stats
 
         # Extract counts and state_counts from MSM dict
         counts = np.asarray(msm_obj.get("counts", np.zeros((0, 0), dtype=float)), dtype=float)
         state_counts = np.asarray(msm_obj.get("state_counts", np.zeros((0,), dtype=float)), dtype=float)
-        counted_pairs_dict = msm_obj.get("counted_pairs", {})
-        total_pairs = sum(int(v) for v in counted_pairs_dict.values() if v is not None)
+        total_pairs = self._analysis_total_pairs(msm_obj, counts)
 
         # Extract shard metadata
         shards_meta = dataset.get("__shards__", [])
@@ -1505,7 +1586,7 @@ class WorkflowBackend:
             })
         if zero_rows > 0:
             warnings.append({
-                "code": "ZERO_ROW_STATES PRESENT",
+                "code": "ZERO_ROW_STATES_PRESENT",
                 "message": "States with zero outgoing counts detected before regularisation."
             })
 
@@ -1532,12 +1613,61 @@ class WorkflowBackend:
             "warnings": warnings,
         }
 
-        return AnalysisDebugData(
-            summary=summary,
-            counts=counts,
-            state_counts=state_counts,
-            component_labels=component_labels,
+        stats = _AnalysisMSMStats(
+            total_pairs=int(total_pairs),
+            zero_rows=int(zero_rows),
+            largest_scc_fraction=(
+                float(largest_cover) if largest_cover is not None else None
+            ),
+            diag_mass=float(diag_mass_val),
         )
+
+        return (
+            AnalysisDebugData(
+                summary=summary,
+                counts=counts,
+                state_counts=state_counts,
+                component_labels=component_labels,
+            ),
+            stats,
+        )
+
+    @staticmethod
+    def _analysis_total_pairs(
+        msm_obj: Mapping[str, Any], counts: Any | None = None
+    ) -> int:
+        """Derive the total number of (t, t+tau) pairs from the MSM payload."""
+        counted_pairs = msm_obj.get("counted_pairs")
+        if isinstance(counted_pairs, Mapping) and counted_pairs:
+            if "all" in counted_pairs and counted_pairs["all"] is not None:
+                try:
+                    return int(counted_pairs["all"])
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"Invalid 'all' counted_pairs value {counted_pairs['all']!r}"
+                    ) from exc
+            totals: list[int] = []
+            for value in counted_pairs.values():
+                if value is None:
+                    continue
+                try:
+                    totals.append(int(value))
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"Invalid counted_pairs entry {value!r}; cannot determine total pairs"
+                    ) from exc
+            if totals:
+                return int(sum(totals))
+
+        counts_payload = counts if counts is not None else msm_obj.get("counts")
+        if counts_payload is None:
+            raise ValueError(
+                "MSM payload lacks counted_pairs and counts; cannot derive total transition pairs"
+            )
+        arr = np.asarray(counts_payload, dtype=np.float64)
+        if arr.size == 0:
+            return 0
+        return int(np.rint(arr.sum()))
 
     def build_analysis(
         self,
@@ -1670,15 +1800,21 @@ class WorkflowBackend:
             expected_effective_tau = effective_tau_frames  # Expected based on stride
 
             # Now that discretization is complete, compute debug data from the build result
-            debug_data = self._extract_debug_data_from_build_result(
+            debug_data, msm_stats = self._extract_debug_data_from_build_result(
                 br, dataset, config.lag, stride_values, stride_map, preview_truncated
             )
 
             # Extract actual statistics from the MSM build result (post-clustering)
-            total_pairs_val = 0
-            zero_rows_val = 0
-            largest_cover = None
-            diag_mass_val = float("nan")
+            total_pairs_val = int(msm_stats.total_pairs)
+            zero_rows_val = int(msm_stats.zero_rows)
+            largest_cover = msm_stats.largest_scc_fraction
+            diag_mass_val = float(msm_stats.diag_mass)
+
+
+            transition_matrix_attr = getattr(br, "transition_matrix", None)
+            diag_mass_val, transition_matrix_array, diag_guardrail = (
+                _compute_analysis_diag_mass(transition_matrix_attr)
+            )
 
             actual_seed = int(config.seed)
             if getattr(br.metadata, "seed", None) is not None:
@@ -1715,15 +1851,23 @@ class WorkflowBackend:
             # Note: total_pairs and zero_rows checks are removed because they require
             # post-clustering data which we'll validate from the build result instead
             guardrail_violations: List[Dict[str, Any]] = []
+            if total_pairs_val == 0:
+                guardrail_violations.append(
+                    {
+                        "code": "no_transition_pairs",
+                        "message": "no transition pairs after filtering",
+                    }
+                )
 
-            # Check if MSM build succeeded by verifying the transition matrix exists
-            if br.transition_matrix is None or br.transition_matrix.size == 0:
+            if diag_guardrail is not None:
+                guardrail_violations.append(diag_guardrail)
+
+            if transition_matrix_array is None:
                 guardrail_violations.append(
                     {"code": "msm_build_failed", "actual": "no_transition_matrix"}
                 )
             else:
-                # Extract actual statistics from the built MSM
-                n_states_actual = br.transition_matrix.shape[0]
+                n_states_actual = transition_matrix_array.shape[0]
                 if n_states_actual == 0:
                     guardrail_violations.append(
                         {"code": "no_states_in_msm", "actual": 0}
