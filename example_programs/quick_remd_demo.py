@@ -48,7 +48,7 @@ def main():
     print()
 
     # Import PMARLO API
-    from pmarlo.api import run_replica_exchange
+    from pmarlo.api.replica_exchange import run_replica_exchange
 
     # Setup
     output_dir = Path("tmp_quick_demo")

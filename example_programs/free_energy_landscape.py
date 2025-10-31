@@ -18,7 +18,8 @@ from _example_support import assets_path, ensure_src_on_path
 ensure_src_on_path()
 
 from pmarlo import Protein, power_of_two_temperature_ladder
-from pmarlo.api import analyze_msm, run_replica_exchange
+from pmarlo.api.msm import analyze_msm
+from pmarlo.api.replica_exchange import run_replica_exchange
 from pmarlo.replica_exchange import config as demux_config
 from pmarlo.utils.path_utils import ensure_directory
 
