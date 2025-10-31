@@ -1,3 +1,6 @@
+from pathlib import Path
+from typing import Dict, List, Any
+
 from __future__ import annotations
 
 """Simple JSON-backed state manager for the Streamlit demo."""
@@ -195,3 +198,98 @@ class StateManager:
 
 
 __all__ = ["StateManager"]
+
+
+
+def _migrate_state_paths(self) -> None:
+    if not hasattr(self.state, "normalize_strings"):
+        return
+    try:
+        changed = self.state.normalize_strings(self.layout.normalize_path_string)
+    except Exception:
+        return
+    if changed:
+        logger.debug(
+            "Rebased legacy app_usecase paths to new workspace root %s",
+            self.layout.app_root,
+        )
+
+def build_config_from_entry(self, entry: Dict[str, Any]) -> BuildConfig:
+    bins_raw = entry.get("bins")
+    bins = (
+        dict(bins_raw) if isinstance(bins_raw, dict) else {"Rg": 64, "RMSD_ref": 64}
+    )
+    deeptica_params = self._coerce_deeptica_params(entry.get("deeptica_params"))
+    notes = {}
+    entry_notes = entry.get("notes")
+    if isinstance(entry_notes, dict):
+        notes.update(entry_notes)
+    apply_whitening = bool(entry.get("apply_cv_whitening", True))
+    cluster_mode = str(entry.get("cluster_mode", "kmeans"))
+    n_microstates = int(entry.get("n_microstates", 20))
+    kmeans_kwargs_raw = entry.get("kmeans_kwargs")
+    kmeans_kwargs = (
+        dict(kmeans_kwargs_raw)
+        if isinstance(kmeans_kwargs_raw, dict)
+        else {"n_init": 50}
+    )
+    reweight_mode = str(entry.get("reweight_mode", "MBAR"))
+    fes_method = str(entry.get("fes_method", "kde"))
+    bw_raw = entry.get("fes_bandwidth", "scott")
+    try:
+        fes_bandwidth = float(bw_raw)
+    except (TypeError, ValueError):
+        fes_bandwidth = bw_raw if bw_raw is not None else "scott"
+    min_count = int(entry.get("fes_min_count_per_bin", 1))
+    return BuildConfig(
+        lag=int(entry.get("lag", 10)),
+        bins=bins,
+        seed=int(entry.get("seed", 2025)),
+        temperature=float(entry.get("temperature", 300.0)),
+        learn_cv=bool(entry.get("learn_cv", False)),
+        deeptica_params=deeptica_params,
+        notes=notes,
+        apply_cv_whitening=apply_whitening,
+        cluster_mode=cluster_mode,
+        n_microstates=n_microstates,
+        reweight_mode=reweight_mode,
+        fes_method=fes_method,
+        fes_bandwidth=fes_bandwidth,
+        fes_min_count_per_bin=min_count,
+    )
+
+def sidebar_summary(self) -> Dict[str, int]:
+    # Reconcile stale manifest entries first
+    self._reconcile_shard_state()
+    self._reconcile_conformation_state()
+
+    # Count shard files on disk for accuracy
+    try:
+        shard_files = len(self.discover_shards())
+    except Exception:
+        shard_files = len(self.state.shards)
+
+    return {
+        "runs": len(self.state.runs),
+        "shards": int(shard_files),
+        "models": len(self.state.models),
+        "builds": len(self.state.builds),
+        "conformations": len(self.state.conformations),
+    }
+
+
+class PersistentState:
+    """Manages workspace state persistence."""
+
+    def __init__(self, manifest_path: Path):
+
+    # ... all PersistentState methods
+
+    def append_run(self, entry: Dict[str, Any]) -> None:
+
+    # ... your implementation
+
+    def remove_run(self, index: int) -> Optional[Dict[str, Any]]:
+# ... your implementation
+
+# ... all other state methods
