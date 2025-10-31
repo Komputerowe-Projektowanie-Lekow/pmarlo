@@ -28,3 +28,4 @@
     * **DO** run the maintenance script: `./codex_maintenance_script.sh` to attempt to repair the environment and install missing dependencies.
     * After the maintenance script runs, **DO** re-run the original `poetry run pytest ...` or `poetry run tox ...` command to verify the fix.
 21. Write clean and elegant code, without overcomplications, do not use emojis in the codebase.
+22. When you write in the changelog, only do the sections that are from those categories, do not come up with others. Those are the categories: "added", "fixed", "changed", "removed".

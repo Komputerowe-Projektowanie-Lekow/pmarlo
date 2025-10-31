@@ -160,9 +160,13 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 def _pmarlo_handles() -> Dict[str, Any]:
     """Import heavyweight PMARLO helpers on demand."""
 
-    from pmarlo.api import build_from_shards as _build_from_shards
-    from pmarlo.api import emit_shards_rg_rmsd_windowed as _emit_shards
-    from pmarlo.api import run_replica_exchange as _run_replica_exchange
+    from pmarlo.api.shards import (
+        build_from_shards as _build_from_shards,
+        emit_shards_rg_rmsd_windowed as _emit_shards,
+    )
+    from pmarlo.api.replica_exchange import (
+        run_replica_exchange as _run_replica_exchange,
+    )
     from pmarlo.data.shard import read_shard as _read_shard
     from pmarlo.transform.build import BuildResult as _BuildResultRuntime
     from pmarlo.transform.build import _sanitize_artifacts as _sanitize
