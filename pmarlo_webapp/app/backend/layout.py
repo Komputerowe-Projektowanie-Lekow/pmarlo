@@ -41,13 +41,36 @@ class WorkspaceLayout:
 
     @classmethod
     def from_app_package(cls, file_path: Optional[Path] = None) -> "WorkspaceLayout":
+        """Create layout based on the app package location.
+
+        The directory structure should be:
+        pmarlo_webapp/
+        ├── app/                    # app package (where __file__ is located)
+        ├── app_input/              # input files
+        └── app_output/             # output workspace
+            ├── sims/
+            ├── shards/
+            ├── models/
+            ├── bundles/
+            └── logs/
+        """
         here = Path(file_path or __file__).resolve()
-        app_dir = here.parent  # .../app
+        # here = .../pmarlo_webapp/app/backend/layout.py
+        backend_dir = here.parent  # .../pmarlo_webapp/app/backend
+        app_dir = backend_dir.parent  # .../pmarlo_webapp/app
         root = app_dir.parent.resolve()  # .../pmarlo_webapp
+
+        # Ensure we got the right directory by checking for the app folder
+        if not (root / "app").exists():
+            raise RuntimeError(
+                f"Expected to find 'app' directory in {root}, but it doesn't exist. "
+                f"Check that the workspace structure is correct."
+            )
+
         workspace = root / "app_output"
         layout = cls(
             app_root=root,
-            inputs_dir=root / "app_intputs",
+            inputs_dir=root / "app_input",
             workspace_dir=workspace,
             sims_dir=workspace / "sims",
             shards_dir=workspace / "shards",

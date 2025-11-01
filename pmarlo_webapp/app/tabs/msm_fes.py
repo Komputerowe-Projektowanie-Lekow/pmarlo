@@ -1,15 +1,21 @@
 import streamlit as st
 import traceback
+import numpy as np
 from pathlib import Path
 from typing import Dict, Any, List
 
-from app.core.context import AppContext
-from app.core.session import (
+from core.context import AppContext
+from core.session import (
     _LAST_BUILD,
     _LAST_TRAIN_CONFIG,
     _apply_analysis_config_to_state,
 )
-from app.backend.types import BuildConfig, BuildArtifact, TrainingConfig
+from backend.types import BuildConfig, BuildArtifact, TrainingConfig
+from plots.diagnostics import (
+    plot_canonical_correlations,
+    plot_autocorrelation_curves,
+    format_warnings,
+)
 
 def render_msm_fes_tab(ctx: AppContext) -> None:
     """Render the MSM/FES analysis tab."""
@@ -335,7 +341,8 @@ def _select_shard_paths(shard_groups: List[Dict[str, Any]], selected_runs: List[
     for entry in shard_groups:
         run_id = str(entry.get("run_id", ""))
         if run_id in selected_runs:
-            paths = entry.get("shard_paths", [])
+            # Fixed: backend.shard_summaries() returns "paths" not "shard_paths"
+            paths = entry.get("paths", [])
             for p in paths:
                 if isinstance(p, (str, Path)):
                     selected_paths.append(Path(p))
@@ -362,65 +369,298 @@ def _summarize_selected_shards(selected_paths: List[Path]) -> tuple[List[str], s
 
 
 def _show_build_outputs(artifact: BuildArtifact) -> None:
-    """Display the outputs from a build artifact."""
+    """Display the outputs from a build artifact in a compact grid layout."""
     st.subheader("Analysis Bundle Outputs")
 
-    # Display basic information
-    col1, col2 = st.columns(2)
+    # Add debug logging
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info("=" * 80)
+    logger.info("RENDERING BUILD OUTPUTS")
+    logger.info(f"Bundle: {artifact.bundle_path}")
+    logger.info(f"Has build_result: {artifact.build_result is not None}")
+    if artifact.build_result:
+        logger.info(f"Has transition_matrix: {artifact.build_result.transition_matrix is not None}")
+        logger.info(f"Has fes: {artifact.build_result.fes is not None}")
+        logger.info(f"Has diagnostics: {artifact.build_result.diagnostics is not None}")
+    logger.info("=" * 80)
+
+    # Display basic information in a compact header
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Bundle Path", artifact.bundle_path.name)
-        st.metric("Dataset Hash", artifact.dataset_hash[:12] + "...")
+        st.metric("Bundle", artifact.bundle_path.name[:20] + "...")
     with col2:
-        st.metric("Created", artifact.created_at)
+        st.metric("Hash", artifact.dataset_hash[:8] + "...")
+    with col3:
+        st.metric("Created", artifact.created_at.split(" ")[0] if " " in artifact.created_at else artifact.created_at[:10])
+    with col4:
         if artifact.analysis_msm_n_states:
             st.metric("MSM States", artifact.analysis_msm_n_states)
 
-    # Display build result artifacts if available
-    if artifact.build_result and hasattr(artifact.build_result, 'artifacts'):
-        artifacts = artifact.build_result.artifacts
-        if artifacts:
-            with st.expander("📦 Available Artifacts", expanded=False):
-                for key, value in artifacts.items():
-                    st.write(f"**{key}**")
-                    if isinstance(value, dict):
-                        st.json(value)
+    # === PLOTS SECTION (Single Expander) ===
+    with st.expander("📊 Plots", expanded=True):
+        # Create grid layout for plots: 3 columns, 2 rows
+        row1_col1, row1_col2, row1_col3 = st.columns(3)
+        row2_col1, row2_col2, row2_col3 = st.columns(3)
+
+        # PLOT 1: MSM Transition Matrix
+        with row1_col1:
+            if artifact.build_result and artifact.build_result.transition_matrix is not None:
+                st.write("**MSM Transition Matrix**")
+                logger.info("Rendering MSM transition matrix")
+                T = artifact.build_result.transition_matrix
+                from pmarlo.reporting.plots import plot_transition_matrix_heatmap
+                try:
+                    fig = plot_transition_matrix_heatmap(T)
+                    # Make figure smaller for grid
+                    fig.set_size_inches(5, 4)
+                    st.pyplot(fig, use_container_width=True)
+                    logger.info("Successfully rendered MSM transition matrix")
+                except Exception as e:
+                    logger.error(f"Failed to plot MSM: {e}", exc_info=True)
+                    st.error(f"Error: {e}")
+            else:
+                st.write("**MSM Transition Matrix**")
+                st.info("No MSM data")
+
+        # PLOT 2: Free Energy Surface
+        with row1_col2:
+            if artifact.build_result and artifact.build_result.fes is not None:
+                st.write("**Free Energy Surface**")
+                logger.info(f"Rendering FES, type: {type(artifact.build_result.fes)}")
+                fes_obj = artifact.build_result.fes
+                from pmarlo.reporting.plots import plot_fes_contour
+                try:
+                    if hasattr(fes_obj, 'F') and hasattr(fes_obj, 'xedges') and hasattr(fes_obj, 'yedges'):
+                        F = fes_obj.F
+                        xedges = fes_obj.xedges
+                        yedges = fes_obj.yedges
+                        cv_names = artifact.build_result.feature_names if artifact.build_result.feature_names else ["CV1", "CV2"]
+                        xlabel = cv_names[0] if len(cv_names) > 0 else "CV1"
+                        ylabel = cv_names[1] if len(cv_names) > 1 else "CV2"
+
+                        logger.info(f"FES shape: {F.shape}, labels: {xlabel} vs {ylabel}")
+                        fig = plot_fes_contour(F, xedges, yedges, xlabel, ylabel)
+                        fig.set_size_inches(5, 4)
+                        st.pyplot(fig, use_container_width=True)
+                        logger.info("Successfully rendered FES")
                     else:
-                        st.write(value)
-
-    # Display debug summary if available
-    if artifact.debug_summary:
-        with st.expander("🔍 Debug Summary", expanded=False):
-            summary = artifact.debug_summary
-
-            # MSM statistics
-            if "total_pairs" in summary:
-                st.write(f"**Total transition pairs:** {summary['total_pairs']}")
-            if "states_observed" in summary:
-                st.write(f"**States observed:** {summary['states_observed']}")
-            if "largest_scc_size" in summary:
-                st.write(f"**Largest connected component:** {summary['largest_scc_size']}")
-            if "diag_mass" in summary:
-                st.write(f"**Diagonal mass:** {summary['diag_mass']:.4f}")
-
-            # Warnings
-            if "warnings" in summary and summary["warnings"]:
-                st.warning("**Analysis Warnings:**")
-                for warning in summary["warnings"]:
-                    if isinstance(warning, dict):
-                        st.write(f"- {warning.get('message', warning)}")
+                        st.warning("FES structure not recognized")
+                except ValueError as e:
+                    # Handle sparse FES gracefully
+                    if "too sparse" in str(e):
+                        logger.warning(f"FES too sparse: {e}")
+                        st.warning(f"FES too sparse to display\n({str(e).split('(')[1].split(')')[0]})")
                     else:
+                        raise
+                except Exception as e:
+                    logger.error(f"Failed to plot FES: {e}", exc_info=True)
+                    st.error(f"Error: {e}")
+            else:
+                st.write("**Free Energy Surface**")
+                st.info("No FES data")
+
+        # PLOT 3: Autocorrelation
+        with row1_col3:
+            if artifact.build_result and hasattr(artifact.build_result, 'diagnostics') and artifact.build_result.diagnostics:
+                st.write("**Autocorrelation**")
+                logger.info("Rendering autocorrelation")
+                try:
+                    fig_autocorr = plot_autocorrelation_curves(artifact.build_result.diagnostics)
+                    fig_autocorr.set_size_inches(5, 4)
+                    st.pyplot(fig_autocorr, use_container_width=True)
+                except Exception as e:
+                    logger.error(f"Failed to plot autocorrelation: {e}", exc_info=True)
+                    st.error(f"Error: {e}")
+            else:
+                st.write("**Autocorrelation**")
+                st.info("No diagnostics")
+
+        # PLOT 4: Canonical Correlation
+        with row2_col1:
+            if artifact.build_result and hasattr(artifact.build_result, 'diagnostics') and artifact.build_result.diagnostics:
+                st.write("**Canonical Correlation**")
+                logger.info("Rendering canonical correlation")
+                try:
+                    fig_canonical = plot_canonical_correlations(artifact.build_result.diagnostics)
+                    fig_canonical.set_size_inches(5, 4)
+                    st.pyplot(fig_canonical, use_container_width=True)
+                except Exception as e:
+                    logger.error(f"Failed to plot canonical correlation: {e}", exc_info=True)
+                    st.error(f"Error: {e}")
+            else:
+                st.write("**Canonical Correlation**")
+                st.info("No diagnostics")
+
+        # PLOT 5: Stationary Distribution (if available)
+        with row2_col2:
+            if artifact.build_result and artifact.build_result.stationary_distribution is not None:
+                st.write("**Stationary Distribution**")
+                pi = artifact.build_result.stationary_distribution
+                try:
+                    import matplotlib.pyplot as plt
+                    fig, ax = plt.subplots(figsize=(5, 4))
+                    ax.bar(range(len(pi)), pi, color='steelblue', alpha=0.7)
+                    ax.set_xlabel("State")
+                    ax.set_ylabel("Probability")
+                    ax.set_title("Stationary Distribution")
+                    fig.tight_layout()
+                    st.pyplot(fig, use_container_width=True)
+                except Exception as e:
+                    logger.error(f"Failed to plot stationary dist: {e}", exc_info=True)
+                    st.error(f"Error: {e}")
+            else:
+                st.write("**Stationary Distribution**")
+                st.info("No data")
+
+        # PLOT 6: FES Quality (if available)
+        with row2_col3:
+            if artifact.build_result and artifact.build_result.artifacts and "fes_quality" in artifact.build_result.artifacts:
+                st.write("**FES Quality**")
+                quality = artifact.build_result.artifacts["fes_quality"]
+                try:
+                    # Create a simple bar chart of quality metrics
+                    import matplotlib.pyplot as plt
+                    fig, ax = plt.subplots(figsize=(5, 4))
+
+                    metrics = []
+                    values = []
+                    if "empty_bins_fraction" in quality:
+                        metrics.append("Empty\nBins %")
+                        values.append(quality["empty_bins_fraction"] * 100)
+                    if "smoothing" in quality and "applied_fraction" in quality["smoothing"]:
+                        metrics.append("Smoothed\nBins %")
+                        values.append(quality["smoothing"]["applied_fraction"] * 100)
+
+                    if metrics:
+                        ax.bar(metrics, values, color=['orange', 'green'][:len(values)], alpha=0.7)
+                        ax.set_ylabel("Percentage")
+                        ax.set_title("FES Quality Metrics")
+                        ax.set_ylim(0, 100)
+                        fig.tight_layout()
+                        st.pyplot(fig, use_container_width=True)
+                    else:
+                        st.info("No quality metrics")
+                except Exception as e:
+                    logger.error(f"Failed to plot FES quality: {e}", exc_info=True)
+                    st.error(f"Error: {e}")
+            else:
+                st.write("**FES Quality**")
+                st.info("No quality data")
+
+    # === METRICS SECTION (Single Expander) ===
+    with st.expander("📈 All Metrics", expanded=False):
+        # Create tabs for different metric categories
+        tab_msm, tab_fes, tab_diag, tab_artifacts = st.tabs([
+            "MSM Metrics",
+            "FES Metrics",
+            "Diagnostics",
+            "Artifacts"
+        ])
+
+        # MSM Metrics Tab
+        with tab_msm:
+            if artifact.build_result and artifact.build_result.transition_matrix is not None:
+                T = artifact.build_result.transition_matrix
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("States", T.shape[0])
+                    st.metric("Diagonal Mass", f"{np.trace(T) / T.shape[0]:.4f}")
+                with col2:
+                    st.metric("Min Prob", f"{np.min(T):.6f}")
+                    st.metric("Max Prob", f"{np.max(T):.6f}")
+                with col3:
+                    if artifact.build_result.stationary_distribution is not None:
+                        pi = artifact.build_result.stationary_distribution
+                        st.metric("Most Populated State", f"{np.argmax(pi)}")
+                        st.metric("Max Population", f"{np.max(pi):.4f}")
+
+                # Debug summary
+                if artifact.debug_summary:
+                    st.write("**Build Statistics:**")
+                    summary_cols = st.columns(4)
+                    if "total_pairs" in artifact.debug_summary:
+                        summary_cols[0].metric("Transition Pairs", artifact.debug_summary["total_pairs"])
+                    if "states_observed" in artifact.debug_summary:
+                        summary_cols[1].metric("States Observed", artifact.debug_summary["states_observed"])
+                    if "largest_scc_size" in artifact.debug_summary:
+                        summary_cols[2].metric("Largest SCC", artifact.debug_summary["largest_scc_size"])
+                    if "diag_mass" in artifact.debug_summary:
+                        summary_cols[3].metric("Diag Mass", f"{artifact.debug_summary['diag_mass']:.4f}")
+            else:
+                st.info("No MSM metrics available")
+
+        # FES Metrics Tab
+        with tab_fes:
+            if artifact.build_result and artifact.build_result.fes is not None:
+                fes_obj = artifact.build_result.fes
+                if hasattr(fes_obj, 'metadata'):
+                    metadata = fes_obj.metadata
+                    if metadata:
+                        st.json(metadata)
+                    else:
+                        st.info("No FES metadata")
+
+                if artifact.build_result.artifacts and "fes_quality" in artifact.build_result.artifacts:
+                    st.write("**Quality Metrics:**")
+                    st.json(artifact.build_result.artifacts["fes_quality"])
+            else:
+                st.info("No FES metrics available")
+
+        # Diagnostics Tab
+        with tab_diag:
+            if artifact.build_result and hasattr(artifact.build_result, 'diagnostics') and artifact.build_result.diagnostics:
+                diagnostics = artifact.build_result.diagnostics
+
+                # Display warnings
+                warnings = format_warnings(diagnostics)
+                if warnings:
+                    st.warning("**Warnings:**")
+                    for warning in warnings:
                         st.write(f"- {warning}")
 
-    # Display guardrail violations if present
-    if artifact.guardrail_violations:
-        with st.expander("⚠️ Guardrail Violations", expanded=True):
-            for violation in artifact.guardrail_violations:
-                if isinstance(violation, dict):
-                    code = violation.get("code", "unknown")
-                    message = violation.get("message", str(violation))
-                    st.error(f"**{code}:** {message}")
+                # Display taus
+                if "taus" in diagnostics:
+                    st.write(f"**Lag times used:** {diagnostics['taus']}")
+
+                # Display diag_mass
+                if "diag_mass" in diagnostics and diagnostics["diag_mass"] is not None:
+                    st.metric("Diagonal Mass", f"{diagnostics['diag_mass']:.4f}")
+
+                # Raw diagnostics data
+                with st.expander("Raw Diagnostics JSON", expanded=False):
+                    st.json(diagnostics)
+            else:
+                st.info("No diagnostics available")
+
+        # Artifacts Tab
+        with tab_artifacts:
+            if artifact.build_result and hasattr(artifact.build_result, 'artifacts'):
+                artifacts = artifact.build_result.artifacts
+                if artifacts:
+                    for key, value in artifacts.items():
+                        with st.expander(f"**{key}**", expanded=False):
+                            if isinstance(value, dict):
+                                st.json(value)
+                            else:
+                                st.write(value)
                 else:
-                    st.error(str(violation))
+                    st.info("No artifacts available")
+            else:
+                st.info("No artifacts available")
+
+    # Guardrail violations (always visible if present)
+    if artifact.guardrail_violations:
+        st.error("⚠️ **Guardrail Violations**")
+        for violation in artifact.guardrail_violations:
+            if isinstance(violation, dict):
+                code = violation.get("code", "unknown")
+                message = violation.get("message", str(violation))
+                st.error(f"**{code}:** {message}")
+            else:
+                st.error(str(violation))
+
+    logger.info("Finished rendering build outputs")
 
 
 def _render_deeptica_summary(summary: Dict[str, Any]) -> None:

@@ -8,7 +8,7 @@ from pathlib import Path
 def configure_file_logging() -> None:
     """Configure Python logging to write to a timestamped file.
 
-    Creates a log file in pmarlo_webapp/app_outputs/app_logs/
+    Creates a log file in pmarlo_webapp/app_output/logs/
     with a timestamp in the filename. All logs from the app and pmarlo library
     will be captured in this file.
 
@@ -26,8 +26,12 @@ def configure_file_logging() -> None:
         return
 
     # Define log directory path
+    # __file__ is in pmarlo_webapp/app/core/logging.py
+    # parent is pmarlo_webapp/app/core/
+    # parent.parent is pmarlo_webapp/app/
+    # parent.parent.parent is pmarlo_webapp/
     app_dir = Path(__file__).resolve().parent
-    log_dir = app_dir.parent / "app_outputs" / "app_logs"
+    log_dir = app_dir.parent.parent / "app_output" / "logs"
 
     # Create log directory if it doesn't exist
     os.makedirs(log_dir, exist_ok=True)

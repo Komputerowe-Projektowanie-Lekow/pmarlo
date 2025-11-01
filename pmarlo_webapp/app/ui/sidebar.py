@@ -1,7 +1,11 @@
 import streamlit as st
-from app.core.context import AppContext
+from core.context import AppContext
 
 def render_sidebar(ctx: AppContext) -> None:
+    """Render the sidebar with workspace summary."""
+    backend = ctx.backend
+    layout = ctx.layout
+
     summary = backend.sidebar_summary()
     with st.sidebar:
         st.title("Workspace")
@@ -20,4 +24,4 @@ def render_sidebar(ctx: AppContext) -> None:
             for pdb in inputs:
                 st.caption(pdb.name)
         else:
-            st.info("Drop prepared PDB files into app_intputs/ to get started.")
+            st.info("Drop prepared PDB files into app_input/ to get started.")

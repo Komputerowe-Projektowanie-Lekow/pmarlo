@@ -2,18 +2,18 @@ from __future__ import annotations
 
 import streamlit as st
 
-from app.core.context import build_context
-from app.core import ensure_session_defaults, consume_pending_training_config
-from app.ui.sidebar import render_sidebar
+from core.context import build_context
+from core import ensure_session_defaults, consume_pending_training_config
+from ui.sidebar import render_sidebar
 
-from app.tabs.sampling import render_sampling_tab
-from app.tabs.training import render_training_tab
-from app.tabs.msm_fes import render_msm_fes_tab
-from app.tabs.conformations import render_conformations_tab
-from app.tabs.validation import render_validation_tab
-from app.tabs import render_model_preview_tab
-from app.tabs.assets import render_assets_tab
-from app.tabs.its import render_its_tab
+from tabs.sampling import render_sampling_tab
+from tabs.training import render_training_tab
+from tabs.msm_fes import render_msm_fes_tab
+from tabs.conformations import render_conformations_tab
+from tabs.validation import render_validation_tab
+from tabs.model_preview import render_model_preview
+from tabs.assets import render_assets_tab
+from tabs.its import render_its_tab
 
 
 def main() -> None:
@@ -72,7 +72,7 @@ def main() -> None:
             render_validation_tab(ctx)
 
         with tab_model_preview:
-            render_model_preview_tab(ctx)
+            render_model_preview(ctx)
 
         with tab_assets:
             render_assets_tab(ctx)

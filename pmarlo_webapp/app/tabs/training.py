@@ -4,22 +4,22 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from app.core.context import AppContext
-from app.core.session import (
+from core.context import AppContext
+from core.session import (
     _TRAIN_FEEDBACK,
     _LAST_TRAIN,
     _LAST_TRAIN_CONFIG,
     _TRAIN_CONFIG_PENDING,
 )
-from app.core.constants import DEEPTICA_SKIP_MESSAGE
-from app.core.parsers import _parse_tau_schedule
-from app.core.view_helpers import (
+from core.constants import DEEPTICA_SKIP_MESSAGE
+from core.parsers import _parse_tau_schedule
+from core.view_helpers import (
     _select_shard_paths,
     _summarize_selected_shards,
     _show_build_outputs,
     _render_deeptica_summary,
 )
-from app.backend.types import TrainingConfig, TrainingResult
+from backend.types import TrainingConfig, TrainingResult
 
 def render_training_tab(ctx: AppContext) -> None:
     """Render the model training tab."""

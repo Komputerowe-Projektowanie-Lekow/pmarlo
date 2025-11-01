@@ -1,13 +1,13 @@
 """Tab rendering functions for the PMARLO web application."""
 
-from app.tabs.assets import render_assets_tab
-from app.tabs.conformations import render_conformations_tab
-from app.tabs.its import render_its_tab
-from app.tabs.model_preview import render_model_preview
-from app.tabs.msm_fes import render_msm_fes_tab
-from app.tabs.sampling import render_sampling_tab
-from app.tabs.training import render_training_tab
-from app.tabs.validation import render_validation_tab
+from tabs.assets import render_assets_tab
+from tabs.conformations import render_conformations_tab
+from tabs.its import render_its_tab
+from tabs.model_preview import render_model_preview
+from tabs.msm_fes import render_msm_fes_tab
+from tabs.sampling import render_sampling_tab
+from tabs.training import render_training_tab
+from tabs.validation import render_validation_tab
 
 __all__ = [
     "render_sampling_tab",

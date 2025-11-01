@@ -15,6 +15,29 @@ from pmarlo.utils.thermodynamics import kT_kJ_per_mol
 logger = logging.getLogger(__name__)
 
 
+def plot_transition_matrix_heatmap(T: np.ndarray) -> Figure:
+    """Create a heatmap figure of a transition matrix.
+
+    Parameters
+    ----------
+    T : np.ndarray
+        Transition matrix to visualize
+
+    Returns
+    -------
+    Figure
+        Matplotlib figure object ready for display
+    """
+    fig, ax = plt.subplots(figsize=const.PLOT_FIGURE_SIZE_HEATMAP)
+    im = ax.imshow(T, cmap="viridis", origin="lower")
+    fig.colorbar(im, ax=ax, label="Transition Probability")
+    ax.set_xlabel("Target State j")
+    ax.set_ylabel("Source State i")
+    ax.set_title("MSM Transition Matrix")
+    fig.tight_layout()
+    return fig
+
+
 def save_transition_matrix_heatmap(
     T: np.ndarray, output_dir: str, name: str = "T_heatmap.png"
 ) -> Optional[str]:
@@ -25,34 +48,53 @@ def save_transition_matrix_heatmap(
 
     out_dir = Path(output_dir)
     ensure_directory(out_dir)
-    plt.figure(figsize=const.PLOT_FIGURE_SIZE_HEATMAP)
-    plt.imshow(T, cmap="viridis", origin="lower")
-    plt.colorbar(label="Transition Probability")
-    plt.xlabel("j")
-    plt.ylabel("i")
-    plt.title("Transition Matrix")
+    fig = plot_transition_matrix_heatmap(T)
     filepath = out_dir / name
-    plt.tight_layout()
-    plt.savefig(filepath, dpi=const.PLOT_DPI)
-    plt.close()
+    fig.savefig(filepath, dpi=const.PLOT_DPI)
+    plt.close(fig)
     return str(filepath) if filepath.exists() else None
 
 
-def save_fes_contour(
+def plot_fes_contour(
     F: np.ndarray,
     xedges: np.ndarray,
     yedges: np.ndarray,
     xlabel: str,
     ylabel: str,
-    output_dir: str,
-    filename: str,
     mask: Optional[np.ndarray] = None,
-) -> Optional[str]:
-    out_dir = Path(output_dir)
-    ensure_directory(out_dir)
+) -> Figure:
+    """Create a FES contour plot figure.
+
+    Parameters
+    ----------
+    F : np.ndarray
+        Free energy surface values (kJ/mol)
+    xedges : np.ndarray
+        Bin edges for x-axis
+    yedges : np.ndarray
+        Bin edges for y-axis
+    xlabel : str
+        Label for x-axis (CV name)
+    ylabel : str
+        Label for y-axis (CV name)
+    mask : Optional[np.ndarray]
+        Optional mask for unsampled regions
+
+    Returns
+    -------
+    Figure
+        Matplotlib figure object ready for display
+
+    Raises
+    ------
+    ValueError
+        If F is empty or contains no finite values
+    """
     x_centers = const.PLOT_BIN_EDGE_CENTER_FACTOR * (xedges[:-1] + xedges[1:])
     y_centers = const.PLOT_BIN_EDGE_CENTER_FACTOR * (yedges[:-1] + yedges[1:])
-    plt.figure(figsize=const.PLOT_FIGURE_SIZE_FES_CONTOUR)
+
+    fig, ax = plt.subplots(figsize=const.PLOT_FIGURE_SIZE_FES_CONTOUR)
+
     finite_mask = np.isfinite(F)
     if F.size == 0:
         raise ValueError("F must contain at least one element")
@@ -66,18 +108,19 @@ def save_fes_contour(
         )
 
     F_for_plot = np.where(finite_mask, F, np.nan)
-    c = plt.contourf(
+    c = ax.contourf(
         x_centers,
         y_centers,
         F_for_plot.T,
         levels=const.PLOT_CONTOUR_LEVELS,
         cmap="viridis",
     )
-    plt.colorbar(c, label="Free Energy (kJ/mol)")
+    fig.colorbar(c, ax=ax, label="Free Energy (kJ/mol)")
+
     title_warn = ""
     if mask is not None:
         m = np.ma.masked_where(~mask.T, mask.T)
-        plt.contourf(
+        ax.contourf(
             x_centers,
             y_centers,
             m,
@@ -85,13 +128,31 @@ def save_fes_contour(
             colors="none",
             hatches=["////"],
         )
-    plt.xlabel(xlabel)
-    plt.ylabel(ylabel)
-    plt.title(f"FES ({xlabel} vs {ylabel}){title_warn}")
+
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_title(f"Free Energy Surface: {xlabel} vs {ylabel}{title_warn}")
+    fig.tight_layout()
+    return fig
+
+
+def save_fes_contour(
+    F: np.ndarray,
+    xedges: np.ndarray,
+    yedges: np.ndarray,
+    xlabel: str,
+    ylabel: str,
+    output_dir: str,
+    filename: str,
+    mask: Optional[np.ndarray] = None,
+) -> Optional[str]:
+    """Save a FES contour plot to output_dir."""
+    out_dir = Path(output_dir)
+    ensure_directory(out_dir)
+    fig = plot_fes_contour(F, xedges, yedges, xlabel, ylabel, mask)
     filepath = out_dir / filename
-    plt.tight_layout()
-    plt.savefig(filepath, dpi=const.PLOT_DPI)
-    plt.close()
+    fig.savefig(filepath, dpi=const.PLOT_DPI)
+    plt.close(fig)
     return str(filepath) if filepath.exists() else None
 
 

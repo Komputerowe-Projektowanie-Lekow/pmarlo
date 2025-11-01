@@ -1,0 +1,3 @@
+1. I want you to know that most of the things that you are searching for is already in the pmarlo src thing! If you need something and it's missing from the API, we need to make the API better to do not make the current reimplementations of the same things!
+2. If you do any unit or other type of tests put them in correct place in the tests directory which is in the main directory.
+3. Do not use emojis in codebase.

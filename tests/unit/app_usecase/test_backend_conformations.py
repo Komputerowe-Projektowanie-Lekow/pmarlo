@@ -12,7 +12,7 @@ np = pytest.importorskip("numpy")
 from pmarlo.conformations.results import Conformation, ConformationSet, TPTResult
 from pmarlo_webapp.app.backend import (
     ConformationsConfig,
-    WorkflowBackend,
+    Backend,
     WorkspaceLayout,
 )
 
@@ -130,7 +130,7 @@ def test_conformations_requires_topology_path(
     _workspace: WorkspaceLayout,
     _fake_dataset: Dict[str, Any],
 ) -> None:
-    backend = WorkflowBackend(_workspace)
+    backend = Backend(_workspace)
     shard_path = _workspace.shards_dir / "sample.json"
     shard_path.parent.mkdir(parents=True, exist_ok=True)
     shard_path.write_text("{}", encoding="utf-8")
@@ -168,7 +168,7 @@ def test_conformations_rejects_non_reversible_transition_matrix(
     _workspace: WorkspaceLayout,
     _fake_dataset: Dict[str, Any],
 ) -> None:
-    backend = WorkflowBackend(_workspace)
+    backend = Backend(_workspace)
     shard_path = _workspace.shards_dir / "sample.json"
     shard_path.parent.mkdir(parents=True, exist_ok=True)
     shard_path.write_text("{}", encoding="utf-8")
@@ -204,7 +204,7 @@ def test_conformations_successful_run_uses_conformation_set_api(
     _workspace: WorkspaceLayout,
     _fake_dataset: Dict[str, Any],
 ) -> None:
-    backend = WorkflowBackend(_workspace)
+    backend = Backend(_workspace)
     shard_path = _workspace.shards_dir / "sample.json"
     shard_path.parent.mkdir(parents=True, exist_ok=True)
     shard_path.write_text("{}", encoding="utf-8")
@@ -295,7 +295,7 @@ def test_conformations_config_controls_uncertainty_options(
     _workspace: WorkspaceLayout,
     _fake_dataset: Dict[str, Any],
 ) -> None:
-    backend = WorkflowBackend(_workspace)
+    backend = Backend(_workspace)
     shard_path = _workspace.shards_dir / "sample.json"
     shard_path.parent.mkdir(parents=True, exist_ok=True)
     shard_path.write_text("{}", encoding="utf-8")
@@ -379,7 +379,7 @@ def test_conformations_respects_tica_dimension(
     _workspace: WorkspaceLayout,
     _fake_dataset: Dict[str, Any],
 ) -> None:
-    backend = WorkflowBackend(_workspace)
+    backend = Backend(_workspace)
     shard_path = _workspace.shards_dir / "sample.json"
     shard_path.parent.mkdir(parents=True, exist_ok=True)
     shard_path.write_text("{}", encoding="utf-8")
@@ -482,7 +482,7 @@ def test_conformations_uses_precomputed_deeptica_features(
     _workspace: WorkspaceLayout,
     _fake_dataset: Dict[str, Any],
 ) -> None:
-    backend = WorkflowBackend(_workspace)
+    backend = Backend(_workspace)
     shard_path = _workspace.shards_dir / "sample.json"
     shard_path.parent.mkdir(parents=True, exist_ok=True)
     shard_path.write_text("{}", encoding="utf-8")
@@ -568,7 +568,7 @@ def test_conformations_deeptica_requires_projection_path(
     _workspace: WorkspaceLayout,
     _fake_dataset: Dict[str, Any],
 ) -> None:
-    backend = WorkflowBackend(_workspace)
+    backend = Backend(_workspace)
     shard_path = _workspace.shards_dir / "sample.json"
     shard_path.parent.mkdir(parents=True, exist_ok=True)
     shard_path.write_text("{}", encoding="utf-8")

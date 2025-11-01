@@ -79,7 +79,7 @@ class ExperimentPaths:
     @classmethod
     def from_app_root(cls, app_root: Path | None = None) -> "ExperimentPaths":
         base = Path(app_root or Path(__file__).resolve().parent)
-        inputs_root = (base.parent / "app_intputs" / "experiments").resolve()
+        inputs_root = (base.parent / "app_input" / "experiments").resolve()
         outputs_root = (base / "experiment_outputs").resolve()
         configs_dir = (inputs_root / "configs").resolve()
         return cls(

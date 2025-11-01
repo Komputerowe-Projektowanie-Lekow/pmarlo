@@ -222,6 +222,23 @@ class AnalysisMixin:
     def list_builds(self) -> List[Dict[str, Any]]:
         return [dict(entry) for entry in self.state.builds]
 
+    def build_config_from_entry(self, entry: Dict[str, Any]) -> BuildConfig:
+        """Reconstruct a BuildConfig from a state entry."""
+        return BuildConfig(
+            lag=int(entry.get("lag", 10)),
+            bins=dict(entry.get("bins", {})),
+            seed=int(entry.get("seed", 0)),
+            temperature=float(entry.get("temperature", 300.0)),
+            learn_cv=bool(entry.get("learn_cv", False)),
+            apply_cv_whitening=bool(entry.get("apply_cv_whitening", True)),
+            cluster_mode=str(entry.get("cluster_mode", "kmeans")),
+            n_microstates=int(entry.get("n_microstates", 100)),
+            reweight_mode=str(entry.get("reweight_mode", "MBAR")),
+            fes_method=str(entry.get("fes_method", "kde")),
+            fes_bandwidth=entry.get("fes_bandwidth", "scott"),
+            fes_min_count_per_bin=int(entry.get("fes_min_count_per_bin", 1)),
+        )
+
     def _extract_debug_data_from_build_result(
             self,
             br: Any,

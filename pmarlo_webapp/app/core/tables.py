@@ -3,7 +3,7 @@ from typing import Sequence, List, Dict, Any, Mapping
 import numpy as np
 import pandas as pd
 
-from app.core.parsers import _format_tau_schedule
+from core.parsers import _format_tau_schedule
 
 def _timescales_dataframe(
     lag_times: Sequence[int],

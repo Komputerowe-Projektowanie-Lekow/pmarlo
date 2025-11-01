@@ -3,22 +3,22 @@ from typing import Mapping
 
 import streamlit as st
 
-from app.core.context import AppContext
-from app.core.session import (
+from core.context import AppContext
+from core.session import (
     _ITS_PENDING_TOPOLOGY,
     _ITS_PENDING_FEATURE_SPEC,
     _LAST_ITS_RESULT,
     _ITS_FEEDBACK,
 )
-from app.core.parsers import _format_lag_sequence, _parse_lag_sequence
-from app.core.view_helpers import (
+from core.parsers import _format_lag_sequence, _parse_lag_sequence
+from core.view_helpers import (
     _infer_default_topology,
     _default_feature_spec_path,
     _select_shard_paths,
     _summarize_selected_shards,
 )
-from app.core.tables import _timescales_dataframe
-from app.backend.its import calculate_its, plot_its
+from core.tables import _timescales_dataframe
+from backend.its import calculate_its, plot_its
 
 
 def render_its_tab(ctx: AppContext) -> None:

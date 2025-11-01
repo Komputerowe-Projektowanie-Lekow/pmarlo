@@ -249,6 +249,52 @@ class TrainingMixin:
             logger.error(f"Error deleting model {index}: {e}")
             return False
 
+    def get_training_progress(self, checkpoint_dir: Path) -> Optional[Dict[str, Any]]:
+        """Read real-time training progress from checkpoint directory."""
+        import json
+
+        if not checkpoint_dir or not checkpoint_dir.exists():
+            return None
+
+        progress_path = checkpoint_dir / "training_progress.json"
+        if not progress_path.exists():
+            return None
+
+        try:
+            with progress_path.open("r") as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def list_models(self) -> List[Dict[str, Any]]:
+        """Return list of all trained models from state."""
+        return [dict(entry) for entry in self.state.models]
+
+    def training_config_from_entry(self, entry: Dict[str, Any]) -> TrainingConfig:
+        """Reconstruct a TrainingConfig from a state entry."""
+        return TrainingConfig(
+            lag=int(entry.get("lag", 10)),
+            bins=dict(entry.get("bins", {})),
+            seed=int(entry.get("seed", 0)),
+            temperature=float(entry.get("temperature", 300.0)),
+            hidden=tuple(entry.get("hidden", [128, 128])),
+            max_epochs=int(entry.get("max_epochs", 500)),
+            early_stopping=int(entry.get("early_stopping", 20)),
+            tau_schedule=tuple(entry.get("tau_schedule", [])),
+            val_tau=int(entry.get("val_tau", 10)),
+            epochs_per_tau=int(entry.get("epochs_per_tau", 100)),
+        )
+
+    def latest_model_path(self) -> Optional[Path]:
+        """Return the path to the most recently trained model, or None if no models exist."""
+        if not self.state.models:
+            return None
+        latest_entry = self.state.models[-1]
+        bundle_path = self._path_from_value(latest_entry.get("bundle"))
+        if bundle_path is not None and bundle_path.exists():
+            return bundle_path
+        return None
+
     def _load_model_from_entry(self, entry: Dict[str, Any]) -> Optional[TrainingResult]:
         """Load model from a state entry."""
         bundle_path = self._path_from_value(entry.get("bundle"))
@@ -351,22 +397,5 @@ class TrainingMixin:
                 }
         except Exception as e:
             logger.warning(f"Could not export CV model: {e}")
-            return None
-
-    def get_training_progress(self, checkpoint_dir: Path) -> Optional[Dict[str, Any]]:
-        """Read real-time training progress from checkpoint directory."""
-        import json
-
-        if not checkpoint_dir or not checkpoint_dir.exists():
-            return None
-
-        progress_path = checkpoint_dir / "training_progress.json"
-        if not progress_path.exists():
-            return None
-
-        try:
-            with progress_path.open("r") as f:
-                return json.load(f)
-        except Exception:
             return None
 

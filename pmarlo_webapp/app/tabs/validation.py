@@ -3,12 +3,12 @@ import traceback
 import numpy as np
 import streamlit as st
 
-from app.core.context import AppContext
-from app.core.view_helpers import (
+from core.context import AppContext
+from core.view_helpers import (
     _select_shard_paths,
     _summarize_selected_shards,
 )
-from app.plots.diagnostics import (
+from plots.diagnostics import (
     create_sampling_validation_plot,
     create_fes_validation_plot,
 )

@@ -8,8 +8,7 @@ import pytest
 
 from pmarlo.transform.build import AppliedOpts, BuildResult, RunMetadata
 from pmarlo_webapp.app.backend import (
-    BuildConfig,
-    WorkflowBackend,
+    Backend,
     WorkspaceLayout,
 )
 
@@ -35,7 +34,7 @@ def workspace(tmp_path: Path) -> WorkspaceLayout:
 def test_analysis_total_pairs_matches_summary(
     monkeypatch: pytest.MonkeyPatch, workspace: WorkspaceLayout
 ) -> None:
-    backend = WorkflowBackend(workspace)
+    backend = Backend(workspace)
 
     shard_paths = [workspace.shards_dir / f"shard-{idx}.json" for idx in range(3)]
     for path in shard_paths:
@@ -165,7 +164,7 @@ def test_analysis_total_pairs_matches_summary(
 def test_analysis_state_count_guardrail(
     monkeypatch: pytest.MonkeyPatch, workspace: WorkspaceLayout
 ) -> None:
-    backend = WorkflowBackend(workspace)
+    backend = Backend(workspace)
 
     shard_paths = [workspace.shards_dir / f"shard-{idx}.json" for idx in range(2)]
     for path in shard_paths:

@@ -22,7 +22,7 @@ def main():
     parser.add_argument(
         "--shards-dir",
         type=Path,
-        default=Path("../app_intputs/experiments/mixed_ladders_shards"),
+        default=Path("../app_input/experiments/mixed_ladders_shards"),
         help="Directory containing shard files",
     )
     parser.add_argument(
