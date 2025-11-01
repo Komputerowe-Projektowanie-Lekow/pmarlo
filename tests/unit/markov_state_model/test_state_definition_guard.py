@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, List
@@ -62,18 +62,13 @@ class _DummyEstimator(EstimationMixin):
     def _initialize_empty_msm(self) -> None:  # pragma: no cover - stub
         return None
 
-    def _should_use_deeptime(self) -> bool:  # pragma: no cover - stub
-        return False
+    def _ensure_deeptime_backend(self) -> None:  # pragma: no cover - stub
+        raise AssertionError("MSM guard should abort before backend validation")
 
     def _count_transitions_deeptime(
         self, *, lag: int, count_mode: str
     ) -> np.ndarray:  # pragma: no cover - stub
         raise AssertionError("Deeptime counting should not occur")
-
-    def _count_transitions_locally(
-        self, *, lag: int, count_mode: str
-    ) -> np.ndarray:  # pragma: no cover - stub
-        return np.zeros((self.n_states, self.n_states), dtype=float)
 
     def _finalize_transition_and_stationary(
         self, counts: np.ndarray

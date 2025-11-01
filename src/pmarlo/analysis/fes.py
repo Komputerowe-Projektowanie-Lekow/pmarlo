@@ -219,8 +219,21 @@ def _smooth_sparse_bins(hist: np.ndarray, min_count: int) -> tuple[np.ndarray, i
 
 
 def ensure_fes_inputs_whitened(dataset: DatasetLike | Mapping[str, Any]) -> bool:
-    """Apply whitening to the continuous CVs used for FES generation."""
+    """Apply whitening to the continuous CVs used for FES generation.
 
+    Returns True if whitening was applied.
+    When no __artifacts__ exist, this function does nothing and returns False,
+    indicating the caller should proceed with raw data.
+
+    Raises
+    ------
+    TypeError
+        If dataset is not a mutable mapping.
+    KeyError
+        If dataset lacks required 'X' array.
+    ValueError
+        If X is None or whitening metadata is malformed.
+    """
     if not isinstance(dataset, (MutableMapping, dict)):
         raise TypeError("Dataset must be a mutable mapping to apply whitening")
 
@@ -231,23 +244,27 @@ def ensure_fes_inputs_whitened(dataset: DatasetLike | Mapping[str, Any]) -> bool
     if X is None:
         raise ValueError("Dataset provides no coordinate array for whitening")
 
+    # If no artifacts exist, skip whitening (indicates raw CV workflow)
     artifacts = dataset.get("__artifacts__")  # type: ignore[assignment]
+    if artifacts is None:
+        return False
+
     if not isinstance(artifacts, Mapping):
-        raise KeyError("Dataset artifacts are required for whitening metadata")
+        raise ValueError(f"Dataset __artifacts__ must be a Mapping, got {type(artifacts)}")
 
+    # If no DeepTICA metadata, skip whitening (raw CVs)
     summary = artifacts.get("mlcv_deeptica")
-    if not isinstance(summary, (MutableMapping, dict)):
-        raise KeyError(
-            "Dataset artifacts must include 'mlcv_deeptica' whitening metadata"
-        )
+    if summary is None:
+        return False
 
-    whitened, applied = apply_whitening_from_metadata(
-        np.asarray(X, dtype=np.float64), summary
-    )
-    if not applied:
-        raise RuntimeError("Expected whitening metadata to be applied")
+    if not isinstance(summary, (MutableMapping, dict)):
+        raise ValueError(f"mlcv_deeptica metadata must be a dict, got {type(summary)}")
+
+    coords = np.asarray(X, dtype=np.float64)
+    whitened, _applied = apply_whitening_from_metadata(coords, summary)
 
     dataset["X"] = whitened  # type: ignore[index]
+
     return True
 
 

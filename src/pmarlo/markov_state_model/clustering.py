@@ -2,8 +2,8 @@
 
 This module provides intelligent clustering of reduced-dimensional feature data
 into microstates, which serve as the foundation for Markov state model (MSM)
-analysis. The implementation automatically selects between KMeans and MiniBatchKMeans
-algorithms based on dataset size to prevent memory issues with large trajectories.
+analysis. The implementation relies on :mod:`deeptime`'s tested K-Means
+estimators instead of maintaining custom wrappers around scikit-learn.
 
 The module supports both manual and automatic determination of the optimal number
 of microstates, with the latter using silhouette score optimization.
@@ -28,11 +28,12 @@ Examples
 from __future__ import annotations
 
 import logging
+import numbers
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import Any, Dict, Literal, Mapping, cast
 
 import numpy as np
-from sklearn.cluster import KMeans, MiniBatchKMeans
+from deeptime.clustering import KMeans, MiniBatchKMeans
 from sklearn.metrics import silhouette_score
 
 logger = logging.getLogger("pmarlo")
@@ -112,7 +113,7 @@ def _select_clustering_method(
     method: Literal["auto", "minibatchkmeans", "kmeans"],
     Y: np.ndarray,
     minibatch_threshold: int,
-) -> str:
+) -> Literal["minibatchkmeans", "kmeans"]:
     """Select the appropriate clustering algorithm based on method and data size.
 
     Parameters
@@ -143,9 +144,8 @@ def _select_clustering_method(
                 minibatch_threshold,
             )
             return "minibatchkmeans"
-        else:
-            return "kmeans"
-    elif method in ("kmeans", "minibatchkmeans"):
+        return "kmeans"
+    if method in ("kmeans", "minibatchkmeans"):
         return method
     else:
         raise ValueError(f"Unsupported clustering method: {method}")
@@ -157,6 +157,7 @@ def _auto_select_n_states(
     *,
     sample_size: int | None = None,
     override_n_states: int | None = None,
+    estimator_kwargs: Mapping[str, Any] | None = None,
 ) -> tuple[int, str]:
     """Automatically select optimal number of states using silhouette score.
 
@@ -214,9 +215,12 @@ def _auto_select_n_states(
     candidates = range(4, 21)
     scores: list[tuple[int, float]] = []
 
+    estimator_kwargs = dict(estimator_kwargs or {})
+
     for n in candidates:
-        km = KMeans(n_clusters=n, random_state=random_state, n_init=10)
-        labels = km.fit_predict(Y_sample)
+        km = _create_clustering_estimator("kmeans", n, random_state, **estimator_kwargs)
+        model = km.fit_fetch(Y_sample)
+        labels = np.asarray(model.transform(Y_sample), dtype=int)
 
         if len(set(labels)) <= 1:
             score = -1.0
@@ -235,8 +239,74 @@ def _auto_select_n_states(
     return chosen, rationale
 
 
+_COMMON_KWARGS: frozenset[str] = frozenset(
+    {"max_iter", "metric", "tolerance", "init_strategy", "n_jobs", "initial_centers"}
+)
+_ATTRIBUTE_KWARGS: frozenset[str] = frozenset({"fixed_seed", "progress"})
+_MINIBATCH_ONLY_KWARGS: frozenset[str] = frozenset({"batch_size"})
+_SUPPORTED_KWARGS: frozenset[str] = frozenset(
+    set(_COMMON_KWARGS) | set(_ATTRIBUTE_KWARGS) | set(_MINIBATCH_ONLY_KWARGS)
+)
+
+
+def _validate_clustering_kwargs(
+    method: Literal["auto", "minibatchkmeans", "kmeans"], kwargs: Mapping[str, Any]
+) -> None:
+    unsupported = set(kwargs) - set(_SUPPORTED_KWARGS)
+    if unsupported:
+        raise TypeError(
+            "Unsupported clustering parameters for deeptime backend: "
+            f"{sorted(unsupported)}"
+        )
+
+    if method == "kmeans" and any(k in kwargs for k in _MINIBATCH_ONLY_KWARGS):
+        raise TypeError("'batch_size' is only supported when method='minibatchkmeans'.")
+
+
+def _split_kwargs_for_method(
+    method: Literal["minibatchkmeans", "kmeans"], kwargs: Mapping[str, Any]
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    init_kwargs: Dict[str, Any] = {}
+    attribute_kwargs: Dict[str, Any] = {}
+
+    allowed_init = set(_COMMON_KWARGS)
+    if method == "minibatchkmeans":
+        allowed_init |= set(_MINIBATCH_ONLY_KWARGS)
+    else:
+        allowed_init |= {"progress"}
+
+    for key, value in kwargs.items():
+        if key in _ATTRIBUTE_KWARGS:
+            attribute_kwargs[key] = value
+        elif key in allowed_init:
+            init_kwargs[key] = value
+
+    return init_kwargs, attribute_kwargs
+
+
+def _resolve_fixed_seed(
+    random_state: int | None, attribute_kwargs: Dict[str, Any]
+) -> int | bool:
+    if "fixed_seed" in attribute_kwargs:
+        fixed = attribute_kwargs.pop("fixed_seed")
+        if isinstance(fixed, bool):
+            return fixed
+        if isinstance(fixed, numbers.Integral):
+            return int(fixed)
+        raise TypeError(
+            "'fixed_seed' must be an integer or boolean, "
+            f"received type {type(fixed)!r}."
+        )
+    if random_state is None:
+        return False
+    return int(random_state)
+
+
 def _create_clustering_estimator(
-    method: str, n_states: int, random_state: int | None, **kwargs
+    method: Literal["minibatchkmeans", "kmeans"],
+    n_states: int,
+    random_state: int | None,
+    **kwargs: Any,
 ) -> KMeans | MiniBatchKMeans:
     """Create the appropriate clustering estimator.
 
@@ -256,16 +326,51 @@ def _create_clustering_estimator(
     KMeans | MiniBatchKMeans
         Configured clustering estimator.
     """
+    init_kwargs, attribute_kwargs = _split_kwargs_for_method(method, kwargs)
+    fixed_seed = _resolve_fixed_seed(random_state, attribute_kwargs)
+
     if method == "minibatchkmeans":
-        return MiniBatchKMeans(n_clusters=n_states, random_state=random_state, **kwargs)
-    elif method == "kmeans":
-        # Ensure n_init is an integer for KMeans
-        kwargs.setdefault("n_init", 10)
-        if "n_init" in kwargs:
-            kwargs["n_init"] = int(kwargs["n_init"])
-        return KMeans(n_clusters=n_states, random_state=random_state, **kwargs)
-    else:
-        raise ValueError(f"Unsupported method: {method}")
+        estimator = MiniBatchKMeans(n_clusters=n_states, **init_kwargs)
+        estimator.fixed_seed = fixed_seed
+        if "progress" in attribute_kwargs:
+            estimator.progress = attribute_kwargs["progress"]
+        return estimator
+
+    estimator = KMeans(n_clusters=n_states, fixed_seed=fixed_seed, **init_kwargs)
+    if "progress" in attribute_kwargs:
+        estimator.progress = attribute_kwargs["progress"]
+    return estimator
+
+
+def _remap_labels_and_compute_inertia(
+    Y: np.ndarray, raw_labels: np.ndarray
+) -> tuple[np.ndarray, np.ndarray | None, int, float]:
+    """Remap raw clustering labels to a dense range and compute inertia."""
+
+    unique_labels = np.unique(raw_labels)
+    n_unique = int(unique_labels.size)
+    if n_unique == 0:
+        raise ValueError(
+            "Clustering produced zero unique microstates; verify input coverage "
+            "and CV preprocessing."
+        )
+
+    label_map = {int(label): idx for idx, label in enumerate(unique_labels)}
+    remapped = np.empty_like(raw_labels, dtype=int)
+    for idx, label in enumerate(raw_labels):
+        remapped[idx] = label_map[int(label)]
+
+    centers = np.zeros((n_unique, Y.shape[1]), dtype=float)
+    for original_label, dense_label in label_map.items():
+        mask = raw_labels == original_label
+        if not np.any(mask):
+            continue
+        centers[dense_label] = np.asarray(Y[mask], dtype=float).mean(axis=0)
+
+    diffs = Y - centers[remapped]
+    inertia = float(np.sum(diffs * diffs))
+
+    return remapped, centers if centers.size else None, n_unique, inertia
 
 
 def cluster_microstates(
@@ -318,8 +423,15 @@ def cluster_microstates(
         Useful when a pre-determined state count is known but the calling code
         still expects automatic selection semantics.
     **kwargs
-        Additional keyword arguments forwarded to the underlying scikit-learn
-        clustering estimator (KMeans or MiniBatchKMeans).
+        Additional keyword arguments forwarded to the underlying
+        :mod:`deeptime.clustering` estimators. Supported parameters include
+        ``max_iter``, ``metric``, ``tolerance``, ``init_strategy``, ``n_jobs``,
+        and ``initial_centers`` for all methods. ``progress`` and ``fixed_seed``
+        can be supplied to control deterministic behaviour for standard
+        ``KMeans`` clustering. ``batch_size`` is supported only when
+        ``method="minibatchkmeans"``. Supplying ``n_init`` performs multiple
+        clustering restarts using different seeds and selects the run with the
+        lowest within-cluster sum of squares.
 
     Returns
     -------
@@ -372,8 +484,8 @@ def cluster_microstates(
     See Also
     --------
     ClusteringResult : Container for clustering results and metadata
-    sklearn.cluster.KMeans : Standard K-means clustering
-    sklearn.cluster.MiniBatchKMeans : Memory-efficient variant for large datasets
+    deeptime.clustering.KMeans : Standard K-means clustering implementation
+    deeptime.clustering.MiniBatchKMeans : Mini-batch variant for large datasets
     """
     # Handle edge case of empty dataset
     if Y.shape[0] == 0:
@@ -383,17 +495,45 @@ def cluster_microstates(
     # Validate input dimensions and data
     _validate_clustering_inputs(Y)
 
+    Y = np.asarray(Y, dtype=float)
+
+    kwargs = dict(kwargs)
+    raw_n_init = kwargs.pop("n_init", None)
+    if raw_n_init is None:
+        n_init_restarts = 1
+    else:
+        try:
+            n_init_restarts = int(raw_n_init)
+        except (TypeError, ValueError) as exc:  # pragma: no cover - defensive guard
+            raise TypeError(
+                "n_init must be provided as an integer when clustering with deeptime"
+            ) from exc
+        if n_init_restarts <= 0:
+            raise ValueError(
+                "n_init must be a positive integer when clustering microstates"
+            )
+
+    if n_init_restarts > 1 and "fixed_seed" in kwargs:
+        raise ValueError(
+            "n_init cannot be combined with fixed_seed; provide only one mechanism "
+            "for controlling clustering initialisations."
+        )
+
+    _validate_clustering_kwargs(method, kwargs)
+
     # Store original request for logging
     requested = n_states
     rationale: str | None = None
 
     # Auto-select number of states if requested
     if isinstance(n_states, str) and n_states == "auto":
+        silhouette_kwargs = _split_kwargs_for_method("kmeans", kwargs)[0]
         n_states, rationale = _auto_select_n_states(
             Y,
             random_state,
             sample_size=silhouette_sample_size,
             override_n_states=auto_n_states_override,
+            estimator_kwargs=silhouette_kwargs,
         )
     else:
         n_states = int(n_states)
@@ -406,12 +546,14 @@ def cluster_microstates(
     # Select appropriate clustering algorithm
     chosen_method = _select_clustering_method(method, Y, minibatch_threshold)
 
-    # Create and configure the clustering estimator
-    estimator = _create_clustering_estimator(
-        chosen_method, n_states, random_state, **kwargs
-    )
+    if "batch_size" in kwargs and chosen_method != "minibatchkmeans":
+        raise ValueError(
+            "batch_size was provided but the selected clustering method is "
+            f"'{chosen_method}'. Specify method='minibatchkmeans' to use mini-batch "
+            "parameters."
+        )
 
-    # Execute clustering
+    # Execute clustering with optional restarts
     logger.info(
         "Starting clustering with %s algorithm: %d states, %d samples, %d features",
         chosen_method,
@@ -420,17 +562,68 @@ def cluster_microstates(
         Y.shape[1],
     )
 
-    labels = cast(np.ndarray, estimator.fit_predict(Y).astype(int))
-    centers = getattr(estimator, "cluster_centers_", None)
+    seeds: list[int | None]
+    if n_init_restarts == 1:
+        seeds = [random_state]
+    else:
+        rng = np.random.default_rng(random_state)
+        seeds = []
+        if random_state is None:
+            seeds.append(None)
+        else:
+            seeds.append(int(random_state))
+        existing = {s for s in seeds if isinstance(s, int)}
+        while len(seeds) < n_init_restarts:
+            candidate = int(rng.integers(0, np.iinfo(np.int32).max))
+            if candidate in existing:
+                continue
+            seeds.append(candidate)
+            existing.add(candidate)
 
-    unique_labels = int(np.unique(labels).size)
-    if unique_labels == 0:
-        message = (
-            "Clustering produced zero unique microstates; verify input coverage "
-            "and CV preprocessing."
+    best_run: dict[str, Any] | None = None
+
+    for init_index, seed in enumerate(seeds):
+        estimator = _create_clustering_estimator(
+            chosen_method, n_states, seed, **kwargs
         )
-        logger.error(message)
-        raise ValueError(message)
+        model = estimator.fit_fetch(Y)
+        labels_raw = cast(np.ndarray, np.asarray(model.transform(Y), dtype=int))
+
+        try:
+            labels, centers, unique_labels, inertia = _remap_labels_and_compute_inertia(
+                Y, labels_raw
+            )
+        except ValueError as exc:
+            logger.error("%s", exc)
+            raise
+
+        run_info = {
+            "labels": labels,
+            "centers": centers,
+            "unique": unique_labels,
+            "inertia": inertia,
+            "seed": seed,
+            "iteration": init_index,
+        }
+
+        if best_run is None or inertia < best_run["inertia"]:
+            best_run = run_info
+
+    assert best_run is not None  # for mypy
+
+    labels = cast(np.ndarray, best_run["labels"])
+    centers = best_run["centers"]
+    unique_labels = int(best_run["unique"])
+
+    if n_init_restarts > 1:
+        logger.info(
+            "Selected best clustering from %d initialisations (iteration=%d, seed=%s, inertia=%.6f)",
+            n_init_restarts,
+            int(best_run["iteration"]),
+            "None" if best_run["seed"] is None else int(best_run["seed"]),
+            float(best_run["inertia"]),
+        )
+
     if unique_labels != n_states:
         message = (
             "Clustering produced {unique} unique microstates, expected {expected}. "
@@ -439,22 +632,6 @@ def cluster_microstates(
         ).format(unique=unique_labels, expected=n_states)
         logger.warning(message)
         n_states = unique_labels
-
-    if centers is not None:
-        try:
-            n_centers = int(getattr(centers, "shape", (0,))[0])
-        except Exception:
-            n_centers = n_states
-        if n_centers != n_states:
-            logger.warning(
-                "Clustering returned %s centers, expected %s; trimming metadata.",
-                n_centers,
-                n_states,
-            )
-            try:
-                centers = np.asarray(centers)[:n_states]
-            except Exception:
-                centers = None
 
     # Log completion with rationale if available
     logger.info(

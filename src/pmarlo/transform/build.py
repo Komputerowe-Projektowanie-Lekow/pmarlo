@@ -25,6 +25,7 @@ from typing import (
 import numpy as np
 
 from pmarlo import constants as const
+from pmarlo.utils.coercion import coerce_finite_float
 from pmarlo.utils.json_io import load_json_file
 from pmarlo.utils.path_utils import ensure_directory
 from pmarlo.utils.temperature import collect_temperature_values
@@ -104,16 +105,6 @@ def _is_demux_shard(path: Path, meta: Optional[Dict[str, Any]] = None) -> bool:
                 if isinstance(raw, str) and "demux" in raw.lower():
                     return True
     return "demux" in path.stem.lower()
-
-
-def _coerce_float(value: Any) -> Optional[float]:
-    try:
-        val = float(value)
-    except (TypeError, ValueError):
-        return None
-    if math.isnan(val):
-        return None
-    return val
 
 
 def _collect_demux_temperatures(meta: Mapping[str, Any] | None) -> List[float]:
@@ -306,12 +297,22 @@ class BuildOpts:
     msm_mode: str = "kmeans+msm"
     enable_fes: bool = True
     fes_temperature: float = 300.0
+    fes_bins: Optional[Tuple[int, int]] = None
+    fes_grid_strategy: str = "adaptive"
+    fes_smoothing_mode: str = "never"
+    fes_target_sd_kT: Optional[float] = None
+    fes_alpha: float = 1e-6
+    fes_h0: float = 1.2
+    fes_ess_ref: float = 50.0
+    fes_h_min: float = 0.4
+    fes_h_max: float = 3.0
     enable_tram: bool = False
     tram_lag: int = 1
     tram_n_iter: int = 100
     output_format: str = "json"
     save_trajectories: bool = False
     save_plots: bool = True
+    diagnostics_dir: Optional[str] = None
     n_jobs: int = 1
     memory_limit_gb: Optional[float] = None
     chunk_size: int = 1000
@@ -326,6 +327,63 @@ class BuildOpts:
             )
         if self.temperature is not None:
             object.__setattr__(self, "fes_temperature", float(self.temperature))
+        if self.fes_bins is not None:
+            if not isinstance(self.fes_bins, tuple) or len(self.fes_bins) != 2:
+                raise ValueError("fes_bins must be a tuple of two integers")
+            if any(not isinstance(b, int) or b <= 0 for b in self.fes_bins):
+                raise ValueError("fes_bins must contain two positive integers")
+            object.__setattr__(self, "fes_bins", tuple(int(x) for x in self.fes_bins))
+
+        # Validate grid_strategy
+        grid_strategy = str(self.fes_grid_strategy).lower()
+        if grid_strategy not in {"fixed", "adaptive"}:
+            raise ValueError("fes_grid_strategy must be 'fixed' or 'adaptive'")
+        object.__setattr__(self, "fes_grid_strategy", grid_strategy)
+
+        mode = str(self.fes_smoothing_mode).lower()
+        if mode not in {"never", "auto", "always"}:
+            raise ValueError(
+                "fes_smoothing_mode must be one of {'never', 'auto', 'always'}"
+            )
+        object.__setattr__(self, "fes_smoothing_mode", mode)
+
+        if self.fes_target_sd_kT is not None:
+            target = float(self.fes_target_sd_kT)
+            if target <= 0:
+                raise ValueError("fes_target_sd_kT must be positive when provided")
+            object.__setattr__(self, "fes_target_sd_kT", target)
+
+        diag_dir_raw = getattr(self, "diagnostics_dir", None)
+        if diag_dir_raw:
+            try:
+                resolved_diag = str(Path(diag_dir_raw).expanduser())
+            except Exception as exc:
+                raise ValueError(
+                    "diagnostics_dir must be a valid path-like value"
+                ) from exc
+            object.__setattr__(self, "diagnostics_dir", resolved_diag)
+        else:
+            object.__setattr__(self, "diagnostics_dir", None)
+
+        def _coerce_positive(name: str) -> float:
+            value = float(getattr(self, name))
+            if value <= 0:
+                raise ValueError(f"{name} must be positive")
+            return value
+
+        alpha = _coerce_positive("fes_alpha")
+        h0 = _coerce_positive("fes_h0")
+        ess_ref = _coerce_positive("fes_ess_ref")
+        h_min = _coerce_positive("fes_h_min")
+        h_max = _coerce_positive("fes_h_max")
+        if h_min > h_max:
+            raise ValueError("fes_h_min must be <= fes_h_max")
+
+        object.__setattr__(self, "fes_alpha", alpha)
+        object.__setattr__(self, "fes_h0", h0)
+        object.__setattr__(self, "fes_ess_ref", ess_ref)
+        object.__setattr__(self, "fes_h_min", h_min)
+        object.__setattr__(self, "fes_h_max", h_max)
 
     def with_plan(self, plan: TransformPlan) -> "BuildOpts":
         return replace(self, plan=plan)
@@ -507,6 +565,59 @@ class BuildResult:
                     return obj
             return obj
 
+        def _decode_msm(obj: Optional[Any]) -> Optional[Any]:
+            """Decode MSM payload, converting serialized arrays back to numpy arrays."""
+            if obj is None:
+                return None
+            if not isinstance(obj, dict):
+                return obj
+
+            # Create a copy to avoid modifying the original
+            decoded = dict(obj)
+
+            # Convert counts matrix back to numpy array
+            if "counts" in decoded and decoded["counts"] is not None:
+                try:
+                    decoded["counts"] = np.asarray(decoded["counts"], dtype=float)
+                except Exception:
+                    pass
+
+            # Convert state_counts back to numpy array
+            if "state_counts" in decoded and decoded["state_counts"] is not None:
+                try:
+                    decoded["state_counts"] = np.asarray(decoded["state_counts"], dtype=float)
+                except Exception:
+                    pass
+
+            # Convert dtrajs list back to list of numpy arrays
+            if "dtrajs" in decoded and decoded["dtrajs"] is not None:
+                try:
+                    dtrajs_list = decoded["dtrajs"]
+                    if isinstance(dtrajs_list, list):
+                        decoded["dtrajs"] = [
+                            np.asarray(dtraj, dtype=np.int32)
+                            for dtraj in dtrajs_list
+                            if dtraj is not None
+                        ]
+                except Exception:
+                    pass
+
+            # Convert transition_matrix if present in MSM payload
+            if "transition_matrix" in decoded and decoded["transition_matrix"] is not None:
+                try:
+                    decoded["transition_matrix"] = np.asarray(decoded["transition_matrix"], dtype=float)
+                except Exception:
+                    pass
+
+            # Convert stationary_distribution if present in MSM payload
+            if "stationary_distribution" in decoded and decoded["stationary_distribution"] is not None:
+                try:
+                    decoded["stationary_distribution"] = np.asarray(decoded["stationary_distribution"], dtype=float)
+                except Exception:
+                    pass
+
+            return decoded
+
         applied_dict = data.get("applied_opts") or None
         applied_obj = (
             AppliedOpts(**applied_dict) if isinstance(applied_dict, dict) else None
@@ -515,7 +626,7 @@ class BuildResult:
         return cls(
             transition_matrix=_decode_array(data.get("transition_matrix")),
             stationary_distribution=_decode_array(data.get("stationary_distribution")),
-            msm=data.get("msm"),
+            msm=_decode_msm(data.get("msm")),
             fes=_decode_fes(data.get("fes")),
             tram=data.get("tram"),
             metadata=metadata,
@@ -779,10 +890,8 @@ def _is_positive_int(value: Any) -> bool:
 def _build_tram_payload(
     working_dataset: Any, opts: BuildOpts, applied: AppliedOpts
 ) -> Optional[Any]:
-    if not opts.enable_tram:
-        return None
-    logger.info("Building TRAM...")
-    return _build_tram(working_dataset, opts, applied)
+    """Build TRAM model - raises error on failure instead of silently skipping."""
+    return default_tram_builder(working_dataset, opts, applied)
 
 
 def _update_metadata_end(metadata: RunMetadata, start_dt: datetime) -> None:
@@ -978,6 +1087,30 @@ def _frames_from_mapping(dataset: Any) -> Optional[int]:
 
 
 def _count_frames(dataset: Any) -> int:
+    """Count frames from shard metadata.
+
+    This derives the frame count from __shards__ metadata to ensure consistency
+    with pair counting logic. Falls back to heuristics only if metadata is unavailable.
+    """
+    # First try to get from shard metadata
+    if isinstance(dataset, Mapping):
+        shards = dataset.get("__shards__")
+        if shards:
+            try:
+                total = 0
+                for shard in shards:
+                    if isinstance(shard, Mapping):
+                        # Use actual length (stop - start)
+                        start = int(shard.get("start", 0))
+                        stop = int(shard.get("stop", start))
+                        length = max(0, stop - start)
+                        total += length
+                if total > 0:
+                    return total
+            except Exception:
+                pass
+
+    # Fallback to heuristics only if shard metadata unavailable
     for extractor in (_frames_from_len, _frames_from_attr, _frames_from_mapping):
         value = extractor(dataset)
         if value is not None:
@@ -1072,30 +1205,193 @@ def _locate_shard(
 def _resolve_diagnostics_dir(
     dataset: Mapping[str, Any], opts: BuildOpts
 ) -> Path | None:
+    project_root = Path.cwd().resolve()
+    project_diagnostics = project_root / "diagnostics"
+
     candidates: list[Path] = []
+    seen_candidates: set[Path] = set()
+
+    def _add_candidate(
+        raw_path: Any, *, ensure_subdir: bool = False, label: str = ""
+    ) -> None:
+        if not raw_path:
+            return
+        try:
+            base = Path(raw_path).expanduser()
+        except Exception:
+            logger.debug(
+                "Discarding diagnostics directory candidate %r (%s)",
+                raw_path,
+                label,
+                exc_info=True,
+            )
+            return
+        candidate = base / "diagnostics" if ensure_subdir else base
+        try:
+            candidate = candidate.resolve(strict=False)
+        except Exception:
+            logger.debug(
+                "Failed to normalise diagnostics directory candidate %r (%s)",
+                raw_path,
+                label,
+                exc_info=True,
+            )
+            candidate = Path(candidate)
+        if candidate == project_diagnostics:
+            logger.debug(
+                "Skipping repository root diagnostics directory candidate (%s)",
+                label,
+            )
+            return
+        if candidate in seen_candidates:
+            return
+        seen_candidates.add(candidate)
+        candidates.append(candidate)
+
+    def _dataset_output_dirs(data: Mapping[str, Any]) -> list[Any]:
+        keys = ("output_dir", "output_path", "output_directory")
+
+        def _extract(mapping: Mapping[str, Any], store: list[Any]) -> None:
+            for key in keys:
+                value = mapping.get(key)
+                if isinstance(value, (str, os.PathLike)):
+                    store.append(value)
+
+        found: list[Any] = []
+        _extract(data, found)
+        meta = data.get("metadata")
+        if isinstance(meta, Mapping):
+            _extract(meta, found)
+        context = data.get("__context__")
+        if isinstance(context, Mapping):
+            _extract(context, found)
+        return found
+
     custom_dir = getattr(opts, "diagnostics_dir", None)
     if custom_dir:
-        try:
-            candidates.append(Path(custom_dir))
-        except Exception:
-            pass
-    shards = dataset.get("__shards__") if isinstance(dataset, Mapping) else None
-    if isinstance(shards, Sequence) and shards:
-        first = shards[0]
-        if isinstance(first, Mapping):
-            source_path = first.get("source_path")
-            if source_path:
-                try:
-                    candidates.append(Path(source_path).parent / "diagnostics")
-                except Exception:
-                    pass
-    candidates.append(Path.cwd() / "pmarlo_diagnostics")
+        _add_candidate(custom_dir, label="opts")
+
+    env_override = os.getenv("PMARLO_DIAGNOSTICS_DIR")
+    if env_override:
+        _add_candidate(env_override, label="env")
+
+    if isinstance(dataset, Mapping):
+        for output_dir in _dataset_output_dirs(dataset):
+            _add_candidate(output_dir, ensure_subdir=True, label="dataset")
+
+        shards = dataset.get("__shards__")
+        if isinstance(shards, Sequence) and shards:
+            first = shards[0]
+            if isinstance(first, Mapping):
+                source_path = first.get("source_path")
+                if source_path:
+                    try:
+                        raw_source = Path(source_path)
+                    except Exception:
+                        logger.debug(
+                            "Ignoring shard diagnostics root %r; could not coerce to Path",
+                            source_path,
+                            exc_info=True,
+                        )
+                    else:
+                        if raw_source.is_absolute():
+                            resolved_source = raw_source.resolve(strict=False)
+                        else:
+                            resolved_source = (project_root / raw_source).resolve(
+                                strict=False
+                            )
+                        source_parent = resolved_source.parent
+                        try:
+                            relative = resolved_source.relative_to(project_root)
+                        except ValueError:
+                            _add_candidate(
+                                source_parent,
+                                ensure_subdir=True,
+                                label="shard_parent_abs",
+                            )
+                        else:
+                            parts = relative.parts
+                            if len(parts) >= 2:
+                                top_anchor = project_root / parts[0]
+                                _add_candidate(
+                                    top_anchor,
+                                    ensure_subdir=True,
+                                    label="shard_top",
+                                )
+                                if len(parts) >= 3:
+                                    sub_anchor = top_anchor / parts[1]
+                                    _add_candidate(
+                                        sub_anchor,
+                                        ensure_subdir=True,
+                                        label="shard_sub",
+                                    )
+                            elif len(parts) == 1:
+                                examples_root = project_root / "example_programs"
+                                if examples_root.exists():
+                                    _add_candidate(
+                                        examples_root,
+                                        ensure_subdir=True,
+                                        label="shard_example_root",
+                                    )
+                                tests_root = project_root / "tests"
+                                if tests_root.exists():
+                                    _add_candidate(
+                                        tests_root,
+                                        ensure_subdir=True,
+                                        label="shard_tests_root",
+                                    )
+                            _add_candidate(
+                                source_parent,
+                                ensure_subdir=True,
+                                label="shard_parent",
+                            )
+
+    example_programs_root = project_root / "example_programs"
+    if example_programs_root.exists():
+        _add_candidate(
+            example_programs_root,
+            ensure_subdir=True,
+            label="examples_root",
+        )
+        programs_output_root = example_programs_root / "programs_outputs"
+        if programs_output_root.exists():
+            _add_candidate(
+                programs_output_root,
+                ensure_subdir=True,
+                label="examples_output",
+            )
+
+    tests_root = project_root / "tests"
+    if tests_root.exists():
+        _add_candidate(tests_root, ensure_subdir=True, label="tests_root")
+
+    output_root_env = os.getenv("PMARLO_OUTPUT_ROOT")
+    if output_root_env:
+        _add_candidate(output_root_env, ensure_subdir=True, label="output_root_env")
+    else:
+        _add_candidate(
+            Path.cwd() / "experiments_output",
+            ensure_subdir=True,
+            label="default_output_root",
+        )
+
+    _add_candidate(Path.cwd() / "output", ensure_subdir=True, label="cwd_output")
+
+    seen: set[str] = set()
     for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
         try:
             ensure_directory(candidate)
             return candidate
         except Exception:
-            continue
+            logger.debug(
+                "Failed to prepare diagnostics directory at %s",
+                candidate,
+                exc_info=True,
+            )
     return None
 
 
@@ -1280,12 +1576,19 @@ def _cluster_continuous_trajectories(
     shards_info = dataset.get("__shards__", [])
     if shards_info:
         dtrajs: List[np.ndarray] = []
-        for shard_info in shards_info:
+        for idx, shard_info in enumerate(shards_info):
             start = int(shard_info.get("start", 0))
             stop = int(shard_info.get("stop", start))
             if stop > start:
                 shard_labels = labels[start:stop]
-                dtrajs.append(shard_labels.astype(np.int32))
+                dtraj_array = shard_labels.astype(np.int32)
+                dtrajs.append(dtraj_array)
+
+                # Log shape after clustering/featurization for this shard
+                logger.info(
+                    f"Featurized shard {idx}: features shape={dtraj_array.shape}"
+                )
+
         logger.info("Created %d discrete trajectories from clustering", len(dtrajs))
         return dtrajs
     logger.info("Created 1 discrete trajectory from clustering")
@@ -1297,7 +1600,15 @@ def _prepare_dtrajs(dataset: Any, opts: BuildOpts) -> Optional[List[np.ndarray]]
     if isinstance(dataset, dict):
         raw = dataset.get("dtrajs")
     if raw and not (isinstance(raw, list) and all(d is None for d in raw)):
-        return list(raw) if isinstance(raw, list) else [np.asarray(raw)]
+        dtrajs_list = list(raw) if isinstance(raw, list) else [np.asarray(raw)]
+
+        # Log shape after loading pre-computed discrete trajectories for each shard
+        logger.info("Using pre-computed discrete trajectories (dtrajs)")
+        for idx, dtraj in enumerate(dtrajs_list):
+            dtraj_array = np.asarray(dtraj, dtype=np.int32)
+            logger.info(f"Featurized shard {idx}: features shape={dtraj_array.shape}")
+
+        return dtrajs_list
     if isinstance(dataset, dict):
         return _cluster_continuous_trajectories(dataset, opts)
     logger.warning("No dtrajs or continuous data available for MSM building")
@@ -1411,11 +1722,8 @@ def _build_fes(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
 
 
 def _build_tram(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
-    try:
-        return default_tram_builder(dataset, opts, applied)
-    except Exception as e:
-        logger.warning("TRAM build failed: %s", e)
-        return {"skipped": True, "reason": f"tram_error: {e}"}
+    """Build TRAM model - raises error on failure instead of silently skipping."""
+    return default_tram_builder(dataset, opts, applied)
 
 
 # --- Default builders ---------------------------------------------------------
@@ -1451,6 +1759,7 @@ def _generate_fes(
         b,
         temperature=opts.temperature,
         periodic=periodic,
+        config=opts,
     )
     return {"result": fes, "cv1_name": names[0], "cv2_name": names[1]}
 
@@ -1461,10 +1770,7 @@ def default_fes_builder(
     """Build a simple free energy surface."""
 
     if isinstance(dataset, dict):
-        try:
-            ensure_fes_inputs_whitened(dataset)
-        except Exception:
-            logger.debug("Failed to apply CV whitening before FES build", exc_info=True)
+        ensure_fes_inputs_whitened(dataset)
 
     cv_pair = _extract_cvs(dataset)
     if cv_pair is None:
@@ -1508,14 +1814,41 @@ def _fes_metadata_summary(meta: Dict[str, Any]) -> Dict[str, Any]:
     method = meta.get("method")
     if method:
         summary["method"] = str(method)
-    if "adaptive" in meta:
-        summary["adaptive"] = meta.get("adaptive")
+    smoothing_meta = meta.get("smoothing")
+    if isinstance(smoothing_meta, Mapping):
+        smoothing_summary: Dict[str, Any] = {}
+        mode = smoothing_meta.get("mode")
+        if mode is not None:
+            smoothing_summary["mode"] = str(mode)
+        target = smoothing_meta.get("target_sd_kT")
+        try:
+            smoothing_summary["target_sd_kT"] = (
+                float(target) if target is not None else None
+            )
+        except Exception:
+            smoothing_summary["target_sd_kT"] = None
+        applied = smoothing_meta.get("applied_fraction")
+        try:
+            smoothing_summary["applied_fraction"] = (
+                float(applied) if applied is not None else 0.0
+            )
+        except Exception:
+            smoothing_summary["applied_fraction"] = 0.0
+        for key in ("alpha", "h0", "ess_ref", "h_min", "h_max"):
+            value = smoothing_meta.get(key)
+            if value is not None:
+                try:
+                    smoothing_summary[key] = float(value)
+                except Exception:
+                    continue
+        summary["smoothing"] = smoothing_summary
     return summary
 
 
 def _coerce_temperature(value: Any) -> Optional[float]:
-    coerced = _coerce_float(value) if value is not None else None
-    return coerced
+    if value is None:
+        return None
+    return coerce_finite_float(value)
 
 
 def _extract_fes_quality_artifact(fes_obj: Any) -> Dict[str, Any]:
@@ -1590,18 +1923,29 @@ def _sanitize_artifacts(obj: Any) -> Any:
 
 
 def estimate_memory_usage(dataset: Any, opts: BuildOpts) -> float:
-    try:
-        n_frames = _count_frames(dataset)
-        n_features = len(_extract_feature_names(dataset))
+    """Estimate the memory required to build the MSM pipeline.
 
-        dataset_gb = (n_frames * n_features * 8) / (1024**3)
-        msm_gb = (opts.n_clusters * n_features * 8) / (1024**3)
-        msm_gb += (opts.n_states * opts.n_states * 8) / (1024**3)
-        fes_gb = (100 * 100 * 8) / (1024**3) if opts.enable_fes else 0
+    The estimation relies on the dataset exposing both the number of frames and
+    a sequence of feature names.  The build process assumes these values are
+    present – if they are missing we raise an error instead of attempting to
+    continue with guessed defaults.
+    """
 
-        return (dataset_gb + msm_gb + fes_gb) * 1.5
-    except Exception:
-        return 1.0
+    n_frames = _count_frames(dataset)
+    if n_frames <= 0:
+        raise ValueError("Cannot estimate memory usage: dataset has no frames")
+
+    feature_names = _extract_feature_names(dataset)
+    if not feature_names:
+        raise ValueError("Cannot estimate memory usage: dataset has no feature names")
+
+    n_features = len(feature_names)
+    dataset_gb = (n_frames * n_features * 8) / (1024**3)
+    msm_gb = (opts.n_clusters * n_features * 8) / (1024**3)
+    msm_gb += (opts.n_states * opts.n_states * 8) / (1024**3)
+    fes_gb = (100 * 100 * 8) / (1024**3) if opts.enable_fes else 0.0
+
+    return dataset_gb + msm_gb + fes_gb
 
 
 def create_build_summary(result: BuildResult) -> Dict[str, Any]:

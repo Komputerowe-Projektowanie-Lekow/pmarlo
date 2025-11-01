@@ -71,13 +71,16 @@ class BalancedTempSampler:
         for temperature, shards in self.shards_by_temperature.items():
             if not shards:
                 continue
-            shard = self._rng.choice(shards)
-            pairs = self.pair_builder.make_pairs(shard)
-            if pairs.size == 0:
-                continue
-            k = min(pairs_per_temperature, pairs.shape[0])
-            chosen = self._select_pairs(shard, temperature, pairs, k)
-            batch.append((shard, chosen))
+
+            for shard_idx in self._rng.permutation(len(shards)):
+                shard = shards[int(shard_idx)]
+                pairs = self.pair_builder.make_pairs(shard)
+                if pairs.size == 0:
+                    continue
+                k = min(pairs_per_temperature, pairs.shape[0])
+                chosen = self._select_pairs(shard, temperature, pairs, k)
+                batch.append((shard, chosen))
+                break
         return batch
 
     def _select_pairs(
@@ -101,7 +104,11 @@ class BalancedTempSampler:
         n_pairs = pairs.shape[0]
         base = self._frame_weights.get(shard.meta.shard_id)
         if base is not None and base.shape[0] != shard.meta.n_frames:
-            base = None
+            raise ValueError(
+                "frame weights length mismatch for shard "
+                f"{shard.meta.shard_id}: expected {shard.meta.n_frames}, "
+                f"got {base.shape[0]}"
+            )
         base_weights = (
             base[pairs[:, 0]].astype(np.float64)
             if base is not None
@@ -140,6 +147,12 @@ class BalancedTempSampler:
         if embeddings is None or embeddings.shape[0] != shard.meta.n_frames:
             return
         base = self._frame_weights.get(shard.meta.shard_id)
+        if base is not None and base.shape[0] != shard.meta.n_frames:
+            raise ValueError(
+                "frame weights length mismatch for shard "
+                f"{shard.meta.shard_id}: expected {shard.meta.n_frames}, "
+                f"got {base.shape[0]}"
+            )
         occupancy = self._occupancy.setdefault(temperature, {})
         for i, _ in chosen_pairs:
             key = self._hash_embedding(embeddings[int(i)])

@@ -11,8 +11,14 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any, Dict, Tuple
 
-from . import builtins as _builtins  # noqa: F401 - ensure feature registration
-from .base import FEATURE_REGISTRY, get_feature, register_feature
+from .base import (
+    FEATURE_REGISTRY,
+    FeatureComputer,
+)
+from .base import get_feature as _base_get_feature
+from .base import (
+    register_feature,
+)
 
 __all__ = ["FEATURE_REGISTRY", "get_feature", "register_feature"]
 
@@ -44,6 +50,29 @@ _OPTIONAL_EXPORTS: Dict[str, Tuple[str, str]] = {
 }
 
 __all__.extend(sorted(_OPTIONAL_EXPORTS.keys()))
+
+_BUILTINS_IMPORT_ERROR: ModuleNotFoundError | None = None
+
+try:
+    import_module("pmarlo.features.builtins")
+except ModuleNotFoundError as exc:  # pragma: no cover - depends on optional deps
+    if getattr(exc, "name", None) != "mdtraj":
+        raise
+    _BUILTINS_IMPORT_ERROR = exc
+
+
+def get_feature(name: str) -> FeatureComputer:
+    """Retrieve a registered feature, ensuring optional dependencies are present."""
+
+    try:
+        return _base_get_feature(name)
+    except KeyError as exc:
+        if _BUILTINS_IMPORT_ERROR is not None:
+            raise ModuleNotFoundError(
+                "Built-in molecular features require the optional 'mdtraj' dependency. "
+                "Install mdtraj and re-import pmarlo.features to access them."
+            ) from _BUILTINS_IMPORT_ERROR
+        raise
 
 
 def __getattr__(name: str) -> Any:

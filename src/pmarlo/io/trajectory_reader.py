@@ -78,7 +78,7 @@ class MDAnalysisReader:
 
     def _require(self):
         try:
-            pass  # type: ignore
+            import MDAnalysis  # type: ignore  # noqa: F401
         except Exception as exc:  # pragma: no cover - dependency optional
             raise TrajectoryIOError(
                 "MDAnalysis is required for backend='mdanalysis'. Install extra 'pmarlo[mdanalysis]' or 'MDAnalysis'."
@@ -99,7 +99,7 @@ class MDAnalysisReader:
         stride = 1 if stride <= 0 else int(stride)
         try:
             u = mda.Universe(self.topology_path, path)
-            sel = slice(start, stop, 1)
+            sel = slice(start, stop, stride)
             for ts in u.trajectory[sel]:
                 # MDAnalysis uses Angstroms by default; we return raw arrays to avoid assumptions
                 yield np.array(ts.positions, copy=True)

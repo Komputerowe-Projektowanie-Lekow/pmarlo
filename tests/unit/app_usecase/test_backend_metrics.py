@@ -1,4 +1,4 @@
-from example_programs.app_usecase.app.backend import _normalize_training_metrics
+﻿from pmarlo_webapp.app.backend import _normalize_training_metrics
 
 
 def test_normalize_training_metrics_infers_best_values():

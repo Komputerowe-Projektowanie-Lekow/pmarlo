@@ -27,6 +27,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from pmarlo import constants as const
 from pmarlo.features.deeptica.losses import VAMP2Loss
+from pmarlo.utils.coercion import coerce_finite_float_with_default
 from pmarlo.utils.path_utils import ensure_directory
 
 logger = logging.getLogger(__name__)
@@ -60,7 +61,11 @@ def prepare_batch(
         )
         x_t_list.append(xt_tensor)
         x_tau_list.append(xtau_tensor)
-        if use_weights and weights is not None:
+        if use_weights:
+            if weights is None:
+                raise ValueError(
+                    "batch requires weights but a batch element provided None"
+                )
             weight_tensor = torch.as_tensor(
                 np.asarray(weights, dtype=np.float32), device=dev
             ).reshape(-1)
@@ -79,8 +84,8 @@ def prepare_batch(
         if weights_tensor.numel() != total_frames:
             raise ValueError("weights length does not match batch size")
     else:
-        weights_tensor = torch.full(
-            (total_frames,), 1.0 / float(max(1, total_frames)), device=dev
+        raise ValueError(
+            "batch requires weights but none were provided in any batch element"
         )
 
     return x_t, x_tau, weights_tensor
@@ -123,9 +128,22 @@ def make_metrics(
 ) -> dict[str, float]:
     """Package scalar training metrics into a serialisable mapping."""
 
-    lr = 0.0
-    if optimizer.param_groups:
-        lr = float(optimizer.param_groups[0].get("lr", 0.0))
+    if not optimizer.param_groups:
+        raise ValueError(
+            "optimizer has no parameter groups; cannot determine learning rate"
+        )
+
+    first_group = optimizer.param_groups[0]
+    if "lr" not in first_group:
+        raise ValueError("optimizer parameter group 0 does not define a 'lr' value")
+
+    lr_value = first_group["lr"]
+    if not isinstance(lr_value, numbers.Real):
+        raise TypeError(
+            "optimizer parameter group 0 contains a non-numeric learning rate"
+        )
+
+    lr = float(lr_value)
 
     return {
         "loss": float(loss.detach().cpu().item()),
@@ -192,25 +210,46 @@ def _metric_scalar(metrics: MetricMapping, key: str, default: float = 0.0) -> fl
 
 
 def _metric_vector(metrics: MetricMapping, key: str) -> list[float]:
-    """Extract a sequence of floats from the metrics mapping when available."""
+    """Extract a sequence of floats from the metrics mapping when available.
 
-    value = metrics.get(key)
+    Raises:
+        KeyError: If the requested metric is missing.
+        ValueError: If the metric exists but contains non-numeric or empty data.
+        TypeError: If the metric exists but is not an array-like sequence.
+    """
+
+    if key not in metrics:
+        raise KeyError(f"Metric '{key}' is missing from the metrics collection.")
+
+    value = metrics[key]
     if isinstance(value, np.ndarray):
-        array = np.asarray(value, dtype=np.float64)
+        if value.size == 0:
+            raise ValueError(f"Metric '{key}' contains no values.")
+        try:
+            array = np.asarray(value, dtype=np.float64)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"Metric '{key}' contains data that cannot be converted to floats."
+            ) from error
         return cast(list[float], array.tolist())
+
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        if not value:
+            raise ValueError(f"Metric '{key}' contains no values.")
         result: list[float] = []
-        for item in value:
-            if isinstance(item, numbers.Real):
+        for index, item in enumerate(value):
+            try:
                 result.append(float(item))
-            elif isinstance(item, str):
-                try:
-                    result.append(float(item))
-                except ValueError:
-                    continue
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"Metric '{key}' contains non-numeric value at index {index}: {item!r}."
+                ) from error
         return result
-    empty: list[float] = []
-    return empty
+
+    raise TypeError(
+        f"Metric '{key}' must be an array or sequence of numeric values, "
+        f"received {type(value).__name__}."
+    )
 
 
 # inherit for the typeddict
@@ -376,9 +415,23 @@ class _EpochAccumulator:
     def _accumulate_vector(
         accumulator: np.ndarray | None, values: object, weight: float
     ) -> np.ndarray | None:
-        if not isinstance(values, list) or not values:
+        if isinstance(values, np.ndarray):
+            if values.size == 0:
+                return accumulator
+            arr = np.asarray(values, dtype=np.float64)
+        elif isinstance(values, Sequence) and not isinstance(
+            values, (str, bytes, bytearray)
+        ):
+            if not values:
+                return accumulator
+            arr = np.asarray(values, dtype=np.float64)
+        else:
             return accumulator
-        arr = np.asarray(values, dtype=np.float64) * weight
+
+        if arr.ndim != 1:
+            raise ValueError("condition metric vectors must be one-dimensional")
+
+        arr = arr * weight
         if accumulator is None:
             return arr
         return accumulator + arr
@@ -1186,8 +1239,12 @@ class DeepTICACurriculumTrainer:
 
         # Update status to complete
         progress["status"] = "completed"
-        progress["wall_time_s"] = _coerce_float(history.get("wall_time_s", 0.0))
-        progress["best_val_score"] = _coerce_float(history.get("best_val_score", 0.0))
+        progress["wall_time_s"] = coerce_finite_float_with_default(
+            history.get("wall_time_s", 0.0), default=0.0
+        )
+        progress["best_val_score"] = coerce_finite_float_with_default(
+            history.get("best_val_score", 0.0), default=0.0
+        )
         progress["best_epoch"] = history.get("best_epoch")
         progress["best_tau"] = history.get("best_tau")
 
@@ -1283,14 +1340,3 @@ class _LossModule(Protocol):
         z_tau: torch.Tensor,
         weights: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor]: ...
-
-
-def _coerce_float(value: object, default: float = 0.0) -> float:
-    if isinstance(value, numbers.Real):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except ValueError:
-            return default
-    return default

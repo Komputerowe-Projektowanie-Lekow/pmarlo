@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import timedelta
 from time import perf_counter
 from types import TracebackType
 from typing import Literal, Optional, Sequence
@@ -13,20 +14,26 @@ BORDER = "=" * 80
 
 def format_duration(seconds: float) -> str:
     """Render a duration in seconds into a human-readable ASCII string."""
-    if seconds < 0.0:
-        seconds = 0.0
-    if seconds < 1.0:
-        return f"{seconds * 1000.0:.0f} ms"
-    minutes, remainder = divmod(seconds, 60.0)
-    if minutes < 1.0:
-        return f"{seconds:.2f} s"
-    hours, minutes_int = divmod(int(minutes), 60)
-    if hours == 0:
-        return f"{minutes_int} min {remainder:.1f} s"
-    days, hours = divmod(hours, 24)
+
+    duration = timedelta(seconds=max(seconds, 0.0))
+    total_seconds = duration.total_seconds()
+
+    if total_seconds < 1.0:
+        return f"{total_seconds * 1000.0:.0f} ms"
+    if total_seconds < 60.0:
+        return f"{total_seconds:.2f} s"
+
+    days = duration.days
+    remaining_seconds = duration.seconds
+    hours, remaining_seconds = divmod(remaining_seconds, 3600)
+    minutes, seconds_whole = divmod(remaining_seconds, 60)
+    seconds_fraction = seconds_whole + duration.microseconds / 1_000_000
+
+    if days == 0 and hours == 0:
+        return f"{minutes} min {seconds_fraction:.1f} s"
     if days == 0:
-        return f"{hours} h {minutes_int} min {remainder:.1f} s"
-    return f"{days} d {hours} h {minutes_int} min"
+        return f"{hours} h {minutes} min {seconds_fraction:.1f} s"
+    return f"{days} d {hours} h {minutes} min"
 
 
 def format_stage_header(

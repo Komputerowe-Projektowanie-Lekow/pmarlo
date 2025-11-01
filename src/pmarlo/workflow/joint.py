@@ -3,6 +3,7 @@ from __future__ import annotations
 """Joint REMD<->CV orchestrator coordinating shard ingestion and MSM building."""
 
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -17,13 +18,18 @@ from pmarlo.replica_exchange.bias_hook import BiasHook
 from pmarlo.shards.assemble import load_shards, select_shards
 from pmarlo.shards.pair_builder import PairBuilder
 from pmarlo.shards.schema import Shard
+from pmarlo.validation.ck_rule import CKConfig, CKDecision, decide_ck
 
 from .metrics import GuardrailReport, Metrics
 
-__all__ = ["WorkflowConfig", "JointWorkflow"]
+__all__ = ["WorkflowConfig", "JointWorkflow", "CKGuardrailError"]
 
 
 logger = logging.getLogger(__name__)
+
+
+class CKGuardrailError(RuntimeError):
+    """Raised when the Chapman–Kolmogorov guardrail fails."""
 
 
 @dataclass(frozen=True)
@@ -54,6 +60,8 @@ class JointWorkflow:
         self.last_artifacts: Dict[str, Any] | None = None
         self.last_new_shards: List[Path] = []
         self.last_guardrails: Optional[GuardrailReport] = None
+        self.last_ck_decision: Optional[CKDecision] = None
+        self.last_ck_config: Optional[CKConfig] = None
         self.remd_callback: Optional[
             Callable[[BiasHook, int], Optional[Sequence[Path]]]
         ] = None
@@ -117,7 +125,16 @@ class JointWorkflow:
                 )
         return metrics
 
-    def finalize(self) -> MSMResult:
+    def finalize(
+        self,
+        *,
+        ck_mode: str | None = None,
+        ck_absolute: float | None = None,
+        ck_min_pass_fraction: float | None = None,
+        ck_per_lag_cap: float | None = None,
+        ck_k_steps: tuple[int, ...] | None = None,
+        ck_sigma_mult: float | None = None,
+    ) -> MSMResult:
         """Reweight shards, build an MSM, and generate diagnostic artifacts."""
 
         shard_jsons = select_shards(
@@ -183,8 +200,20 @@ class JointWorkflow:
         lag_time_ps = float(self.cfg.tau_steps * dt_ps)
         its_array = self._compute_its(T, lag_time_ps)
 
+        ck_config = self._resolve_ck_config(
+            ck_mode=ck_mode,
+            ck_absolute=ck_absolute,
+            ck_min_pass_fraction=ck_min_pass_fraction,
+            ck_per_lag_cap=ck_per_lag_cap,
+            ck_k_steps=ck_k_steps,
+            ck_sigma_mult=ck_sigma_mult,
+        )
+        self.last_ck_config = ck_config
+
         ck_errors: Dict[int, float] = {}
-        for multiplier in (2, 3):
+        ck_transition_matrices: Dict[int, np.ndarray] = {}
+        ck_row_counts: Dict[int, np.ndarray] = {}
+        for multiplier in ck_config.k_steps:
             counts_k = self._compute_counts(
                 shards,
                 clusters_per_shard,
@@ -195,6 +224,8 @@ class JointWorkflow:
             T_actual = self._normalize_counts(counts_k)
             T_pred = np.linalg.matrix_power(T, multiplier)
             ck_errors[multiplier] = float(np.linalg.norm(T_pred - T_actual, ord="fro"))
+            ck_transition_matrices[multiplier] = T_actual
+            ck_row_counts[multiplier] = counts_k.sum(axis=1)
 
         fes_artifact = self._build_fes(concatenated, concatenated_weights)
 
@@ -223,9 +254,11 @@ class JointWorkflow:
             "stationary_distribution": pi,
             "its": its_array,
             "ck_errors": ck_errors,
+            "ck_transition_matrices": ck_transition_matrices,
+            "ck_row_counts": ck_row_counts,
             "fes": fes_artifact,
         }
-        self.last_guardrails = self.evaluate_guardrails()
+        self.last_guardrails = self.evaluate_guardrails(ck_config=ck_config)
         return result
 
     # ------------------------------------------------------------------
@@ -343,7 +376,17 @@ class JointWorkflow:
 
         return _hook
 
-    def evaluate_guardrails(self) -> GuardrailReport:
+    def evaluate_guardrails(
+        self,
+        *,
+        ck_config: CKConfig | None = None,
+        ck_mode: str | None = None,
+        ck_absolute: float | None = None,
+        ck_min_pass_fraction: float | None = None,
+        ck_per_lag_cap: float | None = None,
+        ck_k_steps: tuple[int, ...] | None = None,
+        ck_sigma_mult: float | None = None,
+    ) -> GuardrailReport:
         """Evaluate guardrail conditions (VAMP-2 trend, ITS plateau, CK errors)."""
 
         notes: Dict[str, str] = {}
@@ -373,16 +416,61 @@ class JointWorkflow:
         elif its_vals.size == 0:
             notes.setdefault("its", "insufficient data")
 
-        ck_errors = self._extract_ck_errors()
-        ck_threshold = 0.15
+        if ck_config is not None and any(
+            param is not None
+            for param in (
+                ck_mode,
+                ck_absolute,
+                ck_min_pass_fraction,
+                ck_per_lag_cap,
+                ck_k_steps,
+                ck_sigma_mult,
+            )
+        ):
+            raise ValueError(
+                "ck_config cannot be combined with individual CK parameter overrides"
+            )
+
+        if ck_config is None:
+            ck_config = self._resolve_ck_config(
+                ck_mode=ck_mode,
+                ck_absolute=ck_absolute,
+                ck_min_pass_fraction=ck_min_pass_fraction,
+                ck_per_lag_cap=ck_per_lag_cap,
+                ck_k_steps=ck_k_steps,
+                ck_sigma_mult=ck_sigma_mult,
+                base=self.last_ck_config,
+            )
+
+        self.last_ck_config = ck_config
+
+        P_taus, P_ktaus, row_counts = self._extract_ck_inputs()
+        ck_decision: Optional[CKDecision] = None
         ck_ok = True
-        if ck_errors:
-            ck_ok = all(float(err) <= ck_threshold for err in ck_errors.values())
+        if P_ktaus:
+            try:
+                ck_decision = decide_ck(P_taus, P_ktaus, row_counts, ck_config)
+            except ValueError as exc:  # shape mismatch or invalid counts
+                message = (
+                    "Invalid CK inputs for guardrail evaluation: "
+                    f"{exc}. Provide consistent matrices and row counts."
+                )
+                raise CKGuardrailError(message) from exc
+
+            self.last_ck_decision = ck_decision
+            logger.info(
+                "CK guardrail decision: %s | details=%s",
+                ck_decision.reason,
+                ck_decision.per_lag,
+            )
+            ck_ok = ck_decision.passed
             if not ck_ok:
                 notes["ck"] = ", ".join(
-                    f"k={k}: {float(v):.4f}" for k, v in ck_errors.items()
+                    f"k={k}: err={data['error']:.4f} thr={data['threshold']:.4f}"
+                    for k, data in sorted(ck_decision.per_lag.items())
                 )
         else:
+            self.last_ck_decision = None
             notes.setdefault("ck", "insufficient data")
 
         report = GuardrailReport(
@@ -392,6 +480,8 @@ class JointWorkflow:
             notes=notes,
         )
         self.last_guardrails = report
+        if ck_decision is not None and not ck_decision.passed:
+            raise CKGuardrailError(ck_decision.reason)
         return report
 
     def _extract_vamp2_series(self) -> List[float]:
@@ -423,18 +513,163 @@ class JointWorkflow:
                 return arr[np.isfinite(arr)]
         return np.asarray([], dtype=np.float64)
 
-    def _extract_ck_errors(self) -> Dict[int, float]:
+    def _extract_ck_inputs(
+        self,
+    ) -> Tuple[Dict[int, np.ndarray], Dict[int, np.ndarray], Dict[int, np.ndarray]]:
         if self.last_artifacts is None:
-            return {}
-        raw = self.last_artifacts.get("ck_errors", {})
-        out: Dict[int, float] = {}
-        if isinstance(raw, dict):
-            for key, val in raw.items():
+            return {}, {}, {}
+
+        base = self.last_artifacts.get("transition_matrix")
+        if base is None:
+            return {}, {}, {}
+        P_tau = np.asarray(base, dtype=np.float64)
+        if P_tau.ndim != 2 or P_tau.shape[0] != P_tau.shape[1]:
+            return {}, {}, {}
+
+        matrices = self.last_artifacts.get("ck_transition_matrices", {})
+        counts_raw = self.last_artifacts.get("ck_row_counts", {})
+        P_taus: Dict[int, np.ndarray] = {}
+        P_ktaus: Dict[int, np.ndarray] = {}
+        row_counts: Dict[int, np.ndarray] = {}
+
+        if isinstance(matrices, dict):
+            for key, matrix in matrices.items():
                 try:
-                    out[int(key)] = float(val)
+                    k = int(key)
                 except Exception:
                     continue
-        return out
+                counts_candidate = (
+                    counts_raw.get(key) if isinstance(counts_raw, dict) else None
+                )
+                if counts_candidate is None and isinstance(counts_raw, dict):
+                    counts_candidate = counts_raw.get(k)
+                if counts_candidate is None:
+                    continue
+
+                Pk = np.asarray(matrix, dtype=np.float64)
+                if Pk.shape != P_tau.shape:
+                    continue
+                counts = np.asarray(counts_candidate, dtype=np.float64)
+                if counts.ndim != 1 or counts.shape[0] != P_tau.shape[0]:
+                    continue
+
+                P_taus[k] = P_tau
+                P_ktaus[k] = Pk
+                row_counts[k] = counts
+
+        return P_taus, P_ktaus, row_counts
+
+    def _resolve_ck_config(
+        self,
+        *,
+        ck_mode: str | None,
+        ck_absolute: float | None,
+        ck_min_pass_fraction: float | None,
+        ck_per_lag_cap: float | None,
+        ck_k_steps: tuple[int, ...] | None,
+        ck_sigma_mult: float | None,
+        base: CKConfig | None = None,
+    ) -> CKConfig:
+        cfg_base = base or self.last_ck_config or CKConfig()
+
+        def _resolve_float_value(
+            explicit: float | None, env_name: str, default_value: float, field: str
+        ) -> float:
+            if explicit is not None:
+                try:
+                    return float(explicit)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"{field} must be a numeric value; received {explicit!r}."
+                    ) from exc
+            env_val = os.getenv(env_name)
+            if env_val is not None and env_val != "":
+                try:
+                    return float(env_val)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"Environment variable {env_name} must be numeric;"
+                        f" received {env_val!r}."
+                    ) from exc
+            return float(default_value)
+
+        mode_raw = ck_mode or os.getenv("PMARLO_CK_MODE") or cfg_base.mode
+        mode_norm = mode_raw.strip().lower()
+        if mode_norm not in {"absolute", "ess_adjusted"}:
+            raise ValueError(
+                "ck_mode must be 'absolute' or 'ess_adjusted'; "
+                f"received {mode_raw!r}."
+            )
+        mode: Mode = "absolute" if mode_norm == "absolute" else "ess_adjusted"
+
+        absolute = _resolve_float_value(
+            ck_absolute, "PMARLO_CK_ABSOLUTE", cfg_base.absolute, "ck_absolute"
+        )
+        if absolute <= 0.0:
+            raise ValueError("ck_absolute must be positive.")
+
+        min_pass = _resolve_float_value(
+            ck_min_pass_fraction,
+            "PMARLO_CK_MIN_PASS_FRACTION",
+            cfg_base.min_pass_fraction,
+            "ck_min_pass_fraction",
+        )
+        if not 0.0 <= min_pass <= 1.0:
+            raise ValueError("ck_min_pass_fraction must be between 0 and 1 inclusive.")
+
+        per_lag_cap = _resolve_float_value(
+            ck_per_lag_cap,
+            "PMARLO_CK_PER_LAG_CAP",
+            cfg_base.per_lag_cap,
+            "ck_per_lag_cap",
+        )
+        if per_lag_cap <= 0.0:
+            raise ValueError("ck_per_lag_cap must be positive.")
+
+        sigma_mult = _resolve_float_value(
+            ck_sigma_mult,
+            "PMARLO_CK_SIGMA_MULT",
+            cfg_base.sigma_mult,
+            "ck_sigma_mult",
+        )
+        if sigma_mult <= 0.0:
+            raise ValueError("ck_sigma_mult must be positive.")
+
+        if ck_k_steps is not None:
+            steps_candidate = tuple(int(step) for step in ck_k_steps)
+        else:
+            env_steps = os.getenv("PMARLO_CK_K_STEPS")
+            if env_steps:
+                tokens = [tok for tok in env_steps.replace(",", " ").split() if tok]
+                if not tokens:
+                    raise ValueError(
+                        "PMARLO_CK_K_STEPS is set but empty; provide integer lag steps."
+                    )
+                try:
+                    steps_candidate = tuple(int(tok) for tok in tokens)
+                except ValueError as exc:
+                    raise ValueError(
+                        "PMARLO_CK_K_STEPS must contain integers separated by spaces or commas."
+                    ) from exc
+            else:
+                steps_candidate = cfg_base.k_steps
+
+        if not steps_candidate:
+            raise ValueError("ck_k_steps must contain at least one lag factor >= 2.")
+
+        cleaned_steps = sorted({int(step) for step in steps_candidate})
+        if any(step < 2 for step in cleaned_steps):
+            raise ValueError("All ck_k_steps values must be integers >= 2.")
+        k_steps_tuple = tuple(cleaned_steps)
+
+        return CKConfig(
+            mode=mode,
+            absolute=float(absolute),
+            min_pass_fraction=float(min_pass),
+            per_lag_cap=float(per_lag_cap),
+            k_steps=k_steps_tuple,
+            sigma_mult=float(sigma_mult),
+        )
 
     def _compute_counts(
         self,

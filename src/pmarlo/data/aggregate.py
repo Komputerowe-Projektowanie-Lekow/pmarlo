@@ -82,6 +82,10 @@ class AggregatedShards:
 def _aggregate_shard_contents(shard_jsons: Sequence[Path]) -> AggregatedShards:
     """Load shards, enforce safety rails, and build the dataset payload."""
 
+    import logging
+
+    logger = logging.getLogger("pmarlo")
+
     paths = _normalise_shard_paths(shard_jsons)
 
     cv_names_ref: tuple[str, ...] | None = None
@@ -92,7 +96,7 @@ def _aggregate_shard_contents(shard_jsons: Sequence[Path]) -> AggregatedShards:
     kinds: list[str] = []
     temps: list[float] = []
 
-    for path in paths:
+    for idx, path in enumerate(paths):
         meta_info = load_shard_meta(path)
         kinds.append(meta_info.kind)
         if isinstance(meta_info, DemuxShard):
@@ -107,6 +111,10 @@ def _aggregate_shard_contents(shard_jsons: Sequence[Path]) -> AggregatedShards:
         )
 
         X_np = np.asarray(X, dtype=np.float64)
+
+        # Log shape immediately after loading the shard data
+        logger.info(f"Loaded shard {idx} ({path.name}): raw shape={X_np.shape}")
+
         X_parts.append(X_np)
         dtrajs.append(None if dtraj is None else np.asarray(dtraj, dtype=np.int32))
 
@@ -118,6 +126,10 @@ def _aggregate_shard_contents(shard_jsons: Sequence[Path]) -> AggregatedShards:
     cv_names = tuple(cv_names_ref or tuple())
     periodic = tuple(periodic_ref or tuple())
     X_all = np.vstack(X_parts).astype(np.float64, copy=False)
+
+    # Log featurized/concatenated shape
+    logger.info(f"Featurized all shards: concatenated shape={X_all.shape}")
+
     _fill_shard_offsets(shards_info)
 
     dataset = {
@@ -313,6 +325,8 @@ def _validate_or_set_refs(
 
 
 def _maybe_read_bias(npz_path: Path) -> np.ndarray | None:
+    if not npz_path.exists():
+        return None
     with np.load(npz_path) as f:
         if "bias_potential" not in getattr(f, "files", []):
             return None
@@ -375,10 +389,25 @@ def aggregate_and_build(
     )
     # Attach shard usage into artifacts for downstream gating checks
     try:
+        # Collect all shard IDs and deduplicate them
         shard_ids = [str(s.get("id", "")) for s in shards_info]
+        unique_shard_ids = sorted(set(shard_ids))  # Deduplicate and sort for consistency
+
         art = dict(res.artifacts or {})
-        art.setdefault("shards_used", shard_ids)
-        art.setdefault("shards_count", int(len(shard_ids)))
+        art.setdefault("shards_used", unique_shard_ids)
+        art.setdefault("shards_count", int(len(unique_shard_ids)))
+
+        # Validate: ensure all shards are unique (no duplicates)
+        if len(unique_shard_ids) != len(shard_ids):
+            duplicate_count = len(shard_ids) - len(unique_shard_ids)
+            # This is a data integrity issue - log but don't fail the build
+            import logging
+            logger = logging.getLogger("pmarlo")
+            logger.warning(
+                f"Found {duplicate_count} duplicate shard IDs in shards_info. "
+                f"Original count: {len(shard_ids)}, unique count: {len(unique_shard_ids)}"
+            )
+
         res.artifacts = art  # type: ignore[assignment]
     except Exception:
         pass

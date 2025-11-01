@@ -37,7 +37,6 @@ class _SupportsITS(Protocol):
         n_timescales: int,
         n_samples: int,
         ci: float,
-        dirichlet_alpha: float,
         _logging,
     ) -> Tuple[
         List[List[float]],
@@ -83,7 +82,6 @@ class _SupportsITS(Protocol):
         lag: int,
         n_timescales: int,
         n_samples: int,
-        dirichlet_alpha: float,
         q_low: float,
         q_high: float,
         _logging,
@@ -97,10 +95,6 @@ class _SupportsITS(Protocol):
     ]: ...
 
     def _counts_for_lag(self, lag: int, dirichlet_alpha: float) -> Any: ...
-
-    def _bayesian_transition_samples(
-        self, counts: np.ndarray, n_samples: int
-    ) -> np.ndarray: ...
 
     def _summarize_its_stats(
         self,
@@ -262,7 +256,6 @@ class ITSMixin:
                 lag=lag,
                 n_timescales=n_timescales,
                 n_samples=n_samples,
-                dirichlet_alpha=dirichlet_alpha,
                 q_low=q_low,
                 q_high=q_high,
                 _logging=_logging,
@@ -282,7 +275,6 @@ class ITSMixin:
         lag: int,
         n_timescales: int,
         n_samples: int,
-        dirichlet_alpha: float,
         q_low: float,
         q_high: float,
         _logging,
@@ -294,12 +286,46 @@ class ITSMixin:
         List[float],
         List[List[float]],
     ]:
-        res = self._counts_for_lag(lag, dirichlet_alpha)
-        matrices_arr = self._bayesian_transition_samples(res.counts, n_samples)
-        if matrices_arr.size == 0:
-            raise RuntimeError(
-                f"Bayesian transition sampling produced no samples for lag {lag}"
-            )
+        from deeptime.markov.msm import BayesianMSM  # type: ignore
+
+        lag_int = int(max(1, lag))
+        n_samples_int = int(max(1, n_samples))
+
+        estimator = BayesianMSM(lagtime=lag_int, n_samples=n_samples_int)
+        ignore_counting_mode = False
+        count_mode = getattr(self, "count_mode", None)
+        if count_mode is not None:
+            mode_text = str(count_mode)
+            if "effective" not in mode_text.lower():
+                _logging.getLogger("pmarlo").warning(
+                    "Bayesian MSM confidence sampling expects effective counts; "
+                    "continuing with count_mode='%s' may yield correlated samples.",
+                    mode_text,
+                )
+                ignore_counting_mode = True
+
+        posterior = estimator.fit(
+            self.dtrajs,
+            lagtime=lag_int,
+            count_mode=count_mode,
+            ignore_counting_mode=ignore_counting_mode,
+        ).fetch_model()
+
+        samples = getattr(posterior, "samples", None)
+        if not samples:
+            raise RuntimeError(f"BayesianMSM returned no samples for lag {lag_int}")
+
+        matrices = []
+        for sample in samples:
+            matrix = np.asarray(getattr(sample, "transition_matrix", None), dtype=float)
+            if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
+                raise ValueError(
+                    "BayesianMSM sample transition matrix must be square; "
+                    f"received shape {matrix.shape}"
+                )
+            matrices.append(matrix)
+
+        matrices_arr = np.stack(matrices, axis=0)
 
         (
             eval_med,
@@ -311,12 +337,14 @@ class ITSMixin:
             rate_med,
             rate_lo,
             rate_hi,
-        ) = self._summarize_its_stats(lag, matrices_arr, n_timescales, q_low, q_high)
+        ) = self._summarize_its_stats(
+            lag_int, matrices_arr, n_timescales, q_low, q_high
+        )
 
         if np.all(rate_med < const.NUMERIC_MIN_POSITIVE):
             _logging.getLogger("pmarlo").warning(
                 "Rates collapsed to near zero at lag %s; data may be insufficient",
-                lag,
+                lag_int,
             )
 
         return (
@@ -396,7 +424,30 @@ class ITSMixin:
 
     def _its_default_lag_times(self, lag_times: Optional[List[int]]) -> List[int]:
         if lag_times is None:
-            return [1, 2, 3, 5, 8, 10, 15, 20, 30, 50, 75, 100, 150, 200]
+            # Extended lag sweep for more comprehensive ITS analysis
+            # Includes powers of 2 (20, 40, 80, 160, 320, 640, 1280) for physically meaningful times
+            return [
+                1,
+                2,
+                3,
+                5,
+                8,
+                10,
+                15,
+                20,
+                30,
+                40,
+                50,
+                75,
+                80,
+                100,
+                150,
+                160,
+                200,
+                320,
+                640,
+                1280,
+            ]
         return [int(max(1, v)) for v in lag_times]
 
     def _validate_its_inputs(
@@ -488,31 +539,6 @@ class ITSMixin:
         )
         model = tce.fit(self.dtrajs).fetch_model()
         return np.asarray(model.count_matrix, dtype=float)
-
-    def _bayesian_transition_samples(
-        self, counts: np.ndarray, n_samples: int
-    ) -> np.ndarray:
-        counts = np.asarray(counts, dtype=float)
-        if counts.size == 0 or n_samples <= 0:
-            return np.empty((0, counts.shape[0], counts.shape[1]), dtype=float)
-
-        rng = np.random.default_rng(self.random_state)
-        counts = np.asarray(counts, dtype=float)
-        n_states = counts.shape[0]
-        n_samples = int(max(1, n_samples))
-        samples = np.zeros((n_samples, n_states, n_states), dtype=float)
-        for sample_idx in range(n_samples):
-            for i in range(n_states):
-                row = np.asarray(counts[i], dtype=float).reshape(-1)
-                total = float(np.sum(row))
-                if total <= 0.0:
-                    samples[sample_idx, i] = np.full(
-                        (n_states,), 1.0 / float(max(1, n_states))
-                    )
-                    continue
-                alpha = np.clip(row + 1.0, 1.0e-6, None)
-                samples[sample_idx, i] = rng.dirichlet(alpha)
-        return samples
 
     def _summarize_its_stats(
         self,

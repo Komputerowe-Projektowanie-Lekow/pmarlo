@@ -1,1 +1,1 @@
-# Helpers for force validation tests
+﻿# Helpers for force validation tests

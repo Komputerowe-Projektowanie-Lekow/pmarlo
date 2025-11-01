@@ -15,12 +15,25 @@ def timestamp_dir(base_dir: Union[str, Path]) -> Path:
     """Create and return a unique timestamped directory under base_dir.
 
     The directory name uses YYYYMMDD-HHMMSS to preserve lexicographic sort order.
-    The directory is created if it does not already exist.
+    The directory is created if it does not already exist. If the timestamped
+    directory already exists (for example, when two runs start within the same
+    second), numeric suffixes are appended until a free path is found.
     """
+    base_path = ensure_directory(base_dir)
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    run_dir = Path(base_dir) / ts
-    ensure_directory(run_dir)
-    return run_dir
+
+    candidate = base_path / ts
+    if not candidate.exists():
+        ensure_directory(candidate)
+        return candidate
+
+    suffix = 1
+    while True:
+        candidate = base_path / f"{ts}-{suffix:02d}"
+        if not candidate.exists():
+            ensure_directory(candidate)
+            return candidate
+        suffix += 1
 
 
 def _validate_assets_dir(path: Path, required_files: Iterable[str]) -> Path:

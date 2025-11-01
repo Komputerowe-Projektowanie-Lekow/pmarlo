@@ -40,7 +40,7 @@ class MDAnalysisDCDWriter:
 
     def _require(self):
         try:
-            pass  # type: ignore
+            import MDAnalysis  # type: ignore  # noqa: F401
         except Exception as exc:  # pragma: no cover - dependency optional
             raise TrajectoryWriteError(
                 "MDAnalysis is required for backend='mdanalysis'. Install extra 'pmarlo[mdanalysis]' or 'MDAnalysis'."

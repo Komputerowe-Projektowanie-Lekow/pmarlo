@@ -1,4 +1,4 @@
-import numpy as np
+﻿import numpy as np
 
 from pmarlo.markov_state_model.free_energy import generate_2d_fes, periodic_kde_2d
 

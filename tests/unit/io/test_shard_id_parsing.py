@@ -1,4 +1,4 @@
-"""
+﻿"""
 Tests for shard ID parsing and canonical identification.
 
 This module tests the ShardId dataclass and parse_shard_id function

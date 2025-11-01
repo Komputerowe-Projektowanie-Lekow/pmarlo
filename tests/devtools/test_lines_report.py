@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 from typing import Mapping
@@ -63,7 +63,7 @@ def test_build_language_rows_appends_total() -> None:
 
 def test_format_table_handles_empty_rows() -> None:
     table = format_table([])
-    assert "—" in table
+    assert "â€”" in table
 
 
 def test_format_folder_summary_round_trip() -> None:

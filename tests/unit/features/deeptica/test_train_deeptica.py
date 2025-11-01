@@ -1,8 +1,12 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import numpy as np
 import pytest
-import torch.nn as nn
+
+torch = pytest.importorskip("torch")
+if not hasattr(torch, "nn"):
+    pytest.skip("torch.nn not available", allow_module_level=True)
+nn = torch.nn
 
 from pmarlo.features.deeptica import _full as deeptica_full
 from pmarlo.features.deeptica.core.trainer_api import TrainingArtifacts
@@ -71,6 +75,26 @@ def test_train_deeptica_routes_to_mlcolvar_backend(
     model = deeptica_full.train_deeptica(_dummy_data(), _dummy_pairs(), cfg)
 
     assert called.get("mlcolvar") is True
+    assert isinstance(model, deeptica_full.DeepTICAModel)
+
+
+def test_train_deeptica_routes_to_deeptime_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called: dict[str, bool] = {}
+
+    def fake_deeptime(
+        X_list, pairs, cfg, weights=None
+    ):  # pragma: no cover - simple stub
+        called["deeptime"] = True
+        return _make_artifacts()
+
+    monkeypatch.setitem(deeptica_full._TRAINING_BACKENDS, "deeptime", fake_deeptime)
+
+    cfg = deeptica_full.DeepTICAConfig(lag=2, trainer_backend="deeptime")
+    model = deeptica_full.train_deeptica(_dummy_data(), _dummy_pairs(), cfg)
+
+    assert called.get("deeptime") is True
     assert isinstance(model, deeptica_full.DeepTICAModel)
 
 

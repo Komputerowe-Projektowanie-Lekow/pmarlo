@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 
-__all__ = ["require", "all_finite", "any_finite"]
+__all__ = ["require", "all_finite", "any_finite", "finite_or_none"]
 
 
 def require(condition: bool, message: str) -> None:
@@ -42,3 +42,21 @@ def any_finite(values: Any) -> bool:
     if arr.size == 0:
         return False
     return bool(np.isfinite(arr).any())
+
+
+def finite_or_none(value: Any) -> Optional[float]:
+    """Return the value coerced to ``float`` when finite, otherwise ``None``.
+
+    Non-numeric inputs, NaNs and infinite values all return ``None``. This mirrors
+    the semantics required by KPI helpers when persisting optional metrics.
+    """
+
+    if value is None:
+        return None
+    try:
+        as_float = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(as_float):
+        return None
+    return as_float

@@ -1,0 +1,18 @@
+{
+  "tpt": {
+    "rate": 0.0668660394047059,
+    "mfpt": 14.955274888460375,
+    "total_flux": 0.015030609101585274,
+    "n_pathways": 2
+  },
+  "n_metastable_states": 0,
+  "n_transition_states": 0,
+  "n_conformations": 8,
+  "config": {
+    "lag": 5,
+    "n_clusters": 15,
+    "n_components": 3,
+    "n_metastable": 4,
+    "temperature": 300.0
+  }
+}

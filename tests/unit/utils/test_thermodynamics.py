@@ -1,4 +1,4 @@
-import math
+﻿import math
 
 from scipy import constants as scipy_constants
 
@@ -18,5 +18,5 @@ def test_kT_kJ_per_mol_uses_scipy_constants() -> None:
 def test_kT_kJ_per_mol_at_standard_temperature() -> None:
     """Verify kT at standard temperature (298.15 K) is ~2.48 kJ/mol."""
     result = thermodynamics.kT_kJ_per_mol(298.15)
-    # kT at 298.15 K ≈ 2.479 kJ/mol
+    # kT at 298.15 K â‰ˆ 2.479 kJ/mol
     assert 2.47 < result < 2.49

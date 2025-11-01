@@ -1,4 +1,4 @@
-"""
+﻿"""
 Unit tests for temperature ladder utilities.
 """
 
@@ -23,13 +23,9 @@ class TestPowerOfTwoTemperatureLadder:
         assert is_power_of_two(len(temps))
         assert len(temps) == 16
 
-    def test_none_replicas_picks_reasonable_spacing(self):
-        temps = power_of_two_temperature_ladder(300.0, 375.0, None)
-        assert is_power_of_two(len(temps))
-        # Roughly 5K spacing → about 16 points from 300 to 375 inclusive
-        assert 8 <= len(temps) <= 32
-        assert abs(temps[0] - 300.0) < 1e-8
-        assert abs(temps[-1] - 375.0) < 1e-8
+    def test_none_replicas_raises(self):
+        with pytest.raises(ValueError):
+            power_of_two_temperature_ladder(300.0, 375.0, None)
 
     def test_inclusive_bounds_and_sorted(self):
         temps = power_of_two_temperature_ladder(300.0, 375.0, 16)
@@ -43,9 +39,12 @@ class TestPowerOfTwoTemperatureLadder:
         assert temps[-1] == pytest.approx(375.0)
         assert len(temps) == 8
 
-    def test_degenerate_equal_bounds(self):
-        temps = power_of_two_temperature_ladder(310.0, 310.0, None)
+    def test_degenerate_equal_bounds_requires_single_replica(self):
+        temps = power_of_two_temperature_ladder(310.0, 310.0, 1)
         assert temps == [310.0]
+
+        with pytest.raises(ValueError):
+            power_of_two_temperature_ladder(310.0, 310.0, 2)
 
 
 class TestOtherLadders:

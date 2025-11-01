@@ -1,4 +1,5 @@
-import numpy as np
+﻿import numpy as np
+import pytest
 
 from pmarlo.markov_state_model.bridge import build_simple_msm
 from pmarlo.markov_state_model.enhanced_msm import EnhancedMSM
@@ -9,7 +10,6 @@ def _build_simple_msm(dtraj, lag_time, mode="sliding"):
     arr = np.asarray(dtraj, dtype=int)
     msm.dtrajs = [arr]
     msm.n_states = int(np.max(arr[arr >= 0])) + 1
-    msm.estimator_backend = "pmarlo"
     msm.count_mode = mode
     msm.build_msm(lag_time=lag_time)
     return msm
@@ -41,6 +41,15 @@ def test_negative_states_ignored():
     dtraj = [0, -1, 1, 0]
     msm = _build_simple_msm(dtraj, lag_time=1, mode="sliding")
     _assert_basic_properties(msm)
+
+
+def test_invalid_backend_raises():
+    msm = EnhancedMSM(output_dir=".")
+    msm.dtrajs = [np.array([0, 1, 0, 1], dtype=int)]
+    msm.n_states = 2
+    msm.estimator_backend = "legacy"
+    with pytest.raises(RuntimeError, match="Only the 'deeptime' backend"):
+        msm.build_msm(lag_time=1)
 
 
 def test_unvisited_state_yields_stochastic_T():

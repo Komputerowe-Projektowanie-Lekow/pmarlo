@@ -1,23 +1,17 @@
 from __future__ import annotations
 
-"""
-Helpers for consistently extracting temperature information from nested metadata.
-"""
+"""Helpers for consistently extracting temperature information from nested metadata."""
 
-import math
 from collections import deque
 from typing import Any, Iterable, Mapping
+
+from pmarlo.utils.coercion import coerce_finite_float
 
 _TEMPERATURE_KEYS = ("temperature_K", "temperature")
 _SEQUENCE_TYPES = (list, tuple, set)
 
 
 def _coerce_float(value: Any) -> float | None:
-    if isinstance(value, (int, float)):
-        result = float(value)
-        if math.isnan(result):
-            return None
-        return result
     if isinstance(value, str):
         trimmed = value.strip()
         if not trimmed:
@@ -25,14 +19,8 @@ def _coerce_float(value: Any) -> float | None:
         suffix = trimmed[-1]
         if suffix in {"K", "k"}:
             trimmed = trimmed[:-1].strip()
-        try:
-            result = float(trimmed)
-        except ValueError:
-            return None
-        if math.isnan(result):
-            return None
-        return result
-    return None
+        return coerce_finite_float(trimmed)
+    return coerce_finite_float(value)
 
 
 def _iter_candidate_nodes(root: Mapping[str, Any]) -> Iterable[Mapping[str, Any]]:

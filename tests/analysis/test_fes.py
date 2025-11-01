@@ -1,10 +1,20 @@
-import numpy as np
+﻿import numpy as np
 
-from pmarlo.analysis.fes import compute_weighted_fes
+from pmarlo.analysis.fes import compute_weighted_fes, ensure_fes_inputs_whitened
 
 
 def _make_dataset(points: np.ndarray) -> dict:
-    return {"splits": {"train": {"X": np.asarray(points, dtype=np.float64)}}}
+    coords = np.asarray(points, dtype=np.float64)
+    metadata = {
+        "output_mean": np.zeros(coords.shape[1], dtype=np.float64),
+        "output_transform": np.eye(coords.shape[1], dtype=np.float64),
+        "output_transform_applied": False,
+    }
+    return {
+        "X": coords,
+        "__artifacts__": {"mlcv_deeptica": metadata},
+        "splits": {"train": {"X": coords}},
+    }
 
 
 def test_kde_surface_metadata_and_shape():
@@ -13,7 +23,12 @@ def test_kde_surface_metadata_and_shape():
     cluster_b = rng.normal(loc=[1.1, 0.7], scale=0.12, size=(70, 2))
     dataset = _make_dataset(np.vstack([cluster_a, cluster_b]))
 
-    fes = compute_weighted_fes(dataset, method="kde", bins=16, bandwidth="scott")
+    fes = compute_weighted_fes(
+        dataset,
+        method="kde",
+        bins=16,
+        bandwidth="scott",
+    )
 
     density = fes["histogram"]
     assert density.shape == (16, 16)
@@ -30,11 +45,15 @@ def test_kde_surface_metadata_and_shape():
 def test_grid_smoothing_applies_neighbor_floor():
     points = np.array(
         [
-            [0.02, 0.01],
-            [0.03, -0.02],
-            [-0.01, 0.04],
-            [0.02, 0.03],
-            [0.01, -0.01],
+            [-1.0, -1.0],
+            [-1.0, 0.0],
+            [-1.0, 1.0],
+            [0.0, -1.0],
+            [0.0, 0.0],
+            [0.0, 1.0],
+            [1.0, -1.0],
+            [1.0, 0.0],
+            [1.0, 1.0],
         ],
         dtype=np.float64,
     )
@@ -43,12 +62,12 @@ def test_grid_smoothing_applies_neighbor_floor():
     fes = compute_weighted_fes(
         dataset,
         method="grid",
-        bins=(6, 6),
+        bins=(3, 3),
         min_count_per_bin=3,
     )
 
     hist = fes["histogram"]
-    assert hist.shape == (6, 6)
+    assert hist.shape == (3, 3)
 
     metadata = fes["metadata"]
     assert metadata["method"] == "grid"
@@ -59,3 +78,28 @@ def test_grid_smoothing_applies_neighbor_floor():
     # Bins neighbouring the populated cell should have received mass.
     zero_fraction = np.count_nonzero(hist == 0.0) / hist.size
     assert zero_fraction < 0.8
+
+
+def test_ensure_fes_inputs_whitened_accepts_prewhitened_metadata():
+    coords = np.array(
+        [
+            [0.4, -0.2],
+            [0.1, 0.3],
+            [-0.2, 0.6],
+        ],
+        dtype=np.float64,
+    )
+
+    dataset = {
+        "X": coords.copy(),
+        "__artifacts__": {
+            "mlcv_deeptica": {
+                "output_mean": np.zeros(2, dtype=np.float64),
+                "output_transform": np.eye(2, dtype=np.float64),
+                "output_transform_applied": True,
+            }
+        },
+    }
+
+    assert ensure_fes_inputs_whitened(dataset) is True
+    np.testing.assert_allclose(dataset["X"], coords)

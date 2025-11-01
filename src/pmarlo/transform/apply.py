@@ -219,17 +219,35 @@ def _prepare_learn_cv_arrays(dataset: Dict[str, Any]) -> Tuple[
     return X_all, shards_meta, shard_ranges, X_list
 
 
-def _collect_lag_candidates(params: Dict[str, Any], tau_requested: int) -> List[int]:
-    def _coerce_one(value: Any) -> Optional[int]:
-        try:
-            coerced = int(value)
-        except Exception:
-            return None
-        return coerced if coerced > 0 else None
+def _coerce_positive_int(value: Any, *, source: str) -> int:
+    if value is None:
+        raise ValueError(
+            f"LEARN_CV requires a positive integer lag value; {source} is missing"
+        )
+    try:
+        coerced = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"LEARN_CV requires a positive integer lag value; {source}={value!r} is not an integer"
+        ) from exc
+    if coerced <= 0:
+        raise ValueError(
+            f"LEARN_CV requires a positive integer lag value; {source}={value!r} is not positive"
+        )
+    return coerced
 
-    primary = _coerce_one(params.get("lag", tau_requested))
-    if primary is None:
-        raise ValueError("LEARN_CV requires a positive integer lag value")
+
+def _resolve_requested_lag(params: Dict[str, Any]) -> int:
+    if "lag" in params:
+        return _coerce_positive_int(params.get("lag"), source="params['lag']")
+    return _coerce_positive_int(params.get("lag", 5), source="requested lag")
+
+
+def _collect_lag_candidates(params: Dict[str, Any], tau_requested: int) -> List[int]:
+    if "lag" in params:
+        primary = _coerce_positive_int(params.get("lag"), source="params['lag']")
+    else:
+        primary = _coerce_positive_int(tau_requested, source="requested lag")
     return [primary]
 
 
@@ -660,7 +678,7 @@ def learn_cv_step(context: Dict[str, Any], **params) -> Dict[str, Any]:
         total_frames,
     )
 
-    tau_requested = int(max(1, params.get("lag", 5)))
+    tau_requested = _resolve_requested_lag(params)
     per_shard_info, pairs_estimate, warnings = _compute_pairs_metadata(
         tau_requested, shard_ranges, shards_meta, total_frames
     )
@@ -808,6 +826,19 @@ def _store_transformed_features(dataset: Dict[str, Any], Y: np.ndarray) -> int:
     dataset["X"] = Y
     dataset["cv_names"] = tuple(f"DeepTICA_{i+1}" for i in range(n_out))
     dataset["periodic"] = tuple(False for _ in range(n_out))
+
+    # Log per-shard shapes after dimension reduction
+    import logging as _logging
+
+    shards_info = dataset.get("__shards__", [])
+    if shards_info:
+        for idx, shard_info in enumerate(shards_info):
+            start = int(shard_info.get("start", 0))
+            stop = int(shard_info.get("stop", start))
+            if stop > start:
+                shard_shape = (stop - start, n_out)
+                logger.info(f"Projected shard {idx}: projection shape={shard_shape}")
+
     return n_out
 
 
@@ -890,10 +921,14 @@ def replica_initialization(context: Dict[str, Any], **kwargs) -> Dict[str, Any]:
 
     prepared_pdb = context.get("prepared_pdb")
     temperatures = kwargs.get("temperatures") or context.get("temperatures", [300.0])
-    output_dir = kwargs.get("output_dir") or context.get("output_dir", "output")
+    output_dir = kwargs.get("output_dir") or context.get("output_dir")
 
     if not prepared_pdb:
         raise ValueError("prepared_pdb required for replica initialization")
+    if output_dir is None:
+        raise ValueError(
+            "replica_initialization requires an explicit `output_dir` value."
+        )
 
     config = RemdConfig(
         input_pdb=str(prepared_pdb),
@@ -951,8 +986,12 @@ def production_simulation(context: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         raise ValueError("prepared_pdb required for production simulation")
 
     steps = kwargs.get("steps") or context.get("steps", 1000)
-    output_dir = kwargs.get("output_dir") or context.get("output_dir", "output")
+    output_dir = kwargs.get("output_dir") or context.get("output_dir")
     temperatures = kwargs.get("temperatures") or context.get("temperatures", [300.0])
+    if output_dir is None:
+        raise ValueError(
+            "production_simulation requires an explicit `output_dir` value."
+        )
 
     trajectory_file = run_remd_simulation(
         pdb_file=str(prepared_pdb),
@@ -974,8 +1013,10 @@ def trajectory_demux(context: Dict[str, Any], **kwargs) -> Dict[str, Any]:
     """Adapter for trajectory demultiplexing stage."""
     trajectory_files = context.get("trajectory_files", [])
     if not trajectory_files:
-        logger.warning("No trajectory files found for demultiplexing")
-        return context
+        raise ValueError(
+            "No trajectory files found for demultiplexing. "
+            "Ensure trajectory_files are present in the context."
+        )
 
     # Demultiplexing logic would go here
     context["demux_completed"] = True
@@ -987,8 +1028,10 @@ def trajectory_analysis(context: Dict[str, Any], **kwargs) -> Dict[str, Any]:
     """Adapter for trajectory analysis stage."""
     trajectory_files = context.get("trajectory_files", [])
     if not trajectory_files:
-        logger.warning("No trajectory files found for analysis")
-        return context
+        raise ValueError(
+            "No trajectory files found for analysis. "
+            "Ensure trajectory_files are present in the context."
+        )
 
     # Analysis logic would go here
     context["analysis_completed"] = True
@@ -1005,7 +1048,9 @@ def msm_build(context: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         raise ValueError("trajectory_files required for MSM building")
 
     n_states = kwargs.get("n_states") or context.get("n_states", 50)
-    output_dir = kwargs.get("output_dir") or context.get("output_dir", "output")
+    output_dir = kwargs.get("output_dir") or context.get("output_dir")
+    if output_dir is None:
+        raise ValueError("msm_build requires an explicit `output_dir` value.")
 
     # Get topology file from context
     prepared_pdb = context.get("prepared_pdb")
@@ -1167,8 +1212,12 @@ def apply_transform_plan(dataset, plan: TransformPlan):
     for step in plan.steps:
         handler = _STEP_HANDLERS.get(step.name)
         if handler is None:
-            logger.warning(f"Unknown transform step: {step.name}")
-            continue
+            known = ", ".join(sorted(_STEP_HANDLERS))
+            message = f"Unknown transform step '{step.name}'." + (
+                f" Known steps: {known}" if known else ""
+            )
+            logger.error(message)
+            raise KeyError(message)
         context = handler(context, **step.params)
 
     if "data" in context and not isinstance(dataset, dict):

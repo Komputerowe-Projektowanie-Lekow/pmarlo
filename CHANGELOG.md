@@ -1,3 +1,240 @@
+<a id='changelog-1.0.39'></a>
+# 1.0.39 — 2025-10-16
+
+### Changed
+- Simplified TPT conformation classification to treat source and sink states as metastable and all other states as transitions while retaining flux and committor annotations for every conformation.
+- Updated the Streamlit conformations panel to let users choose between TICA and DeepTICA CVs and provide DeepTICA projection/metadata paths.
+- Updated `run_conformations_analysis()` in the Streamlit backend to build reversible MSMs with deeptime's maximum likelihood estimator, guaranteeing detailed balance or failing fast when deeptime is unavailable.
+- Enforced reversible MSM estimation within shared MSM utilities and kinetic importance MSM rebuilding to eliminate complex eigenvalues in downstream analyses.
+- Updated `pmarlo.features.deeptica.core.safe_float` to raise descriptive errors instead of silently falling back to default values.
+- Simplified `find_conformations` by relying solely on `RepresentativePicker` for frame selection, removing the redundant `_assign_frame_indices` logic.
+- Removed implicit ``output/`` fallbacks across replica exchange, MSM, simulation, and pipeline helpers; callers must now provide explicit output directories (tests and examples updated to persist under ``example_programs/programs_outputs``).
+- ``retune_temperature_ladder`` now requires an explicit ``output_json`` path, keeping ladder suggestions alongside the chosen workspace instead of the repository root.
+- Updated `find_conformations()` to use PCCA+ macrostates for metastable conformations and metadata without falling back to manual source/sink microstates.
+- Exposed a dedicated `kmeans_n_init` control for the conformations Streamlit app and CLI so users can configure clustering restarts without tripping backend validation.
+- Eliminated all hardcoded "magic numbers" from `pmarlo.reporting.plots` module by adding comprehensive plotting constants to `pmarlo.constants`. All figure sizes, DPI values, line widths, contour levels, FES thresholds, and binning parameters are now centralized and configurable via the constants module, improving maintainability and making it easier to tune visualization defaults across the entire codebase.
+- Enhanced API clarity by promoting `n_metastable` from hidden kwargs to explicit parameter with default value of 2.
+- Users can now easily control PCCA+ clustering granularity without needing to know about the hidden kwargs interface.
+- Updated `example_programs/app_usecase/app/plots/diagnostics.py` to export new validation plot wrappers
+- Refactored Free Energy Validation tab to compute validation metrics independently rather than relying on pre-computed MSM/FES analysis results
+- Enhanced app workflow with standalone validation tool that allows users to verify sampling quality on-demand for any shard combination
+
+- Refactored `_run_gradual_heating` and `_run_temperature_equilibration` methods in `replica_exchange.py` to reduce cyclomatic complexity and improve maintainability
+- Extracted single-responsibility helper methods following SOLID principles:
+  - `_calculate_heating_parameters`: Calculate heating phase parameters
+  - `_log_heating_milestone`: Log heating milestones at threshold percentages
+  - `_perform_heating_step`: Execute heating step for all replicas
+  - `_report_heating_progress`: Report heating progress to reporter and logger
+  - `_complete_heating_phase`: Finalize heating phase with checkpointing
+  - `_initialize_temperature_equilibration`: Initialize equilibration parameters
+  - `_set_target_temperatures`: Configure replica integrators to target temperatures
+  - `_perform_equilibration_step`: Execute equilibration step with error handling
+  - `_log_equilibration_milestone`: Log equilibration milestones
+  - `_report_equilibration_progress`: Report equilibration progress
+  - `_complete_equilibration_phase`: Finalize equilibration with checkpointing
+  - Relocated the Streamlit application from `example_programs/app_usecase` into the dedicated `pmarlo_webapp/app` package and refreshed user-facing run instructions.
+- Added path migration helpers so saved state, analysis bundles, and shard metadata rebased cleanly onto the new workspace layout.
+- Updated tests, utilities, and docs to import the `pmarlo_webapp` modules and to source example inputs from the new directory.
+- Redirected transform diagnostics to resolve alongside dataset or configured
+  output directories instead of creating a top-level `pmarlo_diagnostics`
+  folder, honouring the new ``BuildOpts.diagnostics_dir`` override and
+  repository output conventions.
+- Added unit coverage for diagnostics directory resolution so environment and
+  example program heuristics stay exercised.
+- Replaced deprecated Streamlit `use_container_width` option with the new `width` parameter throughout the DeepTICA use case app to ensure compatibility with upcoming releases.
+- Redirect transform diagnostics artefacts away from the repository root so they land
+  beside the originating example programs or test fixtures (falling back to the
+  standard experiments output tree when no contextual location is available).
+- Removed the legacy `test_output/` bundle artefact from the repository root and
+  documented that generated bundles now live under `example_programs/programs_outputs/`.
+- Persist TPT conformation analyses in the backend state and expose list/load helpers so previously generated conformations can be rediscovered and reloaded from the UI.
+- Enforced strict RDKit descriptor calculations during protein preparation by raising explicit errors when RDKit cannot parse the generated structure, preventing silent fallbacks.
+- Consolidated float coercion helpers into `pmarlo.utils.coercion` and updated analysis, transform, DeepTICA training, and example app workflows to share the same finite-float handling.
+
+
+
+### Fixed
+- Ensure `build_pair_info` gracefully handles multi-lag schedules with no valid
+  pairs by returning empty index arrays instead of raising a ValueError.
+- Removed redundant metadata counts for metastable and transition states in `pmarlo.conformations.finder.find_conformations()` so the CLI summary remains the single source of truth.
+- Flag non-converged TPT pathway decomposition results and warn Streamlit users that the reported flux pathways are unreliable.
+- DeepTICA-driven conformations runs now raise explicit errors when required projection assets are missing instead of silently reverting to TICA.
+- Workflow backend raises descriptive errors when shard metadata contains missing or non-numeric values rather than silently substituting defaults.
+- Prevented unsupported `n_init` kwargs from reaching deeptime estimators, eliminating the TypeError raised during conformations analysis.
+- The CLI aborts immediately when trajectory metadata is missing or files are absent instead of silently skipping structure exports.
+- Streamlit conformations workflow now resolves original topology and trajectory files so representative structures are emitted, passing the trajectory mapping through to the PMARLO picker for mdtraj-based frame extraction.
+- Fixed missing `n_metastable` parameter in conformations CLI and app backend that caused PCCA+ to always use 2 clusters instead of the user-specified value.
+- The `conformations_cli.py` now properly passes `--n-metastable` argument to `find_conformations()`.
+- The `backend.py` now properly passes `ConformationsConfig.n_metastable` to `find_conformations()`.
+- `plot_sampling_validation` now fails fast on missing trajectories, empty shards, or unknown colormaps instead of silently
+- Addressed multiple mypy failures in the ``type`` tox environment by tightening
+  MSM attribute handling, refining clustering estimator typing, and improving
+  conformations utilities annotations so ``poetry run tox -e type`` passes again.
+- Raised explicit errors when DeepTICA lag configuration cannot be coerced, preventing silent fallbacks in LEARN_CV pipelines.
+- Resolved 7 merge conflicts in `src/pmarlo/protein/protein.py` consolidating strict
+  PDBFixer handling. The module now consistently fails fast with clear ImportError
+  messages when PDBFixer is required but unavailable, with no silent fallbacks.
+- Updated the app implied timescales pre-analysis to use `MaximumLikelihoodMSM` so the MSM estimator runs without requiring a preconstructed transition matrix.
+- Ensure protein input paths expand user and environment variables before
+  validation, allowing `Protein` to load structures referenced via `~` and
+  other shell-style paths.
+- Record the built MSM state count and raise a `state_count_mismatch` guardrail when the transition matrix size disagrees with the declared discretizer fingerprint.
+- Surface the MSM state count and run identifier in the app plot so mismatches are visible in the UI.
+- Added regression coverage that exercises the guardrail path and verifies the analysis debug summary captures the mismatch metadata.
+- Honour the requested microstate count when building MSM bundles so the webapp no longer trips the `state_count_mismatch` guardrail during analysis.
+- Removed shadowing `import traceback` statements inside the Streamlit app to prevent the UnboundLocalError raised when reporting build failures.
+- Regenerated the sanitiser docstring for debug exports to silence the invalid escape sequence warning emitted when launching the webapp.
+- Added regression coverage for the microstate plumbing and backend integration to keep the guardrail path intact.
+- Restored the Streamlit Implied Timescales tab so shard selections, configuration, and plotting now call `calculate_its` again instead of rendering an empty panel.
+- Brought back the Model Preview and Assets tabs with full bundle inspection, workspace inventories, and one-click loading into the corresponding workflow stages.
+- Resolved Streamlit session-state assignment errors by routing ITS form updates through pending keys before widgets instantiate.
+- Removed the silent OpenMM platform fallback in `pmarlo.replica_exchange._simulation_full.Simulation` so runs now fail fast when the requested backend is unavailable and only explicit CPU or CUDA selections are accepted.
+- Raised explicit errors when trajectory alignment fails instead of silently
+  returning unaligned data, ensuring data issues are detected early in the
+  workflow by `_align_trajectory`.
+- Normalized MDAnalysis I/O dependency checks to raise the dedicated
+  `TrajectoryIOError`/`TrajectoryWriteError` instead of leaking a
+  `ModuleNotFoundError`, maintaining fail-fast behaviour when optional
+  backends are unavailable.
+- Raised explicit `ValueError` when LEARN_CV lag configuration is missing, non-integer, or non-positive instead of silently falling back to `None`.
+- Corrected configuration parsing for `enable_cv_bias` to reject ambiguous values and
+  honor explicit `false` settings loaded from YAML files.
+- Preserve complex MSM eigenvalues when computing implied timescales so `safe_timescales` no longer drops the imaginary
+  component and incorrectly reports stable negative eigenmodes.
+- Added regression coverage for complex-valued eigenvalues in the implied timescale math tests.
+- Corrected `pmarlo.utils.replica_utils.geometric_ladder` to respect `endpoint=False`,
+  matching NumPy's geometric spacing semantics and preventing extraneous
+  high-temperature samples in derived ladders.
+- Restored the module docstring in `pmarlo.utils.naming` so the module imports
+  without raising a syntax error when accessed by tests or downstream tools.
+- Prevented mixed shard kinds from loading by enforcing provenance.kind consistency and explicit declaration during shard assembly.
+- Added regression tests covering mixed-kind shards and missing provenance.kind metadata.
+- Restore the workflow validation module docstring so the file imports correctly without a syntax error.
+- Updated `_clamp01` in `pmarlo.experiments.kpi` to clamp values with
+  `numpy.clip`, relying on the standard NumPy helper instead of manual bounds
+  checks.
+- Bound the TICA performance harness to pytest's `tmp_path`, eliminating the
+  repository-level `tmp/` artefacts it previously produced during perf test
+  runs and ensuring its feature cache lives alongside the invoking test context.
+- Audited replica-exchange and MSM perf harnesses to confirm no code path still
+  seeds a `tmp_ms/` directory at the project root.
+- Prevented the analysis reweighter cache from reusing weights when shard thermodynamics or base weights change, avoiding stale
+  distributions when reweighting multiple datasets with shared shard identifiers.
+
+
+
+
+### Added
+- Surface RuntimeWarning when pathway decomposition in the conformations CLI reaches the maximum iterations limit.
+- Conformations analysis now accepts precomputed DeepTICA projections via the new `cv_method="deeptica"` option, including optional whitening metadata reuse.
+- Added configurable uncertainty analysis controls to the Streamlit workflow backend so `find_conformations()` receives explicit `uncertainty_analysis` and `n_bootstrap` parameters from the UI.
+- Extended the Streamlit app and CLI tooling with toggles for bootstrap uncertainty analysis and covered the new behaviour with unit tests.
+- Transition state ensemble identification in `find_conformations()` with explicit `tse` conformation type and accessor.
+- Enabled multi-start clustering in `cluster_microstates` by honouring the `n_init` restart count and selecting the run with the lowest inertia.
+- Command-line conformations analysis now requires an explicit `--topology` PDB path and validates shard metadata before loading trajectories.
+- Made `n_metastable` an explicit parameter in `find_conformations()` function signature (previously hidden in `**kwargs`).
+- Added comprehensive documentation for `n_metastable` parameter explaining it controls the number of PCCA+ clusters.
+- Added example usage in docstring showing how to increase the number of metastable states.
+- Two new validation plotting functions in `pmarlo.reporting.plots`:
+  - `plot_sampling_validation`: Shows 1D trajectory traces over histogram to validate sampling connectivity between metastable states
+  - `plot_free_energy_2d`: Renders 2D FES contour plot on collective variable components
+- New self-contained "Free Energy Validation" tab in the example app with:
+  - Independent shard selection interface
+  - On-demand TICA projection computation
+  - Real-time FES calculation from selected shards
+  - Side-by-side display of sampling connectivity and FES plots
+- Wrapper functions in app diagnostics module (`create_sampling_validation_plot`, `create_fes_validation_plot`) to integrate library plots with Streamlit UI
+- Enhanced code maintainability by separating concerns into focused, testable methods
+- Reduced cognitive complexity of equilibration workflow
+- Preserved all existing functionality and values without introducing fallbacks
+- Improved code readability by extracting complex nested logic into named methods
+- Introduced a dedicated "Conformation Analysis" tab in the Streamlit workflow so TPT configuration, shard/run selection, and prior conformation bundles live alongside the other workflow stages.
+- Added helper utilities to infer default topology/feature spec paths and tabularize implied timescale outputs for the example app workflow.
+- Introduced reusable table formatters for runs, shards, models, analyses, and conformations so the Assets tab surfaces actionable metadata instead of empty placeholders.
+
+### Removed
+- Removed the automatic ~5 K spacing fallback in `pmarlo.utils.replica_utils.power_of_two_temperature_ladder`; callers must now provide an explicit replica count and invalid degenerate ladders raise immediately.
+
+
+
+<a id='changelog-1.0.38'></a>
+# 1.0.38 — 2025-10-16
+
+### Fixed
+- Compute implied timescales via the standard logarithmic formula instead of importing the removed `timescales_from_eigenvalues` helper from deeptime.
+- Prevent importing `pmarlo.features` from requiring the optional `mdtraj` dependency while still raising an explicit error when built-in features are requested without it.
+- Resolved merge conflicts in conformations analysis workflow
+  - Updated `StateDetector` to use `committor_thresholds` parameter instead of `n_metastable`
+  - Maintained backward compatibility by keeping `_resolve_metastable_count` method
+  - Updated Streamlit app to support both metastable state configuration and committor thresholds
+  - Fixed backend conformations analysis to use new `committor_thresholds` parameter
+- Prevented shard aggregation from crashing when optional bias NPZ files are absent by skipping missing bias potentials during dataset assembly.
+- **Streamlit app shard loading**: Fixed `run_conformations_analysis()` in `backend.py` to use `load_shards_as_dataset()` instead of non-existent `Shard.from_json()` method
+  - Now uses same robust shard loading infrastructure as MSM building
+  - Added fallback topology PDB detection from `app_intputs/` directory
+  - Added graceful error handling for missing trajectories
+  - Added comprehensive logging at all steps
+- **Deeptime import errors**: Made `tpt_analysis.py` imports lazy using `TYPE_CHECKING`
+  - Module can now be imported without deeptime installed at runtime
+  - Actual deeptime usage still raises clear `ImportError` when needed
+  - Fixes "No module named 'deeptime'" errors during import even when deeptime is installed
+- **Clustering parameters**: Fixed `backend.py` and `find_conformations_tpt_real.py` to use correct `cluster_microstates()` parameters
+  - Removed unsupported `n_init` parameter (not valid for deeptime backend)
+  - Now uses `random_state=42` for reproducibility
+  - Fixes "Unsupported clustering parameters for deeptime backend: ['n_init']" error
+- **ClusteringResult type error**: Fixed `cluster_microstates()` usage to extract `.labels` attribute from returned `ClusteringResult` object
+  - Fixed `backend.py` and `find_conformations_tpt_real.py` to use `clustering_result.labels` instead of treating result as array
+  - Fixes "unsupported operand type(s) for +: 'ClusteringResult' and 'int'" error
+- **find_conformations() API**: Fixed conformations analysis to use correct `find_conformations()` signature
+  - Now passes MSM data as dictionary with 'T', 'pi', 'dtrajs', 'features' keys
+  - Uses correct keyword arguments: `auto_detect`, `find_transition_states`, `save_structures`
+  - Fixes "find_conformations() missing 1 required positional argument: 'msm_data'" error
+- **PCCA+ keyword argument**: Fixed all `pcca()` calls in conformations module to use positional argument for number of metastable states
+  - Changed `pcca(T, n_metastable_sets=n)` to `pcca(T, n)` (matches deeptime 0.4.5 signature)
+  - Fixed in `finder.py`, `state_detection.py`, and `uncertainty.py`
+  - Fixes "pcca() got an unexpected keyword argument 'n_metastable_sets'" error
+- Conformations analysis in Streamlit app and CLI now works with real shards without errors
+- Created `conformations_cli.py` tool for command-line conformations analysis
+
+### Added
+- New `pmarlo.conformations` module for Transition Path Theory (TPT) analysis using deeptime
+  - **Direct deeptime integration**: Uses `MarkovStateModel.reactive_flux()` API exactly as documented
+  - **NO FALLBACKS**: Raises ImportError immediately if deeptime is missing - no silent failures
+  - Auto-detection of source/sink states from FES, timescale gaps, and populations
+  - TPT analysis: forward/backward committors, reactive flux matrix, transition rates, MFPT via deeptime
+  - Pathway decomposition using `ReactiveFlux.pathways()` method
+  - Coarse-graining support via `ReactiveFlux.coarse_grain()`
+  - Kinetic Importance Score (KIS) metric with stability validation via bootstrap and hyperparameter ensembles
+  - Representative structure extraction with corrected TRAM/MBAR weighting (no double-weighting with π_i)
+  - Comprehensive uncertainty quantification via bootstrap and hyperparameter sensitivity
+  - Identification of transition state ensembles, metastable states, and pathway intermediates
+  - Visualization functions: committor plots, flux networks, pathway plots (following deeptime examples)
+  - High-level `find_conformations()` API for unified workflow
+  - Integration into MSM workflow as final analysis step
+  - JSON serialization/deserialization of ConformationSet results
+  - Example programs:
+    - `find_conformations_tpt.py` - Demo with test data
+    - `find_conformations_tpt_real.py` - Analysis on real shards with CLI selection
+  - **Streamlit App Integration**:
+    - New "TPT Conformations Analysis" section in Analysis tab of `app_usecase/app/app.py`
+    - Backend functions in `backend.py`: `ConformationsConfig`, `ConformationsResult`, `run_conformations_analysis()`
+    - Interactive UI with configurable parameters (lag, n_clusters, n_metastable states, temperature, etc.)
+    - Real-time visualization of TPT results, metastable states, transition states, and pathways
+    - Automatic saving of representative PDB structures to output directory (e.g., `metastable_1.pdb`, `transition_1.pdb`)
+    - Display of TPT metrics: rate, MFPT, total flux, pathway counts
+    - Export of conformations summary JSON with all analysis results
+
+
+### Changed
+- Replaced the Markov state model maximum-likelihood estimation pipeline with `deeptime.markov.msm.MaximumLikelihoodMSM`, eliminating local fallback counting paths.
+
+### Testing
+- Extended unit coverage for Markov state model backend validation.
+- Updated MSM clustering utilities to use deeptime's KMeans and MiniBatchKMeans estimators directly, removing custom wrappers and enforcing explicit parameter validation.
+- Fixed `find_conformations_tpt_real.py` to use direct imports from `pmarlo.markov_state_model` modules instead of `pmarlo.api` to avoid triggering module-level deeptime imports
+- Streamlit conformations analysis now accepts configurable clustering parameters (mode, seed, KMeans kwargs) matching the BuildConfig discretization controls instead of forcing MiniBatchKMeans with a hardcoded seed
+
+
 <a id='changelog-1.0.0'></a>
 # 0.121.0 — 2025-10-16
 

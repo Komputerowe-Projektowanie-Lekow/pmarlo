@@ -1,4 +1,4 @@
-import numpy as np
+﻿import numpy as np
 import pytest
 
 from pmarlo.markov_state_model.bridge import _stationary_from_T

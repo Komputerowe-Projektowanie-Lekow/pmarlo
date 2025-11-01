@@ -142,6 +142,18 @@ class LoadingMixin:
                 )
                 return None
             raise
+
+        # Log shape immediately after loading completes
+        if joined is not None:
+            _logging.getLogger("pmarlo").debug(
+                "Loaded shard %s: %d frames, %d atoms",
+                traj_file,
+                joined.n_frames,
+                joined.n_atoms,
+            )
+        else:
+            _logging.getLogger("pmarlo").debug("Loaded shard %s: No frames (None returned)", traj_file)
+
         if joined is None:
             _logging.getLogger("pmarlo").warning(f"No frames loaded from {traj_file}")
         return joined

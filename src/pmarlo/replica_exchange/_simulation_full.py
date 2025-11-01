@@ -19,6 +19,7 @@ import numpy as np
 import openmm
 import openmm.app as app
 import openmm.unit as unit
+from openmm.unit.quantity import Quantity
 from openmm.app.metadynamics import BiasVariable, Metadynamics
 
 if not hasattr(openmm.XmlSerializer, "load"):  # pragma: no cover - compatibility
@@ -47,14 +48,16 @@ class Simulation:
     ----------
     pdb_file : str
         Path to PDB file for the system
-    output_dir : str, optional
-        Directory for output files (default: "output")
+    output_dir : str
+        Directory for output files.
     temperature : float, optional
         Simulation temperature in Kelvin (default: 300.0)
     pressure : float, optional
         Simulation pressure in bar (default: 1.0)
     platform : str, optional
-        OpenMM platform to use ("CUDA", "OpenCL", "CPU", "Reference")
+        OpenMM platform to use ("CUDA" for GPU or "CPU" for CPU). The value must be
+        provided explicitly—no automatic fallback or heuristic selection is
+        performed.
     steps : int, optional
         Default number of production steps when :meth:`run_production` is called
         without an explicit value.  Defaults to 100000 for backwards compatibility.
@@ -68,7 +71,7 @@ class Simulation:
     def __init__(
         self,
         pdb_file: str,
-        output_dir: str = "output",
+        output_dir: str | Path,
         temperature: float = 300.0,
         pressure: float = 1.0,
         platform: str = "CUDA",
@@ -78,7 +81,9 @@ class Simulation:
         random_seed: int | None = None,
     ):
         self.pdb_file = str(pdb_file)
-        self.output_dir = Path(output_dir or "output")
+        if output_dir is None:
+            raise TypeError("Simulation requires `output_dir` to be provided.")
+        self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.temperature = float(temperature)
         self.pressure = float(pressure)
@@ -106,13 +111,13 @@ class Simulation:
         self.meta = None
 
     @property
-    def temperature_quantity(self) -> unit.Quantity:
+    def temperature_quantity(self) -> Quantity:
         """OpenMM-compatible temperature quantity."""
 
         return self.temperature * unit.kelvin
 
     @property
-    def pressure_quantity(self) -> unit.Quantity:
+    def pressure_quantity(self) -> Quantity:
         """OpenMM-compatible pressure quantity."""
 
         return self.pressure * unit.bar
@@ -218,28 +223,20 @@ class Simulation:
         self.pdb = fixer
 
     def _setup_platform(self):
-        """Set up the OpenMM platform, preferring GPU when available."""
+        """Set up the OpenMM platform using the explicitly requested backend."""
+        supported_platforms = {"CPU", "CUDA"}
+        if self.platform_name not in supported_platforms:
+            raise ValueError(
+                "Unsupported OpenMM platform '%s'. Supported platforms are: %s"
+                % (self.platform_name, ", ".join(sorted(supported_platforms)))
+            )
+
         try:
             self.platform = openmm.Platform.getPlatformByName(self.platform_name)
         except Exception as exc:
-            logger = logging.getLogger(__name__)
-            logger.warning(
-                "Requested OpenMM platform '%s' unavailable (%s); falling back to CPU.",
-                self.platform_name,
-                exc,
-            )
-            fallback_order = [
-                name for name in ("CPU", "Reference") if name != self.platform_name
-            ]
-            for candidate in fallback_order:
-                try:
-                    self.platform = openmm.Platform.getPlatformByName(candidate)
-                    self.platform_name = candidate
-                    break
-                except Exception:
-                    continue
-            else:
-                raise
+            raise RuntimeError(
+                "Requested OpenMM platform '%s' is unavailable" % self.platform_name
+            ) from exc
         if self.platform_name == "CUDA":
             self.platform.setPropertyDefaultValue("Precision", "mixed")
 
@@ -505,8 +502,6 @@ class Simulation:
         topology_file = self.pdb_file
 
         traj = self._load_trajectory(trajectory_file, topology_file)
-        if traj is None:
-            return {}
 
         features: Dict[str, Any] = {}
         handlers: Dict[
@@ -540,9 +535,11 @@ class Simulation:
     def _load_trajectory(self, trajectory_file: str, topology_file: str):
         try:
             return md.load(trajectory_file, top=topology_file)
-        except Exception as e:  # pragma: no cover - log-and-continue path
-            print(f"Warning: Could not load trajectory: {e}")
-            return None
+        except Exception as exc:  # pragma: no cover - log path
+            raise RuntimeError(
+                "Failed to load trajectory for feature extraction "
+                f"from '{trajectory_file}' with topology '{topology_file}'."
+            ) from exc
 
     def _extract_distance_features(
         self, traj: md.Trajectory, spec: Dict[str, Any]
@@ -775,6 +772,7 @@ class Simulation:
 # Convenience functions for common workflows
 def prepare_system(
     pdb_file,
+    output_dir,
     forcefield_files=None,
     water_model="tip3p",
     pdb_file_name=None,
@@ -786,6 +784,8 @@ def prepare_system(
     ----------
     pdb_file : str
         Path to PDB file
+    output_dir : str or Path
+        Directory where simulation outputs should be written.
     forcefield_files : list, optional
         Force field XML files
     water_model : str, optional
@@ -802,7 +802,7 @@ def prepare_system(
     if pdb_path is None:
         raise ValueError("pdb_file or pdb_file_name must be provided")
 
-    sim = Simulation(pdb_path)
+    sim = Simulation(pdb_path, output_dir=output_dir)
     sim.prepare_system(forcefield_files, water_model)
     return sim
 

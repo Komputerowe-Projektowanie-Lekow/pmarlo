@@ -5,6 +5,7 @@ from typing import Any, cast
 
 import numpy as np
 from deeptime.markov import pcca as _deeptime_pcca  # type: ignore
+from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
 from deeptime.markov.tools.analysis import (
     stationary_distribution as _dt_stationary_distribution,  # type: ignore
 )
@@ -17,6 +18,18 @@ from pmarlo.utils import msm_utils as _shared_msm_utils
 from pmarlo.utils.msm_utils import ConnectedCountResult
 
 logger = logging.getLogger("pmarlo")
+
+__all__ = [
+    "candidate_lag_ladder",
+    "ensure_connected_counts",
+    "check_transition_matrix",
+    "compute_macro_populations",
+    "lump_micro_to_macro_T",
+    "compute_macro_mfpt",
+    "build_simple_msm",
+    "pcca_like_macrostates",
+    "select_lag_from_its",
+]
 
 
 def candidate_lag_ladder(
@@ -202,8 +215,9 @@ def _fit_msm_deeptime(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Fit MSM using deeptime library (required dependency).
 
-    Uses TransitionCountEstimator to estimate the transition matrix,
-    then normalizes and computes stationary distribution.
+    Uses TransitionCountEstimator to estimate transition counts and
+    MaximumLikelihoodMSM with reversible=True to obtain a reversible
+    transition matrix and stationary distribution.
 
     Parameters
     ----------
@@ -238,8 +252,13 @@ def _fit_msm_deeptime(
             np.empty((0, 0), dtype=float),
             np.empty((0,), dtype=float),
         )
-    T_active = _row_normalize(res.counts)
-    pi_active = _stationary_from_T(T_active)
+    ml = MaximumLikelihoodMSM(
+        lagtime=int(max(1, lag)),
+        reversible=True,
+    )
+    msm_model = ml.fit(res.counts).fetch_model()
+    T_active = np.asarray(msm_model.transition_matrix, dtype=float)
+    pi_active = np.asarray(msm_model.stationary_distribution, dtype=float)
     return _expand_results(n_states, res.active, T_active, pi_active)
 
 
@@ -271,3 +290,103 @@ def pcca_like_macrostates(
     labels = np.argmax(chi, axis=1)
     labels = _canonicalize_macro_labels(labels.astype(int), T)
     return cast(np.ndarray, labels)
+
+
+def select_lag_from_its(
+    lag_times: np.ndarray,
+    timescales: np.ndarray,
+    *,
+    min_lag_idx: int = 3,
+    plateau_threshold: float = 0.15,
+) -> int:
+    """Select optimal lag time from implied timescales by detecting plateau.
+
+    Selects the first lag where the slowest timescale begins to stabilize,
+    indicating that the MSM has converged to the true kinetics.
+
+    Parameters
+    ----------
+    lag_times : np.ndarray
+        Array of lag times tested (shape: [n_lags]).
+    timescales : np.ndarray
+        Implied timescales for each lag (shape: [n_lags, n_timescales]).
+    min_lag_idx : int
+        Minimum lag index to consider (skip very short lags).
+    plateau_threshold : float
+        Maximum relative change between consecutive timescales to consider plateau.
+
+    Returns
+    -------
+    int
+        Selected lag time in frames.
+    """
+    if lag_times.size == 0 or timescales.size == 0:
+        logger.warning("select_lag_from_its: Empty inputs, returning default lag=10")
+        return 10
+
+    # Use slowest (first) timescale
+    ts_slow = timescales[:, 0] if timescales.ndim > 1 else timescales
+
+    # Find valid (finite) timescales
+    valid_mask = np.isfinite(ts_slow) & (ts_slow > 0)
+    if not np.any(valid_mask):
+        logger.warning("select_lag_from_its: No valid timescales, returning default lag=10")
+        return 10
+
+    # Start searching from min_lag_idx
+    start_idx = max(1, min_lag_idx)
+    if start_idx >= len(ts_slow):
+        start_idx = max(1, len(ts_slow) // 4)
+
+    # Look for first point where relative change drops below threshold
+    for idx in range(start_idx, len(ts_slow)):
+        if not valid_mask[idx] or not valid_mask[idx - 1]:
+            continue
+
+        rel_change = abs((ts_slow[idx] - ts_slow[idx - 1]) / ts_slow[idx - 1])
+
+        if rel_change < plateau_threshold:
+            # Verify this isn't a fluke by checking next point if available
+            if idx + 1 < len(ts_slow) and valid_mask[idx + 1]:
+                rel_change_next = abs((ts_slow[idx + 1] - ts_slow[idx]) / ts_slow[idx])
+                if rel_change_next < plateau_threshold * 1.5:
+                    selected_lag = int(lag_times[idx])
+                    logger.info(
+                        "select_lag_from_its: Plateau detected at lag=%d (rel_change=%.3f)",
+                        selected_lag,
+                        rel_change,
+                    )
+                    return selected_lag
+            else:
+                # Last point or single plateau
+                selected_lag = int(lag_times[idx])
+                logger.info(
+                    "select_lag_from_its: Plateau detected at lag=%d (rel_change=%.3f)",
+                    selected_lag,
+                    rel_change,
+                )
+                return selected_lag
+
+    # No clear plateau found, use lag where timescale is largest and stable
+    # among the latter half of tested lags
+    half_idx = len(ts_slow) // 2
+    valid_latter = valid_mask[half_idx:]
+    if np.any(valid_latter):
+        # Get index with maximum timescale in latter half
+        latter_ts = ts_slow[half_idx:]
+        max_idx_relative = np.nanargmax(np.where(valid_latter, latter_ts, -np.inf))
+        selected_lag = int(lag_times[half_idx + max_idx_relative])
+        logger.info(
+            "select_lag_from_its: No clear plateau, selecting lag=%d with max timescale",
+            selected_lag,
+        )
+        return selected_lag
+
+    # Fallback to median lag if all else fails
+    median_idx = len(lag_times) // 2
+    selected_lag = int(lag_times[median_idx])
+    logger.warning(
+        "select_lag_from_its: No plateau detected, using median lag=%d", selected_lag
+    )
+    return selected_lag
+

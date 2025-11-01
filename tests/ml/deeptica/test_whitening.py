@@ -1,4 +1,4 @@
-import numpy as np
+﻿import numpy as np
 import pytest
 
 from pmarlo.analysis.msm import ensure_msm_inputs_whitened
@@ -67,6 +67,20 @@ def test_apply_output_transform_requires_metadata() -> None:
 
     with pytest.raises(ValueError):
         apply_output_transform(Y, mean=np.zeros(2), W=None, already_applied=False)
+
+
+def test_apply_output_transform_respects_string_flags() -> None:
+    Y = np.array([[1.0, 2.0]], dtype=np.float64)
+    mean = np.zeros(2, dtype=np.float64)
+    transform = np.eye(2, dtype=np.float64)
+
+    whitened = apply_output_transform(Y, mean, transform, already_applied="false")
+    expected = (Y - mean) @ transform
+    expected -= expected.mean(axis=0, keepdims=True)
+    assert np.allclose(whitened, expected)
+
+    with pytest.raises(ValueError):
+        apply_output_transform(Y, mean, transform, already_applied="definitely")
 
 
 def test_deeptica_model_transform_applies_whitening() -> None:

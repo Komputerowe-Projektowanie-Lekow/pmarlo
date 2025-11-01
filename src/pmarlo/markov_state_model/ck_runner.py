@@ -35,6 +35,37 @@ class CKRunResult:
     mode: str = "micro"
     insufficient_k: List[int] = field(default_factory=list)
 
+    @property
+    def max_error(self) -> float:
+        """Return the maximum RMS error across all tested lag multiples."""
+        if not self.mse:
+            return float("inf")  # No valid CK test means infinite error
+        return max(np.sqrt(v) for v in self.mse.values())
+
+    @property
+    def has_valid_tests(self) -> bool:
+        """Check if any CK tests were successfully performed."""
+        return bool(self.mse)
+
+
+def ck_rms_error(result: CKRunResult) -> float:
+    """Compute the maximum RMS error from CK test results.
+
+    Returns the worst-case (maximum) root-mean-square error across
+    all tested lag multiples. If no valid tests exist, returns inf.
+
+    Parameters
+    ----------
+    result : CKRunResult
+        Result object from run_ck().
+
+    Returns
+    -------
+    float
+        Maximum RMS error, or inf if no valid tests.
+    """
+    return result.max_error
+
 
 def _count_transitions(
     dtrajs: Sequence[np.ndarray], n_states: int, lag: int

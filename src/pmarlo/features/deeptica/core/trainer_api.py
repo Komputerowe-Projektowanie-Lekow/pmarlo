@@ -23,7 +23,13 @@ from pmarlo.ml.deeptica.trainer import (
 from pmarlo.utils.path_utils import ensure_directory
 from pmarlo.utils.seed import set_global_seed
 
-from .dataset import create_dataset, create_loaders, split_sequences
+from .dataset import (
+    TorchLoaderBundle,
+    create_dataset,
+    create_loaders,
+    create_torch_pair_loaders,
+    split_sequences,
+)
 from .history import vamp2_proxy
 from .inputs import FeaturePrep, prepare_features
 from .model import apply_output_whitening, build_network
@@ -31,7 +37,12 @@ from .pairs import PairInfo, build_pair_info
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["TrainingArtifacts", "train_deeptica_pipeline", "train_deeptica_mlcolvar"]
+__all__ = [
+    "TrainingArtifacts",
+    "train_deeptica_pipeline",
+    "train_deeptica_mlcolvar",
+    "train_deeptica_deeptime",
+]
 
 
 @dataclass(slots=True)
@@ -336,6 +347,111 @@ def train_deeptica_mlcolvar(
 
     prep = _prepare_training_prep(X_list, pairs, cfg, weights)
     outcome = _train_with_mlcolvar(prep, cfg)
+    return _finalize_training_artifacts(prep, outcome, cfg)
+
+
+def _train_with_deeptime(prep: _TrainingPrep, cfg: Any) -> _TrainingOutcome:
+    try:
+        from deeptime.decomposition.deep import VAMPNet  # type: ignore
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise ImportError(
+            "deeptime is required for the 'deeptime' DeepTICA backend"
+        ) from exc
+
+    loaders: TorchLoaderBundle = create_torch_pair_loaders(
+        prep.prep.Z,
+        prep.idx_t,
+        prep.idx_tau,
+        prep.weights,
+        cfg,
+        seed=prep.prep.seed,
+    )
+
+    device_spec = str(getattr(cfg, "device", "auto")).lower().strip()
+    if device_spec == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(getattr(cfg, "device"))
+
+    prep.net.to(device)
+    vampnet = VAMPNet(
+        lobe=prep.net,
+        device=device,
+        learning_rate=float(
+            getattr(cfg, "learning_rate", const.DEEPTICA_DEFAULT_LEARNING_RATE)
+        ),
+        epsilon=float(getattr(cfg, "vamp_eps", const.DEEPTICA_DEFAULT_VAMP_EPS)),
+        score_mode="regularize",
+    )
+
+    start_time = time.time()
+    train_scores: list[tuple[int, float]] = []
+    val_scores: list[tuple[int, float]] = []
+
+    def _train_callback(step: int, score_tensor: torch.Tensor) -> None:
+        score = float(score_tensor.detach().cpu().item())
+        train_scores.append((int(step), score))
+
+    def _val_callback(step: int, score_tensor: torch.Tensor) -> None:
+        score = float(score_tensor.detach().cpu().item())
+        val_scores.append((int(step), score))
+
+    vampnet.fit(
+        loaders.train_loader,
+        n_epochs=int(getattr(cfg, "max_epochs", 200)),
+        validation_loader=loaders.val_loader,
+        train_score_callback=_train_callback,
+        validation_score_callback=_val_callback,
+    )
+
+    wall_time = float(time.time() - start_time)
+
+    prep.net.eval()
+    prep.net.cpu()
+
+    history: dict[str, Any] = {
+        "history_source": "deeptime_vampnet",
+        "epochs_completed": int(getattr(cfg, "max_epochs", 200)),
+        "train_scores": [[int(s), float(v)] for s, v in train_scores],
+        "val_scores": [[int(s), float(v)] for s, v in val_scores],
+        "loss_curve": [float(-v) for _, v in train_scores],
+        "val_loss_curve": [float(-v) for _, v in val_scores],
+        "val_score_curve": [float(v) for _, v in val_scores],
+        "grad_norm_curve": [],
+        "wall_time_s": wall_time,
+        "train_samples": int(loaders.train_size),
+        "val_samples": int(loaders.val_size),
+    }
+
+    if train_scores:
+        val_map = {int(step): float(score) for step, score in val_scores}
+        steps: list[dict[str, float | int]] = []
+        for step, score in train_scores:
+            entry: dict[str, float | int] = {
+                "step": int(step),
+                "train_vamp2": float(score),
+            }
+            if step in val_map:
+                entry["val_vamp2"] = val_map[step]
+            steps.append(entry)
+        history["steps"] = steps
+
+    device_label = device.type
+    if device.index is not None:
+        device_label = f"{device_label}:{device.index}"
+
+    return _TrainingOutcome(history=history, summary_dir=None, device=device_label)
+
+
+def train_deeptica_deeptime(
+    X_list: Sequence[np.ndarray],
+    pairs: Tuple[np.ndarray, np.ndarray],
+    cfg: Any,
+    *,
+    weights: np.ndarray | None = None,
+) -> TrainingArtifacts:
+    prep = _prepare_training_prep(X_list, pairs, cfg, weights)
+    outcome = _train_with_deeptime(prep, cfg)
     return _finalize_training_artifacts(prep, outcome, cfg)
 
 

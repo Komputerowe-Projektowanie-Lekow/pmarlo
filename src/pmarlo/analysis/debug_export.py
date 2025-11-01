@@ -3,13 +3,16 @@ from __future__ import annotations
 """Utilities for emitting detailed debugging artifacts for MSM analysis builds."""
 
 import json
+import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple, cast
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, Sequence, Tuple, cast
 
 import numpy as np
 
 from pmarlo.markov_state_model.free_energy import FESResult
+from pmarlo.utils.coercion import coerce_finite_float
 from pmarlo.utils.path_utils import ensure_directory
 
 from .counting import expected_pairs
@@ -94,7 +97,8 @@ def compute_analysis_debug(
 
     shards_raw = _normalise_shard_info(dataset.get("__shards__", ()))
     shard_lengths = [int(entry["length"]) for entry in shards_raw]
-    total_frames = sum(shard_lengths)
+    # total_frames from metadata - keep for reference but don't use for accounting
+    total_frames_metadata = sum(shard_lengths)
 
     dtrajs = _coerce_dtrajs(dataset.get("dtrajs", ()))
 
@@ -103,14 +107,29 @@ def compute_analysis_debug(
         raise ValueError(
             "Cannot compute analysis debug statistics: dataset has no discrete trajectories (dtrajs). "
             "The dataset must be discretized (clustered) before transition counts can be computed. "
-            f"Dataset contains {total_frames} frames across {len(shard_lengths)} shards, "
+            f"Dataset contains {total_frames_metadata} frames across {len(shard_lengths)} shards, "
             "but no state assignments are present. Run discretization first."
         )
 
     n_states = _infer_n_states(dtrajs)
+
+    # Check if no states were detected at all - this is a critical error
+    if n_states == 0:
+        raise ValueError(
+            "Cannot compute MSM statistics: no valid states detected in discrete trajectories. "
+            f"Dataset contains {total_frames_metadata} frames across {len(shard_lengths)} shards, "
+            f"but all discrete trajectory values are negative or empty. "
+            "This may indicate clustering failed or produced invalid state assignments. "
+            "Check your clustering configuration and ensure valid state labels are generated."
+        )
+
     counts, total_pairs = _build_transition_counts(dtrajs, n_states, lag, count_mode)
     state_counts = _count_state_visits(dtrajs, n_states)
     total_frames_state = int(state_counts.sum())
+
+    # FIX: Compute total_frames_declared from actual dtraj lengths, not shard metadata
+    dtraj_lengths = [len(dtraj) for dtraj in dtrajs]
+    total_frames = sum(dtraj_lengths)
 
     frames_declared_all = [int(entry.get("frames_declared", 0)) for entry in shards_raw]
     frames_loaded_all = [
@@ -131,6 +150,26 @@ def compute_analysis_debug(
     largest_indices = max(components, key=len) if components else []
     largest_cover = _coverage_fraction(state_counts, largest_indices)
     diag_mass_val = _transition_diag_mass(counts)
+
+    # Compute dwell time statistics
+    dwell_stats = _compute_dwell_times(dtrajs, n_states)
+
+    # Compute occupancy tail (lowest-occupancy states)
+    occupancy_tail = _compute_occupancy_tail(state_counts, top_k=10)
+
+    # Identify isolated states (not in the largest SCC)
+    isolated_states: List[int] = []
+    if len(components) > 1:
+        # Find the largest component index
+        largest_comp_idx = max(range(len(components)), key=lambda i: len(components[i]))
+        # Find all states not in the largest component
+        for state_id in range(len(component_labels)):
+            if component_labels[state_id] != largest_comp_idx:
+                isolated_states.append(int(state_id))
+
+    # Calculate SCC fraction (fraction of components that are size 1 = fully connected)
+    n_components = len(components)
+    is_fully_connected = (n_components == 1) if n_components > 0 else False
 
     warnings: List[Dict[str, Any]] = []
     if total_pairs < 5000:
@@ -188,11 +227,15 @@ def compute_analysis_debug(
         {float(entry["temperature"]) for entry in shards_raw if entry["temperature"]}
     )
 
-    stride_map = {
-        str(entry.get("id", str(idx))): entry.get("effective_frame_stride")
-        for idx, entry in enumerate(shards_raw)
-        if entry.get("effective_frame_stride") is not None
-    }
+    # Build complete stride map covering ALL unique shards
+    # Include shards even if effective_frame_stride is None (default to 1)
+    stride_map = {}
+    for idx, entry in enumerate(shards_raw):
+        shard_id = str(entry.get("id", str(idx)))
+        stride_value = entry.get("effective_frame_stride")
+        # Always include the shard in the map, even if stride is None
+        stride_map[shard_id] = stride_value if stride_value is not None else 1
+
     first_timestamps = [
         entry.get("first_timestamp")
         for entry in shards_raw
@@ -205,8 +248,20 @@ def compute_analysis_debug(
     ]
     effective_tau_frames = int(lag * max_stride) if lag > 0 else 0
     stride_for_pairs = 1 if count_mode == "sliding" else max(1, lag)
-    expected_pair_count = expected_pairs(shard_lengths, lag, stride_for_pairs)
+    # FIX: Compute expected_pairs from actual dtraj lengths, not shard metadata
+    expected_pair_count = expected_pairs(dtraj_lengths, lag, stride_for_pairs)
     total_pairs_predicted = expected_pair_count
+
+    # Assert that counted_pairs matches expected_pairs within one hop per segment
+    # Allow tolerance of one pair per segment to account for edge cases
+    tolerance = len(dtraj_lengths)
+    if abs(expected_pair_count - total_pairs) > tolerance:
+        raise CountingLogicError(
+            f"Pair counting mismatch: counted {total_pairs} pairs but expected "
+            f"{expected_pair_count} pairs based on actual dtraj lengths (tolerance: {tolerance}). "
+            f"Dtraj lengths: {dtraj_lengths}, lag: {lag}, stride: {stride_for_pairs}. "
+            f"This indicates a bug in the transition counting logic."
+        )
 
     summary: Dict[str, Any] = {
         "tau_frames": int(lag),
@@ -222,6 +277,9 @@ def compute_analysis_debug(
             float(largest_cover) if largest_cover is not None else None
         ),
         "component_sizes": [int(len(comp)) for comp in components],
+        "n_components": int(n_components),
+        "is_fully_connected": bool(is_fully_connected),
+        "isolated_states": isolated_states,
         "stride": int(stride_for_pairs),
         "expected_pairs": int(expected_pair_count),
         "counted_pairs": int(total_pairs),
@@ -241,6 +299,8 @@ def compute_analysis_debug(
         "temperatures": temperatures,
         "diag_mass": float(diag_mass_val),
         "warnings": warnings,
+        "dwell_time_stats": dwell_stats,
+        "occupancy_tail": occupancy_tail,
     }
 
     return AnalysisDebugData(
@@ -299,8 +359,18 @@ def export_analysis_debug(
         arrays_written.update(assignment_arrays)
         summary_payload["state_assignment_splits"] = assignment_splits
 
+    # Generate annotated plots with MSM metadata
+    plots_written = _generate_annotated_plots(
+        build_result=build_result,
+        output_dir=output_dir,
+        summary_payload=summary_payload,
+        config=config,
+    )
+    if plots_written:
+        summary_payload["plots"] = plots_written
+
     summary_path = _write_summary(output_dir, summary_payload)
-    return {"summary": summary_path, "arrays": arrays_written}
+    return {"summary": summary_path, "arrays": arrays_written, "plots": plots_written}
 
 
 # ---------------------------------------------------------------------------
@@ -318,12 +388,12 @@ def _prepare_summary_payload(
 ) -> Dict[str, Any]:
     summary_payload = debug_data.to_summary_dict()
     if summary_overrides:
-        summary_payload.update(_make_json_ready(summary_overrides))
+        summary_payload.update({str(k): v for k, v in summary_overrides.items()})
     if fingerprint is not None:
-        summary_payload.setdefault("fingerprint", _make_json_ready(fingerprint))
+        summary_payload.setdefault("fingerprint", fingerprint)
     summary_payload["dataset_hash"] = str(dataset_hash)
     if config is not None:
-        summary_payload["config"] = _make_json_ready(config)
+        summary_payload["config"] = config
     return summary_payload
 
 
@@ -373,25 +443,31 @@ def _write_additional_metadata(
     diagnostics = getattr(build_result, "diagnostics", None)
     if isinstance(diagnostics, Mapping):
         diag_path = output_dir / "diagnostics.json"
-        diag_path.write_text(json.dumps(_make_json_ready(diagnostics), indent=2))
+        diag_path.write_text(
+            json.dumps(diagnostics, cls=_AnalysisJSONEncoder, indent=2)
+        )
         summary_payload["diagnostics_file"] = diag_path.name
 
     flags = getattr(build_result, "flags", None)
     if isinstance(flags, Mapping):
         flags_path = output_dir / "flags.json"
-        flags_path.write_text(json.dumps(_make_json_ready(flags), indent=2))
+        flags_path.write_text(json.dumps(flags, cls=_AnalysisJSONEncoder, indent=2))
         summary_payload["flags_file"] = flags_path.name
 
     feature_stats = _extract_feature_stats(build_result)
     if isinstance(feature_stats, Mapping) and feature_stats:
         stats_path = output_dir / "feature_stats.json"
-        stats_path.write_text(json.dumps(_make_json_ready(feature_stats), indent=2))
+        stats_path.write_text(
+            json.dumps(feature_stats, cls=_AnalysisJSONEncoder, indent=2)
+        )
         summary_payload["feature_stats_file"] = stats_path.name
 
 
 def _write_summary(output_dir: Path, summary_payload: Mapping[str, Any]) -> Path:
     summary_path = output_dir / "summary.json"
-    summary_path.write_text(json.dumps(_make_json_ready(summary_payload), indent=2))
+    summary_path.write_text(
+        json.dumps(summary_payload, cls=_AnalysisJSONEncoder, indent=2)
+    )
     return summary_path
 
 
@@ -410,7 +486,7 @@ def _normalise_shard_info(shards: Iterable[Mapping[str, Any]]) -> List[Dict[str,
             "start": start,
             "stop": stop,
             "length": length,
-            "temperature": _coerce_float(raw.get("temperature")),
+            "temperature": coerce_finite_float(raw.get("temperature")),
         }
         for key in (
             "frames_declared",
@@ -513,6 +589,133 @@ def _count_state_visits(dtrajs: Sequence[np.ndarray], n_states: int) -> np.ndarr
     return visits
 
 
+def _compute_dwell_times(
+    dtrajs: Sequence[np.ndarray], n_states: int
+) -> Dict[str, Any]:
+    """Compute dwell time statistics for each state.
+
+    Dwell time is the number of consecutive frames spent in a state before
+    transitioning to another state.
+
+    Returns a dictionary with per-state dwell statistics including min, max,
+    mean, median, and counts of transitions.
+    """
+    if n_states == 0:
+        return {
+            "per_state_dwell_min": [],
+            "per_state_dwell_max": [],
+            "per_state_dwell_mean": [],
+            "per_state_dwell_median": [],
+            "per_state_transition_counts": [],
+        }
+
+    # Collect all dwell times for each state
+    state_dwells: List[List[int]] = [[] for _ in range(n_states)]
+
+    for traj in dtrajs:
+        if traj.size == 0:
+            continue
+
+        # Filter out invalid states
+        valid_mask = traj >= 0
+        if not np.any(valid_mask):
+            continue
+
+        valid_traj = traj[valid_mask]
+        if valid_traj.size == 0:
+            continue
+
+        # Compute run lengths (consecutive visits to same state)
+        current_state = int(valid_traj[0])
+        current_dwell = 1
+
+        for i in range(1, valid_traj.size):
+            state = int(valid_traj[i])
+            if state == current_state:
+                current_dwell += 1
+            else:
+                # Record the dwell time for the previous state
+                if current_state < n_states:
+                    state_dwells[current_state].append(current_dwell)
+                current_state = state
+                current_dwell = 1
+
+        # Don't forget the last dwell
+        if current_state < n_states:
+            state_dwells[current_state].append(current_dwell)
+
+    # Compute statistics for each state
+    per_state_dwell_min = []
+    per_state_dwell_max = []
+    per_state_dwell_mean = []
+    per_state_dwell_median = []
+    per_state_transition_counts = []
+
+    for state_id in range(n_states):
+        dwells = state_dwells[state_id]
+        if dwells:
+            per_state_dwell_min.append(int(np.min(dwells)))
+            per_state_dwell_max.append(int(np.max(dwells)))
+            per_state_dwell_mean.append(float(np.mean(dwells)))
+            per_state_dwell_median.append(float(np.median(dwells)))
+            per_state_transition_counts.append(len(dwells))
+        else:
+            # State was never visited
+            per_state_dwell_min.append(0)
+            per_state_dwell_max.append(0)
+            per_state_dwell_mean.append(0.0)
+            per_state_dwell_median.append(0.0)
+            per_state_transition_counts.append(0)
+
+    return {
+        "per_state_dwell_min": per_state_dwell_min,
+        "per_state_dwell_max": per_state_dwell_max,
+        "per_state_dwell_mean": per_state_dwell_mean,
+        "per_state_dwell_median": per_state_dwell_median,
+        "per_state_transition_counts": per_state_transition_counts,
+    }
+
+
+def _compute_occupancy_tail(
+    state_counts: np.ndarray, top_k: int = 10
+) -> Dict[str, Any]:
+    """Identify states with the lowest occupancy (bottom-k states).
+
+    Parameters
+    ----------
+    state_counts
+        Array of visit counts per state.
+    top_k
+        Number of lowest-occupancy states to report.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Dictionary containing:
+        - "lowest_occupancy_states": list of state indices
+        - "lowest_occupancy_counts": list of corresponding counts
+    """
+    n_states = len(state_counts)
+    if n_states == 0:
+        return {
+            "lowest_occupancy_states": [],
+            "lowest_occupancy_counts": [],
+        }
+
+    # Sort states by count (ascending)
+    sorted_indices = np.argsort(state_counts)
+
+    # Take the bottom k states
+    k = min(top_k, n_states)
+    lowest_states = sorted_indices[:k].tolist()
+    lowest_counts = state_counts[lowest_states].tolist()
+
+    return {
+        "lowest_occupancy_states": lowest_states,
+        "lowest_occupancy_counts": lowest_counts,
+    }
+
+
 def _count_zero_rows(counts: np.ndarray) -> int:
     if counts.size == 0:
         return 0
@@ -585,7 +788,17 @@ def _strongly_connected_components(
     if n == 0:
         return [], np.empty((0,), dtype=int)
 
+    # Build adjacency list, checking if there are any transitions at all
     adjacency = [np.where(counts[i] > 0.0)[0].astype(int).tolist() for i in range(n)]
+
+    # Check if all states are isolated (no transitions)
+    total_transitions = sum(len(neighbors) for neighbors in adjacency)
+    if total_transitions == 0:
+        # Every state is its own component (all isolated)
+        components = [[i] for i in range(n)]
+        labels = np.arange(n, dtype=int)
+        return components, labels
+
     solver = _TarjanSCC(adjacency)
     return solver.run()
 
@@ -774,11 +987,29 @@ def _make_json_ready(obj: Any) -> Any:
     return obj
 
 
-def _coerce_float(value: Any) -> float | None:
-    try:
-        number = float(value)
-    except Exception:
-        return None
-    if not np.isfinite(number):
-        return None
-    return float(number)
+def _generate_annotated_plots(
+    *,
+    build_result: Any,
+    output_dir: Path,
+    summary_payload: Mapping[str, Any],
+    config: Mapping[str, Any] | None,
+) -> Dict[str, str]:
+    """Generate annotated plots with MSM metadata."""
+    # Placeholder implementation - extend as needed
+    return {}
+
+
+class _AnalysisJSONEncoder(json.JSONEncoder):
+    """JSON encoder for analysis artifacts."""
+
+    def default(self, obj: Any) -> Any:
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, np.generic):
+            return obj.item()
+        if isinstance(obj, Path):
+            return str(obj)
+        if isinstance(obj, Mapping):
+            return dict(obj)
+        return super().default(obj)
+

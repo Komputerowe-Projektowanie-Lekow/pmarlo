@@ -9,8 +9,11 @@ from typing import Any, Dict, Optional, cast
 
 try:  # pragma: no cover - optional dependency import
     from pdbfixer import PDBFixer as _RealPDBFixer
-except Exception:  # pragma: no cover - optional dependency missing
+except Exception as exc:  # pragma: no cover - optional dependency missing
     _RealPDBFixer = None
+    _PDBFIXER_IMPORT_ERROR: Exception | None = exc
+else:
+    _PDBFIXER_IMPORT_ERROR = None
 
 from openmm import unit
 from openmm.app import PME, ForceField, HBonds, Modeller, PDBFile
@@ -44,81 +47,22 @@ _STANDARD_RESIDUES = {
 }
 _WATER_RESIDUES = {"HOH", "H2O", "WAT"}
 
-
-_PDBFixer: type[Any]
-
-if _RealPDBFixer is None:  # noqa: C901
-
-    class _StubPDBFixer:
-        """Lightweight fallback emulating core PDBFixer APIs."""
-
-        def __init__(self, filename: str) -> None:
-            pdb = PDBFile(filename)
-            self._modeller = Modeller(pdb.topology, pdb.positions)
-            self.topology = self._modeller.topology
-            self.positions = self._modeller.positions
-            self._forcefield_error: Exception | None = None
-            try:
-                self._forcefield = ForceField("amber14-all.xml", "amber14/tip3pfb.xml")
-            except Exception as exc:  # pragma: no cover - defensive, missing FF files
-                self._forcefield = None
-                self._forcefield_error = exc
-
-        def _sync(self) -> None:
-            self.topology = self._modeller.topology
-            self.positions = self._modeller.positions
-
-        def findNonstandardResidues(self) -> list:
-            return []
-
-        def replaceNonstandardResidues(self) -> None:
-            return None
-
-        def removeHeterogens(self, keepWater: bool = True) -> None:
-            residues_to_remove = []
-            for residue in self._modeller.topology.residues():
-                if residue.name in _STANDARD_RESIDUES:
-                    continue
-                if keepWater and residue.name in _WATER_RESIDUES:
-                    continue
-                residues_to_remove.append(residue)
-            if residues_to_remove:
-                self._modeller.delete(residues_to_remove)
-                self._sync()
-
-        def findMissingResidues(self) -> dict:
-            return {}
-
-        def findMissingAtoms(self) -> dict:
-            return {}
-
-        def addMissingAtoms(self) -> None:
-            return None
-
-        def addMissingHydrogens(self, ph: float) -> None:
-            self._modeller.addHydrogens(pH=ph)
-            self._sync()
-
-        def addSolvent(self, padding: float) -> None:
-            if self._forcefield is None:
-                raise RuntimeError(
-                    "OpenMM forcefield XML files 'amber14-all.xml' and "
-                    "'amber14/tip3pfb.xml' are required for solvation with the PDBFixer "
-                    "stub; install OpenMM forcefields or provide a custom fixer."
-                ) from self._forcefield_error
-            self._modeller.addSolvent(self._forcefield, padding=padding)
-            self._sync()
-
-    _PDBFixer = _StubPDBFixer
+if _RealPDBFixer is None:
     HAS_NATIVE_PDBFIXER = False
-    USING_PDBFIXER_STUB = True
+    USING_PDBFIXER_STUB = False
+    HAS_PDBFIXER = False
+    PDBFixer: type[Any] | None = None
 else:
-    _PDBFixer = _RealPDBFixer
     HAS_NATIVE_PDBFIXER = True
     USING_PDBFIXER_STUB = False
+    HAS_PDBFIXER = True
+    PDBFixer = cast(type[Any], _RealPDBFixer)
 
-HAS_PDBFIXER = True
-PDBFixer = cast(type[Any], _PDBFixer)
+
+def _raise_pdbfixer_missing(message: str) -> None:
+    if _PDBFIXER_IMPORT_ERROR is not None:
+        raise ImportError(message) from _PDBFIXER_IMPORT_ERROR
+    raise ImportError(message)
 
 
 class Protein:
@@ -146,12 +90,13 @@ class Protein:
         # If automatic preparation is requested but PDBFixer isn't available,
         # fail fast with a clear ImportError (test expectation when fixer missing).
         if auto_prepare and not HAS_PDBFIXER:
-            raise ImportError(
+            _raise_pdbfixer_missing(
                 (
                     "PDBFixer is required for protein preparation but is not "
                     "installed. Install it with: pip install 'pmarlo[fixer]' or "
                     "set auto_prepare=False to skip preparation."
                 )
+                + " Set auto_prepare=False to skip preparation."
             )
 
         pdb_path = self._resolve_pdb_path(pdb_file)
@@ -161,7 +106,7 @@ class Protein:
         self._validate_readable_nonempty(pdb_path)
         self._validate_ph(ph)
         self._assign_basic_fields(pdb_path, ph)
-        self._initialize_fixer(auto_prepare, pdb_file)
+        self._initialize_fixer(auto_prepare)
         self._initialize_storage()
         self._initialize_properties_dict()
         self._maybe_prepare(auto_prepare, preparation_options, ph)
@@ -171,7 +116,8 @@ class Protein:
     # --- Initialization helpers to reduce complexity ---
 
     def _resolve_pdb_path(self, pdb_file: str) -> Path:
-        return Path(pdb_file)
+        expanded = os.path.expandvars(os.path.expanduser(pdb_file))
+        return Path(expanded).resolve(strict=False)
 
     def _validate_file_exists(self, pdb_path: Path) -> None:
         if not pdb_path.exists():
@@ -213,11 +159,11 @@ class Protein:
         self.pdb_file = str(pdb_path)
         self.ph = ph
 
-    def _initialize_fixer(self, auto_prepare: bool, pdb_file: str) -> None:
+    def _initialize_fixer(self, auto_prepare: bool) -> None:
         if not HAS_PDBFIXER:
             self._configure_state_no_fixer(auto_prepare)
         else:
-            self._initialize_fixer_instance(pdb_file)
+            self._initialize_fixer_instance()
 
     def _configure_state_no_fixer(self, auto_prepare: bool) -> None:
         # When not preparing automatically, ensure the file exists so
@@ -227,17 +173,20 @@ class Protein:
         self.fixer: Any = None
         self.prepared = False
         if auto_prepare:
-            raise ImportError(
+            _raise_pdbfixer_missing(
                 (
                     "PDBFixer is required for protein preparation but is not "
                     "installed. Install it with: pip install 'pmarlo[fixer]' "
                     "or set auto_prepare=False to skip preparation."
                 )
+                + " Set auto_prepare=False to skip preparation."
             )
 
-    def _initialize_fixer_instance(self, pdb_file: str) -> None:
+    def _initialize_fixer_instance(self) -> None:
         # PDBFixer will validate the file path and raise appropriately if invalid.
-        self.fixer = PDBFixer(filename=pdb_file)
+        if PDBFixer is None:  # Defensive check; should be unreachable when HAS_PDBFIXER
+            raise RuntimeError("PDBFixer class reference is not available")
+        self.fixer = PDBFixer(filename=self.pdb_file)
         self.prepared = False
 
     def _initialize_storage(self) -> None:
@@ -285,9 +234,11 @@ class Protein:
         """
         try:
             import mdtraj as md
-        except Exception as e:
-            print(f"Warning: MDTraj not available: {e}")
-            return
+        except Exception as e:  # pragma: no cover - optional dependency missing
+            raise ImportError(
+                "MDTraj is required to compute protein properties when auto_prepare="
+                "False. Install MDTraj or enable automatic preparation."
+            ) from e
 
         try:
             traj = md.load(self.pdb_file)
@@ -326,7 +277,7 @@ class Protein:
 
     def prepare(
         self,
-        ph: float = 7.0,
+        ph: float | None = None,
         remove_heterogens: bool = True,
         keep_water: bool = True,
         add_missing_atoms: bool = True,
@@ -341,7 +292,8 @@ class Protein:
         Prepare the protein structure with specified options.
 
         Args:
-            ph (float): pH value for protonation state (default: 7.0)
+            ph (float | None): pH value for protonation state. When ``None`` the
+                instance's stored ``self.ph`` is used (default behavior).
             remove_heterogens (bool): Remove non-protein molecules (default: True)
             keep_water (bool): Keep water molecules if True (default: True)
             add_missing_atoms (bool): Add missing atoms to residues (default: True)
@@ -362,8 +314,15 @@ class Protein:
         Raises:
             ImportError: If PDBFixer is not installed
         """
+        if ph is None:
+            ph_to_use = self.ph
+        else:
+            self._validate_ph(ph)
+            self.ph = ph
+            ph_to_use = ph
+
         if not HAS_PDBFIXER:
-            raise ImportError(
+            _raise_pdbfixer_missing(
                 "PDBFixer is required for protein preparation but is not installed. "
                 "Install it with: pip install 'pmarlo[fixer]'"
             )
@@ -392,7 +351,7 @@ class Protein:
 
         # Add missing hydrogens with specified pH
         if add_missing_hydrogens:
-            self.fixer.addMissingHydrogens(ph)
+            self.fixer.addMissingHydrogens(ph_to_use)
 
         # Optionally solvate the system if no waters are present
         if solvate:
@@ -474,21 +433,18 @@ class Protein:
 
     def _calculate_rdkit_properties(self) -> Dict[str, Any]:
         """Calculate properties using RDKit for accurate molecular analysis."""
-        props: Dict[str, Any] = {}
+        tmp_pdb = self._create_temp_pdb()
         try:
-            tmp_pdb = self._create_temp_pdb()
             self.rdkit_mol = Chem.MolFromPDBFile(tmp_pdb)
+            if self.rdkit_mol is None:
+                raise ValueError(
+                    "RDKit could not parse the generated PDB file for descriptor "
+                    "calculation. Ensure the input structure is valid."
+                )
 
-            if self.rdkit_mol is not None:
-                props = self._compute_rdkit_descriptors()
-            else:
-                print("Warning: Could not load molecule into RDKit.")
-
-        except Exception as e:
-            print(f"Warning: RDKit calculation failed: {e}")
+            props = self._compute_rdkit_descriptors()
         finally:
-            if "tmp_pdb" in locals():
-                self._cleanup_temp_file(tmp_pdb)
+            self._cleanup_temp_file(tmp_pdb)
 
         self._rdkit_properties = props
         return props
@@ -598,14 +554,43 @@ class Protein:
                     neg += count * (10 ** (ph - pk) / (1 + 10 ** (ph - pk)))
             return pos - neg
 
-        # Estimate pI by scanning pH 0-14
-        pI = 0.0
-        min_charge = float("inf")
-        for pH in [x / 100 for x in range(0, 1401)]:
-            c = abs(charge_at_ph(pH))
-            if c < min_charge:
-                min_charge = c
-                pI = pH
+        # Estimate pI using a bisection search to find the zero-charge pH.
+        lower, upper = 0.0, 14.0
+        lower_charge = charge_at_ph(lower)
+        upper_charge = charge_at_ph(upper)
+
+        if math.isclose(lower_charge, 0.0, abs_tol=1e-6):
+            pI = lower
+        elif math.isclose(upper_charge, 0.0, abs_tol=1e-6):
+            pI = upper
+        else:
+            if lower_charge * upper_charge > 0:
+                raise ValueError(
+                    "Protein net charge does not cross zero between pH 0 and 14; "
+                    "cannot compute isoelectric point."
+                )
+
+            max_iterations = 60
+            tolerance = 1e-4
+            for _ in range(max_iterations):
+                mid = 0.5 * (lower + upper)
+                mid_charge = charge_at_ph(mid)
+                if math.isclose(mid_charge, 0.0, abs_tol=tolerance) or (
+                    (upper - lower) / 2 < tolerance
+                ):
+                    pI = mid
+                    break
+                if lower_charge * mid_charge < 0:
+                    upper = mid
+                    upper_charge = mid_charge
+                else:
+                    lower = mid
+                    lower_charge = mid_charge
+            else:
+                raise ValueError(
+                    "Bisection search for the protein isoelectric point did not "
+                    "converge within 60 iterations."
+                )
 
         charge = charge_at_ph(self.ph)
 
@@ -698,7 +683,7 @@ class Protein:
 
         # For prepared structures, use PDBFixer
         if not HAS_PDBFIXER:
-            raise ImportError(
+            _raise_pdbfixer_missing(
                 (
                     "PDBFixer is required for saving prepared structures but is "
                     "not installed. Install it with: pip install 'pmarlo[fixer]'"
@@ -727,7 +712,7 @@ class Protein:
             )
 
         if not HAS_PDBFIXER:
-            raise ImportError(
+            _raise_pdbfixer_missing(
                 "PDBFixer is required for saving prepared structures but is not installed. "
                 "Install it with: pip install 'pmarlo[fixer]'"
             )

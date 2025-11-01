@@ -16,6 +16,8 @@ final.xml
 /example_programs/app_usecase/app_output/state.json
 
 
+pmarlo_webapp/app_output/*
+pmarlo_webapp/app_input/*
 
 /utilities/
 

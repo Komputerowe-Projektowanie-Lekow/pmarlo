@@ -1,14 +1,14 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
 
 def test_deeptica_tab_gating_banner_message_exists():
-    # The app shows a banner when Deep‑TICA is skipped; ensure the message template exists.
-    p = Path("example_programs/app_usecase/app/app.py")
+    # The app shows a banner when Deepâ€‘TICA is skipped; ensure the message template exists.
+    p = Path("pmarlo_webapp/app/app.py")
     text = p.read_text(encoding="utf-8")
     assert (
-        "Deep‑TICA CV learning was skipped" in text
+        "Deepâ€‘TICA CV learning was skipped" in text
         or "Deep-TICA CV learning was skipped" in text
     )
 

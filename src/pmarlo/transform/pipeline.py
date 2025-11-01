@@ -177,7 +177,7 @@ class Pipeline:
     def __init__(
         self,
         pdb_file: str,
-        output_dir: str = "output",
+        output_dir: str | Path,
         temperatures: Optional[List[float]] = None,
         n_replicas: int = 3,
         steps: int = 1000,
@@ -857,10 +857,11 @@ class Pipeline:
 # Convenience function for the 5-line API
 def run_pmarlo(
     pdb_file: str,
+    output_dir: str | Path,
+    *,
     temperatures: Optional[List[float]] = None,
     steps: int = 1000,
     n_states: int = 50,
-    output_dir: str = "output",
     checkpoint_id: Optional[str] = None,
     auto_continue: bool = True,
     **kwargs: Any,

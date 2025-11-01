@@ -1,4 +1,4 @@
-# Copyright (c) 2025 PMARLO Development Team
+﻿# Copyright (c) 2025 PMARLO Development Team
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 """
@@ -37,15 +37,22 @@ class TestPipeline:
         assert pipeline.n_states == 10
         assert not pipeline.use_replica_exchange
 
-    def test_pipeline_default_temperatures(self, test_pdb_file):
+    def test_pipeline_default_temperatures(self, test_pdb_file, temp_output_dir):
         """Test pipeline with default temperature settings."""
         # Test single temperature (no replica exchange)
-        pipeline = Pipeline(pdb_file=str(test_pdb_file), use_replica_exchange=False)
+        pipeline = Pipeline(
+            pdb_file=str(test_pdb_file),
+            use_replica_exchange=False,
+            output_dir=str(temp_output_dir / "single"),
+        )
         assert pipeline.temperatures == [300.0]
 
         # Test replica exchange with default temperatures
         pipeline = Pipeline(
-            pdb_file=str(test_pdb_file), use_replica_exchange=True, n_replicas=3
+            pdb_file=str(test_pdb_file),
+            use_replica_exchange=True,
+            n_replicas=3,
+            output_dir=str(temp_output_dir / "remd"),
         )
         assert len(pipeline.temperatures) == 3
         assert all(t >= 300.0 for t in pipeline.temperatures)
@@ -67,9 +74,11 @@ class TestPipeline:
             # If protein setup fails due to dependencies, that's expected
             assert "No module named" in str(e) or "ImportError" in str(type(e).__name__)
 
-    def test_pipeline_get_components(self, test_pdb_file):
+    def test_pipeline_get_components(self, test_pdb_file, temp_output_dir):
         """Test getting pipeline components."""
-        pipeline = Pipeline(pdb_file=str(test_pdb_file))
+        pipeline = Pipeline(
+            pdb_file=str(test_pdb_file), output_dir=str(temp_output_dir / "components")
+        )
         components = pipeline.get_components()
 
         assert isinstance(components, dict)

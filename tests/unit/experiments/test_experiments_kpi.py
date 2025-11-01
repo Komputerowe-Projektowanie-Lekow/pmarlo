@@ -1,4 +1,4 @@
-import json
+﻿import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -226,7 +226,7 @@ def test_compute_stationary_entropy():
     pi_uniform = np.array([0.25, 0.25, 0.25, 0.25], dtype=float)
     entropy_uniform = compute_stationary_entropy(pi_uniform)
 
-    # Entropy of uniform distribution over 4 states = log2(4) ≈ 1.386 nats
+    # Entropy of uniform distribution over 4 states = log2(4) â‰ˆ 1.386 nats
     assert 1.35 < entropy_uniform < 1.40
 
     # Delta distribution (all mass on one state) has zero entropy

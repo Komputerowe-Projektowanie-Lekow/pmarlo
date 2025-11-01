@@ -7,13 +7,13 @@ from pathlib import Path
 
 import numpy as np
 
-from example_programs.app_usecase.app.backend import (
+from pmarlo.data.shard import write_shard
+from pmarlo_webapp.app.backend import (
     BuildArtifact,
     BuildConfig,
-    WorkflowBackend,
+    Backend,
     WorkspaceLayout,
 )
-from pmarlo.data.shard import write_shard
 
 _SEGMENT_COUNTER = count()
 
@@ -34,7 +34,7 @@ def _source_metadata(segment_id: int, replica_id: int) -> dict[str, object]:
     }
 
 
-def _make_workspace(tmp_path: Path) -> tuple[WorkflowBackend, list[Path]]:
+def _make_workspace(tmp_path: Path) -> tuple[Backend, list[Path]]:
     workspace_dir = tmp_path / "workspace"
     layout = WorkspaceLayout(
         app_root=tmp_path,
@@ -75,12 +75,12 @@ def _make_workspace(tmp_path: Path) -> tuple[WorkflowBackend, list[Path]]:
         source=_source_metadata(segment_id, replica_id),
     )
 
-    backend = WorkflowBackend(layout)
+    backend = Backend(layout)
     return backend, [shard_path]
 
 
 def _run_build(
-    backend: WorkflowBackend,
+    backend: Backend,
     shard_paths: list[Path],
     n_states: int,
     lag: int,

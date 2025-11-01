@@ -1,12 +1,19 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
+import builtins
+import sys
 from pathlib import Path
 
 import mdtraj as md
 import numpy as np
+import pytest
 
 from pmarlo.io.trajectory_reader import MDTrajReader
-from pmarlo.io.trajectory_writer import MDTrajDCDWriter
+from pmarlo.io.trajectory_writer import (
+    MDAnalysisDCDWriter,
+    MDTrajDCDWriter,
+    TrajectoryWriteError,
+)
 
 
 def _make_topology(tmp_path: Path, n_atoms: int = 3):
@@ -80,3 +87,20 @@ def test_writer_overwrite_flag(tmp_path: Path):
     # Now length should be 2
     reader = MDTrajReader(topology_path=top_path)
     assert reader.probe_length(str(out_path)) == 2
+
+
+def test_mdanalysis_writer_missing_dependency(monkeypatch, tmp_path: Path):
+    monkeypatch.delitem(sys.modules, "MDAnalysis", raising=False)
+
+    real_import = builtins.__import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "MDAnalysis" or name.startswith("MDAnalysis."):
+            raise ModuleNotFoundError("No module named 'MDAnalysis'")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    writer = MDAnalysisDCDWriter()
+    with pytest.raises(TrajectoryWriteError, match="MDAnalysis is required"):
+        writer.open(str(tmp_path / "out.dcd"), topology_path=str(tmp_path / "top.pdb"))

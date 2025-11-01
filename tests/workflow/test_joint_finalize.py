@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
@@ -69,3 +69,5 @@ def test_joint_workflow_finalize_pipeline(tmp_path):
     assert "ck_errors" in workflow.last_artifacts
     assert result.meta.get("fes") is not None
     assert workflow.last_guardrails is not None
+    assert "ck_transition_matrices" in workflow.last_artifacts
+    assert "ck_row_counts" in workflow.last_artifacts

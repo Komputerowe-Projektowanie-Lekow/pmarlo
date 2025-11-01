@@ -150,6 +150,14 @@ class PlotsMixin:
                 )
             else:
                 plt.plot([], [], label=f"τ{i+1} ({unit_label})")
+
+        # Mark the selected lag time if available
+        selected_lag = getattr(self, 'lag_time', None)
+        if selected_lag is not None and selected_lag > 0:
+            selected_lag_ps = selected_lag * dt_ps * scale
+            plt.axvline(selected_lag_ps, color='red', linestyle='--', linewidth=2,
+                       label=f'Selected lag = {selected_lag} frames', alpha=0.7)
+
         plt.plot([], [], " ", label="NaNs indicate unstable eigenvalues at this τ")
         plt.xlabel(f"Lag Time ({unit_label})")
         plt.ylabel(f"Implied Timescale ({unit_label})")

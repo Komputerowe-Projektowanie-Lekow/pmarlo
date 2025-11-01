@@ -1,5 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
+import builtins
+import sys
+import types
 from pathlib import Path
 
 import mdtraj as md
@@ -7,7 +10,9 @@ import numpy as np
 import pytest
 
 from pmarlo.io.trajectory_reader import (
+    MDAnalysisReader,
     MDTrajReader,
+    TrajectoryIOError,
     TrajectoryMissingTopologyError,
 )
 
@@ -68,3 +73,71 @@ def test_missing_topology_raises(tmp_path: Path):
         _ = reader.probe_length(str(dcd_path))
     with pytest.raises(TrajectoryMissingTopologyError):
         list(reader.iter_frames(str(dcd_path), start=0, stop=2, stride=1))
+
+
+def test_mdanalysis_reader_respects_stride(monkeypatch):
+    frames = [
+        np.full((1, 3), fill_value=float(i)) for i in range(6)
+    ]  # shape (n_atoms=1, 3)
+
+    class DummyTimestep:
+        def __init__(self, arr: np.ndarray) -> None:
+            self.positions = arr
+
+    class DummyTrajectory:
+        def __init__(self) -> None:
+            self._frames = [DummyTimestep(arr) for arr in frames]
+            self.requested_slice = None
+
+        def __getitem__(self, key):
+            self.requested_slice = key
+            if isinstance(key, slice):
+                start, stop, step = key.indices(len(self._frames))
+                indices = range(start, stop, step)
+            else:  # pragma: no cover - defensive fallback
+                indices = [int(key)]
+            return (self._frames[i] for i in indices)
+
+    module = types.ModuleType("MDAnalysis")
+
+    class DummyUniverse:
+        def __init__(self, topology_path: str, traj_path: str) -> None:
+            self.topology_path = topology_path
+            self.traj_path = traj_path
+            self.trajectory = DummyTrajectory()
+            module.last_universe = self
+
+    module.Universe = DummyUniverse  # type: ignore[attr-defined]
+    module.last_universe = None  # type: ignore[attr-defined]
+
+    monkeypatch.setitem(sys.modules, "MDAnalysis", module)
+
+    reader = MDAnalysisReader(topology_path="top.pdb")
+    out = list(reader.iter_frames("traj.dcd", start=1, stop=6, stride=2))
+
+    assert module.last_universe is not None
+    requested = module.last_universe.trajectory.requested_slice
+    assert isinstance(requested, slice)
+    assert (requested.start, requested.stop, requested.step) == (1, 6, 2)
+    assert len(out) == 3
+    assert all(arr.shape == (1, 3) for arr in out)
+    assert np.allclose(out[0], frames[1])
+    assert np.allclose(out[1], frames[3])
+    assert np.allclose(out[2], frames[5])
+
+
+def test_mdanalysis_reader_missing_dependency(monkeypatch):
+    monkeypatch.delitem(sys.modules, "MDAnalysis", raising=False)
+
+    real_import = builtins.__import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "MDAnalysis" or name.startswith("MDAnalysis."):
+            raise ModuleNotFoundError("No module named 'MDAnalysis'")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    reader = MDAnalysisReader(topology_path="topology.pdb")
+    with pytest.raises(TrajectoryIOError, match="MDAnalysis is required"):
+        list(reader.iter_frames("traj.dcd", start=0, stop=1, stride=1))

@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
 
 from pmarlo.shards.format import read_shard_npz_json
-from pmarlo.utils.validation import require
 
 from .shard_schema import (
     SCHEMA_VERSION,
@@ -51,35 +50,31 @@ def load_shard_meta(json_path: Path) -> BaseShard:
     provenance: Dict[str, Any] = dict(meta.provenance)
 
     schema_version = str(meta.schema_version)
-    require(
-        schema_version == SCHEMA_VERSION,
-        f"Shard schema_version {schema_version} does not match {SCHEMA_VERSION}",
-    )
+    if schema_version != SCHEMA_VERSION:
+        raise ValueError(
+            f"Shard schema_version {schema_version} does not match {SCHEMA_VERSION}"
+        )
 
     kind = provenance.get("kind")
     run_id = provenance.get("run_id")
-    require(isinstance(kind, str), f"Shard {json_path} missing provenance.kind")
-    require(isinstance(run_id, str), f"Shard {json_path} missing provenance.run_id")
+    if not isinstance(kind, str):
+        raise ValueError(f"Shard {json_path} missing provenance.kind")
+    if not isinstance(run_id, str):
+        raise ValueError(f"Shard {json_path} missing provenance.run_id")
     kind_str = str(kind).strip().lower()
     run_id_str = str(run_id)
 
     periodic_raw = provenance.get("periodic")
-    require(
-        isinstance(periodic_raw, (list, tuple)),
-        f"Shard {json_path} must declare periodic flags",
-    )
+    if not isinstance(periodic_raw, (list, tuple)):
+        raise ValueError(f"Shard {json_path} must declare periodic flags")
     cv_names = _coerce_tuple_str(meta.feature_spec.columns)
     periodic = _coerce_tuple_bool(periodic_raw)
-    require(
-        len(periodic) == len(cv_names),
-        f"Shard {json_path} periodic flags length mismatch",
-    )
+    if len(periodic) != len(cv_names):
+        raise ValueError(f"Shard {json_path} periodic flags length mismatch")
 
     created_at = provenance.get("created_at")
-    require(
-        isinstance(created_at, str) and created_at,
-        f"Shard {json_path} missing created_at",
-    )
+    if not (isinstance(created_at, str) and created_at):
+        raise ValueError(f"Shard {json_path} missing created_at")
 
     topology_path = provenance.get("topology") or provenance.get("topology_path")
     topology_path = str(topology_path) if topology_path is not None else None
@@ -123,10 +118,8 @@ def load_shard_meta(json_path: Path) -> BaseShard:
         return DemuxShard(temperature_K=float(meta.temperature_K), **base_kwargs)
 
     replica_index = provenance.get("replica_index", meta.replica_id)
-    require(
-        isinstance(replica_index, (int, float)),
-        f"Shard {json_path} missing replica_index",
-    )
+    if not isinstance(replica_index, (int, float)):
+        raise ValueError(f"Shard {json_path} missing replica_index")
     return ReplicaShard(replica_index=int(replica_index), **base_kwargs)
 
 
