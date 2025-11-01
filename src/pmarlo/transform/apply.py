@@ -1013,8 +1013,10 @@ def trajectory_demux(context: Dict[str, Any], **kwargs) -> Dict[str, Any]:
     """Adapter for trajectory demultiplexing stage."""
     trajectory_files = context.get("trajectory_files", [])
     if not trajectory_files:
-        logger.warning("No trajectory files found for demultiplexing")
-        return context
+        raise ValueError(
+            "No trajectory files found for demultiplexing. "
+            "Ensure trajectory_files are present in the context."
+        )
 
     # Demultiplexing logic would go here
     context["demux_completed"] = True
@@ -1026,8 +1028,10 @@ def trajectory_analysis(context: Dict[str, Any], **kwargs) -> Dict[str, Any]:
     """Adapter for trajectory analysis stage."""
     trajectory_files = context.get("trajectory_files", [])
     if not trajectory_files:
-        logger.warning("No trajectory files found for analysis")
-        return context
+        raise ValueError(
+            "No trajectory files found for analysis. "
+            "Ensure trajectory_files are present in the context."
+        )
 
     # Analysis logic would go here
     context["analysis_completed"] = True

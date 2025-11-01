@@ -141,17 +141,10 @@ class SamplingMixin:
             if path is not None and path.exists():
                 traj_files.append(path)
         if not traj_files:
-            # Fallback: scan standard REMD output locations
-            candidates: List[Path] = []
-            replica_dir = run_dir / "replica_exchange"
-            demux_dir = run_dir
-            candidates.extend(sorted(replica_dir.rglob("*.dcd")))
-            candidates.extend(sorted(replica_dir.rglob("*.nc")))
-            candidates.extend(sorted(demux_dir.glob("demux_*.*")))
-            traj_files = candidates
-        if not traj_files:
-            return None
-
+            raise FileNotFoundError(
+                f"No trajectory files found for run {run_dir}. "
+                f"Expected trajectory files in analysis results or standard REMD output locations."
+            )
         analysis_temps = [float(t) for t in record.get("analysis_temperatures", [])]
         steps = int(record.get("steps", 0))
         created_at = str(record.get("created_at", "")) or _timestamp()
@@ -311,7 +304,7 @@ class SamplingMixin:
 
             if not torch.cuda.is_available():  # pragma: no cover - hardware dependent
                 logger.warning(
-                    "⚠️  PyTorch is running on CPU only!\n"
+                    "WARNING: PyTorch is running on CPU only!\n"
                     "CV-biased simulations will be ~10-20x slower than unbiased.\n"
                     "For production use, install CUDA-enabled PyTorch:\n"
                     "https://pytorch.org/get-started/locally/\n"
@@ -337,7 +330,7 @@ class SamplingMixin:
             logger.info("  E_bias = k * sum(cv_i^2)")
             logger.info("  Forces: F = -∇E_bias (computed by OpenMM)")
             logger.info("  Purpose: Repulsive bias → explore diverse conformations")
-            logger.info("\n⚠️  IMPORTANT: The model expects MOLECULAR FEATURES as input")
+            logger.info("\nIMPORTANT: The model expects MOLECULAR FEATURES as input")
             logger.info("  (distances, angles, dihedrals), not raw atomic positions.")
             logger.info("  Feature extraction must be configured in OpenMM system.")
         run_label = base_label
