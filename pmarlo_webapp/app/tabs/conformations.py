@@ -3,18 +3,18 @@ import traceback
 from pathlib import Path
 from typing import List, Optional
 
-from app.core.context import AppContext
-from app.core.session import (
+from core.context import AppContext
+from core.session import (
     _LAST_CONFORMATIONS,
     _CONFORMATIONS_FEEDBACK,
     _sync_form_metastable_states,
 )
-from app.core.view_helpers import (
+from core.view_helpers import (
     _select_shard_paths,
     _summarize_selected_shards,
     _render_conformations_result,
 )
-from app.backend.types import ConformationsConfig, ConformationsResult
+from backend.types import ConformationsConfig, ConformationsResult
 
 def render_conformations_tab(ctx: AppContext) -> None:
     """Render the conformations analysis tab."""
@@ -114,20 +114,20 @@ def render_conformations_tab(ctx: AppContext) -> None:
                 "Configure Conformations Analysis", expanded=False
         ):
             # Topology Selection
-            st.markdown(" Topology Selection")
+            st.markdown("#### Topology Selection")
             available_topologies = layout.available_inputs()
             topology_select_col, topology_manual_col = st.columns(2)
             selected_topology: Optional[Path] = None
             if available_topologies:
                 selected_topology = topology_select_col.selectbox(
-                    "Topology PDB (from app_intputs/)",
+                    "Topology PDB (from app_input/)",
                     options=available_topologies,
                     format_func=lambda p: p.name,
                     key="conf_topology_select",
                 )
             else:
                 topology_select_col.warning(
-                    "No PDB files detected in app_intputs/. Provide the topology used during sampling."
+                    "No PDB files detected in app_input/. Provide the topology used during sampling."
                 )
 
             manual_topology_entry = topology_manual_col.text_input(

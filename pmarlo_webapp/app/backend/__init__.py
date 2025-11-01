@@ -24,10 +24,10 @@ class Backend(
 ):
     """Main backend interface for pmarlo-webapp."""
 
-    def __init__(self, workspace: Path):
-        self.layout = WorkspaceLayout(workspace)
-        manifest = self.layout.workspace_dir / "manifest.json"
-        self.state = PersistentState(manifest)
+    def __init__(self, layout: WorkspaceLayout):
+        """Initialize with a WorkspaceLayout object."""
+        self.layout = layout
+        self.state = PersistentState(self.layout.state_path)
 
     def _path_from_value(self, value: Any) -> Optional[Path]:
         """Convert a value to a Path, handling various input types."""
@@ -37,10 +37,25 @@ class Backend(
             return Path(value)
         return None
 
+    def sidebar_summary(self) -> Dict[str, int]:
+        """Return summary counts for the sidebar display."""
+        return {
+            "runs": len(self.state.runs),
+            "shards": len(self.state.shards),
+            "models": len(self.state.models),
+            "builds": len(self.state.builds),
+            "conformations": len(self.state.conformations),
+        }
+
+
+# Backward compatibility alias
+WorkflowBackend = Backend
+
 
 # Public exports
 __all__ = [
     "Backend",
+    "WorkflowBackend",
     "WorkspaceLayout",
     "PersistentState",
     "SimulationResult",

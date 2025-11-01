@@ -539,8 +539,10 @@ def _compute_split_diagnostics(
     split: Any,
     taus: Sequence[int],
 ) -> tuple[list[float] | None, Dict[str, Any], list[str]] | None:
-    """Gather canonical correlations and autocorrelation curve for one split."""
+    """Gather canonical correlations and autocorrelation curve for one split.
 
+    Raises errors if data is malformed. Returns None only if split cannot be coerced.
+    """
     try:
         X = _coerce_array(split)
     except Exception as exc:  # pragma: no cover - defensive
@@ -548,7 +550,12 @@ def _compute_split_diagnostics(
         return None
 
     metadata = split.get("meta") if isinstance(split, Mapping) else None
-    whitened, _ = apply_whitening_from_metadata(X, metadata)
+
+    # Apply whitening if metadata exists; use raw data otherwise
+    if metadata is not None:
+        whitened, _ = apply_whitening_from_metadata(X, metadata)
+    else:
+        whitened = X
 
     canonical: list[float] | None = None
     warnings: list[str] = []
@@ -569,7 +576,6 @@ def _compute_split_diagnostics(
             logger.error(
                 "%s: insufficient samples for canonical correlation (need >=2)", name
             )
-            # Propagate as per requirement to raise error on insufficient samples
             raise
         except CanonicalCorrelationError as exc:
             msg = f"{name}: canonical correlation failed ({exc})"

@@ -1,14 +1,14 @@
 import streamlit as st
 from pathlib import Path
 
-from app.core.context import AppContext
-from app.core.session import (
+from core.context import AppContext
+from core.session import (
     _RUN_PENDING,
     _LAST_SIM,
     _LAST_SHARDS,
 )
-from app.core.parsers import _parse_temperature_ladder
-from app.backend.types import SimulationConfig, ShardRequest
+from core.parsers import _parse_temperature_ladder
+from backend.types import SimulationConfig, ShardRequest
 
 
 def render_sampling_tab(ctx: AppContext) -> None:
@@ -19,7 +19,7 @@ def render_sampling_tab(ctx: AppContext) -> None:
     st.header("Sampling & Shard Production")
     inputs = layout.available_inputs()
     if not inputs:
-        st.warning("No prepared proteins found. Place a PDB under app_intputs/.")
+        st.warning("No prepared proteins found. Place a PDB under app_input/.")
     else:
         # Basic Simulation Settings
         with st.expander("Basic Simulation Settings", expanded=True):
@@ -56,7 +56,7 @@ def render_sampling_tab(ctx: AppContext) -> None:
                 value=True,
                 help=(
                     "When enabled, the final MD frame is stored in the run directory and "
-                    "copied into app_intputs/ so it becomes available as a protein input."
+                    "copied into app_input/ so it becomes available as a protein input."
                 ),
                 key="sim_save_restart_snapshot",
             )

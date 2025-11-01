@@ -6,14 +6,14 @@ import pandas as pd
 import streamlit as st
 
 from pmarlo.data.shard_io import ShardRunSummary, summarize_shard_runs
-from app.plots import plot_msm, plot_fes
-from app.backend.utils import _sanitize_artifacts
-from app.core.tables import _metrics_table
+from plots import plot_msm, plot_fes
+from backend.utils import _sanitize_artifacts
+from core.tables import _metrics_table
 
 if TYPE_CHECKING:
-    from app.backend.workspace import WorkflowBackend
-    from app.backend.layout import WorkspaceLayout
-    from app.backend.types import BuildArtifact, TrainingResult, ConformationsResult
+    from backend.workspace import WorkflowBackend
+    from backend.layout import WorkspaceLayout
+    from backend.types import BuildArtifact, TrainingResult, ConformationsResult
 
 
 

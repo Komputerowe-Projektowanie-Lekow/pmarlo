@@ -1,8 +1,8 @@
 import streamlit as st
 from pathlib import Path
 
-from app.core.context import AppContext
-from app.core.session import (
+from core.context import AppContext
+from core.session import (
     _ASSET_RUN_SELECTION,
     _ASSET_SHARD_SELECTION,
     _ASSET_MODEL_SELECTION,
@@ -15,15 +15,15 @@ from app.core.session import (
     _MODEL_PREVIEW_SELECTION,
     _apply_analysis_config_to_state,
 )
-from app.core.tables import (
+from core.tables import (
     _runs_dataframe,
     _shards_dataframe,
     _models_dataframe,
     _builds_dataframe,
     _conformations_dataframe,
 )
-from app.core.view_helpers import _model_entry_label
-from app.backend.utils import _sanitize_artifacts
+from core.view_helpers import _model_entry_label
+from backend.utils import _sanitize_artifacts
 
 def render_assets_tab(ctx: AppContext) -> None:
     """Render the workspace assets tab."""

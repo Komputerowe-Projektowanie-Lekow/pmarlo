@@ -6,7 +6,7 @@ import pytest
 
 from pmarlo_webapp.app.backend import (
     SimulationConfig,
-    WorkflowBackend,
+    Backend,
     WorkspaceLayout,
 )
 
@@ -29,7 +29,7 @@ def test_quick_mode_runs_full_simulation_by_default(
         state_path=tmp_path / "output" / "state.json",
     )
     layout.ensure()
-    backend = WorkflowBackend(layout)
+    backend = Backend(layout)
 
     calls: dict[str, object] = {}
 
@@ -99,7 +99,7 @@ def test_explicit_stub_flag_skips_engine(
         state_path=tmp_path / "output" / "state.json",
     )
     layout.ensure()
-    backend = WorkflowBackend(layout)
+    backend = Backend(layout)
 
     def fake_run_replica_exchange(
         *_args: object, **_kwargs: object
@@ -145,7 +145,7 @@ def test_save_restart_snapshot_creates_inputs_copy(
         state_path=tmp_path / "output" / "state.json",
     )
     layout.ensure()
-    backend = WorkflowBackend(layout)
+    backend = Backend(layout)
 
     monkeypatch.setattr(
         "pmarlo_webapp.app.backend._timestamp",
@@ -224,7 +224,7 @@ def test_stub_restart_snapshot_written(
         state_path=tmp_path / "output" / "state.json",
     )
     layout.ensure()
-    backend = WorkflowBackend(layout)
+    backend = Backend(layout)
 
     monkeypatch.setattr(
         "pmarlo_webapp.app.backend._timestamp",

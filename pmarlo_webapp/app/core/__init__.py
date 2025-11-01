@@ -1,16 +1,16 @@
 """Core utilities for the PMARLO web application."""
 
-from app.core.constants import DEEPTICA_SKIP_MESSAGE
-from app.core.context import AppContext, build_context
-from app.core.logging import configure_file_logging
-from app.core.parsers import (
+from core.constants import DEEPTICA_SKIP_MESSAGE
+from core.context import AppContext, build_context
+from core.logging import configure_file_logging
+from core.parsers import (
     _format_lag_sequence as format_lag_sequence,
     _format_tau_schedule as format_tau_schedule,
     _parse_lag_sequence as parse_lag_sequence,
     _parse_tau_schedule as parse_tau_schedule,
     _parse_temperature_ladder as parse_temperature_ladder,
 )
-from app.core.session import (
+from core.session import (
     _ASSET_BUILD_SELECTION as ASSET_BUILD_SELECTION,
     _ASSET_CONF_SELECTION as ASSET_CONF_SELECTION,
     _ASSET_MODEL_SELECTION as ASSET_MODEL_SELECTION,
@@ -41,7 +41,7 @@ from app.core.session import (
     _sync_sidebar_tica_dim as sync_sidebar_tica_dim,
     _update_state as update_state,
 )
-from app.core.tables import (
+from core.tables import (
     _builds_dataframe as builds_dataframe,
     _conformations_dataframe as conformations_dataframe,
     _metrics_table as metrics_table,
@@ -50,7 +50,7 @@ from app.core.tables import (
     _shards_dataframe as shards_dataframe,
     _timescales_dataframe as timescales_dataframe,
 )
-from app.core.view_helpers import (
+from core.view_helpers import (
     _default_feature_spec_path as default_feature_spec_path,
     _format_run_selection_summary as format_run_selection_summary,
     _infer_default_topology as infer_default_topology,

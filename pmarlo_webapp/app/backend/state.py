@@ -182,12 +182,26 @@ class StateManager:
 
     def _load(self) -> None:
         if not self.path.exists():
+            logger.info(f"State file does not exist, starting with empty state: {self.path}")
             return
         try:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
+            text_content = self.path.read_text(encoding="utf-8")
+            payload = json.loads(text_content)
             self._data = _StateData.from_dict(payload)
-        except Exception:
+            logger.info(
+                f"Loaded state from {self.path}: "
+                f"{len(self._data.runs)} runs, "
+                f"{len(self._data.shards)} shards, "
+                f"{len(self._data.models)} models, "
+                f"{len(self._data.builds)} builds, "
+                f"{len(self._data.conformations)} conformations"
+            )
+        except Exception as exc:
             # Corrupt or unreadable file; start fresh to avoid crashing the UI.
+            logger.error(
+                f"Failed to load state from {self.path}: {exc}. Starting with empty state.",
+                exc_info=True
+            )
             self._data = _StateData()
 
     def _save(self) -> None:

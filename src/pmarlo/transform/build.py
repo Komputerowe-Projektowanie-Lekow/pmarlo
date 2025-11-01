@@ -1691,10 +1691,7 @@ def default_fes_builder(
     """Build a simple free energy surface."""
 
     if isinstance(dataset, dict):
-        try:
-            ensure_fes_inputs_whitened(dataset)
-        except Exception:
-            logger.debug("Failed to apply CV whitening before FES build", exc_info=True)
+        ensure_fes_inputs_whitened(dataset)
 
     cv_pair = _extract_cvs(dataset)
     if cv_pair is None:
