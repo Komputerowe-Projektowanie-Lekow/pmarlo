@@ -128,6 +128,7 @@ def generate_free_energy_surface(
     fes_ess_ref: float | None = None,
     fes_h_min: float | None = None,
     fes_h_max: float | None = None,
+    grid_strategy: str = "adaptive",
 ) -> FESResult:
     """Generate a 2D free-energy surface.
 
@@ -156,6 +157,10 @@ def generate_free_energy_surface(
     fes_h_min, fes_h_max
         Overrides for the corresponding smoothing options. ``None`` leaves the
         value unchanged relative to ``config`` or the defaults.
+    grid_strategy
+        Strategy for grid extent selection: "fixed" uses full data range,
+        "adaptive" crops to [q1, q99] percentiles and adjusts bin counts
+        to target finite_bins_fraction >= 0.6. Default is "adaptive".
 
     Returns
     -------
@@ -164,8 +169,8 @@ def generate_free_energy_surface(
     """
 
     logger.info(
-        "[fes] Generating 2D FES: n_samples=%d, bins=%s, T=%.1fK, periodic=%s",
-        len(cv1), bins, temperature, periodic
+        "[fes] Generating 2D FES: n_samples=%d, bins=%s, T=%.1fK, periodic=%s, grid_strategy=%s",
+        len(cv1), bins, temperature, periodic, grid_strategy
     )
 
     # Build processing options description
@@ -211,15 +216,17 @@ def generate_free_energy_surface(
         min_count=min_count,
         kde_bw_deg=kde_bw_deg,
         config=config_arg,
+        grid_strategy=grid_strategy,
     )
 
     # Log summary statistics about the generated FES
     if hasattr(out, 'F') and out.F is not None:
         F_finite = out.F[np.isfinite(out.F)]
         if F_finite.size > 0:
+            empty_frac = out.metadata.get("empty_bins_fraction", 0.0) if hasattr(out, 'metadata') else 0.0
             logger.info(
-                "[fes] FES complete: F_min=%.2f, F_max=%.2f kJ/mol, %d/%d bins filled",
-                np.min(F_finite), np.max(F_finite), F_finite.size, out.F.size
+                "[fes] FES complete: F_min=%.2f, F_max=%.2f kJ/mol, %d/%d bins filled (%.1f%% empty)",
+                np.min(F_finite), np.max(F_finite), F_finite.size, out.F.size, empty_frac * 100
             )
         else:
             logger.warning("[fes] FES generated but no finite energy values found")

@@ -389,10 +389,25 @@ def aggregate_and_build(
     )
     # Attach shard usage into artifacts for downstream gating checks
     try:
+        # Collect all shard IDs and deduplicate them
         shard_ids = [str(s.get("id", "")) for s in shards_info]
+        unique_shard_ids = sorted(set(shard_ids))  # Deduplicate and sort for consistency
+
         art = dict(res.artifacts or {})
-        art.setdefault("shards_used", shard_ids)
-        art.setdefault("shards_count", int(len(shard_ids)))
+        art.setdefault("shards_used", unique_shard_ids)
+        art.setdefault("shards_count", int(len(unique_shard_ids)))
+
+        # Validate: ensure all shards are unique (no duplicates)
+        if len(unique_shard_ids) != len(shard_ids):
+            duplicate_count = len(shard_ids) - len(unique_shard_ids)
+            # This is a data integrity issue - log but don't fail the build
+            import logging
+            logger = logging.getLogger("pmarlo")
+            logger.warning(
+                f"Found {duplicate_count} duplicate shard IDs in shards_info. "
+                f"Original count: {len(shard_ids)}, unique count: {len(unique_shard_ids)}"
+            )
+
         res.artifacts = art  # type: ignore[assignment]
     except Exception:
         pass

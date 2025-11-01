@@ -427,6 +427,7 @@ def generate_2d_fes(  # noqa: C901
     kde_bw_deg: Tuple[float, float] = (20.0, 20.0),
     epsilon: float = const.NUMERIC_ABSOLUTE_TOLERANCE,
     config: Any | None = None,
+    grid_strategy: str = "adaptive",
 ) -> FESResult:
     """Generate a two-dimensional free-energy surface (FES).
 
@@ -435,6 +436,40 @@ def generate_2d_fes(  # noqa: C901
     ``fes_target_sd_kT`` (using a pseudocount ``fes_alpha``). The Gaussian
     bandwidth adapts inversely with the effective sample size via
     :func:`adaptive_bandwidth`.
+
+    Parameters
+    ----------
+    cv1, cv2
+        Collective variable samples.
+    bins
+        Number of histogram bins in (x, y).
+    temperature
+        Simulation temperature in Kelvin.
+    periodic
+        Flags indicating whether each dimension is periodic.
+    ranges
+        Optional histogram ranges as ((xmin, xmax), (ymin, ymax)).
+    smooth
+        If True, smooth the density with a periodic KDE (deprecated).
+    inpaint
+        If True, fill empty bins using KDE estimate (deprecated).
+    min_count
+        Histogram bins with fewer samples are marked as empty.
+    kde_bw_deg
+        Bandwidth in degrees for periodic KDE.
+    epsilon
+        Numerical tolerance for bandwidth calculations.
+    config
+        Optional configuration object supplying fes_* smoothing parameters.
+    grid_strategy
+        Strategy for grid extent selection: "fixed" uses full data range,
+        "adaptive" crops to [q1, q99] percentiles and adjusts bin counts
+        to target finite_bins_fraction >= 0.6.
+
+    Returns
+    -------
+    FESResult
+        Dataclass containing the free-energy surface and bin edges.
     """
 
     x: NDArray[np.float64] = (
@@ -456,10 +491,15 @@ def generate_2d_fes(  # noqa: C901
     if min_count < 0:
         raise ValueError("min_count must be non-negative")
 
+    grid_strategy = str(grid_strategy).lower()
+    if grid_strategy not in {"fixed", "adaptive"}:
+        raise ValueError("grid_strategy must be 'fixed' or 'adaptive'")
+
     if ranges is None:
-        # Adaptive percentile clipping to reduce outlier-driven empty bins
-        try:
-            if not any(periodic):
+        # Determine ranges based on grid strategy
+        if grid_strategy == "adaptive" and not any(periodic):
+            # Adaptive: crop to [q1, q99] percentiles to reduce empty bins
+            try:
                 x_quantiles = mquantiles(x, prob=[0.01, 0.99]).filled(np.nan)
                 y_quantiles = mquantiles(y, prob=[0.01, 0.99]).filled(np.nan)
                 x_q = np.asarray(x_quantiles, dtype=np.float64)
@@ -475,12 +515,38 @@ def generate_2d_fes(  # noqa: C901
                 # Clip samples into the selected range to keep edge bins populated
                 x = np.clip(x, xr[0], xr[1]).astype(np.float64, copy=False)
                 y = np.clip(y, yr[0], yr[1]).astype(np.float64, copy=False)
-            else:
+                logger.info(
+                    "Adaptive grid: cropped to x=[%.3f, %.3f], y=[%.3f, %.3f]",
+                    xr[0], xr[1], yr[0], yr[1]
+                )
+            except Exception:
                 xr = (float(np.min(x)), float(np.max(x)))
                 yr = (float(np.min(y)), float(np.max(y)))
-        except Exception:
-            xr = (float(np.min(x)), float(np.max(x)))
-            yr = (float(np.min(y)), float(np.max(y)))
+        else:
+            # Fixed or periodic: use full data range
+            try:
+                if not any(periodic):
+                    x_quantiles = mquantiles(x, prob=[0.01, 0.99]).filled(np.nan)
+                    y_quantiles = mquantiles(y, prob=[0.01, 0.99]).filled(np.nan)
+                    x_q = np.asarray(x_quantiles, dtype=np.float64)
+                    y_q = np.asarray(y_quantiles, dtype=np.float64)
+                    if np.isfinite(x_q).all() and x_q[1] > x_q[0]:
+                        xr = (float(x_q[0]), float(x_q[1]))
+                    else:
+                        xr = (float(np.min(x)), float(np.max(x)))
+                    if np.isfinite(y_q).all() and y_q[1] > y_q[0]:
+                        yr = (float(y_q[0]), float(y_q[1]))
+                    else:
+                        yr = (float(np.min(y)), float(np.max(y)))
+                    # Clip samples into the selected range to keep edge bins populated
+                    x = np.clip(x, xr[0], xr[1]).astype(np.float64, copy=False)
+                    y = np.clip(y, yr[0], yr[1]).astype(np.float64, copy=False)
+                else:
+                    xr = (float(np.min(x)), float(np.max(x)))
+                    yr = (float(np.min(y)), float(np.max(y)))
+            except Exception:
+                xr = (float(np.min(x)), float(np.max(x)))
+                yr = (float(np.min(y)), float(np.max(y)))
     else:
         if len(ranges) != 2 or any(len(r) != 2 for r in ranges):
             raise ValueError("ranges must be ((xmin, xmax), (ymin, ymax))")
@@ -522,9 +588,49 @@ def generate_2d_fes(  # noqa: C901
 
     bx_fd = _fd_bins(x, xr)
     by_fd = _fd_bins(y, yr)
-    # Choose the better of requested, FD, and sqrt rule
-    bx = max(int(bx_req), int(bx_fd or 0), int(sqrt_bins))
-    by = max(int(by_req), int(by_fd or 0), int(sqrt_bins))
+
+    # For adaptive strategy, adjust bin counts to target finite_bins_fraction >= 0.6
+    if grid_strategy == "adaptive":
+        # Start with requested bins or FD estimate
+        bx_initial = max(int(bx_req), int(bx_fd or 0), int(sqrt_bins))
+        by_initial = max(int(by_req), int(by_fd or 0), int(sqrt_bins))
+
+        # Iteratively reduce bins to achieve target finite bins fraction
+        target_finite_fraction = 0.6
+        max_iterations = 5
+
+        bx, by = bx_initial, by_initial
+        for iteration in range(max_iterations):
+            # Test current bin counts
+            test_x_edges = np.linspace(xr[0], xr[1], bx + 1).astype(np.float64, copy=False)
+            test_y_edges = np.linspace(yr[0], yr[1], by + 1).astype(np.float64, copy=False)
+
+            test_H, _, _ = np.histogram2d(x, y, bins=(test_x_edges, test_y_edges))
+            test_empty_fraction = float(np.sum(test_H < min_count)) / test_H.size
+            test_finite_fraction = 1.0 - test_empty_fraction
+
+            if test_finite_fraction >= target_finite_fraction:
+                logger.info(
+                    "Adaptive grid converged: bins=(%d, %d), finite_fraction=%.3f",
+                    bx, by, test_finite_fraction
+                )
+                break
+
+            # Reduce bins by ~15% per axis to increase density
+            reduction_factor = 0.85
+            bx = max(min_bins, int(bx * reduction_factor))
+            by = max(min_bins, int(by * reduction_factor))
+
+            if iteration == max_iterations - 1:
+                logger.info(
+                    "Adaptive grid: reached max iterations with bins=(%d, %d), finite_fraction=%.3f",
+                    bx, by, test_finite_fraction
+                )
+    else:
+        # Fixed strategy: use standard bin selection
+        bx = max(int(bx_req), int(bx_fd or 0), int(sqrt_bins))
+        by = max(int(by_req), int(by_fd or 0), int(sqrt_bins))
+
     x_edges: NDArray[np.float64] = np.linspace(xr[0], xr[1], bx + 1).astype(
         np.float64, copy=False
     )
@@ -736,11 +842,22 @@ def generate_2d_fes(  # noqa: C901
         "mask": final_mask,
         "empty_bins_fraction": empty_bins_fraction,
         "smoothing": smoothing_meta,
+        "grid_strategy": grid_strategy,
+        "grid_shape": (bx, by),
+        "grid_ranges": {"x": xr, "y": yr},
     }
-    if empty_bins_fraction > 0.60:
+
+    # Enhanced sparse FES guardrail
+    if empty_bins_fraction > 0.50:
         metadata["sparse_warning"] = (
-            f"Sparse FES ({empty_bins_fraction*100.0:.1f}% empty bins)"
+            f"Sparse FES: {empty_bins_fraction*100.0:.1f}% empty bins detected. "
+            f"Grid: {bx}×{by}. Consider using grid_strategy='adaptive' to reduce waste."
         )
+        logger.warning(
+            "Sparse FES detected: %.1f%% empty bins (grid=%dx%d, strategy=%s)",
+            empty_bins_fraction * 100.0, bx, by, grid_strategy
+        )
+
     result = FESResult(F=F_result, xedges=xedges, yedges=yedges, metadata=metadata)
 
     masked_fraction = float(final_mask.sum()) / np.prod(result.output_shape)

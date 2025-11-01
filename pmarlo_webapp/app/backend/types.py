@@ -113,6 +113,7 @@ class BuildConfig:
     fes_method: str = "kde"
     fes_bandwidth: str | float = "scott"
     fes_min_count_per_bin: int = 1
+    require_fully_connected_msm: bool = True  # Set to False to allow disconnected MSMs
 
 @dataclass
 class BuildArtifact:

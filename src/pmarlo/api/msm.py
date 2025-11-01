@@ -14,6 +14,7 @@ from pmarlo.markov_state_model._msm_utils import (
     compute_macro_populations,
     lump_micro_to_macro_T,
     compute_macro_mfpt,
+    select_lag_from_its,
 )
 from pmarlo.markov_state_model.ck_runner import run_ck
 from pmarlo.markov_state_model.free_energy import generate_1d_pmf
@@ -177,41 +178,46 @@ def analyze_msm(  # noqa: C901
         msm.compute_implied_timescales(lag_times=candidate_lags, n_timescales=3)  # type: ignore[attr-defined]
         logger.info("[msm] Implied timescales computed for %d lag times", len(candidate_lags))
 
-    chosen_lag = 10
-    logger.debug("[msm] Selecting optimal lag time...")
+    # Select lag time from ITS plateau detection
+    logger.debug("[msm] Selecting optimal lag time from implied timescales...")
+    chosen_lag = 10  # default fallback
     try:
         its_data = getattr(msm, "implied_timescales", None)
-        if its_data is not None and hasattr(its_data, "__getitem__"):
-            lags = np.array(its_data["lag_times"])  # type: ignore[index]
-            its = np.array(its_data["timescales"])  # type: ignore[index]
-            logger.debug("[msm] Using computed ITS data for lag selection")
-        else:
-            lags = np.array(candidate_lags)
-            its = np.ones((len(candidate_lags), 3)) * 10.0
-            logger.debug("[msm] Using default ITS values")
+        if its_data is not None:
+            # Extract ITS results
+            if hasattr(its_data, "lag_times") and hasattr(its_data, "timescales"):
+                lags = np.asarray(its_data.lag_times, dtype=int)
+                its = np.asarray(its_data.timescales, dtype=float)
+                logger.debug("[msm] ITS data extracted: lags shape=%s, its shape=%s", lags.shape, its.shape)
 
-        scores: List[float] = []
-        for idx in range(len(lags)):
-            if idx == 0:
-                scores.append(float("inf"))
-                continue
-            prev = its[idx - 1]
-            cur = its[idx]
-            mask = np.isfinite(prev) & np.isfinite(cur) & (np.abs(prev) > 0)
-            if np.count_nonzero(mask) == 0:
-                scores.append(float("inf"))
-                continue
-            rel = float(np.mean(np.abs((cur[mask] - prev[mask]) / prev[mask])))
-            scores.append(rel)
-        start_idx = min(3, len(scores) - 1)
-        region = scores[start_idx:]
-        if region:
-            min_idx = int(np.nanargmin(region)) + start_idx
-            chosen_lag = int(lags[min_idx])
-            logger.info("[msm] Selected optimal lag_time=%d", chosen_lag)
+                # Use the new plateau detection method
+                from pmarlo.markov_state_model._msm_utils import select_lag_from_its as detect_plateau
+
+                chosen_lag = detect_plateau(lags, its, min_lag_idx=3, plateau_threshold=0.15)
+                logger.info("[msm] Selected lag_time=%d from ITS plateau detection", chosen_lag)
+            elif hasattr(its_data, "__getitem__"):
+                # Fallback for dict-like interface
+                lags = np.array(its_data["lag_times"])  # type: ignore[index]
+                its = np.array(its_data["timescales"])  # type: ignore[index]
+                logger.debug("[msm] ITS data extracted (dict interface): lags shape=%s, its shape=%s", lags.shape, its.shape)
+
+                from pmarlo.markov_state_model._msm_utils import select_lag_from_its as detect_plateau
+
+                chosen_lag = detect_plateau(lags, its, min_lag_idx=3, plateau_threshold=0.15)
+                logger.info("[msm] Selected lag_time=%d from ITS plateau detection", chosen_lag)
+            else:
+                logger.warning("[msm] ITS data exists but has unexpected structure")
+                chosen_lag = 10
+        else:
+            logger.warning("[msm] No ITS data available, using default lag_time=10")
+            chosen_lag = 10
     except Exception as e:
         chosen_lag = 10
-        logger.warning("[msm] Lag time selection failed, using default lag_time=%d: %s", chosen_lag, e)
+        logger.warning("[msm] Lag time selection from ITS failed, using default lag_time=%d: %s", chosen_lag, e)
+
+    # Store selected lag for downstream analysis
+    if hasattr(msm, "lag_time"):
+        msm.lag_time = chosen_lag  # type: ignore[attr-defined]
 
     logger.info("[msm] Building final MSM with chosen lag_time=%d...", chosen_lag)
     if hasattr(msm, "build_msm"):
@@ -220,17 +226,33 @@ def analyze_msm(  # noqa: C901
 
     # CK test with macro → micro fallback
     logger.debug("[msm] Running Chapman-Kolmogorov test...")
+    ck_result = None
+    ck_max_error = float('inf')
+    ck_pass = False
     try:
         dtrajs = getattr(msm, "dtrajs", None)
         lag_time = getattr(msm, "lag_time", chosen_lag)
         output_dir_ck = getattr(msm, "output_dir", output_dir)
         if dtrajs is not None:
-            run_ck(dtrajs, lag_time, output_dir_ck, macro_k=3)
-            logger.info("[msm] Chapman-Kolmogorov test completed")
+            ck_result = run_ck(dtrajs, lag_time, output_dir_ck, macro_k=3)
+            ck_max_error = ck_result.max_error
+            # Default threshold: 0.05 (5% RMS error)
+            ck_threshold = 0.05
+            ck_pass = ck_max_error < ck_threshold
+
+            logger.info("[msm] Chapman-Kolmogorov test completed: max_error=%.4f, pass=%s (threshold=%.4f)",
+                       ck_max_error, ck_pass, ck_threshold)
+
+            # Store CK metrics in MSM object
+            if hasattr(msm, '__dict__'):
+                msm.ck_max_error = ck_max_error  # type: ignore[attr-defined]
+                msm.ck_pass = ck_pass  # type: ignore[attr-defined]
+                msm.ck_threshold = ck_threshold  # type: ignore[attr-defined]
         else:
             logger.warning("[msm] No dtrajs available for CK test")
     except Exception as e:
         logger.warning("[msm] Chapman-Kolmogorov test failed: %s", e)
+        # Keep infinite error and fail status on exception
 
     try:
         total_frames_fes = sum(
@@ -462,3 +484,4 @@ def macro_mfpt(T_macro: np.ndarray) -> np.ndarray:
     result = compute_macro_mfpt(T_macro)
     logger.debug("[msm] MFPT matrix computed: shape=%s", result.shape)
     return result
+

@@ -298,6 +298,7 @@ class BuildOpts:
     enable_fes: bool = True
     fes_temperature: float = 300.0
     fes_bins: Optional[Tuple[int, int]] = None
+    fes_grid_strategy: str = "adaptive"
     fes_smoothing_mode: str = "never"
     fes_target_sd_kT: Optional[float] = None
     fes_alpha: float = 1e-6
@@ -332,6 +333,12 @@ class BuildOpts:
             if any(not isinstance(b, int) or b <= 0 for b in self.fes_bins):
                 raise ValueError("fes_bins must contain two positive integers")
             object.__setattr__(self, "fes_bins", tuple(int(x) for x in self.fes_bins))
+
+        # Validate grid_strategy
+        grid_strategy = str(self.fes_grid_strategy).lower()
+        if grid_strategy not in {"fixed", "adaptive"}:
+            raise ValueError("fes_grid_strategy must be 'fixed' or 'adaptive'")
+        object.__setattr__(self, "fes_grid_strategy", grid_strategy)
 
         mode = str(self.fes_smoothing_mode).lower()
         if mode not in {"never", "auto", "always"}:
@@ -558,6 +565,59 @@ class BuildResult:
                     return obj
             return obj
 
+        def _decode_msm(obj: Optional[Any]) -> Optional[Any]:
+            """Decode MSM payload, converting serialized arrays back to numpy arrays."""
+            if obj is None:
+                return None
+            if not isinstance(obj, dict):
+                return obj
+
+            # Create a copy to avoid modifying the original
+            decoded = dict(obj)
+
+            # Convert counts matrix back to numpy array
+            if "counts" in decoded and decoded["counts"] is not None:
+                try:
+                    decoded["counts"] = np.asarray(decoded["counts"], dtype=float)
+                except Exception:
+                    pass
+
+            # Convert state_counts back to numpy array
+            if "state_counts" in decoded and decoded["state_counts"] is not None:
+                try:
+                    decoded["state_counts"] = np.asarray(decoded["state_counts"], dtype=float)
+                except Exception:
+                    pass
+
+            # Convert dtrajs list back to list of numpy arrays
+            if "dtrajs" in decoded and decoded["dtrajs"] is not None:
+                try:
+                    dtrajs_list = decoded["dtrajs"]
+                    if isinstance(dtrajs_list, list):
+                        decoded["dtrajs"] = [
+                            np.asarray(dtraj, dtype=np.int32)
+                            for dtraj in dtrajs_list
+                            if dtraj is not None
+                        ]
+                except Exception:
+                    pass
+
+            # Convert transition_matrix if present in MSM payload
+            if "transition_matrix" in decoded and decoded["transition_matrix"] is not None:
+                try:
+                    decoded["transition_matrix"] = np.asarray(decoded["transition_matrix"], dtype=float)
+                except Exception:
+                    pass
+
+            # Convert stationary_distribution if present in MSM payload
+            if "stationary_distribution" in decoded and decoded["stationary_distribution"] is not None:
+                try:
+                    decoded["stationary_distribution"] = np.asarray(decoded["stationary_distribution"], dtype=float)
+                except Exception:
+                    pass
+
+            return decoded
+
         applied_dict = data.get("applied_opts") or None
         applied_obj = (
             AppliedOpts(**applied_dict) if isinstance(applied_dict, dict) else None
@@ -566,7 +626,7 @@ class BuildResult:
         return cls(
             transition_matrix=_decode_array(data.get("transition_matrix")),
             stationary_distribution=_decode_array(data.get("stationary_distribution")),
-            msm=data.get("msm"),
+            msm=_decode_msm(data.get("msm")),
             fes=_decode_fes(data.get("fes")),
             tram=data.get("tram"),
             metadata=metadata,
@@ -1027,6 +1087,30 @@ def _frames_from_mapping(dataset: Any) -> Optional[int]:
 
 
 def _count_frames(dataset: Any) -> int:
+    """Count frames from shard metadata.
+
+    This derives the frame count from __shards__ metadata to ensure consistency
+    with pair counting logic. Falls back to heuristics only if metadata is unavailable.
+    """
+    # First try to get from shard metadata
+    if isinstance(dataset, Mapping):
+        shards = dataset.get("__shards__")
+        if shards:
+            try:
+                total = 0
+                for shard in shards:
+                    if isinstance(shard, Mapping):
+                        # Use actual length (stop - start)
+                        start = int(shard.get("start", 0))
+                        stop = int(shard.get("stop", start))
+                        length = max(0, stop - start)
+                        total += length
+                if total > 0:
+                    return total
+            except Exception:
+                pass
+
+    # Fallback to heuristics only if shard metadata unavailable
     for extractor in (_frames_from_len, _frames_from_attr, _frames_from_mapping):
         value = extractor(dataset)
         if value is not None:

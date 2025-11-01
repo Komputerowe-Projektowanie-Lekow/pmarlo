@@ -52,7 +52,8 @@ def plot_msm(
         annotation_fragments.append(f"run={msm_run_id}")
     if annotation_fragments:
         fig.suptitle("MSM metadata: " + " | ".join(annotation_fragments), fontsize=10)
-        fig.tight_layout(rect=(0, 0, 1, 0.93))
+        # Use subplots_adjust instead of tight_layout to avoid warning with gridspec
+        fig.subplots_adjust(top=0.93, bottom=0.1, left=0.1, right=0.95)
     else:
         fig.tight_layout()
     return fig
