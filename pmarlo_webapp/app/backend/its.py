@@ -4,7 +4,17 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+try:
+    import deeptime as dt
+except ImportError:
+    dt = None
+
 from pmarlo.data.aggregate import load_shards_as_dataset
+
+import numpy as np
+
+logger = logging.getLogger(__name__)
+
 
 def plot_its(
     lag_times: Sequence[int],

@@ -1,7 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
 import os
-import unicodedata
 from dataclasses import dataclass
 from pmarlo.utils.path_utils import ensure_directory
 from typing import List, Optional, Tuple
