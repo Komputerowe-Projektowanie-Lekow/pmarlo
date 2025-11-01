@@ -153,6 +153,12 @@ def render_msm_fes_tab(ctx: AppContext) -> None:
                 key="analysis_reweight_mode",
                 help="Statistical reweighting method for enhanced sampling"
             )
+            require_connectivity = st.checkbox(
+                "Require fully connected MSM",
+                value=True,
+                key="analysis_require_connectivity",
+                help="If enabled, analysis will fail if the MSM has isolated states. Disable to allow disconnected components."
+            )
 
         # Collective Variable Settings
         with st.expander(" Collective Variable (CV) Settings", expanded=True):
@@ -300,6 +306,7 @@ def render_msm_fes_tab(ctx: AppContext) -> None:
                     fes_method=str(fes_method),
                     fes_bandwidth=bandwidth_val,
                     fes_min_count_per_bin=int(min_count_per_bin),
+                    require_fully_connected_msm=bool(require_connectivity),
                 )
                 artifact: BuildArtifact | None = None
                 try:

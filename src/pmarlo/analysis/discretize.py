@@ -466,11 +466,27 @@ class _KMeansDiscretizer:
         n_states: int,
         *,
         random_state: int | None = None,
+        apply_whitening: bool = True,
     ) -> None:
         self.n_states = int(n_states)
         self.random_state = random_state
+        self.apply_whitening = bool(apply_whitening)
         self.model: KMeans | MiniBatchKMeans | None = None
         self.feature_schema: Dict[str, Any] | None = None
+        # Whitening parameters (StandardScaler)
+        self.scaler_mean_: np.ndarray | None = None
+        self.scaler_std_: np.ndarray | None = None
+
+    def _standardize(self, X: np.ndarray) -> np.ndarray:
+        """Apply standardization (z-score normalization) to features."""
+        if not self.apply_whitening:
+            return X
+        if self.scaler_mean_ is None or self.scaler_std_ is None:
+            raise RuntimeError("Scaler parameters not fitted")
+
+        # Avoid division by zero for constant features
+        std_safe = np.where(self.scaler_std_ > 1e-10, self.scaler_std_, 1.0)
+        return (X - self.scaler_mean_) / std_safe
 
     def fit(
         self,
@@ -481,6 +497,21 @@ class _KMeansDiscretizer:
             feature_schema,
             X.shape[1],
         )
+
+        # Fit whitening scaler if enabled
+        if self.apply_whitening:
+            self.scaler_mean_ = np.mean(X, axis=0)
+            self.scaler_std_ = np.std(X, axis=0, ddof=1)  # Use sample std (ddof=1)
+            X_scaled = self._standardize(X)
+            logger.info(
+                "Feature whitening enabled: mean=%s, std=%s",
+                self.scaler_mean_,
+                self.scaler_std_,
+            )
+        else:
+            X_scaled = X
+            logger.info("Feature whitening disabled")
+
         if _minibatch_threshold(X.shape[0], X.shape[1]):
             self.model = MiniBatchKMeans(
                 n_clusters=self.n_states,
@@ -492,7 +523,7 @@ class _KMeansDiscretizer:
                 random_state=self.random_state,
                 n_init=10,
             )
-        self.model.fit(X)
+        self.model.fit(X_scaled)
 
     def transform(
         self,
@@ -509,7 +540,14 @@ class _KMeansDiscretizer:
                 feature_schema,
                 split_name=split_name or "split",
             )
-        labels = self.model.predict(X)
+
+        # Apply whitening transformation before prediction
+        if self.apply_whitening:
+            X_scaled = self._standardize(X)
+        else:
+            X_scaled = X
+
+        labels = self.model.predict(X_scaled)
         return labels.astype(np.int32, copy=False)
 
     @property
@@ -520,6 +558,17 @@ class _KMeansDiscretizer:
         if centers is None:
             return None
         return np.asarray(centers, dtype=np.float64)
+
+    @property
+    def scaler_params(self) -> Dict[str, Any]:
+        """Return scaler parameters for fingerprinting."""
+        if not self.apply_whitening or self.scaler_mean_ is None:
+            return {}
+        return {
+            "mean": self.scaler_mean_.tolist(),
+            "std": self.scaler_std_.tolist() if self.scaler_std_ is not None else None,
+            "enabled": True,
+        }
 
 
 class _GridDiscretizer:
@@ -696,6 +745,7 @@ def _prepare_discretizer_and_schema(
     cluster_mode: str,
     n_microstates: int,
     random_state: int | None,
+    apply_whitening: bool = True,
 ) -> tuple[
     str,
     np.ndarray,
@@ -713,7 +763,11 @@ def _prepare_discretizer_and_schema(
 
     discretizer: _KMeansDiscretizer | _GridDiscretizer
     if cluster_mode == "kmeans":
-        discretizer = _KMeansDiscretizer(n_microstates, random_state=random_state)
+        discretizer = _KMeansDiscretizer(
+            n_microstates,
+            random_state=random_state,
+            apply_whitening=apply_whitening,
+        )
     elif cluster_mode == "grid":
         discretizer = _GridDiscretizer(target_states=n_microstates)
     else:
@@ -922,6 +976,7 @@ def discretize_dataset(
     ) = None,
     min_out_count: int = 0,
     random_state: int | None = None,
+    apply_whitening: bool = True,
 ) -> MSMDiscretizationResult:
     """Discretise continuous CVs into microstates and build MSM statistics."""
 
@@ -940,6 +995,7 @@ def discretize_dataset(
         cluster_mode=cluster_mode,
         n_microstates=n_microstates,
         random_state=random_state,
+        apply_whitening=apply_whitening,
     )
 
     segment_lengths_by_split: Dict[str, List[int]] = {}
@@ -1101,6 +1157,11 @@ def discretize_dataset(
             int(pruned_state_indices.size) if pruned_state_indices is not None else 0
         ),
         "min_out_count": int(min_out_threshold),
+        "scaler": (
+            discretizer.scaler_params
+            if isinstance(discretizer, _KMeansDiscretizer)
+            else {}
+        ),
     }
 
     return MSMDiscretizationResult(

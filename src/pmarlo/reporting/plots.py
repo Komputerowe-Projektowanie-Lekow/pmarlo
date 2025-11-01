@@ -15,13 +15,25 @@ from pmarlo.utils.thermodynamics import kT_kJ_per_mol
 logger = logging.getLogger(__name__)
 
 
-def plot_transition_matrix_heatmap(T: np.ndarray) -> Figure:
+def plot_transition_matrix_heatmap(
+    T: np.ndarray,
+    *,
+    run_id: Optional[str] = None,
+    msm_n_states: Optional[int] = None,
+    tau: Optional[int] = None,
+) -> Figure:
     """Create a heatmap figure of a transition matrix.
 
     Parameters
     ----------
     T : np.ndarray
         Transition matrix to visualize
+    run_id : Optional[str]
+        Run identifier for the MSM
+    msm_n_states : Optional[int]
+        Number of states in the MSM (should equal T.shape[0])
+    tau : Optional[int]
+        Lag time used for the MSM in frames
 
     Returns
     -------
@@ -34,12 +46,42 @@ def plot_transition_matrix_heatmap(T: np.ndarray) -> Figure:
     ax.set_xlabel("Target State j")
     ax.set_ylabel("Source State i")
     ax.set_title("MSM Transition Matrix")
-    fig.tight_layout()
+
+    # Add metadata annotation
+    annotation_fragments: List[str] = []
+    if run_id is not None:
+        annotation_fragments.append(f"run_id={run_id}")
+    if msm_n_states is not None:
+        annotation_fragments.append(f"n_states={msm_n_states}")
+    if tau is not None:
+        annotation_fragments.append(f"τ={tau}")
+
+    if annotation_fragments:
+        fig.text(
+            0.5,
+            0.01,
+            " | ".join(annotation_fragments),
+            ha="center",
+            fontsize=8,
+            style="italic",
+            bbox=dict(
+                boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.5
+            ),
+        )
+        fig.tight_layout(rect=(0, 0.03, 1, 1))
+    else:
+        fig.tight_layout()
     return fig
 
 
 def save_transition_matrix_heatmap(
-    T: np.ndarray, output_dir: str, name: str = "T_heatmap.png"
+    T: np.ndarray,
+    output_dir: str,
+    name: str = "T_heatmap.png",
+    *,
+    run_id: Optional[str] = None,
+    msm_n_states: Optional[int] = None,
+    tau: Optional[int] = None,
 ) -> Optional[str]:
     """Save a heatmap of a transition matrix to ``output_dir``.
 
@@ -48,7 +90,9 @@ def save_transition_matrix_heatmap(
 
     out_dir = Path(output_dir)
     ensure_directory(out_dir)
-    fig = plot_transition_matrix_heatmap(T)
+    fig = plot_transition_matrix_heatmap(
+        T, run_id=run_id, msm_n_states=msm_n_states, tau=tau
+    )
     filepath = out_dir / name
     fig.savefig(filepath, dpi=const.PLOT_DPI)
     plt.close(fig)
@@ -62,6 +106,10 @@ def plot_fes_contour(
     xlabel: str,
     ylabel: str,
     mask: Optional[np.ndarray] = None,
+    *,
+    run_id: Optional[str] = None,
+    msm_n_states: Optional[int] = None,
+    tau: Optional[int] = None,
 ) -> Figure:
     """Create a FES contour plot figure.
 
@@ -79,6 +127,12 @@ def plot_fes_contour(
         Label for y-axis (CV name)
     mask : Optional[np.ndarray]
         Optional mask for unsampled regions
+    run_id : Optional[str]
+        Run identifier for the MSM
+    msm_n_states : Optional[int]
+        Number of states in the MSM
+    tau : Optional[int]
+        Lag time used for the MSM in frames
 
     Returns
     -------
@@ -132,7 +186,31 @@ def plot_fes_contour(
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.set_title(f"Free Energy Surface: {xlabel} vs {ylabel}{title_warn}")
-    fig.tight_layout()
+
+    # Add metadata annotation
+    annotation_fragments: List[str] = []
+    if run_id is not None:
+        annotation_fragments.append(f"run_id={run_id}")
+    if msm_n_states is not None:
+        annotation_fragments.append(f"n_states={msm_n_states}")
+    if tau is not None:
+        annotation_fragments.append(f"τ={tau}")
+
+    if annotation_fragments:
+        fig.text(
+            0.5,
+            0.01,
+            " | ".join(annotation_fragments),
+            ha="center",
+            fontsize=8,
+            style="italic",
+            bbox=dict(
+                boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.5
+            ),
+        )
+        fig.tight_layout(rect=(0, 0.03, 1, 1))
+    else:
+        fig.tight_layout()
     return fig
 
 
@@ -145,11 +223,18 @@ def save_fes_contour(
     output_dir: str,
     filename: str,
     mask: Optional[np.ndarray] = None,
+    *,
+    run_id: Optional[str] = None,
+    msm_n_states: Optional[int] = None,
+    tau: Optional[int] = None,
 ) -> Optional[str]:
     """Save a FES contour plot to output_dir."""
     out_dir = Path(output_dir)
     ensure_directory(out_dir)
-    fig = plot_fes_contour(F, xedges, yedges, xlabel, ylabel, mask)
+    fig = plot_fes_contour(
+        F, xedges, yedges, xlabel, ylabel, mask,
+        run_id=run_id, msm_n_states=msm_n_states, tau=tau
+    )
     filepath = out_dir / filename
     fig.savefig(filepath, dpi=const.PLOT_DPI)
     plt.close(fig)

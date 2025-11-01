@@ -14,6 +14,8 @@ from pmarlo.analysis.debug_export import (
     _coverage_fraction,
     _strongly_connected_components,
     _transition_diag_mass,
+    _compute_dwell_times,
+    _compute_occupancy_tail,
 )
 from pmarlo.api.shards import build_from_shards
 from pmarlo.data.aggregate import load_shards_as_dataset
@@ -254,6 +256,19 @@ class AnalysisMixin:
         # Extract MSM data from build result
         msm_obj = getattr(br, "msm", None)
 
+        # Debug logging to see what we have
+        logger.info("[DEBUG] msm_obj type: %s", type(msm_obj))
+        if msm_obj is not None:
+            if isinstance(msm_obj, Mapping):
+                logger.info("[DEBUG] msm_obj keys: %s", list(msm_obj.keys()))
+                logger.info("[DEBUG] msm_obj counts shape: %s",
+                           np.asarray(msm_obj.get("counts", [])).shape if msm_obj.get("counts") is not None else "None")
+                logger.info("[DEBUG] msm_obj state_counts shape: %s",
+                           np.asarray(msm_obj.get("state_counts", [])).shape if msm_obj.get("state_counts") is not None else "None")
+                logger.info("[DEBUG] msm_obj dtrajs type: %s, length: %s",
+                           type(msm_obj.get("dtrajs")),
+                           len(msm_obj.get("dtrajs", [])) if msm_obj.get("dtrajs") is not None else "None")
+
         if msm_obj is None or not isinstance(msm_obj, Mapping):
             # No MSM data available
             shards_meta = dataset.get("__shards__", [])
@@ -305,6 +320,42 @@ class AnalysisMixin:
         # Compute diagonal mass
         diag_mass_val = _transition_diag_mass(counts)
 
+        # Identify isolated states (not in the largest SCC)
+        n_components = len(components)
+        is_fully_connected = (n_components == 1) if n_components > 0 else False
+        isolated_states: list[int] = []
+        if len(components) > 1:
+            # Find the largest component index
+            largest_comp_idx = max(range(len(components)), key=lambda i: len(components[i]))
+            # Find all states not in the largest component
+            for state_id in range(len(component_labels)):
+                if component_labels[state_id] != largest_comp_idx:
+                    isolated_states.append(int(state_id))
+
+        # Compute dwell time statistics from dtrajs if available
+        dwell_stats = {}
+        occupancy_tail = {}
+
+        # First try to get dtrajs from MSM payload (where they're stored after clustering)
+        dtrajs_raw = msm_obj.get("dtrajs")
+        if dtrajs_raw is None:
+            # Fall back to dataset dtrajs (pre-clustering)
+            dtrajs_raw = dataset.get("dtrajs")
+
+        if dtrajs_raw is not None:
+            try:
+                # Coerce dtrajs to list of numpy arrays
+                from pmarlo.analysis.debug_export import _coerce_dtrajs, _infer_n_states
+                dtrajs = _coerce_dtrajs(dtrajs_raw)
+                if dtrajs and any(d.size > 0 for d in dtrajs):
+                    n_states = _infer_n_states(dtrajs)
+                    # Compute dwell time statistics
+                    dwell_stats = _compute_dwell_times(dtrajs, n_states)
+                    # Compute occupancy tail (lowest-occupancy states)
+                    occupancy_tail = _compute_occupancy_tail(state_counts, top_k=10)
+            except Exception as e:
+                logger.warning("Failed to compute dwell/occupancy statistics: %s", e)
+
         # Build summary
         stride_max = max(stride_values) if stride_values else 1
         effective_tau_frames = int(lag * stride_max) if lag > 0 else 0
@@ -333,6 +384,9 @@ class AnalysisMixin:
             "largest_scc_size": int(largest_size),
             "largest_scc_frame_fraction": float(largest_cover) if largest_cover is not None else None,
             "component_sizes": [int(len(comp)) for comp in components],
+            "n_components": int(n_components),
+            "is_fully_connected": bool(is_fully_connected),
+            "isolated_states": list(isolated_states),
             "expected_pairs": 0,  # Not available in this context
             "counted_pairs": int(total_pairs),
             "effective_stride_max": int(stride_max),
@@ -493,6 +547,16 @@ class AnalysisMixin:
             effective_tau_frames = tau_frames * stride_max if tau_frames > 0 else 0
             expected_effective_tau = effective_tau_frames  # Expected based on stride
 
+            # Log stride information for diagnostics
+            if stride_max > 1:
+                logger.info(
+                    "Stride-adjusted tau: tau_frames=%d (frame indices), "
+                    "stride_max=%d, effective_tau_frames=%d (physical frames)",
+                    tau_frames,
+                    stride_max,
+                    effective_tau_frames,
+                )
+
             # Now that discretization is complete, compute debug data from the build result
             debug_data, msm_stats = self._extract_debug_data_from_build_result(
                 br, dataset, config.lag, stride_values, stride_map, preview_truncated
@@ -545,6 +609,46 @@ class AnalysisMixin:
             # Note: total_pairs and zero_rows checks are removed because they require
             # post-clustering data which we'll validate from the build result instead
             guardrail_violations: List[Dict[str, Any]] = []
+
+            # Extract CK test results from build result
+            ck_max_error = float('inf')
+            ck_pass = False
+            ck_threshold = 0.05  # 5% RMS error threshold
+
+            msm_obj = getattr(br, "msm", None)
+            if msm_obj is not None:
+                # Try to extract CK metrics from MSM object
+                if isinstance(msm_obj, Mapping):
+                    ck_max_error = float(msm_obj.get("ck_max_error", float('inf')))
+                    ck_pass = bool(msm_obj.get("ck_pass", False))
+                    ck_threshold = float(msm_obj.get("ck_threshold", 0.05))
+                else:
+                    ck_max_error = float(getattr(msm_obj, "ck_max_error", float('inf')))
+                    ck_pass = bool(getattr(msm_obj, "ck_pass", False))
+                    ck_threshold = float(getattr(msm_obj, "ck_threshold", 0.05))
+
+                # Add CK failure to guardrail violations
+                if not ck_pass and ck_max_error != float('inf'):
+                    guardrail_violations.append(
+                        {
+                            "code": "ck_test_failed",
+                            "message": f"Chapman-Kolmogorov test failed: max_error={ck_max_error:.4f} exceeds threshold={ck_threshold:.4f}",
+                            "max_error": float(ck_max_error),
+                            "threshold": float(ck_threshold),
+                        }
+                    )
+                    logger.warning(
+                        "CK test failed: max_error=%.4f > threshold=%.4f",
+                        ck_max_error,
+                        ck_threshold,
+                    )
+                elif ck_pass:
+                    logger.info(
+                        "CK test passed: max_error=%.4f < threshold=%.4f",
+                        ck_max_error,
+                        ck_threshold,
+                    )
+
             if total_pairs_val == 0:
                 guardrail_violations.append(
                     {
@@ -602,6 +706,62 @@ class AnalysisMixin:
                     effective_tau_frames,
                 )
                 # Don't treat tau mismatch as a hard failure
+
+            # SCC Guardrail: MSM must be fully connected (require fraction = 1.0)
+            # Check if the MSM is fully connected by looking at component information
+            is_fully_connected = debug_data.summary.get("is_fully_connected", False)
+            isolated_states = debug_data.summary.get("isolated_states", [])
+            n_components = debug_data.summary.get("n_components", 0)
+
+            # Allow override via config, but default to requiring full connectivity
+            require_full_connectivity = config_payload.get(
+                "require_fully_connected_msm", True
+            )
+
+            if require_full_connectivity and not is_fully_connected:
+                # Provide clearer error messages depending on the situation
+                if n_components == 0:
+                    # This shouldn't happen with the new checks, but keep as fallback
+                    logger.error(
+                        "MSM construction failed: no valid states detected in discrete trajectories. "
+                        "Check clustering configuration and data quality."
+                    )
+                    error_msg = (
+                        "No valid states detected in discrete trajectories. "
+                        "This indicates clustering failed or produced no valid state assignments. "
+                        "Check your data quality and clustering configuration."
+                    )
+                elif isolated_states:
+                    logger.error(
+                        "MSM is not fully connected: %d isolated state(s) detected: %s",
+                        len(isolated_states),
+                        isolated_states,
+                    )
+                    error_msg = (
+                        f"MSM has {n_components} strongly connected components "
+                        f"(must be 1 for fully connected). "
+                        f"Isolated states: {isolated_states}"
+                    )
+                else:
+                    logger.error(
+                        "MSM is not fully connected: %d components detected",
+                        n_components,
+                    )
+                    error_msg = (
+                        f"MSM has {n_components} strongly connected components "
+                        f"(must be 1 for fully connected). "
+                        f"Isolated states: {isolated_states}"
+                    )
+
+                guardrail_violations.append(
+                    {
+                        "code": "msm_not_fully_connected",
+                        "message": error_msg,
+                        "n_components": int(n_components),
+                        "isolated_states": isolated_states,
+                        "is_fully_connected": False,
+                    }
+                )
 
             analysis_healthy = not guardrail_violations
 
@@ -693,6 +853,10 @@ class AnalysisMixin:
             analysis_notes["analysis_effective_stride_map"] = stride_map
             analysis_notes["analysis_expected_effective_tau_frames"] = expected_effective_tau
             analysis_notes["analysis_healthy"] = analysis_healthy
+            # Persist CK test metrics
+            analysis_notes["analysis_ck_max_error"] = float(ck_max_error) if ck_max_error != float('inf') else None
+            analysis_notes["analysis_ck_pass"] = bool(ck_pass)
+            analysis_notes["analysis_ck_threshold"] = float(ck_threshold)
             if preview_truncated:
                 analysis_notes["analysis_preview_truncated"] = preview_truncated
             analysis_notes["analysis_guardrail_violations"] = guardrail_violations
