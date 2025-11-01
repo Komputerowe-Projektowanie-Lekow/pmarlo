@@ -830,10 +830,8 @@ def _is_positive_int(value: Any) -> bool:
 def _build_tram_payload(
     working_dataset: Any, opts: BuildOpts, applied: AppliedOpts
 ) -> Optional[Any]:
-    if not opts.enable_tram:
-        return None
-    logger.info("Building TRAM...")
-    return _build_tram(working_dataset, opts, applied)
+    """Build TRAM model - raises error on failure instead of silently skipping."""
+    return default_tram_builder(working_dataset, opts, applied)
 
 
 def _update_metadata_end(metadata: RunMetadata, start_dt: datetime) -> None:
@@ -1640,11 +1638,8 @@ def _build_fes(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
 
 
 def _build_tram(dataset: Any, opts: BuildOpts, applied: AppliedOpts) -> Any:
-    try:
-        return default_tram_builder(dataset, opts, applied)
-    except Exception as e:
-        logger.warning("TRAM build failed: %s", e)
-        return {"skipped": True, "reason": f"tram_error: {e}"}
+    """Build TRAM model - raises error on failure instead of silently skipping."""
+    return default_tram_builder(dataset, opts, applied)
 
 
 # --- Default builders ---------------------------------------------------------

@@ -398,7 +398,7 @@ def _show_build_outputs(artifact: BuildArtifact) -> None:
             st.metric("MSM States", artifact.analysis_msm_n_states)
 
     # === PLOTS SECTION (Single Expander) ===
-    with st.expander("📊 Plots", expanded=True):
+    with st.expander("Plots", expanded=True):
         # Create grid layout for plots: 3 columns, 2 rows
         row1_col1, row1_col2, row1_col3 = st.columns(3)
         row2_col1, row2_col2, row2_col3 = st.columns(3)
@@ -549,7 +549,7 @@ def _show_build_outputs(artifact: BuildArtifact) -> None:
                 st.info("No quality data")
 
     # === METRICS SECTION (Single Expander) ===
-    with st.expander("📈 All Metrics", expanded=False):
+    with st.expander("All Metrics", expanded=False):
         # Create tabs for different metric categories
         tab_msm, tab_fes, tab_diag, tab_artifacts = st.tabs([
             "MSM Metrics",
@@ -651,7 +651,7 @@ def _show_build_outputs(artifact: BuildArtifact) -> None:
 
     # Guardrail violations (always visible if present)
     if artifact.guardrail_violations:
-        st.error("⚠️ **Guardrail Violations**")
+        st.error("**Guardrail Violations**")
         for violation in artifact.guardrail_violations:
             if isinstance(violation, dict):
                 code = violation.get("code", "unknown")
@@ -689,13 +689,13 @@ def _render_deeptica_summary(summary: Dict[str, Any]) -> None:
 
     # Display training history if available
     if "training_history" in summary:
-        with st.expander("📈 Training History", expanded=False):
+        with st.expander("Training History", expanded=False):
             history = summary["training_history"]
             st.line_chart(history)
 
     # Display model architecture if available
     if "architecture" in summary:
-        with st.expander("🏗️ Model Architecture", expanded=False):
+        with st.expander("Model Architecture", expanded=False):
             arch = summary["architecture"]
             if isinstance(arch, dict):
                 st.json(arch)

@@ -118,17 +118,11 @@ def extract_random_highT_frame_to_pdb(
             traj_path = None
 
     if traj_path is None:
-        # Fallback: pick highest replica index .dcd
-        logger.debug("[trajectory_utils] Falling back to highest replica index")
-        dcds = sorted((rd / "replica_exchange").glob("replica_*.dcd"))
-        if not dcds:
-            raise FileNotFoundError(
-                f"No replica_*.dcd found under {rd / 'replica_exchange'}"
-            )
-        traj_path = dcds[-1]
-        logger.info(
-            "[trajectory_utils] Selected fallback trajectory: %s",
-            traj_path.name,
+        # No fallback - raise explicit error instead
+        raise FileNotFoundError(
+            f"No trajectory file found in analysis results at {rd}. "
+            f"Expected analysis results to contain trajectory file paths or "
+            f"replica_exchange/replica_*.dcd files to exist."
         )
 
     traj = md.load(str(traj_path), top=str(topology_pdb))

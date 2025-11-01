@@ -233,7 +233,7 @@ def render_training_tab(ctx: AppContext) -> None:
                     pass
 
         if is_training_ongoing and log_file.exists():
-            with st.expander("⚠️ Training in Progress - View Log", expanded=True):
+            with st.expander("Training in Progress - View Log", expanded=True):
                 st.warning(f"Training directory: `{latest_training.name}`")
                 st.caption(
                     "Training may take 10-30 minutes depending on data size. Check the log below for progress.")

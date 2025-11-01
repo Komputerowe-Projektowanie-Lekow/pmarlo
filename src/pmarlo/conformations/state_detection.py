@@ -251,12 +251,11 @@ class StateDetector:
         # Label connected regions
         try:
             from scipy.ndimage import label
-        except ImportError:
-            # Fallback without connected components
-            low_indices = np.where(low_energy_mask.ravel())[0]
-            if len(low_indices) < 2:
-                return np.array([0]), np.array([1])
-            return np.array([low_indices[0]]), np.array([low_indices[-1]])
+        except ImportError as e:
+            raise ImportError(
+                "Energy-based state detection requires scipy. "
+                "Install it with: pip install scipy"
+            ) from e
 
         labeled, n_labels = label(low_energy_mask)
         if n_labels < 2:

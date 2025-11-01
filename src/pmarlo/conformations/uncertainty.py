@@ -453,13 +453,9 @@ class UncertaintyQuantifier:
             raise ImportError("CK test requires deeptime")
 
         # Coarse-grain to macrostates
-        try:
-            model = pcca(T, n_macrostates)
-            memberships = np.asarray(model.memberships)
-            labels = np.argmax(memberships, axis=1)
-        except Exception as e:
-            logger.warning(f"PCCA+ failed: {e}")
-            return {"success": False, "error": str(e)}
+        model = pcca(T, n_macrostates)
+        memberships = np.asarray(model.memberships)
+        labels = np.argmax(memberships, axis=1)
 
         # Map dtrajs to macrostates
         macro_dtrajs = [labels[dtraj] for dtraj in dtrajs]

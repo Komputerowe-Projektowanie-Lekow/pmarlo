@@ -20,6 +20,7 @@ from pmarlo.data.aggregate import load_shards_as_dataset
 
 from .types import BuildArtifact, BuildConfig, _AnalysisMSMStats
 from .utils import _sanitize_artifacts, _timestamp
+from .metrics_logger import MetricsLogger
 
 logger = logging.getLogger(__name__)
 
@@ -411,7 +412,6 @@ class AnalysisMixin:
                 "fes_method": str(config.fes_method),
                 "fes_bandwidth": config.fes_bandwidth,
                 "fes_min_count_per_bin": int(config.fes_min_count_per_bin),
-                "kmeans_kwargs": dict(config.kmeans_kwargs),
             }
             requested_fingerprint = {
                 "mode": str(config.cluster_mode),
@@ -862,6 +862,15 @@ class AnalysisMixin:
                 }
             )
             print("--- DEBUG: backend.build_analysis finished successfully ---")
+
+            # Log metrics to structured text files
+            try:
+                metrics_logger = MetricsLogger(self.layout.logs_dir)
+                metrics_dir = metrics_logger.log_msm_fes_build(artifact)
+                logger.info(f"Metrics logged to: {metrics_dir}")
+            except Exception as e:
+                logger.warning(f"Failed to log metrics: {e}", exc_info=True)
+
             return artifact
 
         except Exception as e:
