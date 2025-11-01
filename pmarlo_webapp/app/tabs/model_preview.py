@@ -1,8 +1,27 @@
 import streamlit as st
+from pathlib import Path
+
 from app.core.context import AppContext
+from app.core.session import (
+    _MODEL_PREVIEW_SELECTION,
+    _MODEL_PREVIEW_RESULT,
+    _LAST_TRAIN,
+    _TRAIN_CONFIG_PENDING,
+    _TRAIN_FEEDBACK,
+)
+from app.core.view_helpers import (
+    _model_entry_label,
+    _show_build_outputs,
+    _render_deeptica_summary,
+)
+from app.core.parsers import _format_tau_schedule
+from app.backend.utils import _sanitize_artifacts
 
 def render_model_preview(ctx: AppContext) -> None:
     """Render the Model Preview Tab."""
+    backend = ctx.backend
+    layout = ctx.layout
+
     st.header("Model Preview")
     models = backend.list_models()
     if not models:

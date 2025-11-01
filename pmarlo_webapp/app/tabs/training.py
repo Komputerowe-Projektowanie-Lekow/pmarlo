@@ -1,8 +1,31 @@
+import json
+from pathlib import Path
+
+import pandas as pd
 import streamlit as st
+
 from app.core.context import AppContext
+from app.core.session import (
+    _TRAIN_FEEDBACK,
+    _LAST_TRAIN,
+    _LAST_TRAIN_CONFIG,
+    _TRAIN_CONFIG_PENDING,
+)
+from app.core.constants import DEEPTICA_SKIP_MESSAGE
+from app.core.parsers import _parse_tau_schedule
+from app.core.view_helpers import (
+    _select_shard_paths,
+    _summarize_selected_shards,
+    _show_build_outputs,
+    _render_deeptica_summary,
+)
+from app.backend.types import TrainingConfig, TrainingResult
 
 def render_training_tab(ctx: AppContext) -> None:
     """Render the model training tab."""
+    backend = ctx.backend
+    layout = ctx.layout
+
     st.header("Train collective-variable model")
     feedback = st.session_state.get(_TRAIN_FEEDBACK)
     if feedback:

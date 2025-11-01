@@ -1,8 +1,21 @@
 import streamlit as st
+from pathlib import Path
+
 from app.core.context import AppContext
+from app.core.session import (
+    _RUN_PENDING,
+    _LAST_SIM,
+    _LAST_SHARDS,
+)
+from app.core.parsers import _parse_temperature_ladder
+from app.backend.types import SimulationConfig, ShardRequest
+
 
 def render_sampling_tab(ctx: AppContext) -> None:
     """Render the sampling & shard production tab."""
+    backend = ctx.backend
+    layout = ctx.layout
+
     st.header("Sampling & Shard Production")
     inputs = layout.available_inputs()
     if not inputs:

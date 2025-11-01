@@ -1,5 +1,19 @@
 from pathlib import Path
-from typing import List, Dict, Sequence, Optional, Mapping
+from typing import List, Dict, Sequence, Optional, Mapping, Any, TYPE_CHECKING
+
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+from pmarlo.data.shard_io import ShardRunSummary, summarize_shard_runs
+from app.plots import plot_msm, plot_fes
+from app.backend.utils import _sanitize_artifacts
+from app.core.tables import _metrics_table
+
+if TYPE_CHECKING:
+    from app.backend.workspace import WorkflowBackend
+    from app.backend.layout import WorkspaceLayout
+    from app.backend.types import BuildArtifact, TrainingResult, ConformationsResult
 
 
 
@@ -39,7 +53,7 @@ def _summarize_selected_shards(
     summaries = summarize_shard_runs(shard_paths)
     return summaries, _format_run_selection_summary(summaries)
 
-def _default_feature_spec_path(layout: WorkspaceLayout) -> Optional[Path]:
+def _default_feature_spec_path(layout: "WorkspaceLayout") -> Optional[Path]:
     """Return the packaged feature specification if it exists."""
 
     candidate = (layout.app_root / "app" / "feature_spec.yaml").resolve()
@@ -48,8 +62,8 @@ def _default_feature_spec_path(layout: WorkspaceLayout) -> Optional[Path]:
     return None
 
 def _infer_default_topology(
-    backend: WorkflowBackend,
-    layout: WorkspaceLayout,
+    backend: "WorkflowBackend",
+    layout: "WorkspaceLayout",
     run_ids: Sequence[str],
 ) -> Optional[Path]:
     """Heuristically locate a topology file for the selected shard runs."""
@@ -77,7 +91,7 @@ def _model_entry_label(entry: Mapping[str, Any], idx: int) -> str:
     created = entry.get("created_at", "unknown")
     return f"{bundle_name} (created {created})"
 
-def _show_build_outputs(artifact: BuildArtifact | TrainingResult) -> None:
+def _show_build_outputs(artifact: "BuildArtifact | TrainingResult") -> None:
     br = artifact.build_result
     col1, col2 = st.columns(2)
     with col1:
@@ -255,7 +269,7 @@ def _render_deeptica_summary(summary: Dict[str, object]) -> None:
             st.line_chart(df_grad, height=200)
 
 
-def _render_conformations_result(conf_result: ConformationsResult) -> None:
+def _render_conformations_result(conf_result: "ConformationsResult") -> None:
     """Visualise stored or freshly computed conformations analysis results."""
 
     if conf_result.error:
