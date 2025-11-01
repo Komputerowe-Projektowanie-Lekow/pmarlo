@@ -305,8 +305,24 @@ class AnalysisMixin:
 
         # Extract shard metadata
         shards_meta = dataset.get("__shards__", [])
-        n_frames = sum(int(s.get("length", 0)) for s in shards_meta if isinstance(s, Mapping))
+        n_frames_metadata = sum(int(s.get("length", 0)) for s in shards_meta if isinstance(s, Mapping))
         n_frames_with_states = int(state_counts.sum())
+
+        # FIX: Get actual dtraj lengths for accurate frame counting
+        dtrajs_raw = msm_obj.get("dtrajs")
+        if dtrajs_raw is None:
+            dtrajs_raw = dataset.get("dtrajs")
+
+        # Compute n_frames from actual dtrajs if available, otherwise fall back to metadata
+        n_frames = n_frames_metadata
+        if dtrajs_raw is not None:
+            try:
+                from pmarlo.analysis.debug_export import _coerce_dtrajs
+                dtrajs = _coerce_dtrajs(dtrajs_raw)
+                if dtrajs and any(d.size > 0 for d in dtrajs):
+                    n_frames = sum(len(d) for d in dtrajs)
+            except Exception:
+                pass  # Fall back to metadata if dtraj extraction fails
 
         # Compute zero rows
         zero_rows = int(np.count_nonzero(counts.sum(axis=1) == 0)) if counts.size > 0 else 0

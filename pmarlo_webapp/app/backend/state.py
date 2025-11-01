@@ -79,35 +79,50 @@ class _StateData:
 
 
 class StateManager:
-    """Persist JSON state for runs, shard batches, trained models, and builds."""
+    """Persist JSON state for runs, shard batches, trained models, and builds.
 
-    def __init__(self, path: str | Path) -> None:
+    This class now supports dynamic filesystem discovery to ensure the state
+    stays synchronized with actual files on disk.
+    """
+
+    def __init__(self, path: str | Path, *, workspace_layout=None) -> None:
         self.path = Path(path)
+        self.workspace_layout = workspace_layout
         ensure_directory(self.path.parent)
         self._data = _StateData()
         self._load()
 
     # ------------------------------------------------------------------
-    # Collection accessors
+    # Collection accessors with dynamic reconciliation
     # ------------------------------------------------------------------
     @property
     def runs(self) -> List[Dict[str, Any]]:
+        """Get runs, automatically removing entries with missing directories."""
+        self._reconcile_runs()
         return self._data.runs
 
     @property
     def shards(self) -> List[Dict[str, Any]]:
+        """Get shards, automatically removing entries with missing files."""
+        self._reconcile_shards()
         return self._data.shards
 
     @property
     def models(self) -> List[Dict[str, Any]]:
+        """Get models, automatically removing entries with missing files."""
+        self._reconcile_models()
         return self._data.models
 
     @property
     def builds(self) -> List[Dict[str, Any]]:
+        """Get builds, automatically removing entries with missing files."""
+        self._reconcile_builds()
         return self._data.builds
 
     @property
     def conformations(self) -> List[Dict[str, Any]]:
+        """Get conformations, automatically removing entries with missing files."""
+        self._reconcile_conformations()
         return self._data.conformations
 
     # ------------------------------------------------------------------
@@ -149,15 +164,139 @@ class StateManager:
         return self._remove_from(self._data.conformations, index)
 
     # ------------------------------------------------------------------
-    # Summaries & persistence
+    # Dynamic reconciliation methods
     # ------------------------------------------------------------------
-    def summary(self) -> Dict[str, int]:
-        return {
+    def _reconcile_runs(self) -> None:
+        """Remove run entries where the run directory no longer exists."""
+        to_remove = []
+        for i, entry in enumerate(self._data.runs):
+            run_dir = entry.get("run_dir")
+            if run_dir:
+                path = Path(run_dir)
+                if not path.exists() or not path.is_dir():
+                    to_remove.append(i)
+
+        if to_remove:
+            for i in reversed(to_remove):
+                self._data.runs.pop(i)
+            self._save()
+            logger.info(f"Reconciled {len(to_remove)} missing runs from state")
+
+    def _reconcile_shards(self) -> None:
+        """Remove shard entries where all referenced files are missing."""
+        to_remove = []
+        for i, entry in enumerate(self._data.shards):
+            # Check if directory exists
+            directory = entry.get("directory")
+            if directory:
+                dir_path = Path(directory)
+                if not dir_path.exists():
+                    to_remove.append(i)
+                    continue
+
+            # Check if any shard files exist
+            paths = entry.get("paths", [])
+            if paths:
+                any_exist = any(Path(p).exists() for p in paths)
+                if not any_exist:
+                    to_remove.append(i)
+
+        if to_remove:
+            for i in reversed(to_remove):
+                self._data.shards.pop(i)
+            self._save()
+            logger.info(f"Reconciled {len(to_remove)} missing shard batches from state")
+
+    def _reconcile_models(self) -> None:
+        """Remove model entries where the bundle file no longer exists."""
+        to_remove = []
+        for i, entry in enumerate(self._data.models):
+            bundle = entry.get("bundle")
+            if bundle:
+                path = Path(bundle)
+                if not path.exists():
+                    to_remove.append(i)
+
+        if to_remove:
+            for i in reversed(to_remove):
+                self._data.models.pop(i)
+            self._save()
+            logger.info(f"Reconciled {len(to_remove)} missing models from state")
+
+    def _reconcile_builds(self) -> None:
+        """Remove build entries where the bundle file no longer exists."""
+        to_remove = []
+        for i, entry in enumerate(self._data.builds):
+            bundle = entry.get("bundle")
+            if bundle:
+                path = Path(bundle)
+                if not path.exists():
+                    to_remove.append(i)
+
+        if to_remove:
+            for i in reversed(to_remove):
+                self._data.builds.pop(i)
+            self._save()
+            logger.info(f"Reconciled {len(to_remove)} missing builds from state")
+
+    def _reconcile_conformations(self) -> None:
+        """Remove conformation entries where the PDB file no longer exists."""
+        to_remove = []
+        for i, entry in enumerate(self._data.conformations):
+            pdb_path = entry.get("pdb_path")
+            if pdb_path:
+                path = Path(pdb_path)
+                if not path.exists():
+                    to_remove.append(i)
+
+        if to_remove:
+            for i in reversed(to_remove):
+                self._data.conformations.pop(i)
+            self._save()
+            logger.info(f"Reconciled {len(to_remove)} missing conformations from state")
+
+    def force_reconcile_all(self) -> Dict[str, int]:
+        """Force reconciliation of all collections and return counts of removed items."""
+        initial_counts = {
             "runs": len(self._data.runs),
             "shards": len(self._data.shards),
             "models": len(self._data.models),
             "builds": len(self._data.builds),
             "conformations": len(self._data.conformations),
+        }
+
+        self._reconcile_runs()
+        self._reconcile_shards()
+        self._reconcile_models()
+        self._reconcile_builds()
+        self._reconcile_conformations()
+
+        final_counts = {
+            "runs": len(self._data.runs),
+            "shards": len(self._data.shards),
+            "models": len(self._data.models),
+            "builds": len(self._data.builds),
+            "conformations": len(self._data.conformations),
+        }
+
+        removed = {
+            key: initial_counts[key] - final_counts[key]
+            for key in initial_counts
+        }
+
+        return removed
+
+    # ------------------------------------------------------------------
+    # Summaries & persistence
+    # ------------------------------------------------------------------
+    def summary(self) -> Dict[str, int]:
+        """Return counts after reconciliation."""
+        return {
+            "runs": len(self.runs),
+            "shards": len(self.shards),
+            "models": len(self.models),
+            "builds": len(self.builds),
+            "conformations": len(self.conformations),
         }
 
     def normalize_strings(self, transform: Callable[[str], str]) -> bool:

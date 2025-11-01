@@ -75,15 +75,47 @@ class ShardsMixin:
 
         shard_paths = _coerce_path_list(shard_paths)
 
+        logger.info(f"Shard emission returned {len(shard_paths)} paths")
+        for idx, p in enumerate(shard_paths):
+            logger.debug(f"  Shard {idx}: {p}, exists={p.exists()}, size={p.stat().st_size if p.exists() else 'N/A'}")
+
         # Count total frames across all shards
         n_frames = 0
+        failed_reads = []
         for path in shard_paths:
             try:
-                meta, _, _ = read_shard(path)
-                n_frames += int(getattr(meta, "n_frames", 0))
+                # Read the shard to count frames
+                meta, data, src = read_shard(path)
+                frames_in_shard = int(getattr(meta, "n_frames", 0))
+                n_frames += frames_in_shard
+                logger.debug(f"Shard {path.name}: {frames_in_shard} frames, data shape: {data.shape if data is not None else 'None'}")
             except Exception as e:
-                logger.warning(f"Could not read shard {path}: {e}")
+                logger.error(f"Failed to read shard {path}: {type(e).__name__}: {e}", exc_info=True)
+                failed_reads.append(path.name)
+                # Check if file exists
+                if not path.exists():
+                    logger.error(f"  → Shard file does not exist: {path}")
+                else:
+                    try:
+                        size = path.stat().st_size
+                        logger.error(f"  → Shard file exists, size: {size} bytes")
+                        # Check for companion npz file
+                        npz_path = path.with_suffix(".npz")
+                        if npz_path.exists():
+                            npz_size = npz_path.stat().st_size
+                            logger.error(f"  → NPZ file exists, size: {npz_size} bytes")
+                        else:
+                            logger.error(f"  → NPZ file missing: {npz_path}")
+                    except Exception as stat_err:
+                        logger.error(f"  → Could not stat file: {stat_err}")
                 continue
+
+        if n_frames == 0 and len(shard_paths) > 0:
+            logger.warning(
+                f"Shard emission produced {len(shard_paths)} shard files but counted 0 frames total. "
+                f"Failed to read {len(failed_reads)} shards: {failed_reads}. "
+                f"This may indicate an issue with shard generation or file I/O."
+            )
 
         result = ShardResult(
             run_id=simulation.run_id,
@@ -121,7 +153,7 @@ class ShardsMixin:
             }
         )
 
-        logger.info(f"Generated {len(shard_paths)} shards for run {simulation.run_id}")
+        logger.info(f"Generated {len(shard_paths)} shards for run {simulation.run_id}, total frames: {n_frames}")
         return result
 
     def delete_shard_batch(self, index: int) -> bool:
@@ -168,39 +200,6 @@ class ShardsMixin:
             logger.error(f"Error deleting shard batch {index}: {e}")
             return False
 
-    def _reconcile_shard_state(self) -> None:
-        """Remove shard batches from state if all referenced files are missing.
-
-        This is a cleanup operation that ensures state consistency.
-        """
-        try:
-            to_delete: List[int] = []
-            for i, entry in enumerate(list(self.state.shards)):
-                raw_paths = entry.get("paths", [])
-                paths = [
-                    self._path_from_value(p)
-                    for p in raw_paths
-                ]
-                existing = [p for p in paths if p is not None and p.exists()]
-                if len(existing) == 0:
-                    to_delete.append(i)
-
-            for i in reversed(to_delete):
-                # Best-effort removal (also attempts to clean empty dirs)
-                if not self.delete_shard_batch(i):
-                    try:
-                        self.state.remove_shards(i)
-                    except Exception as e:
-                        logger.debug(f"Could not remove shard batch {i}: {e}")
-                        pass
-
-            if to_delete:
-                logger.info(f"Reconciled {len(to_delete)} missing shard batches")
-        except Exception as e:
-            # Non-fatal; leave state as-is
-            logger.debug(f"Error during shard state reconciliation: {e}")
-            pass
-
     def discover_shards(self) -> List[Path]:
         """Discover all shard JSON files in the shards directory.
 
@@ -242,4 +241,3 @@ class ShardsMixin:
             info.append(e)
 
         return info
-

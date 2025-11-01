@@ -33,7 +33,7 @@ def render_assets_tab(ctx: AppContext) -> None:
     summary_counts = backend.sidebar_summary()
     summary_cols = st.columns(5)
     summary_cols[0].metric("Runs", summary_counts.get("runs", 0))
-    summary_cols[1].metric("Shard batches", summary_counts.get("shards", 0))
+    summary_cols[1].metric("Shards", summary_counts.get("shards", 0))  # Changed from "Shard batches"
     summary_cols[2].metric("Models", summary_counts.get("models", 0))
     summary_cols[3].metric("Analyses", summary_counts.get("builds", 0))
     summary_cols[4].metric("Conformations", summary_counts.get("conformations", 0))
@@ -98,27 +98,37 @@ def render_assets_tab(ctx: AppContext) -> None:
             df_shards = _shards_dataframe(shards)
             st.dataframe(df_shards, width="stretch")
             indices = df_shards["Index"].tolist()
-            if (
-                    st.session_state[_ASSET_SHARD_SELECTION] is None
-                    or st.session_state[_ASSET_SHARD_SELECTION] not in indices
-            ):
-                st.session_state[_ASSET_SHARD_SELECTION] = indices[-1]
 
-            def _shard_label(idx: int) -> str:
-                entry = shards[idx]
-                run_id = entry.get("run_id", f"run-{idx}")
-                created = entry.get("created_at", "unknown")
-                return f"{run_id} ({entry.get('n_shards', 0)} shards, created {created})"
+            # Ensure we have valid indices after reconciliation
+            if not indices:
+                st.warning("No valid shard batches found. Shards may have been deleted.")
+            else:
+                if (
+                        st.session_state[_ASSET_SHARD_SELECTION] is None
+                        or st.session_state[_ASSET_SHARD_SELECTION] not in indices
+                ):
+                    st.session_state[_ASSET_SHARD_SELECTION] = indices[-1]
 
-            selected_shard_idx = st.selectbox(
-                "Inspect shard batch",
-                options=indices,
-                format_func=_shard_label,
-                key=_ASSET_SHARD_SELECTION,
-            )
-            shard_entry = shards[int(selected_shard_idx)]
-            st.subheader("Shard batch manifest")
-            st.json(_sanitize_artifacts(shard_entry))
+                def _shard_label(idx: int) -> str:
+                    entry = shards[idx]
+                    run_id = entry.get("run_id", f"run-{idx}")
+                    created = entry.get("created_at", "unknown")
+                    return f"{run_id} ({entry.get('n_shards', 0)} shards, created {created})"
+
+                selected_shard_idx = st.selectbox(
+                    "Inspect shard batch",
+                    options=indices,
+                    format_func=_shard_label,
+                    key=_ASSET_SHARD_SELECTION,
+                )
+
+                # Add null check before using selected_shard_idx
+                if selected_shard_idx is not None:
+                    shard_entry = shards[int(selected_shard_idx)]
+                    st.subheader("Shard batch manifest")
+                    st.json(_sanitize_artifacts(shard_entry))
+                else:
+                    st.warning("Please select a shard batch to inspect.")
 
     with tab_models:
         models = backend.list_models()
@@ -128,29 +138,37 @@ def render_assets_tab(ctx: AppContext) -> None:
             df_models = _models_dataframe(models)
             st.dataframe(df_models, width="stretch")
             indices = df_models["Index"].tolist()
-            if (
-                    st.session_state[_ASSET_MODEL_SELECTION] is None
-                    or st.session_state[_ASSET_MODEL_SELECTION] not in indices
-            ):
-                st.session_state[_ASSET_MODEL_SELECTION] = indices[-1]
 
-            selected_model_idx = st.selectbox(
-                "Inspect model",
-                options=indices,
-                format_func=lambda idx: _model_entry_label(models[idx], idx),
-                key=_ASSET_MODEL_SELECTION,
-            )
-            model_entry = models[int(selected_model_idx)]
-            st.subheader("Model record")
-            st.json(_sanitize_artifacts(model_entry))
+            # Ensure we have valid indices
+            if not indices:
+                st.warning("No valid models found. Models may have been deleted.")
+            else:
+                if (
+                        st.session_state[_ASSET_MODEL_SELECTION] is None
+                        or st.session_state[_ASSET_MODEL_SELECTION] not in indices
+                ):
+                    st.session_state[_ASSET_MODEL_SELECTION] = indices[-1]
 
-            if st.button(
-                    "Preview in Model tab",
-                    key="asset_preview_model",
-                    help="Jump to the Model Preview tab for this bundle.",
-            ):
-                st.session_state[_MODEL_PREVIEW_SELECTION] = int(selected_model_idx)
-                st.rerun()
+                selected_model_idx = st.selectbox(
+                    "Inspect model",
+                    options=indices,
+                    format_func=lambda idx: _model_entry_label(models[idx], idx),
+                    key=_ASSET_MODEL_SELECTION,
+                )
+
+                # Add null check before using selected_model_idx
+                if selected_model_idx is not None:
+                    model_entry = models[int(selected_model_idx)]
+                    st.subheader("Model record")
+                    st.json(_sanitize_artifacts(model_entry))
+
+                    if st.button(
+                            "Preview in Model tab",
+                            key="asset_preview_model",
+                            help="Jump to the Model Preview tab for this bundle.",
+                    ):
+                        st.session_state[_MODEL_PREVIEW_SELECTION] = int(selected_model_idx)
+                        st.rerun()
 
     with tab_builds:
         builds = backend.list_builds()
