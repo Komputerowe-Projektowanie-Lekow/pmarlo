@@ -401,11 +401,23 @@ def _emit_windows(
 
     eff_window = min(window, n_frames)
     eff_hop = min(hop, eff_window)
+
+    # Extract run_id from provenance to make shard IDs globally unique across runs
+    run_id = base_provenance.get("run_id", "")
+    # Sanitize run_id to use only the suffix (e.g., "run_20241101_123456" -> "20241101_123456")
+    run_suffix = str(run_id).replace("run_", "") if run_id else "default"
+
+    # Track the last position covered by regular windows
+    last_covered = 0
+
     for start in range(0, n_frames - eff_window + 1, eff_hop):
         stop = start + eff_window
+        last_covered = stop
         segment_id = int(next_idx)
-        shard_id = "T{temp}K_seg{segment:04d}_rep{replica:03d}".format(
+        # Include run_suffix in shard_id to ensure global uniqueness across all runs
+        shard_id = "T{temp}K_{run}_seg{segment:04d}_rep{replica:03d}".format(
             temp=int(round(float(temperature))),
+            run=run_suffix,
             segment=segment_id,
             replica=int(replica_id),
         )
@@ -417,6 +429,54 @@ def _emit_windows(
             "segment_id": segment_id,
             "replica_id": int(replica_id),
             "exchange_window_id": int(base_provenance.get("exchange_window_id", 0)),
+            "run_id": run_id,  # Include run_id in source metadata
+        }
+        merged = dict(base_provenance)
+        merged.update(source)
+        source = merged
+        shard_path = write_shard(
+            out_dir=out_dir,
+            shard_id=shard_id,
+            cvs=cvs,
+            dtraj=None,
+            periodic={"Rg": False, "RMSD_ref": False},
+            seed=int(seed_for(next_idx)),
+            temperature=float(temperature),
+            source=source,
+        )
+        shard_paths.append(shard_path.resolve())
+        next_idx += 1
+
+    # Emit a final partial shard if there are remaining frames
+    # This ensures we don't lose data at the end of trajectories
+    if last_covered < n_frames:
+        remaining_frames = n_frames - last_covered
+        logger.info(
+            "[shards] Emitting final partial shard with %d remaining frames (trajectory has %d total)",
+            remaining_frames,
+            n_frames
+        )
+        start = last_covered
+        stop = n_frames
+        segment_id = int(next_idx)
+        # Use canonical ID format without _partial suffix (mark as partial in metadata instead)
+        shard_id = "T{temp}K_{run}_seg{segment:04d}_rep{replica:03d}".format(
+            temp=int(round(float(temperature))),
+            run=run_suffix,
+            segment=segment_id,
+            replica=int(replica_id),
+        )
+        cvs = {"Rg": rg[start:stop], "RMSD_ref": rmsd[start:stop]}
+        source: dict[str, object] = {
+            "traj": str(traj_path),
+            "range": [int(start), int(stop)],
+            "n_frames": int(stop - start),
+            "segment_id": segment_id,
+            "replica_id": int(replica_id),
+            "exchange_window_id": int(base_provenance.get("exchange_window_id", 0)),
+            "run_id": run_id,
+            "partial": True,  # Mark as partial shard in metadata
+            "is_final_partial": True,  # Additional flag to indicate this is the final partial window
         }
         merged = dict(base_provenance)
         merged.update(source)

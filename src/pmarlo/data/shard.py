@@ -43,6 +43,11 @@ class ShardDetails:
         return float(self.meta.temperature_K)
 
     @property
+    def n_frames(self) -> int:
+        """Return the number of frames in this shard."""
+        return int(self.meta.n_frames)
+
+    @property
     def cv_names(self) -> tuple[str, ...]:
         columns = cast(
             Sequence[object], getattr(self.meta.feature_spec, "columns", tuple())

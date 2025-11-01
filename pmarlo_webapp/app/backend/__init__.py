@@ -39,9 +39,15 @@ class Backend(
 
     def sidebar_summary(self) -> Dict[str, int]:
         """Return summary counts for the sidebar display."""
+        # Count total individual shard files across all batches
+        total_shards = 0
+        for entry in self.state.shards:
+            paths = entry.get("paths", [])
+            total_shards += len(paths)
+
         return {
             "runs": len(self.state.runs),
-            "shards": len(self.state.shards),
+            "shards": total_shards,  # Total individual shard files, not batches
             "models": len(self.state.models),
             "builds": len(self.state.builds),
             "conformations": len(self.state.conformations),

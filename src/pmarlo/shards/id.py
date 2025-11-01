@@ -19,6 +19,10 @@ def canonical_shard_id(meta: ShardMeta) -> str:
     if kind not in {"demux", "replica"}:
         raise ValueError(f"Invalid shard kind: {kind}")
 
+    # Extract run_id from provenance to ensure global uniqueness across runs
+    run_id = meta.provenance.get("run_id", "")
+    run_suffix = str(run_id).replace("run_", "") if run_id else "default"
+
     if kind == "replica":
-        return f"replica_T{t_kelvin}K_seg{segment:04d}_rep{replica:03d}"
-    return f"T{t_kelvin}K_seg{segment:04d}_rep{replica:03d}"
+        return f"replica_T{t_kelvin}K_{run_suffix}_seg{segment:04d}_rep{replica:03d}"
+    return f"T{t_kelvin}K_{run_suffix}_seg{segment:04d}_rep{replica:03d}"
