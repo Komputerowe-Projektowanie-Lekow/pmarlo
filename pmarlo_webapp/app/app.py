@@ -3,7 +3,7 @@ from __future__ import annotations
 import streamlit as st
 
 from app.core.context import build_context
-from app.core.session import ensure_session_defaults, consume_pending_training_config
+from app.core import ensure_session_defaults, consume_pending_training_config
 from app.ui.sidebar import render_sidebar
 
 from app.tabs.sampling import render_sampling_tab
@@ -11,7 +11,7 @@ from app.tabs.training import render_training_tab
 from app.tabs.msm_fes import render_msm_fes_tab
 from app.tabs.conformations import render_conformations_tab
 from app.tabs.validation import render_validation_tab
-from app.tabs.model_preview import render_model_preview_tab
+from app.tabs import render_model_preview_tab
 from app.tabs.assets import render_assets_tab
 from app.tabs.its import render_its_tab
 
@@ -80,6 +80,8 @@ def main() -> None:
     # Implied Timescales tab (separate from conformation analysis)
     with tab_its:
         render_its_tab(ctx)
+
+    # TODO : Create another tab that has the CK validation test to see other interesting parameters
 
     st.caption("Run with: poetry run streamlit run pmarlo_webapp/app/app.py")
 

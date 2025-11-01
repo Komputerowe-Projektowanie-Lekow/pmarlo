@@ -1,8 +1,31 @@
+from pathlib import Path
+from typing import Mapping
+
 import streamlit as st
+
 from app.core.context import AppContext
+from app.core.session import (
+    _ITS_PENDING_TOPOLOGY,
+    _ITS_PENDING_FEATURE_SPEC,
+    _LAST_ITS_RESULT,
+    _ITS_FEEDBACK,
+)
+from app.core.parsers import _format_lag_sequence, _parse_lag_sequence
+from app.core.view_helpers import (
+    _infer_default_topology,
+    _default_feature_spec_path,
+    _select_shard_paths,
+    _summarize_selected_shards,
+)
+from app.core.tables import _timescales_dataframe
+from app.backend.its import calculate_its, plot_its
+
 
 def render_its_tab(ctx: AppContext) -> None:
     """Render the implied timescales tab."""
+    backend = ctx.backend
+    layout = ctx.layout
+
     st.header("Implied Timescales")
     shard_groups = backend.shard_summaries()
     if not shard_groups:
@@ -181,7 +204,7 @@ def render_its_tab(ctx: AppContext) -> None:
             lag_series = its_result.get("lag_times", [])
             times_series = its_result.get("timescales", [])
             try:
-                fig = backend_plot_its(lag_series, times_series)
+                fig = plot_its(lag_series, times_series)
             except Exception as exc:
                 st.warning(f"Could not render implied timescale plot: {exc}")
             else:

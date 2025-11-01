@@ -1,8 +1,26 @@
 import streamlit as st
+import traceback
+from pathlib import Path
+from typing import List, Optional
+
 from app.core.context import AppContext
+from app.core.session import (
+    _LAST_CONFORMATIONS,
+    _CONFORMATIONS_FEEDBACK,
+    _sync_form_metastable_states,
+)
+from app.core.view_helpers import (
+    _select_shard_paths,
+    _summarize_selected_shards,
+    _render_conformations_result,
+)
+from app.backend.types import ConformationsConfig, ConformationsResult
 
 def render_conformations_tab(ctx: AppContext) -> None:
     """Render the conformations analysis tab."""
+    backend = ctx.backend
+    layout = ctx.layout
+
     st.header("TPT Conformations Analysis")
     st.write(
         "Find metastable states, transition states, and pathways using Transition Path Theory."

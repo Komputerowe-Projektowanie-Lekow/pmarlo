@@ -1,5 +1,8 @@
 import streamlit as st
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.backend.types import TrainingConfig, BuildConfig
 
 # Keys used inside st.session_state
 _LAST_SIM = "__pmarlo_last_simulation"
@@ -24,7 +27,9 @@ _ASSET_CONF_SELECTION = "__pmarlo_asset_conf_select"
 _ITS_PENDING_TOPOLOGY = "__pmarlo_its_pending_topology"
 _ITS_PENDING_FEATURE_SPEC = "__pmarlo_its_pending_feature_spec"
 
-def _apply_training_config_to_state(cfg: TrainingConfig) -> None:
+def _apply_training_config_to_state(cfg: "TrainingConfig") -> None:
+    from app.core.parsers import _format_tau_schedule
+
     bins = dict(cfg.bins or {})
     hidden_str = ", ".join(str(int(h)) for h in cfg.hidden)
     _update_state(
@@ -42,6 +47,8 @@ def _apply_training_config_to_state(cfg: TrainingConfig) -> None:
     )
 
 def _consume_pending_training_config() -> None:
+    from app.backend.types import TrainingConfig
+
     pending = st.session_state.get(_TRAIN_CONFIG_PENDING)
     if isinstance(pending, TrainingConfig):
         _apply_training_config_to_state(pending)
@@ -52,6 +59,8 @@ def _update_state(**kwargs: Any) -> None:
         st.session_state[key] = value
 
 def _ensure_session_defaults() -> None:
+    from app.core.parsers import _format_lag_sequence
+
     for key in (
         _LAST_SIM,
         _LAST_SHARDS,
@@ -134,7 +143,7 @@ def _sync_form_metastable_states() -> None:
     st.session_state["conf_n_metastable"] = value
     st.session_state["conf_n_metastable_sidebar"] = value
 
-def _apply_analysis_config_to_state(cfg: BuildConfig) -> None:
+def _apply_analysis_config_to_state(cfg: "BuildConfig") -> None:
     bins = dict(cfg.bins or {})
     if isinstance(cfg.fes_bandwidth, (int, float)):
         bw_value = f"{float(cfg.fes_bandwidth):g}"

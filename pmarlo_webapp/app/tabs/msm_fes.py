@@ -1,8 +1,21 @@
 import streamlit as st
+import traceback
+from pathlib import Path
+from typing import Dict, Any, List
+
 from app.core.context import AppContext
+from app.core.session import (
+    _LAST_BUILD,
+    _LAST_TRAIN_CONFIG,
+    _apply_analysis_config_to_state,
+)
+from app.backend.types import BuildConfig, BuildArtifact, TrainingConfig
 
 def render_msm_fes_tab(ctx: AppContext) -> None:
     """Render the MSM/FES analysis tab."""
+    backend = ctx.backend
+    layout = ctx.layout
+    
     st.header("Build MSM and FES")
     shard_groups = backend.shard_summaries()
 
@@ -33,13 +46,6 @@ def render_msm_fes_tab(ctx: AppContext) -> None:
                 loaded = backend.load_analysis_bundle(int(selected_idx))
                 if loaded is not None:
                     st.session_state[_LAST_BUILD] = loaded
-                    try:
-                        cfg_loaded = backend.build_config_from_entry(
-                            builds[int(selected_idx)]
-                        )
-                        _apply_analysis_config_to_state(cfg_loaded)
-                    except Exception:
-                        pass
                     st.success(f"Loaded bundle {loaded.bundle_path.name}.")
                     _show_build_outputs(loaded)
                     summary = (
@@ -319,3 +325,139 @@ def render_msm_fes_tab(ctx: AppContext) -> None:
                 print(f"--- DEBUG: Analysis failed with exception: {exc}")
                 traceback.print_exc()
                 st.error(f"Analysis failed: {exc}")
+
+
+# Helper functions for MSM/FES tab
+
+def _select_shard_paths(shard_groups: List[Dict[str, Any]], selected_runs: List[str]) -> List[Path]:
+    """Extract shard file paths from selected run IDs."""
+    selected_paths = []
+    for entry in shard_groups:
+        run_id = str(entry.get("run_id", ""))
+        if run_id in selected_runs:
+            paths = entry.get("shard_paths", [])
+            for p in paths:
+                if isinstance(p, (str, Path)):
+                    selected_paths.append(Path(p))
+    return selected_paths
+
+
+def _summarize_selected_shards(selected_paths: List[Path]) -> tuple[List[str], str]:
+    """Summarize the selected shard files for display."""
+    if not selected_paths:
+        return [], ""
+
+    # Extract run IDs from shard paths
+    run_ids = set()
+    for path in selected_paths:
+        # Assume shard paths have format: .../run_<id>/shards/...
+        parts = path.parts
+        for i, part in enumerate(parts):
+            if part.startswith("run_"):
+                run_ids.add(part)
+                break
+
+    summary_text = f"{len(run_ids)} simulation run(s)"
+    return list(run_ids), summary_text
+
+
+def _show_build_outputs(artifact: BuildArtifact) -> None:
+    """Display the outputs from a build artifact."""
+    st.subheader("Analysis Bundle Outputs")
+
+    # Display basic information
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Bundle Path", artifact.bundle_path.name)
+        st.metric("Dataset Hash", artifact.dataset_hash[:12] + "...")
+    with col2:
+        st.metric("Created", artifact.created_at)
+        if artifact.analysis_msm_n_states:
+            st.metric("MSM States", artifact.analysis_msm_n_states)
+
+    # Display build result artifacts if available
+    if artifact.build_result and hasattr(artifact.build_result, 'artifacts'):
+        artifacts = artifact.build_result.artifacts
+        if artifacts:
+            with st.expander("📦 Available Artifacts", expanded=False):
+                for key, value in artifacts.items():
+                    st.write(f"**{key}**")
+                    if isinstance(value, dict):
+                        st.json(value)
+                    else:
+                        st.write(value)
+
+    # Display debug summary if available
+    if artifact.debug_summary:
+        with st.expander("🔍 Debug Summary", expanded=False):
+            summary = artifact.debug_summary
+
+            # MSM statistics
+            if "total_pairs" in summary:
+                st.write(f"**Total transition pairs:** {summary['total_pairs']}")
+            if "states_observed" in summary:
+                st.write(f"**States observed:** {summary['states_observed']}")
+            if "largest_scc_size" in summary:
+                st.write(f"**Largest connected component:** {summary['largest_scc_size']}")
+            if "diag_mass" in summary:
+                st.write(f"**Diagonal mass:** {summary['diag_mass']:.4f}")
+
+            # Warnings
+            if "warnings" in summary and summary["warnings"]:
+                st.warning("**Analysis Warnings:**")
+                for warning in summary["warnings"]:
+                    if isinstance(warning, dict):
+                        st.write(f"- {warning.get('message', warning)}")
+                    else:
+                        st.write(f"- {warning}")
+
+    # Display guardrail violations if present
+    if artifact.guardrail_violations:
+        with st.expander("⚠️ Guardrail Violations", expanded=True):
+            for violation in artifact.guardrail_violations:
+                if isinstance(violation, dict):
+                    code = violation.get("code", "unknown")
+                    message = violation.get("message", str(violation))
+                    st.error(f"**{code}:** {message}")
+                else:
+                    st.error(str(violation))
+
+
+def _render_deeptica_summary(summary: Dict[str, Any]) -> None:
+    """Render a summary of Deep-TICA training results."""
+    st.subheader("Deep-TICA Model Summary")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        if "n_components" in summary:
+            st.metric("Output Dimensions", summary["n_components"])
+        if "lag" in summary:
+            st.metric("Lag Time", summary["lag"])
+
+    with col2:
+        if "epochs_trained" in summary:
+            st.metric("Epochs Trained", summary["epochs_trained"])
+        if "final_loss" in summary:
+            st.metric("Final Loss", f"{summary['final_loss']:.6f}")
+
+    with col3:
+        if "validation_score" in summary:
+            st.metric("Validation Score", f"{summary['validation_score']:.6f}")
+        if "training_time" in summary:
+            st.metric("Training Time", f"{summary['training_time']:.2f}s")
+
+    # Display training history if available
+    if "training_history" in summary:
+        with st.expander("📈 Training History", expanded=False):
+            history = summary["training_history"]
+            st.line_chart(history)
+
+    # Display model architecture if available
+    if "architecture" in summary:
+        with st.expander("🏗️ Model Architecture", expanded=False):
+            arch = summary["architecture"]
+            if isinstance(arch, dict):
+                st.json(arch)
+            else:
+                st.write(arch)
