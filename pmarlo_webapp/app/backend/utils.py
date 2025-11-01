@@ -1,6 +1,15 @@
+import json
+import math
+import re
+import unicodedata
+from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, cast
+
 import numpy as np
+
+from pmarlo.utils.path_utils import ensure_directory
 
 _UNSAFE_SLUG_CHARS = re.compile(r"[^a-z0-9_-]")
 
@@ -15,51 +24,39 @@ _STRUCTURE_EXTENSIONS: tuple[str, ...] = (
     ".gro",
 )
 
-def _path_from_value(self, value: Any) -> Optional[Path]:
-    if value in (None, "", []):
-        return None
-    try:
-        candidate = Path(str(value)).expanduser()
-    except Exception:
-        return None
-    if candidate.is_absolute():
-        candidate = self.layout.rebase_legacy_path(candidate)
-    try:
-        return candidate.resolve()
-    except Exception:
-        return candidate
 
 def _build_result_cls() -> "_BuildResult":
     return cast("_BuildResult", _pmarlo_handles()["BuildResult"])
 
+
 def _sanitize_artifacts(data: Any) -> Any:
     return _pmarlo_handles()["_sanitize_artifacts"](data)
+
 
 def _resolve_workspace_path(base: Path, candidate: Path) -> Path:
     if candidate.is_absolute():
         return candidate.expanduser().resolve()
     return (base / candidate).expanduser().resolve()
 
+
 def _timestamp() -> str:
     return datetime.now().strftime("%Y%m%d-%H%M%S")
 
+
 def _slugify(label: Optional[str]) -> Optional[str]:
     """Return a deterministic slug for ``label`` suitable for filenames."""
-
     if not label:
         return None
-
     normalised = unicodedata.normalize("NFKD", str(label)).strip()
     ascii_label = normalised.encode("ascii", "ignore").decode("ascii")
     slug = _UNSAFE_SLUG_CHARS.sub("_", ascii_label.lower())
     slug = slug.strip("_")
     return slug or None
 
+
 def _coerce_path_list(paths: Iterable[str | Path]) -> List[Path]:
     return [Path(p).resolve() for p in paths]
 
-def _sanitize_artifacts(data: Any) -> Any:
-    # ... your implementation
 
 def choose_sim_seed(mode: str, *, fixed: Optional[int] = None) -> Optional[int]:
     """Choose simulation seed based on mode."""
@@ -73,6 +70,7 @@ def choose_sim_seed(mode: str, *, fixed: Optional[int] = None) -> Optional[int]:
         return random.randint(1, 1000000)
     else:
         raise ValueError(f"Unknown seed mode: {mode}")
+
 
 def _normalize_training_metrics(
     metrics: Mapping[str, Any] | None,
@@ -156,8 +154,6 @@ def _normalize_training_metrics(
     normalized.pop("_best_epoch_index", None)
     return normalized
 
-def _compute_analysis_diag_mass(...) -> Tuple[float, Optional[np.ndarray], Optional[Dict]]:
-    # ... your implementation
 
 def _is_transition_matrix_reversible(
     T: np.ndarray, pi: np.ndarray, atol: float = 1e-8, rtol: float = 1e-5
@@ -169,46 +165,9 @@ def _is_transition_matrix_reversible(
     flux = np.multiply(pi[:, None], T)
     return np.allclose(flux, flux.T, atol=atol, rtol=rtol)
 
-def _rewrite_strings_in_place(obj: Any, transform: Callable[[str], str]) -> bool:
-    def _apply(value: Any) -> Tuple[Any, bool]:
-        if isinstance(value, dict):
-            changed = False
-            for key, item in value.items():
-                new_item, delta = _apply(item)
-                if delta:
-                    value[key] = new_item
-                    changed = True
-            return value, changed
-        if isinstance(value, list):
-            changed = False
-            for idx, item in enumerate(value):
-                new_item, delta = _apply(item)
-                if delta:
-                    value[idx] = new_item
-                    changed = True
-            return value, changed
-        if isinstance(value, tuple):
-            buffer: List[Any] = []
-            changed = False
-            for item in value:
-                new_item, delta = _apply(item)
-                buffer.append(new_item)
-                if delta:
-                    changed = True
-            return (tuple(buffer) if changed else value), changed
-        if isinstance(value, str):
-            new_value = transform(value)
-            return new_value, new_value != value
-        return value, False
-
-    _, mutated = _apply(obj)
-    return mutated
-
-
-def _resolve_workspace_path(base_dir: Path, candidate: Path) -> Path:
-    # ... your implementation
 
 def _load_projection_matrix(path: Path) -> np.ndarray:
+    """Load DeepTICA projection matrix from .npz or .npy file."""
     if not path.exists():
         raise FileNotFoundError(f"DeepTICA projection file does not exist: {path}")
 
@@ -234,7 +193,9 @@ def _load_projection_matrix(path: Path) -> np.ndarray:
         raise ValueError("DeepTICA projection must be a non-empty 2D array")
     return matrix
 
+
 def _load_metadata_mapping(path: Path) -> Dict[str, Any]:
+    """Load DeepTICA metadata from JSON file."""
     if not path.exists():
         raise FileNotFoundError(f"DeepTICA metadata file does not exist: {path}")
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -242,10 +203,10 @@ def _load_metadata_mapping(path: Path) -> Dict[str, Any]:
         raise ValueError("DeepTICA metadata must decode to a mapping")
     return dict(payload)
 
+
 @lru_cache(maxsize=1)
 def _pmarlo_handles() -> Dict[str, Any]:
     """Import heavyweight PMARLO helpers on demand."""
-
     from pmarlo.api.shards import (
         build_from_shards as _build_from_shards,
         emit_shards_rg_rmsd_windowed as _emit_shards,
@@ -265,6 +226,7 @@ def _pmarlo_handles() -> Dict[str, Any]:
         "BuildResult": _BuildResultRuntime,
         "_sanitize_artifacts": _sanitize,
     }
+
 
 def build_from_shards(*args: Any, **kwargs: Any) -> Any:
     return _pmarlo_handles()["build_from_shards"](*args, **kwargs)

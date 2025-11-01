@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Sequence, Tuple
 
@@ -55,8 +55,8 @@ class SimulationConfig:
     jitter_sigma_A: float = 0.05
     exchange_frequency_steps: Optional[int] = None
     temperature_schedule_mode: Optional[str] = None
-    cv_model_bundle: Optional[Path] = None  # Path to trained CV model for CV-informed sampling
-    stub_result: bool = False  # Use synthetic trajectories instead of running REMD
+    cv_model_bundle: Optional[Path] = None
+    stub_result: bool = False
     save_restart_pdb: bool = False
     restart_temperature: Optional[float] = None
     start_from_pdb: Optional[Path] = None
@@ -94,7 +94,7 @@ class TrainingResult:
     build_result: "_BuildResult"
     created_at: str
     checkpoint_dir: Optional[Path] = None
-    cv_model_bundle: Optional[Dict[str, Any]] = None  # Paths to exported CV model files
+    cv_model_bundle: Optional[Dict[str, Any]] = None
 
 @dataclass
 class BuildConfig:
@@ -108,9 +108,7 @@ class BuildConfig:
     apply_cv_whitening: bool = False
     cluster_mode: str = "kmeans"
     n_microstates: int = 20
-    kmeans_kwargs: Dict[str, Any] = field(
-        default_factory=dict
-    )
+    kmeans_kwargs: Dict[str, Any] = field(default_factory=dict)
     reweight_mode: str = "MBAR"
     fes_method: str = "kde"
     fes_bandwidth: str | float = "scott"
@@ -177,18 +175,6 @@ class ConformationsResult:
     tpt_converged: bool = True
     tpt_pathway_iterations: Optional[int] = None
     tpt_pathway_max_iterations: Optional[int] = None
-
-@dataclass
-class TrajectorySegment:
-    # ... your existing dataclass
-
-@dataclass
-class TrajectoryFrameLocator:
-    # ... your existing dataclass
-
-@dataclass
-class AnalysisDebugData:
-    # ... your existing dataclass
 
 @dataclass(frozen=True)
 class _AnalysisMSMStats:
