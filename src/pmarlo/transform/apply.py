@@ -194,13 +194,17 @@ def _prepare_learn_cv_arrays(dataset: Dict[str, Any]) -> Tuple[
     if X_all.ndim != 2 or X_all.shape[0] == 0:
         raise RuntimeError("LEARN_CV requires a non-empty 2D feature matrix")
 
-    shards_meta = dataset.get("__shards__")
-    if not isinstance(shards_meta, list) or not shards_meta:
-        shards_meta = [{"id": "shard_0000", "start": 0, "stop": X_all.shape[0]}]
+    raw_shards = dataset.get("__shards__")
+    if not isinstance(raw_shards, list) or not raw_shards:
+        raw_shards = [{"id": "shard_0000", "start": 0, "stop": X_all.shape[0]}]
 
     shard_ranges: List[Tuple[int, int]] = []
     X_list: List[np.ndarray] = []
-    for entry in shards_meta:
+    cleaned_meta: List[Dict[str, Any]] = []
+
+    for entry in raw_shards:
+        if not isinstance(entry, dict):
+            continue
         try:
             start = int(entry.get("start", 0))
             stop = int(entry.get("stop", start))
@@ -213,10 +217,20 @@ def _prepare_learn_cv_arrays(dataset: Dict[str, Any]) -> Tuple[
         shard_ranges.append((start, stop))
         X_list.append(X_all[start:stop])
 
+        cleaned_entry = dict(entry)
+        cleaned_entry["start"] = start
+        cleaned_entry["stop"] = stop
+        cleaned_meta.append(cleaned_entry)
+
     if not X_list:
         raise RuntimeError("LEARN_CV requires at least one shard with frames")
 
-    return X_all, shards_meta, shard_ranges, X_list
+    # BUGFIX: keep shard metadata aligned with the prepared frame ranges so
+    # downstream pair counting and reporting stay consistent with the slices we
+    # actually use.
+    dataset["__shards__"] = cleaned_meta
+
+    return X_all, cleaned_meta, shard_ranges, X_list
 
 
 def _coerce_positive_int(value: Any, *, source: str) -> int:

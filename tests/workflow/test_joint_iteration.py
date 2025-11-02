@@ -84,3 +84,47 @@ def test_iteration_invokes_remd_callback(tmp_path):
     assert isinstance(captured["bias_sample"], np.ndarray)
     assert workflow.last_new_shards
     assert workflow.last_new_shards[0].name.startswith("T300K_seg9990")
+
+
+def test_iteration_bias_profile_scalar_cv(tmp_path):
+    shards_root = tmp_path / "shards"
+    t_dir = shards_root / "T_300K"
+    t_dir.mkdir(parents=True)
+
+    shard = _make_demo_shard("T300K_seg0001_rep000", 300.0, 10)
+    write_shard(shard, t_dir)
+
+    workflow = JointWorkflow(
+        WorkflowConfig(
+            shards_root=shards_root,
+            temperature_ref_K=300.0,
+            tau_steps=1,
+            n_clusters=2,
+            use_reweight=False,
+        )
+    )
+
+    samples = {}
+
+    def fake_remd(bias_hook, iteration_index):
+        samples["iteration"] = iteration_index
+        # probe the hook with scalar CV values to ensure interpolation works
+        probe = np.array([[-0.5], [0.0], [0.5]])
+        samples["bias"] = bias_hook(probe)
+        return []
+
+    class ScalarCV:
+        def transform(self, X):
+            arr = np.asarray(X, dtype=np.float64)
+            return arr[:, 0]
+
+    workflow.cv_model = ScalarCV()
+    workflow.set_remd_callback(fake_remd)
+
+    metrics = workflow.iteration(0)
+
+    assert metrics.notes == "iter 0"
+    assert samples["iteration"] == 0
+    assert isinstance(samples["bias"], np.ndarray)
+    assert samples["bias"].shape == (3,)
+    assert np.all(np.isfinite(samples["bias"]))

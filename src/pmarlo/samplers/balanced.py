@@ -47,6 +47,9 @@ class BalancedTempSampler:
         arr = np.asarray(weights, dtype=np.float64)
         if arr.ndim != 1:
             raise ValueError("weights must be a 1-D array")
+        if np.any(arr < 0):
+            # BUGFIX: Negative weights would yield invalid sampling probabilities.
+            raise ValueError("weights must be non-negative")
         if not np.isfinite(arr).all():
             raise ValueError("weights must be finite")
         total = arr.sum()

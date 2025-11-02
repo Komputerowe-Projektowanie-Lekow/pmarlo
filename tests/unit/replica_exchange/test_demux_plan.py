@@ -114,6 +114,52 @@ def test_build_demux_plan_truncation_and_fill(caplog) -> None:
     # Warning should be emitted
     assert any("truncated" in r.getMessage() for r in caplog.records)
 
+def test_build_demux_plan_missing_frame_counts(caplog) -> None:
+    caplog.set_level(logging.WARNING)
+
+    exchange_history = [
+        [0, 1],
+        [1, 0],
+    ]
+    temperatures = [300.0, 310.0]
+    target_temperature = 300.0
+    exchange_frequency = 10
+    equilibration_offset = 0
+    default_stride = 2
+    replica_strides = [2, 2]
+    # Replica 0 reports an unknown frame count (None)
+    replica_frames: list[object] = [None, 100]
+    replica_paths = ["/tmp/replica_00.dcd", "/tmp/replica_01.dcd"]
+
+    plan = build_demux_plan(
+        exchange_history=exchange_history,
+        temperatures=temperatures,
+        target_temperature=target_temperature,
+        exchange_frequency=exchange_frequency,
+        equilibration_offset=equilibration_offset,
+        replica_paths=replica_paths,
+        replica_frames=replica_frames,
+        default_stride=default_stride,
+        replica_strides=replica_strides,
+    )
+
+    # Segment 0 needs fill because replica 0 had no usable frame count metadata
+    s0 = plan.segments[0]
+    assert s0.replica_index == 0
+    assert s0.expected_frames == 5
+    assert s0.start_frame == 0
+    assert s0.stop_frame == 0
+    assert s0.needs_fill
+    # Segment 1 continues normally
+    s1 = plan.segments[1]
+    assert s1.replica_index == 1
+    assert s1.expected_frames == 5
+    assert s1.start_frame == 5
+    assert s1.stop_frame == 10
+    assert not s1.needs_fill
+    assert any("invalid" in r.getMessage().lower() for r in caplog.records)
+
+
 
 def test_build_demux_plan_missing_target_replica(caplog) -> None:
     caplog.set_level(logging.WARNING)

@@ -1,5 +1,6 @@
-﻿import numpy as np
+import numpy as np
 
+from pmarlo.ml.deeptica.whitening import apply_output_transform
 from pmarlo.analysis.fes import compute_weighted_fes, ensure_fes_inputs_whitened
 
 
@@ -103,3 +104,42 @@ def test_ensure_fes_inputs_whitened_accepts_prewhitened_metadata():
 
     assert ensure_fes_inputs_whitened(dataset) is True
     np.testing.assert_allclose(dataset["X"], coords)
+
+
+def test_ensure_fes_inputs_whitened_updates_split_coordinates():
+    coords = np.array(
+        [
+            [1.2, -0.6],
+            [-0.3, 0.8],
+            [0.4, 0.1],
+            [1.1, -0.2],
+        ],
+        dtype=np.float64,
+    )
+
+    metadata = {
+        "output_mean": np.array([0.5, -0.25], dtype=np.float64),
+        "output_transform": np.array([[1.5, 0.0], [0.0, 0.75]], dtype=np.float64),
+        "output_transform_applied": False,
+    }
+
+    dataset = {
+        "X": coords.copy(),
+        "__artifacts__": {"mlcv_deeptica": metadata},
+        "splits": {
+            "train": {"X": coords.copy()},
+            "validation": {"X": coords[::-1].copy()},
+        },
+    }
+
+    before_train = dataset["splits"]["train"]["X"].copy()
+    before_valid = dataset["splits"]["validation"]["X"].copy()
+
+    assert ensure_fes_inputs_whitened(dataset) is True
+
+    np.testing.assert_allclose(
+        dataset["X"],
+        apply_output_transform(coords, metadata["output_mean"], metadata["output_transform"], False),
+    )
+    assert not np.allclose(dataset["splits"]["train"]["X"], before_train)
+    assert not np.allclose(dataset["splits"]["validation"]["X"], before_valid)

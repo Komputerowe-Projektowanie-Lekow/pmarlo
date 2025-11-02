@@ -338,13 +338,18 @@ class JointWorkflow:
         self, cv_values: List[np.ndarray], cv_weights: List[np.ndarray]
     ) -> Tuple[np.ndarray, np.ndarray]:
         concat_cv = np.concatenate(cv_values, axis=0)
+        concat_cv = np.asarray(concat_cv, dtype=np.float64)
         concat_w = np.concatenate(cv_weights)
         weight_total = float(concat_w.sum())
         if weight_total <= 0 or concat_cv.size == 0:
             raise ValueError("Cannot build bias profile without positive weight")
         concat_w = concat_w / weight_total
 
-        coord = concat_cv[:, 0]
+        # BUGFIX: handle scalar CV outputs where the transform returns a 1-D array
+        if concat_cv.ndim == 1:
+            coord = concat_cv
+        else:
+            coord = concat_cv[:, 0]
         lo, hi = float(np.min(coord)), float(np.max(coord))
         bounds = np.array([lo, hi], dtype=np.float64)
         if not np.all(np.isfinite(bounds)) or hi <= lo:

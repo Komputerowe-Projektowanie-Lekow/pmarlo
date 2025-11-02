@@ -180,13 +180,17 @@ class ReplicaExchange:
                 )
             except Exception:
                 self.frames_per_replica_target = None
-        if config and getattr(config, "random_seed", None) is not None:
-            seed = int(getattr(config, "random_seed"))
-        elif random_state is not None:
+        seed: int | None = None
+        if random_state is not None:
+            # BUGFIX: honour the documented priority where ``random_state``
+            # overrides any provided ``random_seed`` (including values coming
+            # from a ``RemdConfig`` instance).
             seed = int(random_state)
         elif random_seed is not None:
             seed = int(random_seed)
-        else:
+        elif config and getattr(config, "random_seed", None) is not None:
+            seed = int(getattr(config, "random_seed"))
+        if seed is None:
             seed = int.from_bytes(os.urandom(8), "little") & 0x7FFFFFFF
 
         self.random_seed = seed

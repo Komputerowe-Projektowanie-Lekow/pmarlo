@@ -301,19 +301,37 @@ class Reweighter:
         )
         np.exp(base, out=base)
 
+        total = float(np.sum(base, dtype=np.float64))
+        if not math.isfinite(total) or total <= 0.0:
+            raise ValueError(
+                f"Split '{thermo.shard_id}' produced non-finite or non-positive weight sum ({total})"
+            )
+
         if thermo.base_weights is not None:
             if thermo.base_weights.shape[0] != n_frames:
                 raise ValueError(
                     f"Split '{thermo.shard_id}' base_weights length mismatch: "
                     f"{thermo.base_weights.shape[0]} != {n_frames}"
                 )
-            np.multiply(base, thermo.base_weights, out=base)
 
-        total = float(np.sum(base, dtype=np.float64))
-        if not math.isfinite(total) or total <= 0.0:
-            raise ValueError(
-                f"Split '{thermo.shard_id}' produced non-finite or non-positive weight sum ({total})"
-            )
+            normalized_by_energy = base / total
+            if np.allclose(
+                normalized_by_energy,
+                thermo.base_weights,
+                rtol=const.NUMERIC_RELATIVE_TOLERANCE,
+                atol=const.NUMERIC_ABSOLUTE_TOLERANCE,
+            ):
+                # BUGFIX: Avoid double-counting base weights when dataset already
+                # carries the reweighting output under ``w_frame``.
+                return normalized_by_energy.astype(np.float64, copy=False)
+
+            np.multiply(base, thermo.base_weights, out=base)
+            total = float(np.sum(base, dtype=np.float64))
+            if not math.isfinite(total) or total <= 0.0:
+                raise ValueError(
+                    f"Split '{thermo.shard_id}' produced non-finite or non-positive weight sum ({total})"
+                )
+
         np.divide(base, total, out=base)
         return base.astype(np.float64, copy=False)
 

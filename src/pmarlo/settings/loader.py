@@ -47,7 +47,6 @@ def _load_yaml(path: Path) -> Dict[str, Any]:
     return data
 
 
-@lru_cache(maxsize=1)
 def load_defaults() -> Dict[str, Any]:
     """
     Load the default configuration, validating required keys and value domains.
@@ -59,6 +58,15 @@ def load_defaults() -> Dict[str, Any]:
     else:
         config_path = _default_config_path()
 
+    return _load_defaults_from_path(str(config_path))
+
+
+@lru_cache(maxsize=None)
+def _load_defaults_from_path(config_path_str: str) -> Dict[str, Any]:
+    """Load defaults from a specific configuration path."""
+
+    # BUGFIX: Cache entries per resolved path so environment overrides are respected.
+    config_path = Path(config_path_str)
     config_dir = config_path.parent
     payload = _load_yaml(config_path)
 
@@ -124,6 +132,10 @@ def load_defaults() -> Dict[str, Any]:
         }
     )
     return payload
+
+
+load_defaults.cache_clear = _load_defaults_from_path.cache_clear  # type: ignore[attr-defined]
+load_defaults.cache_info = _load_defaults_from_path.cache_info  # type: ignore[attr-defined]
 
 
 def resolve_feature_spec_path() -> Path:

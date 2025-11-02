@@ -91,6 +91,19 @@ def test_reweighter_deterministic_cache():
     np.testing.assert_allclose(first, second, rtol=0, atol=0)
 
 
+def test_reweighter_reapplying_with_new_instance_is_idempotent():
+    energy = np.array([0.5, 0.1, 0.3], dtype=np.float64)
+    ds = make_dataset(energy)
+    rw = Reweighter(temperature_ref_K=300.0)
+    first = rw.apply(ds)["s1"].copy()
+
+    # Simulate a fresh analysis run that reuses the same dataset carrying w_frame
+    rw_fresh = Reweighter(temperature_ref_K=300.0)
+    second = rw_fresh.apply(ds)["s1"]
+
+    np.testing.assert_allclose(first, second, rtol=0, atol=0)
+
+
 def test_reweighter_recomputes_when_split_arrays_change():
     energy1 = np.array([0.5, 0.1, 0.3], dtype=np.float64)
     energy2 = np.array([10.0, -10.0, 5.0], dtype=np.float64)

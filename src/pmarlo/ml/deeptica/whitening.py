@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import numbers
 from typing import Any
 
@@ -33,10 +34,26 @@ def _coerce_bool_flag(value: Any) -> bool:
         return bool(value)
 
     if isinstance(value, numbers.Integral):
-        return bool(int(value))
+        int_value = int(value)
+        if int_value in (0, 1):
+            return bool(int_value)
+        raise ValueError(
+            "already_applied flag integer values must be 0 or 1",
+        )
 
     if isinstance(value, numbers.Real):
-        return bool(float(value))
+        float_value = float(value)
+        # BUGFIX: Reject ambiguous numeric sentinels so metadata cannot skip
+        # whitening accidentally when serialised as arbitrary floats.
+        if not math.isfinite(float_value):
+            raise ValueError("already_applied flag float must be finite")
+        if math.isclose(float_value, 0.0, rel_tol=0.0, abs_tol=1e-12):
+            return False
+        if math.isclose(float_value, 1.0, rel_tol=0.0, abs_tol=1e-12):
+            return True
+        raise ValueError(
+            "already_applied flag float values must be 0.0 or 1.0",
+        )
 
     if isinstance(value, np.ndarray):
         if value.ndim == 0:

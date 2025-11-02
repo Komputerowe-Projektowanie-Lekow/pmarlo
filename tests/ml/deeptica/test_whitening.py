@@ -83,6 +83,18 @@ def test_apply_output_transform_respects_string_flags() -> None:
         apply_output_transform(Y, mean, transform, already_applied="definitely")
 
 
+def test_apply_output_transform_rejects_ambiguous_numeric_flags() -> None:
+    Y = np.array([[1.0, 2.0]], dtype=np.float64)
+    mean = np.zeros(2, dtype=np.float64)
+    transform = np.eye(2, dtype=np.float64)
+
+    with pytest.raises(ValueError):
+        apply_output_transform(Y, mean, transform, already_applied=2)
+
+    with pytest.raises(ValueError):
+        apply_output_transform(Y, mean, transform, already_applied=float("nan"))
+
+
 def test_deeptica_model_transform_applies_whitening() -> None:
     cfg = DeepTICAConfig(lag=2, n_out=2)
     scaler = DummyScaler(n_features=2)

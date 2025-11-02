@@ -521,6 +521,22 @@ class Protein:
         counts = {aa: sequence.count(aa) for aa in set(sequence)}
         n_res = len(sequence)
 
+        chain_count = 1
+        props = getattr(self, "properties", None)
+        if isinstance(props, dict):
+            raw_chains = props.get("num_chains")
+            try:
+                chains_int = int(raw_chains) if raw_chains is not None else 1
+            except (TypeError, ValueError):
+                chains_int = 1
+            if chains_int > 0:
+                chain_count = chains_int
+
+        # BUGFIX: include terminal charges for every chain, not just once.
+        # Multi-chain proteins have an independent N- and C-terminus per chain;
+        # ignoring this underestimates the total charge and skews the pI.
+        chain_count = max(chain_count, 1)
+
         hydrophobic = set("AVILMFYWPG")
         aromatic = set("FYW")
 
@@ -543,8 +559,8 @@ class Protein:
         pka_c = 2.34
 
         def charge_at_ph(ph: float) -> float:
-            pos = 10 ** (pka_n - ph) / (1 + 10 ** (pka_n - ph))
-            neg = 10 ** (ph - pka_c) / (1 + 10 ** (ph - pka_c))
+            pos = chain_count * (10 ** (pka_n - ph) / (1 + 10 ** (pka_n - ph)))
+            neg = chain_count * (10 ** (ph - pka_c) / (1 + 10 ** (ph - pka_c)))
             for aa, count in counts.items():
                 if aa in ["K", "R", "H"]:
                     pk = pka_side[aa]
@@ -722,7 +738,11 @@ class Protein:
             raise RuntimeError("PDBFixer object is not initialized")
         self._validate_coordinates(self.fixer.positions)
 
-        with open(output_file, "w") as handle:
+        output_path = Path(output_file)
+        # BUGFIX: align behaviour with save() by creating parent directories first
+        ensure_directory(output_path.parent)
+
+        with output_path.open("w") as handle:
             PDBFile.writeFile(self.fixer.topology, self.fixer.positions, handle)
 
     def create_system(self, forcefield_files: Optional[list] = None) -> None:

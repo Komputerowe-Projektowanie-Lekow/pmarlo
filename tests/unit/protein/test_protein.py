@@ -1,16 +1,16 @@
 ﻿# Copyright (c) 2025 PMARLO Development Team
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""
-Tests for the Protein class.
-"""
+"""Tests for the Protein class."""
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 from pmarlo.protein.protein import HAS_PDBFIXER, Protein
+from openmm.app import PDBFile
 
 
 class TestProtein:
@@ -107,6 +107,26 @@ class TestProtein:
         protein.save(str(output_file))
         assert output_file.exists()
         assert output_file.stat().st_size > 0
+
+    def test_save_prepared_pdb_creates_directories(
+        self, test_pdb_file, temp_output_dir
+    ):
+        """save_prepared_pdb should mirror save() and create parent directories."""
+
+        with patch("pmarlo.protein.protein.HAS_PDBFIXER", False):
+            protein = Protein(str(test_pdb_file), auto_prepare=False)
+
+        pdb = PDBFile(str(test_pdb_file))
+        protein.fixer = SimpleNamespace(topology=pdb.topology, positions=pdb.positions)
+        protein.prepared = True
+
+        nested_output = temp_output_dir / "nested" / "deeper" / "prepared.pdb"
+
+        with patch("pmarlo.protein.protein.HAS_PDBFIXER", True):
+            protein.save_prepared_pdb(str(nested_output))
+
+        assert nested_output.exists()
+        assert nested_output.stat().st_size > 0
 
     def test_protein_invalid_file(self):
         """Test protein initialization with invalid file."""
@@ -327,6 +347,41 @@ class TestProteinMetrics:
         assert metrics["aromatic_residues"] == 3
         assert 0.0 <= metrics["isoelectric_point"] <= 14.0
         assert isinstance(metrics["charge"], float)
+
+    def test_chain_terminal_charge_scales_with_chain_count(self):
+        """Multiple chains contribute independent terminal charges."""
+
+        protein = object.__new__(Protein)
+        protein.ph = 7.0
+        protein.properties = {"num_chains": 3}
+        sequence = "AK"
+
+        metrics = Protein._compute_protein_metrics(protein, sequence)
+
+        counts = {aa: sequence.count(aa) for aa in set(sequence)}
+        pka_side = {"C": 8.3, "D": 3.9, "E": 4.1, "H": 6.0, "K": 10.5, "R": 12.5, "Y": 10.1}
+        pka_n = 9.69
+        pka_c = 2.34
+
+        def charge_at_ph(ph: float, chains: int) -> float:
+            pos_term = chains * (10 ** (pka_n - ph) / (1 + 10 ** (pka_n - ph)))
+            neg_term = chains * (10 ** (ph - pka_c) / (1 + 10 ** (ph - pka_c)))
+            pos = pos_term
+            neg = neg_term
+            for aa, count in counts.items():
+                if aa in {"K", "R", "H"}:
+                    pk = pka_side[aa]
+                    pos += count * (10 ** (pk - ph) / (1 + 10 ** (pk - ph)))
+                elif aa in {"D", "E", "C", "Y"}:
+                    pk = pka_side[aa]
+                    neg += count * (10 ** (ph - pk) / (1 + 10 ** (ph - pk)))
+            return pos - neg
+
+        multi_chain_charge = charge_at_ph(protein.ph, chains=3)
+        single_chain_charge = charge_at_ph(protein.ph, chains=1)
+
+        assert metrics["charge"] == pytest.approx(multi_chain_charge)
+        assert abs(multi_chain_charge - single_chain_charge) > 1e-3
 
     def test_sequence_from_topology(self):
         """Ensure sequence extraction from topology is correct."""
