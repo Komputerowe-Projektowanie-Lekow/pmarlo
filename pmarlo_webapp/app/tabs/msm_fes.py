@@ -78,7 +78,7 @@ def render_msm_fes_tab(ctx: AppContext) -> None:
         selected_paths = _select_shard_paths(shard_groups, selected_runs)
         try:
             _analysis_runs, analysis_text = _summarize_selected_shards(
-                selected_paths
+                selected_runs, selected_paths
             )
         except ValueError as exc:
             st.error(f"Shard selection invalid: {exc}")
@@ -356,20 +356,13 @@ def _select_shard_paths(shard_groups: List[Dict[str, Any]], selected_runs: List[
     return selected_paths
 
 
-def _summarize_selected_shards(selected_paths: List[Path]) -> tuple[List[str], str]:
+def _summarize_selected_shards(selected_runs: List[str], selected_paths: List[Path]) -> tuple[List[str], str]:
     """Summarize the selected shard files for display."""
     if not selected_paths:
         return [], ""
 
-    # Extract run IDs from shard paths
-    run_ids = set()
-    for path in selected_paths:
-        # Assume shard paths have format: .../run_<id>/shards/...
-        parts = path.parts
-        for i, part in enumerate(parts):
-            if part.startswith("run_"):
-                run_ids.add(part)
-                break
+    # Use selected_runs directly for summary
+    run_ids = set(selected_runs)
 
     summary_text = f"{len(run_ids)} simulation run(s)"
     return list(run_ids), summary_text
