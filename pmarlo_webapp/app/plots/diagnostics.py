@@ -89,7 +89,8 @@ def create_sampling_validation_plot(app_state) -> plt.Figure:
     Parameters
     ----------
     app_state
-        Application state object containing projection_data.
+        Application state object containing projection_data, run_labels, and optionally
+        dtraj_data and cluster_centers for discrete overlay.
 
     Returns
     -------
@@ -107,12 +108,22 @@ def create_sampling_validation_plot(app_state) -> plt.Figure:
     if projection is None:
         raise ValueError("Projection data not found - cannot create sampling plot")
 
+    # Get run labels if available
+    run_labels = getattr(app_state, 'run_labels', None)
+
+    # Check if discrete trajectory data is available
+    dtraj_data = getattr(app_state, 'dtraj_data', None)
+    cluster_centers = getattr(app_state, 'cluster_centers', None)
+    has_discrete = dtraj_data is not None and cluster_centers is not None
+
     # Debug: Check each trajectory shape before filtering
     print(f"[DEBUG] Number of trajectories in projection: {len(projection)}")
+    print(f"[DEBUG] Has discrete overlay: {has_discrete}")
     for i, traj in enumerate(projection):
         print(f"[DEBUG] Trajectory {i}: shape={traj.shape}, dtype={traj.dtype}")
 
-    projected_data_1d = [traj[:, 0] for traj in projection if traj.shape[1] > 0]
+    # Extract first component from each trajectory, filtering out empty trajectories
+    projected_data_1d = [traj[:, 0] for traj in projection if traj.ndim == 2 and traj.shape[0] > 0 and traj.shape[1] > 0]
 
     # Debug: Check filtered results
     print(f"[DEBUG] Length of projected_data_1d after filtering: {len(projected_data_1d)}")
@@ -130,16 +141,30 @@ def create_sampling_validation_plot(app_state) -> plt.Figure:
 
     print(f"[DEBUG] Parameters: max_len={max_len}, bins={bins}, stride={stride}")
 
+    # Prepare discrete data if available
+    discrete_data_1d = None
+    if has_discrete:
+        discrete_data_1d = []
+        for dtraj in dtraj_data:
+            if len(dtraj) > 0:
+                # Map discrete trajectory to cluster centers in TICA component 1
+                discrete_x = cluster_centers[dtraj, 0]
+                discrete_data_1d.append(discrete_x)
+            else:
+                discrete_data_1d.append(np.array([]))
+
     # Call the updated library function with parameters
     fig = pmarlo_plots.plot_sampling_validation(
         projected_data_1d=projected_data_1d,
         max_traj_length_plot=max_len,
         bins=bins,
         stride=stride,
-        alpha_hist=0.15,  # Keep alpha/lw/cmap fixed or add widgets too
-        alpha_traj=0.4,
-        lw_traj=0.3,
-        cmap_name='viridis'
+        alpha_hist=0.15,
+        alpha_traj=0.7,
+        lw_traj=0.8,
+        cmap_name='tab20',
+        trajectory_labels=run_labels,
+        discrete_data_1d=discrete_data_1d  # Pass discrete overlay data
     )
     return fig
 

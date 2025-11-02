@@ -374,10 +374,12 @@ def plot_sampling_validation(
     bins: int = 150,  # Increased default bins
     stride: int = 10,
     alpha_hist: float = 0.15,
-    alpha_traj: float = 0.4,
-    lw_traj: float = 0.3,
-    cmap_name: str = "viridis",
+    alpha_traj: float = 0.7,  # Increased from 0.4 for more visibility
+    lw_traj: float = 0.8,  # Increased from 0.3 for thicker lines
+    cmap_name: str = "tab20",  # Changed to tab20 for more distinct colors
     ax: Optional[plt.Axes] = None,
+    trajectory_labels: Optional[List[str]] = None,  # Add trajectory labels parameter
+    discrete_data_1d: Optional[List[np.ndarray]] = None,  # Add discrete overlay parameter
 ) -> Figure:
     """
     Plots 1D histograms and trajectory traces to validate sampling connectivity.
@@ -395,6 +397,8 @@ def plot_sampling_validation(
     :param lw_traj: Line width for trajectory lines.
     :param cmap_name: Colormap name for trajectory lines.
     :param ax: Matplotlib axis to plot on.
+    :param trajectory_labels: Optional list of labels for each trajectory (e.g., run IDs).
+    :param discrete_data_1d: Optional list of discrete trajectory overlays (cluster centers mapped to TICA 1).
     :return: Matplotlib Figure.
     """
     if not projected_data_1d:
@@ -421,7 +425,7 @@ def plot_sampling_validation(
         raise ValueError(f"Unknown colormap '{cmap_name}'") from exc
     colors = cmap(np.linspace(0, 1, len(projected_data_1d)))
 
-    # --- 1. Plot Histograms ---
+    # --- 1. Plot Histograms (with higher zorder so it's behind trajectories) ---
     # Combine all data for a single representative histogram
     all_data_1d = np.concatenate(projected_data_1d)
     ax.hist(
@@ -431,38 +435,48 @@ def plot_sampling_validation(
         density=True,
         color="grey",
         label="Overall Distribution",
+        zorder=1,  # Put histogram in background
     )
 
     ylims = ax.get_ylim()
     xlims = ax.get_xlim()
 
-    # --- 2. Plot Trajectory Traces ---
+    # --- 2. Plot Continuous Trajectory Traces ---
     num_shards_to_label = min(15, len(projected_data_1d))  # Limit legend entries
     for i, traj in enumerate(projected_data_1d):
-        logger.debug(f"Shard {i}: traj length = {len(traj)}")
+        logger.debug(f"Trajectory {i}: traj length = {len(traj)}")
 
         plot_len = min(len(traj), max_traj_length_plot)
         logger.debug(
-            f"Shard {i}: plot_len = {plot_len}, max_traj_length_plot = {max_traj_length_plot}"
+            f"Trajectory {i}: plot_len = {plot_len}, max_traj_length_plot = {max_traj_length_plot}"
         )
 
         traj_segment = traj[:plot_len:stride]
         actual_plot_len = len(traj_segment)
 
         logger.debug(
-            f"Shard {i}: stride = {stride}, actual_plot_len = {actual_plot_len}"
+            f"Trajectory {i}: stride = {stride}, actual_plot_len = {actual_plot_len}"
         )
         logger.debug(
-            f"Shard {i}: traj_segment shape = {traj_segment.shape}, dtype = {traj_segment.dtype}"
+            f"Trajectory {i}: traj_segment shape = {traj_segment.shape}, dtype = {traj_segment.dtype}"
         )
 
-        # Log first few values for the first 3 shards
+        # Log first few values for the first 3 trajectories
         if i < 3:
-            logger.debug(f"Shard {i}: traj_segment[:10] = {traj_segment[:10]}")
+            logger.debug(f"Trajectory {i}: traj_segment[:10] = {traj_segment[:10]}")
 
         if actual_plot_len > 1:
             y_time = np.linspace(ylims[0], ylims[1] * 0.9, actual_plot_len)
-            label = f"Shard {i}" if i < num_shards_to_label else None
+
+            # Use trajectory_labels if provided, otherwise use generic "Shard i" label
+            if i < num_shards_to_label:
+                if trajectory_labels and i < len(trajectory_labels):
+                    label = trajectory_labels[i]
+                else:
+                    label = f"Shard {i}"
+            else:
+                label = None
+
             ax.plot(
                 traj_segment,
                 y_time,
@@ -470,12 +484,39 @@ def plot_sampling_validation(
                 color=colors[i],
                 lw=lw_traj,
                 label=label,
+                zorder=2,  # Put continuous trajectories above histogram
             )
             logger.debug(
-                f"Shard {i}: PLOTTED with y_time range [{y_time[0]:.4f}, {y_time[-1]:.4f}]"
+                f"Trajectory {i}: PLOTTED with y_time range [{y_time[0]:.4f}, {y_time[-1]:.4f}]"
             )
 
-    # --- 3. Add Time Arrow ---
+    # --- 3. Plot Discrete Trajectory Overlay (if provided) ---
+    if discrete_data_1d is not None:
+        logger.info("Plotting discrete trajectory overlay")
+        for i, discrete_traj in enumerate(discrete_data_1d):
+            if len(discrete_traj) == 0:
+                continue
+
+            plot_len = min(len(discrete_traj), max_traj_length_plot)
+            discrete_segment = discrete_traj[:plot_len:stride]
+            actual_plot_len = len(discrete_segment)
+
+            if actual_plot_len > 1:
+                y_time = np.linspace(ylims[0], ylims[1] * 0.9, actual_plot_len)
+
+                # Plot discrete overlay with very thin lines or markers
+                ax.plot(
+                    discrete_segment,
+                    y_time,
+                    alpha=0.6,  # Slightly transparent
+                    color=colors[i],
+                    lw=0.3,  # Very thin line
+                    linestyle='--',  # Dashed to distinguish from continuous
+                    zorder=3,  # Put discrete overlay on top
+                )
+                logger.debug(f"Discrete trajectory {i}: PLOTTED with {actual_plot_len} points")
+
+    # --- 4. Add Time Arrow ---
     # Ensure arrow/text are placed reasonably within potentially changed xlims
     arrow_x = xlims[0] + 0.95 * (xlims[1] - xlims[0])
     text_x = xlims[0] + 0.96 * (xlims[1] - xlims[0])
@@ -484,6 +525,7 @@ def plot_sampling_validation(
         xy=(arrow_x, 0.7 * ylims[1]),
         xytext=(arrow_x, 0.3 * ylims[1]),
         arrowprops=dict(fc="gray", ec="none", alpha=0.6, width=2),
+        zorder=4,  # Put arrow on top
     )
     ax.text(
         text_x,
@@ -493,10 +535,13 @@ def plot_sampling_validation(
         va="center",
         rotation=90,
         color="gray",
+        zorder=4,
     )
 
     ax.set_xlabel("TICA Component 1")
-    ax.set_ylabel("Histogram Density / Trajectory Time")
+    # Update y-label to be more honest about what's shown
+    y_label = "Density (background) / normalized time (curves)"
+    ax.set_ylabel(y_label)
     ax.set_ylim(ylims)
     ax.set_xlim(xlims)
 
@@ -504,12 +549,15 @@ def plot_sampling_validation(
     # Only show legend if there are labels
     if labels:
         # Place legend outside plot area
+        legend_title = "Simulation Runs" if trajectory_labels else f"Shards (Top {num_shards_to_label})"
+        if discrete_data_1d is not None:
+            legend_title += " (solid=continuous, dashed=discrete)"
         ax.legend(
             handles,
             labels,
             loc="upper left",
             bbox_to_anchor=(1.02, 1),
-            title=f"Shards (Top {num_shards_to_label})",
+            title=legend_title,
         )
 
     try:
