@@ -102,9 +102,24 @@ class _PlanState:
 def _to_indexed_mapping(
     values: Union[Sequence[int], Mapping[int, int]], default: int = 0
 ) -> Dict[int, int]:
+    fallback = int(default)
+
+    def _coerce(idx: int, raw: object) -> int:
+        try:
+            if raw is None:
+                raise TypeError("missing value")
+            return int(raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Replica metadata for index %d is invalid (%r); using default %d",
+                idx,
+                raw,
+                fallback,
+            )
+            return fallback
     if isinstance(values, Mapping):
-        return {int(k): int(v) for k, v in values.items()}
-    return {i: int(v) for i, v in enumerate(values)}
+        return {int(k): _coerce(int(k), v) for k, v in values.items()}
+    return {i: _coerce(i, v) for i, v in enumerate(values)}
 
 
 def _to_path_mapping(values: Union[Sequence[str], Mapping[int, str]]) -> Dict[int, str]:

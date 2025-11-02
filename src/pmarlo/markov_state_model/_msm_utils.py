@@ -266,8 +266,15 @@ def _expand_results(
     n_states: int, active: np.ndarray, T_active: np.ndarray, pi_active: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
     """Expand MSM results back to the original state space."""
-    T_full = np.eye(n_states, dtype=float)
-    pi_full = np.zeros((n_states,), dtype=float)
+
+    # BUGFIX: the estimator may return active indices beyond ``n_states`` when
+    # the user under-specifies ``n_states``. Ensure the expanded matrices are
+    # large enough to embed the active subset instead of raising IndexError.
+    required_states = int(np.max(active)) + 1 if active.size else 0
+    full_size = max(int(n_states), required_states)
+
+    T_full = np.eye(full_size, dtype=float)
+    pi_full = np.zeros((full_size,), dtype=float)
     if active.size:
         T_full[np.ix_(active, active)] = T_active
         pi_full[active] = pi_active

@@ -14,11 +14,10 @@ import os
 import sys
 from typing import Iterator, Sequence
 
+import pmarlo.io as io_config  # BUGFIX: read verbose flag from package at runtime
 from pmarlo.utils.path_utils import resolve_project_path
 
-from . import verbose_plugin_logs
-
-if verbose_plugin_logs:
+if io_config.verbose_plugin_logs:
     import mdtraj as md  # type: ignore
 else:  # pragma: no cover - import side effect only
     with open(os.devnull, "w") as devnull:
@@ -45,7 +44,7 @@ def _suppress_plugin_output() -> Iterator[None]:
     context, restoring previous levels afterwards.
     """
 
-    if verbose_plugin_logs:
+    if io_config.verbose_plugin_logs:
         # Nothing to do; yield control immediately.
         yield
         return
@@ -168,7 +167,7 @@ def iterload(
         chunk=chunk,
     )
 
-    if verbose_plugin_logs:
+    if io_config.verbose_plugin_logs:
         yield from _yield_frames_plain(gen)
         return
 

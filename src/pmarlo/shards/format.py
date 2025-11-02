@@ -105,13 +105,14 @@ def read_shard_npz_json(npz_path: Path, json_path: Path) -> Shard:
         provenance=dict(json_payload["provenance"]),
     )
 
-    npz = np.load(Path(npz_path))
-    X_loaded = _coerce_array(npz["X"], np.float32, ndim=2)
-    t_index_loaded = _coerce_array(npz["t_index"], np.int64, ndim=1)
-    dt_ps_loaded = np.array(npz["dt_ps"], dtype=np.float32)
-    energy_loaded = _optional_loaded(npz, "energy")
-    bias_loaded = _optional_loaded(npz, "bias")
-    w_frame_loaded = _optional_loaded(npz, "w_frame")
+    # SECURITY: disable pickle support when loading NPZ to avoid arbitrary code execution.
+    with np.load(Path(npz_path), allow_pickle=False) as npz:
+        X_loaded = _coerce_array(npz["X"], np.float32, ndim=2)
+        t_index_loaded = _coerce_array(npz["t_index"], np.int64, ndim=1)
+        dt_ps_loaded = np.array(npz["dt_ps"], dtype=np.float32)
+        energy_loaded = _optional_loaded(npz, "energy")
+        bias_loaded = _optional_loaded(npz, "bias")
+        w_frame_loaded = _optional_loaded(npz, "w_frame")
 
     # Validate data integrity if hash is present
     if "data_hash" in json_payload:

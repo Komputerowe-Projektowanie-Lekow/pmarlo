@@ -337,12 +337,18 @@ def _maybe_read_bias(npz_path: Path) -> np.ndarray | None:
 
 
 def _dataset_hash(
-    dtrajs: List[np.ndarray | None], X: np.ndarray, cv_names: Sequence[str]
+    dtrajs: List[np.ndarray | None],
+    X: np.ndarray,
+    cv_names: Sequence[str],
+    periodic: Sequence[bool],
 ) -> str:
     """Compute deterministic dataset hash over CV names, X, and dtrajs list."""
 
     h = sha256()
     h.update(",".join([str(x) for x in cv_names]).encode("utf-8"))
+    # BUGFIX: Include periodic flags so datasets with identical CV names/X but
+    # different boundary conditions do not collide.
+    h.update(",".join("1" if flag else "0" for flag in periodic).encode("utf-8"))
     Xc = np.ascontiguousarray(X)
     h.update(str(Xc.dtype.str).encode("utf-8"))
     h.update(str(Xc.shape).encode("utf-8"))
@@ -421,7 +427,7 @@ def aggregate_and_build(
         except Exception:
             pass
 
-    ds_hash = _dataset_hash(dtrajs, X_all, cv_names)
+    ds_hash = _dataset_hash(dtrajs, X_all, cv_names, dataset["periodic"])
     try:
         new_md = replace(res.metadata, dataset_hash=ds_hash, digest=ds_hash)
         res.metadata = new_md  # type: ignore[assignment]

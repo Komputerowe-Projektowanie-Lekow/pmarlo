@@ -48,6 +48,17 @@ def test_balanced_sampler_raises_on_mismatched_frame_weights():
         sampler.sample_batch(pairs_per_temperature=1)
 
 
+def test_balanced_sampler_rejects_negative_frame_weights():
+    shard = make_shard(300.0, n_frames=5)
+    sampler = BalancedTempSampler({300.0: [shard]}, PairBuilder(tau_steps=1))
+
+    with pytest.raises(ValueError, match="weights must be non-negative"):
+        sampler.set_frame_weights(
+            shard.meta.shard_id,
+            np.array([0.2, -0.1, 0.3, 0.2, 0.4], dtype=np.float64),
+        )
+
+
 def test_balanced_sampler_retry_until_valid_shard():
     """Ensure shards without valid pairs do not suppress entire temperatures."""
 

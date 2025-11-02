@@ -26,8 +26,18 @@ def make_loaders(
     seed: int = 2024,
 ):
     ds = LaggedPairs(X_t, X_tau)
-    n_val = max(1, int(len(ds) * float(val_frac)))
-    n_train = max(1, len(ds) - n_val)
+    n_total = len(ds)
+    if n_total < 2:
+        # BUGFIX: torch.random_split would previously raise an opaque ValueError
+        # when asked to create both train and validation splits from <2 samples.
+        raise ValueError("LaggedPairs requires at least two samples to split")
+
+    n_val = max(1, int(n_total * float(val_frac)))
+    if n_val >= n_total:
+        # BUGFIX: keep the split sizes consistent with the dataset size while
+        # preserving at least one validation sample when possible.
+        n_val = n_total - 1
+    n_train = n_total - n_val
     g = torch.Generator().manual_seed(int(seed))
     train_ds, val_ds = random_split(ds, [n_train, n_val], generator=g)
     common = dict(

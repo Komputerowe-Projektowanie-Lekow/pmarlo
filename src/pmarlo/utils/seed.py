@@ -32,7 +32,23 @@ def set_global_seed(seed: Optional[int]) -> None:
     torch.manual_seed(s)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(s)
-    torch.use_deterministic_algorithms(True)  # type: ignore[attr-defined]
+
+    deterministic_fn = getattr(torch, "use_deterministic_algorithms", None)
+    if callable(deterministic_fn):
+        deterministic_fn(True)
+    else:
+        # BUGFIX: Older PyTorch releases (<1.8) lack use_deterministic_algorithms.
+        # Fall back to the legacy deterministic toggle and cudnn guards when available
+        # so reproducibility is still enforced instead of raising AttributeError.
+        legacy_fn = getattr(torch, "set_deterministic", None)
+        if callable(legacy_fn):
+            legacy_fn(True)
+        cudnn = getattr(getattr(torch, "backends", None), "cudnn", None)
+        if cudnn is not None:
+            if hasattr(cudnn, "deterministic"):
+                cudnn.deterministic = True
+            if hasattr(cudnn, "benchmark"):
+                cudnn.benchmark = False
 
 
 def quiet_external_loggers(level: int = logging.WARNING) -> None:

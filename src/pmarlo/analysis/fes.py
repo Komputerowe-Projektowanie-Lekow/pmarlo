@@ -261,11 +261,38 @@ def ensure_fes_inputs_whitened(dataset: DatasetLike | Mapping[str, Any]) -> bool
         raise ValueError(f"mlcv_deeptica metadata must be a dict, got {type(summary)}")
 
     coords = np.asarray(X, dtype=np.float64)
-    whitened, _applied = apply_whitening_from_metadata(coords, summary)
+    whitened, applied = apply_whitening_from_metadata(coords, summary)
 
     dataset["X"] = whitened  # type: ignore[index]
 
-    return True
+    # BUGFIX: ensure that every split receives the whitening transform when it
+    # is first applied.  Previously only the top-level dataset was updated,
+    # leaving per-split arrays stale and inconsistent.
+    applied_any = bool(applied)
+    if applied and isinstance(summary, MutableMapping):
+        splits = dataset.get("splits")
+        if isinstance(splits, Mapping):
+            for split_name, split_data in splits.items():
+                if not isinstance(split_data, MutableMapping):
+                    continue
+                if "X" not in split_data:
+                    continue
+                split_coords = split_data["X"]  # type: ignore[index]
+                if split_coords is None:
+                    raise ValueError(
+                        f"Split '{split_name}' provides no coordinate array for whitening"
+                    )
+                summary["output_transform_applied"] = False
+                split_array = np.asarray(split_coords, dtype=np.float64)
+                split_whitened, split_applied = apply_whitening_from_metadata(
+                    split_array,
+                    summary,
+                )
+                split_data["X"] = split_whitened  # type: ignore[index]
+                applied_any = applied_any or bool(split_applied)
+            summary["output_transform_applied"] = True
+
+    return applied_any
 
 
 def _select_split(

@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 
+from pmarlo.replica_exchange.config import RemdConfig
 from pmarlo.replica_exchange.replica_exchange import ReplicaExchange
 
 
@@ -91,6 +92,28 @@ class TestReplicaExchangeInitialization:
 
         assert remd.output_dir == nested_dir
         assert nested_dir.exists()
+
+    def test_random_state_overrides_config_seed(
+        self, test_pdb_file, temp_output_dir
+    ):
+        """Explicit random_state should take precedence over config.random_seed."""
+        config = RemdConfig(
+            pdb_file=str(test_pdb_file),
+            output_dir=temp_output_dir,
+            temperatures=[300.0, 310.0],
+            random_seed=111,
+        )
+
+        remd = ReplicaExchange(
+            pdb_file=str(test_pdb_file),
+            temperatures=[300.0, 310.0],
+            output_dir=temp_output_dir,
+            auto_setup=False,
+            config=config,
+            random_state=222,
+        )
+
+        assert remd.random_seed == 222
 
 
 class TestReplicaExchangeValidation:
