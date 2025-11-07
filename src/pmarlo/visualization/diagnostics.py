@@ -27,6 +27,7 @@ class _SamplingInputs:
     projected_data_1d: List[np.ndarray]
     trajectory_labels: List[str] | None
     discrete_overlay: List[np.ndarray] | None
+    metabiased_flags: List[bool] | None
 
 
 def _validate_positive(name: str, value: int) -> None:
@@ -102,6 +103,46 @@ def _normalise_run_labels(
     return filtered
 
 
+def _normalise_metabiased_flags(
+    metabiased_runs: Iterable[bool] | None,
+    *,
+    total_trajectories: int,
+    kept_indices: Sequence[int],
+) -> list[bool] | None:
+    if metabiased_runs is None:
+        return None
+
+    raw_flags = list(metabiased_runs)
+    if len(raw_flags) != total_trajectories:
+        raise ValueError(
+            "metabiased_runs must have the same length as projection_data"
+        )
+
+    normalised: list[bool] = []
+    for idx, flag in enumerate(raw_flags):
+        if isinstance(flag, (bool, np.bool_)):
+            normalised.append(bool(flag))
+        elif isinstance(flag, (int, np.integer)):
+            if flag not in (0, 1):
+                raise ValueError(
+                    "metabiased_runs entries must be boolean or 0/1 integers"
+                )
+            normalised.append(bool(flag))
+        else:
+            raise TypeError(
+                "metabiased_runs entries must be booleans or integer indicators"
+            )
+
+    filtered: list[bool] = []
+    for idx in kept_indices:
+        if idx >= len(normalised):
+            raise ValueError(
+                "metabiased_runs is shorter than projection_data after filtering"
+            )
+        filtered.append(normalised[idx])
+    return filtered
+
+
 def _prepare_discrete_overlay(
     discrete_trajectories: Sequence[np.ndarray | Sequence[int]] | None,
     cluster_centers: np.ndarray | Sequence[Sequence[float]] | None,
@@ -149,6 +190,7 @@ def _collect_sampling_inputs(
     projection_data: Sequence[np.ndarray | Sequence[float]],
     *,
     run_labels: Iterable[str] | None,
+    metabiased_runs: Iterable[bool] | None,
     dtraj_data: Sequence[np.ndarray | Sequence[int]] | None,
     cluster_centers: np.ndarray | Sequence[Sequence[float]] | None,
     component: int,
@@ -160,16 +202,22 @@ def _collect_sampling_inputs(
         projection_data, component=component
     )
     labels = _normalise_run_labels(run_labels, kept_indices)
+    metabiased = _normalise_metabiased_flags(
+        metabiased_runs,
+        total_trajectories=len(projection_data),
+        kept_indices=kept_indices,
+    )
 
     overlay = _prepare_discrete_overlay(dtraj_data, cluster_centers, kept_indices)
 
-    return _SamplingInputs(projected, labels, overlay)
+    return _SamplingInputs(projected, labels, overlay, metabiased)
 
 
 def create_sampling_validation_plot(
     projection_data: Sequence[np.ndarray | Sequence[float]],
     *,
     run_labels: Iterable[str] | None = None,
+    metabiased_runs: Iterable[bool] | None = None,
     dtraj_data: Sequence[np.ndarray | Sequence[int]] | None = None,
     cluster_centers: np.ndarray | Sequence[Sequence[float]] | None = None,
     component_index: int = 0,
@@ -187,6 +235,10 @@ def create_sampling_validation_plot(
         trajectories, the column specified by ``component_index`` is projected.
     run_labels
         Optional labels for each trajectory, used in the legend.
+    metabiased_runs
+        Optional boolean indicators matching ``projection_data`` entries. When
+        provided, trajectories marked ``True`` are rendered with a dashed style
+        and annotated in the legend as metabiased runs.
     dtraj_data
         Optional discrete trajectories aligned with ``projection_data``. Provide
         together with ``cluster_centers`` to overlay discrete states.
@@ -234,6 +286,7 @@ def create_sampling_validation_plot(
     inputs = _collect_sampling_inputs(
         projection_data,
         run_labels=run_labels,
+        metabiased_runs=metabiased_runs,
         dtraj_data=dtraj_data,
         cluster_centers=cluster_centers,
         component=component_index,
@@ -247,6 +300,7 @@ def create_sampling_validation_plot(
         stride=int(stride),
         trajectory_labels=inputs.trajectory_labels,
         discrete_data_1d=inputs.discrete_overlay,
+        metabiased_flags=inputs.metabiased_flags,
         ax=ax,
     )
     return fig

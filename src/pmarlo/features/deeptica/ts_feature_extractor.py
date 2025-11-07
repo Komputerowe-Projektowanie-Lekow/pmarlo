@@ -478,3 +478,83 @@ def build_feature_extractor_module(
     """Instantiate the TorchScript-ready feature extractor for the provided spec."""
 
     return TorchscriptFeatureExtractor(spec)
+
+
+def extract_nn_only_from_bias_module(bias_module: nn.Module) -> nn.Module:
+    """Extract just the NN layers (scaler + cv_model + bias) from a CVBiasPotential.
+    
+    This creates a module that takes pre-computed features as input instead of
+    positions, for use with OpenMM native feature forces.
+    
+    Parameters
+    ----------
+    bias_module : nn.Module
+        CVBiasPotential module containing feature extraction + NN + bias
+        
+    Returns
+    -------
+    nn.Module
+        NN-only module (features → scaled features → CVs → bias energy)
+    """
+    from pmarlo.features.deeptica.cv_bias_potential import CVBiasPotential
+    
+    if not isinstance(bias_module, CVBiasPotential):
+        raise TypeError(
+            "Expected CVBiasPotential module, "
+            f"got {type(bias_module).__name__}"
+        )
+    
+    class NNOnlyBiasModule(nn.Module):
+        """Neural network-only bias module that takes pre-computed features."""
+        
+        def __init__(
+            self,
+            cv_model: nn.Module,
+            scaler_mean: Tensor,
+            scaler_scale: Tensor,
+            bias_potential: nn.Module,
+            feature_spec_sha256: str,
+        ):
+            super().__init__()
+            self.cv_model = cv_model
+            self.bias_potential = bias_potential
+            self.feature_spec_sha256 = str(feature_spec_sha256)
+            
+            self.register_buffer("scaler_mean", scaler_mean)
+            self.register_buffer("scaler_scale", scaler_scale)
+        
+        def forward(self, features: Tensor) -> Tensor:
+            """Compute bias energy from pre-computed features.
+            
+            Parameters
+            ----------
+            features : Tensor
+                Pre-computed molecular features, shape (n_features,)
+                
+            Returns
+            -------
+            Tensor
+                Bias energy in kJ/mol (scalar)
+            """
+            if features.dim() == 1:
+                features = features.unsqueeze(0)
+            
+            scaled = (features - self.scaler_mean) / self.scaler_scale
+            cvs = self.cv_model(scaled)
+            energy = self.bias_potential(cvs)
+            
+            if energy.dim() == 0:
+                return energy
+            if energy.dim() == 1 and energy.numel() == 1:
+                return energy.squeeze(0)
+            return energy
+    
+    nn_only = NNOnlyBiasModule(
+        cv_model=bias_module.cv_model,
+        scaler_mean=bias_module.scaler_mean,
+        scaler_scale=bias_module.scaler_scale,
+        bias_potential=bias_module.bias_potential,
+        feature_spec_sha256=bias_module.feature_spec_sha256,
+    )
+    
+    return nn_only

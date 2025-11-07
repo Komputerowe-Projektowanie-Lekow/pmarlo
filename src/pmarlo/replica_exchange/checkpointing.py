@@ -63,6 +63,8 @@ class CheckpointManager:
         from openmm import XmlSerializer
 
         replica_xml_states: List[str] = []
+        # Checkpoint getState calls: infrequent (only at checkpoint boundaries)
+        # Batch in tight loop over contexts
         for i, context in enumerate(contexts):
             try:
                 sim_state = context.getState(

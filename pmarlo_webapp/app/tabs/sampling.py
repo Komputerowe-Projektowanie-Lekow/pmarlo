@@ -317,10 +317,22 @@ def render_sampling_tab(ctx: AppContext) -> None:
                             else None
                         ),
                     )
+                    # Check if this simulation was CV-informed (used deeptica/metabiases)
+                    provenance_data = {"source": "pmarlo_webapp"}
+                    # Look up the run in state to get CV model info
+                    for run_entry in backend.state.runs:
+                        if run_entry.get("run_id") == sim.run_id:
+                            if run_entry.get("cv_informed"):
+                                provenance_data["cv_informed"] = True
+                                cv_bundle = run_entry.get("cv_model_bundle")
+                                if cv_bundle:
+                                    provenance_data["cv_model_bundle"] = cv_bundle
+                            break
+
                     shard_result = backend.emit_shards(
                         sim,
                         request,
-                        provenance={"source": "pmarlo_webapp"},
+                        provenance=provenance_data,
                     )
                     st.session_state[_LAST_SHARDS] = shard_result
                     st.success(

@@ -70,12 +70,26 @@ def render_msm_fes_tab(ctx: AppContext) -> None:
     if not shard_groups:
         st.info("Emit shards to build an MSM/FES bundle.")
     else:
-        run_ids = [str(entry.get("run_id")) for entry in shard_groups]
-        selected_runs = st.multiselect(
+        # Build display labels with CV-informed indicators
+        run_display_options = []
+        run_id_map = {}
+        for entry in shard_groups:
+            run_id = str(entry.get("run_id"))
+            is_cv_informed = entry.get("cv_informed", False)
+            if is_cv_informed:
+                display_label = f"{run_id} 🔴 [CV-BIASED]"
+            else:
+                display_label = f"{run_id} 🟢 [UNBIASED]"
+            run_display_options.append(display_label)
+            run_id_map[display_label] = run_id
+
+        selected_display = st.multiselect(
             "Shard groups for analysis",
-            options=run_ids,
-            default=run_ids,
+            options=run_display_options,
+            default=run_display_options,
+            help="🔴 CV-BIASED = DeepTICA/metabias, 🟢 UNBIASED = Regular MD"
         )
+        selected_runs = [run_id_map[display] for display in selected_display]
         try:
             selected_paths = select_shard_paths(shard_groups, selected_runs)
         except ValueError as exc:

@@ -7,6 +7,7 @@ from typing import List, Optional, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 
 from pmarlo import constants as const
 from pmarlo.utils.path_utils import ensure_directory
@@ -380,6 +381,7 @@ def plot_sampling_validation(
     ax: Optional[plt.Axes] = None,
     trajectory_labels: Optional[List[str]] = None,  # Add trajectory labels parameter
     discrete_data_1d: Optional[List[np.ndarray]] = None,  # Add discrete overlay parameter
+    metabiased_flags: Optional[List[bool]] = None,
 ) -> Figure:
     """
     Plots 1D histograms and trajectory traces to validate sampling connectivity.
@@ -399,6 +401,8 @@ def plot_sampling_validation(
     :param ax: Matplotlib axis to plot on.
     :param trajectory_labels: Optional list of labels for each trajectory (e.g., run IDs).
     :param discrete_data_1d: Optional list of discrete trajectory overlays (cluster centers mapped to TICA 1).
+    :param metabiased_flags: Optional list of booleans matching projected_data_1d entries.
+        Metabiased trajectories are drawn with dashed lines and annotated in the legend.
     :return: Matplotlib Figure.
     """
     if not projected_data_1d:
@@ -412,6 +416,13 @@ def plot_sampling_validation(
             "projected_data_1d contains empty trajectories at indices: "
             + ", ".join(str(i) for i in empty_trajectories)
         )
+
+    if metabiased_flags is not None:
+        if len(metabiased_flags) != len(projected_data_1d):
+            raise ValueError(
+                "metabiased_flags must have the same length as projected_data_1d"
+            )
+        metabiased_flags = [bool(flag) for flag in metabiased_flags]
 
     if ax is None:
         fig, ax = plt.subplots(figsize=(10, 6))
@@ -477,12 +488,18 @@ def plot_sampling_validation(
             else:
                 label = None
 
+            is_metabiased = bool(metabiased_flags[i]) if metabiased_flags is not None else False
+            line_style = "--" if is_metabiased else "-"
+            if is_metabiased and label is not None:
+                label = f"{label} (metabiased)"
+
             ax.plot(
                 traj_segment,
                 y_time,
                 alpha=alpha_traj,
                 color=colors[i],
                 lw=lw_traj,
+                linestyle=line_style,
                 label=label,
                 zorder=2,  # Put continuous trajectories above histogram
             )
@@ -511,7 +528,7 @@ def plot_sampling_validation(
                     alpha=0.6,  # Slightly transparent
                     color=colors[i],
                     lw=0.3,  # Very thin line
-                    linestyle='--',  # Dashed to distinguish from continuous
+                    linestyle=":",  # Dotted to distinguish from continuous and metabiased styles
                     zorder=3,  # Put discrete overlay on top
                 )
                 logger.debug(f"Discrete trajectory {i}: PLOTTED with {actual_plot_len} points")
@@ -548,10 +565,34 @@ def plot_sampling_validation(
     handles, labels = ax.get_legend_handles_labels()
     # Only show legend if there are labels
     if labels:
+        style_handles: list[Line2D] = []
+        if metabiased_flags is not None:
+            if any(not flag for flag in metabiased_flags):
+                style_handles.append(
+                    Line2D([0], [0], color="black", linestyle="-", lw=lw_traj, label="Standard Run")
+                )
+            if any(metabiased_flags):
+                style_handles.append(
+                    Line2D([0], [0], color="black", linestyle="--", lw=lw_traj, label="Metabiased Run")
+                )
+        if discrete_data_1d is not None:
+            style_handles.append(
+                Line2D([0], [0], color="black", linestyle=":", lw=0.6, label="Discrete Overlay")
+            )
+
+        if style_handles:
+            handles.extend(style_handles)
+            labels.extend([handle.get_label() for handle in style_handles])
+
         # Place legend outside plot area
         legend_title = "Simulation Runs" if trajectory_labels else f"Shards (Top {num_shards_to_label})"
+        style_notes: list[str] = []
+        if metabiased_flags is not None:
+            style_notes.append("solid=standard, dashed=metabiased")
         if discrete_data_1d is not None:
-            legend_title += " (solid=continuous, dashed=discrete)"
+            style_notes.append("dotted=discrete overlay")
+        if style_notes:
+            legend_title += " (" + "; ".join(style_notes) + ")"
         ax.legend(
             handles,
             labels,

@@ -22,12 +22,27 @@ def test_create_sampling_validation_plot_basic():
     fig = create_sampling_validation_plot(
         projection_data=projection,
         run_labels=["run-a", "run-b"],
+        metabiased_runs=[False, True],
         max_length=120,
         hist_bins=50,
         stride=5,
     )
     assert isinstance(fig, Figure)
     assert fig.axes, "Expected at least one axis on the sampling plot"
+
+    ax = fig.axes[0]
+    lines = ax.lines
+    assert len(lines) == 2
+    assert lines[0].get_linestyle() == "-"
+    assert lines[1].get_linestyle() == "--"
+
+    legend = ax.get_legend()
+    assert legend is not None
+    legend_labels = [text.get_text() for text in legend.get_texts()]
+    assert "run-b (metabiased)" in legend_labels
+    assert "Standard Run" in legend_labels
+    assert "Metabiased Run" in legend_labels
+    assert legend.get_title().get_text() == "Simulation Runs (solid=standard, dashed=metabiased)"
     plt.close(fig)
 
 
@@ -61,6 +76,7 @@ def test_create_sampling_validation_plot_with_discrete_overlay():
     fig = create_sampling_validation_plot(
         projection_data=projection,
         run_labels=["run-a", "run-b"],
+        metabiased_runs=[False, True],
         dtraj_data=dtraj,
         cluster_centers=cluster_centers,
         max_length=90,
@@ -68,6 +84,10 @@ def test_create_sampling_validation_plot_with_discrete_overlay():
     )
     assert isinstance(fig, Figure)
     assert fig.axes, "Expected at least one axis for discrete overlay plot"
+
+    overlay_lines = fig.axes[0].lines[2:]
+    assert overlay_lines, "Expected discrete overlay lines"
+    assert all(line.get_linestyle() == ":" for line in overlay_lines)
     plt.close(fig)
 
 
@@ -85,6 +105,19 @@ def test_create_sampling_validation_plot_ignores_empty_inputs():
     fig = create_sampling_validation_plot(projection_data=projection)
     assert isinstance(fig, Figure)
     plt.close(fig)
+
+
+def test_create_sampling_validation_plot_rejects_metabiased_length_mismatch():
+    projection = [
+        np.linspace(-1.0, 1.0, 20).reshape(-1, 1),
+        np.linspace(-1.0, 1.0, 25).reshape(-1, 1),
+    ]
+
+    with pytest.raises(ValueError, match="metabiased_runs must have the same length as projection_data"):
+        create_sampling_validation_plot(
+            projection_data=projection,
+            metabiased_runs=[True],
+        )
 
 
 def test_create_fes_validation_plot_basic():

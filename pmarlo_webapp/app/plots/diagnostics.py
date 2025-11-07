@@ -95,6 +95,7 @@ def create_sampling_validation_plot(
     *,
     projection_data: Sequence[np.ndarray] | None = None,
     run_labels: Iterable[str] | None = None,
+    metabiased_runs: Iterable[bool] | None = None,
     dtraj_data: Sequence[np.ndarray] | None = None,
     cluster_centers: np.ndarray | None = None,
     component_index: int = 0,
@@ -112,6 +113,8 @@ def create_sampling_validation_plot(
 
     if run_labels is None and app_state is not None:
         run_labels = getattr(app_state, "run_labels", None)
+    if metabiased_runs is None and app_state is not None:
+        metabiased_runs = getattr(app_state, "metabiased_runs", None)
     if dtraj_data is None and app_state is not None:
         dtraj_data = getattr(app_state, "dtraj_data", None)
     if cluster_centers is None and app_state is not None:
@@ -131,6 +134,7 @@ def create_sampling_validation_plot(
     return viz_diagnostics.create_sampling_validation_plot(
         projection_data=projection_data,
         run_labels=run_labels,
+        metabiased_runs=metabiased_runs,
         dtraj_data=dtraj_data,
         cluster_centers=cluster_centers,
         component_index=component_index,

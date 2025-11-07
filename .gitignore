@@ -96,3 +96,4 @@ typelog.txt
 /tests/checkpoints/
 
 changes.patch
+example_programs/programs_outputs/remd_benchmark/*

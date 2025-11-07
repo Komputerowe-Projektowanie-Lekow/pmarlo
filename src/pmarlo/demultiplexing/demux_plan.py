@@ -23,6 +23,7 @@ Usage
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from typing import Dict, List, Mapping, Optional, Sequence, Union
 
@@ -131,8 +132,6 @@ def _to_path_mapping(values: Union[Sequence[str], Mapping[int, str]]) -> Dict[in
 def _closest_temperature_index(
     temperatures: Sequence[float], target_temperature: float
 ) -> int:
-    import math
-
     diffs = [abs(float(t) - float(target_temperature)) for t in temperatures]
     best = 0
     best_diff = math.inf
