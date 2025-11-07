@@ -11,7 +11,7 @@ from core.session import (
     _apply_analysis_config_to_state,
 )
 from backend.types import BuildConfig, BuildArtifact, TrainingConfig
-from pmarlo.api import select_shard_paths
+from pmarlo.api import select_shard_paths, parse_hidden_layers
 from plots.diagnostics import (
     plot_canonical_correlations,
     plot_autocorrelation_curves,
@@ -219,9 +219,7 @@ def render_msm_fes_tab(ctx: AppContext) -> None:
                         value="128,128",
                         key="analysis_hidden_layers",
                     )
-                    hidden_layers = tuple(
-                        int(v.strip()) for v in hidden_ml.split(",") if v.strip()
-                    ) or (128, 128)
+                    hidden_layers = parse_hidden_layers(hidden_ml)
                     max_epochs = st.number_input(
                         "Deep-TICA max epochs",
                         min_value=20,

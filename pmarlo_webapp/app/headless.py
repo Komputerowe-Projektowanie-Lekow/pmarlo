@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from pmarlo.api import parse_bins
+
 from .backend import BuildConfig, BuildArtifact, WorkflowBackend, WorkspaceLayout
 
 
@@ -35,17 +37,6 @@ def _build_backend(args: argparse.Namespace) -> WorkflowBackend:
     layout = _make_layout(args.app_root, args.workspace)
     return WorkflowBackend(layout)
 
-
-def _parse_bins(entries: Sequence[str]) -> Dict[str, int]:
-    bins: Dict[str, int] = {}
-    for item in entries:
-        if "=" not in item:
-            raise ValueError(f"Invalid bin specification '{item}', expected cv=count.")
-        key, value = item.split("=", 1)
-        bins[key.strip()] = int(value.strip())
-    if not bins:
-        bins = {"Rg": 72, "RMSD_ref": 72}
-    return bins
 
 
 def _load_optional_json(path: str | Path | None) -> Dict[str, object] | None:
@@ -126,7 +117,7 @@ def cmd_list_shards(args: argparse.Namespace) -> int:
 def cmd_run_analysis(args: argparse.Namespace) -> int:
     backend = _build_backend(args)
     shard_paths = _resolve_shards(backend, args.shard, args.shard_group)
-    bins = _parse_bins(args.bin or [])
+    bins = parse_bins(args.bin or [])
     deeptica_params = _load_optional_json(args.deeptica_params)
     notes = _load_optional_json(args.notes)
 

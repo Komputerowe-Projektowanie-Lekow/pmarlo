@@ -18,7 +18,7 @@ from core.view_helpers import (
     _render_deeptica_summary,
 )
 from backend.types import TrainingConfig, TrainingResult
-from pmarlo.api import parse_tau_schedule, select_shard_paths
+from pmarlo.api import parse_tau_schedule, select_shard_paths, parse_hidden_layers
 
 def render_training_tab(ctx: AppContext) -> None:
     """Render the model training tab."""
@@ -116,9 +116,7 @@ def render_training_tab(ctx: AppContext) -> None:
                 help="Comma-separated integers for the Deep-TICA network (e.g., 128,128 for two hidden layers)",
                 key="train_hidden_layers",
             )
-            hidden_layers = tuple(
-                int(v.strip()) for v in hidden.split(",") if v.strip()
-            ) or (128, 128)
+            hidden_layers = parse_hidden_layers(hidden)
 
         # Curriculum Learning
         with st.expander("Curriculum Learning", expanded=False):
