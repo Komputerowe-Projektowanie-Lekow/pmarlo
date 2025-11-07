@@ -16,22 +16,6 @@ if TYPE_CHECKING:
     from backend.types import BuildArtifact, TrainingResult, ConformationsResult
 
 
-
-def _select_shard_paths(
-    groups: Sequence[Dict[str, object]], run_ids: Sequence[str]
-) -> List[Path]:
-    lookup: Dict[str, Sequence[str]] = {
-        str(entry.get("run_id")): entry.get("paths", [])  # type: ignore[dict-item]
-        for entry in groups
-    }
-    selected: List[Path] = []
-    for run_id in run_ids:
-        paths = lookup.get(run_id, [])
-        for p in paths:
-            selected.append(Path(p))
-    return selected
-
-
 def _format_run_selection_summary(runs: Sequence[ShardRunSummary]) -> str:
     if not runs:
         return ""

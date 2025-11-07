@@ -55,11 +55,10 @@ from core.view_helpers import (
     _model_entry_label as model_entry_label,
     _render_conformations_result as render_conformations_result,
     _render_deeptica_summary as render_deeptica_summary,
-    _select_shard_paths as select_shard_paths,
     _show_build_outputs as show_build_outputs,
     _summarize_selected_shards as summarize_selected_shards,
 )
-from pmarlo.api import parse_tau_schedule, parse_temperature_ladder
+from pmarlo.api import parse_tau_schedule, parse_temperature_ladder, select_shard_paths
 
 __all__ = [
     # Constants

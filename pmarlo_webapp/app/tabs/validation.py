@@ -5,13 +5,13 @@ import streamlit as st
 
 from core.context import AppContext
 from core.view_helpers import (
-    _select_shard_paths,
     _summarize_selected_shards,
 )
 from plots.diagnostics import (
     create_sampling_validation_plot,
     create_fes_validation_plot,
 )
+from pmarlo.api import select_shard_paths
 
 
 def render_validation_tab(ctx: AppContext) -> None:
@@ -31,7 +31,11 @@ def render_validation_tab(ctx: AppContext) -> None:
             default=run_ids,
             key="validation_selected_runs",
         )
-        selected_paths = _select_shard_paths(shard_groups, selected_runs)
+        try:
+            selected_paths = select_shard_paths(shard_groups, selected_runs)
+        except ValueError as exc:
+            st.error(f"Invalid shard selection: {exc}")
+            st.stop()
 
         if not selected_paths:
             st.warning("Select at least one shard group to generate validation plots.")

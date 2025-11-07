@@ -14,11 +14,11 @@ from core.parsers import _format_lag_sequence, _parse_lag_sequence
 from core.view_helpers import (
     _infer_default_topology,
     _default_feature_spec_path,
-    _select_shard_paths,
     _summarize_selected_shards,
 )
 from core.tables import _timescales_dataframe
 from backend.its import calculate_its, plot_its
+from pmarlo.api import select_shard_paths
 
 
 def render_its_tab(ctx: AppContext) -> None:
@@ -73,7 +73,11 @@ def render_its_tab(ctx: AppContext) -> None:
                 key="its_selected_runs",
                 help="Select shard batches that should contribute to the ITS analysis.",
             )
-            selected_paths = _select_shard_paths(shard_groups, selected_runs)
+            try:
+                selected_paths = select_shard_paths(shard_groups, selected_runs)
+            except ValueError as exc:
+                st.error(f"Shard selection invalid: {exc}")
+                selected_paths = []
             selection_text = ""
             if selected_paths:
                 try:
@@ -138,7 +142,11 @@ def render_its_tab(ctx: AppContext) -> None:
             )
 
         selected_runs = st.session_state.get("its_selected_runs", [])
-        selected_paths = _select_shard_paths(shard_groups, selected_runs)
+        try:
+            selected_paths = select_shard_paths(shard_groups, selected_runs)
+        except ValueError as exc:
+            st.error(f"Shard selection invalid: {exc}")
+            selected_paths = []
         if compute_btn:
             try:
                 lag_values = _parse_lag_sequence(

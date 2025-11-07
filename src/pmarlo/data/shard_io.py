@@ -203,3 +203,72 @@ def summarize_shard_runs(shard_jsons: Sequence[Path | str]) -> List[ShardRunSumm
             )
         )
     return summaries
+
+
+def select_shard_paths(
+    groups: Sequence[Mapping[str, object]],
+    run_ids: Sequence[str],
+) -> List[Path]:
+    """Resolve shard JSON paths for the requested run identifiers.
+
+    Parameters
+    ----------
+    groups
+        Sequence of shard group dictionaries (e.g. backend state entries) that
+        must contain ``run_id`` and ``paths`` keys.
+    run_ids
+        Run identifiers to expand into concrete shard JSON paths.
+
+    Returns
+    -------
+    List[Path]
+        Ordered list of shard JSON paths for the requested run IDs.
+
+    Raises
+    ------
+    ValueError
+        If a shard group is missing its ``run_id``/``paths`` metadata or if a
+        requested run ID is not present in ``groups``.
+    TypeError
+        If ``paths`` is not an iterable of filesystem paths.
+    """
+
+    if not groups or not run_ids:
+        return []
+
+    lookup: Dict[str, tuple[Path, ...]] = {}
+    for entry in groups:
+        run_key = entry.get("run_id")
+        if run_key is None:
+            raise ValueError("Shard group entry missing 'run_id'")
+        run_id = str(run_key)
+        raw_paths = entry.get("paths")
+        if raw_paths is None:
+            raise ValueError(f"Shard group for run '{run_id}' missing 'paths'")
+        if isinstance(raw_paths, (str, bytes)):
+            raise TypeError(
+                f"Shard group paths for run '{run_id}' must be a sequence, not a string"
+            )
+        if not isinstance(raw_paths, IterableABC):
+            raise TypeError(
+                f"Shard group paths for run '{run_id}' must be iterable; got {type(raw_paths)!r}"
+            )
+        lookup[run_id] = tuple(Path(path) for path in raw_paths)
+
+    missing: list[str] = []
+    selected: List[Path] = []
+    for requested in run_ids:
+        run_id = str(requested)
+        paths = lookup.get(run_id)
+        if paths is None:
+            missing.append(run_id)
+            continue
+        selected.extend(paths)
+
+    if missing:
+        missing_unique = ", ".join(sorted(set(missing)))
+        raise ValueError(
+            f"Unknown shard run IDs requested: {missing_unique}"
+        )
+
+    return selected

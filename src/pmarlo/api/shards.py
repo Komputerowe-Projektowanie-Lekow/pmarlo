@@ -11,6 +11,7 @@ from pmarlo import constants as const
 from pmarlo.data.aggregate import aggregate_and_build as _aggregate_and_build
 from pmarlo.data.emit import emit_shards_from_trajectories
 from pmarlo.data.shard import read_shard, write_shard
+from pmarlo.data.shard_io import select_shard_paths as _select_shard_paths
 from pmarlo.io import trajectory as traj_io
 from pmarlo.shards.indexing import initialise_shard_indices
 from pmarlo.transform.build import AppliedOpts as _AppliedOpts
@@ -22,6 +23,8 @@ from pmarlo.utils.array import concatenate_or_empty
 from pmarlo.utils.path_utils import ensure_directory
 
 logger = logging.getLogger("pmarlo")
+
+select_shard_paths = _select_shard_paths
 
 
 def emit_shards_rg_rmsd(
