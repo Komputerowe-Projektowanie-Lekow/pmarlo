@@ -2,12 +2,12 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
+from pmarlo.api import normalize_training_metrics
 from pmarlo.utils.path_utils import ensure_directory
 
 from .types import TrainingConfig, TrainingResult
 from .utils import (
     _build_result_cls,
-    _normalize_training_metrics,
     _sanitize_artifacts,
     _timestamp,
     build_from_shards,
@@ -156,7 +156,7 @@ class TrainingMixin:
         cv_model_bundle_info = self._export_cv_model(bundle_path, checkpoint_dir, br)
 
         raw_metrics = _sanitize_artifacts(br.artifacts.get("mlcv_deeptica", {}))
-        normalized_metrics = _normalize_training_metrics(
+        normalized_metrics = normalize_training_metrics(
             raw_metrics,
             tau_schedule=config.tau_schedule,
             epochs_per_tau=config.epochs_per_tau,
@@ -312,7 +312,7 @@ class TrainingMixin:
 
         metrics = br.artifacts.get("mlcv_deeptica")
         if isinstance(metrics, Mapping):
-            normalized = _normalize_training_metrics(
+            normalized = normalize_training_metrics(
                 metrics,
                 tau_schedule=entry.get("tau_schedule"),
                 epochs_per_tau=entry.get("epochs_per_tau"),
