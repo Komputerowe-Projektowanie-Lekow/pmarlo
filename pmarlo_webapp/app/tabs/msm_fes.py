@@ -11,6 +11,7 @@ from core.session import (
     _apply_analysis_config_to_state,
 )
 from backend.types import BuildConfig, BuildArtifact, TrainingConfig
+from pmarlo.api import select_shard_paths
 from plots.diagnostics import (
     plot_canonical_correlations,
     plot_autocorrelation_curves,
@@ -75,7 +76,11 @@ def render_msm_fes_tab(ctx: AppContext) -> None:
             options=run_ids,
             default=run_ids,
         )
-        selected_paths = _select_shard_paths(shard_groups, selected_runs)
+        try:
+            selected_paths = select_shard_paths(shard_groups, selected_runs)
+        except ValueError as exc:
+            st.error(f"Shard selection invalid: {exc}")
+            st.stop()
         try:
             _analysis_runs, analysis_text = _summarize_selected_shards(
                 selected_runs, selected_paths
@@ -341,20 +346,6 @@ def render_msm_fes_tab(ctx: AppContext) -> None:
 
 
 # Helper functions for MSM/FES tab
-
-def _select_shard_paths(shard_groups: List[Dict[str, Any]], selected_runs: List[str]) -> List[Path]:
-    """Extract shard file paths from selected run IDs."""
-    selected_paths = []
-    for entry in shard_groups:
-        run_id = str(entry.get("run_id", ""))
-        if run_id in selected_runs:
-            # Fixed: backend.shard_summaries() returns "paths" not "shard_paths"
-            paths = entry.get("paths", [])
-            for p in paths:
-                if isinstance(p, (str, Path)):
-                    selected_paths.append(Path(p))
-    return selected_paths
-
 
 def _summarize_selected_shards(selected_runs: List[str], selected_paths: List[Path]) -> tuple[List[str], str]:
     """Summarize the selected shard files for display."""

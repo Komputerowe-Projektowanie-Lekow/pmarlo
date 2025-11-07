@@ -10,11 +10,11 @@ from core.session import (
     _sync_form_metastable_states,
 )
 from core.view_helpers import (
-    _select_shard_paths,
     _summarize_selected_shards,
     _render_conformations_result,
 )
 from backend.types import ConformationsConfig, ConformationsResult
+from pmarlo.api import select_shard_paths
 
 def render_conformations_tab(ctx: AppContext) -> None:
     """Render the conformations analysis tab."""
@@ -98,7 +98,11 @@ def render_conformations_tab(ctx: AppContext) -> None:
             default=run_ids,
             key="conf_selected_runs",
         )
-        selected_paths = _select_shard_paths(shard_groups, selected_runs)
+        try:
+            selected_paths = select_shard_paths(shard_groups, selected_runs)
+        except ValueError as exc:
+            st.error(f"Shard selection invalid: {exc}")
+            st.stop()
         try:
             _, shard_summary = _summarize_selected_shards(selected_paths)
         except ValueError as exc:

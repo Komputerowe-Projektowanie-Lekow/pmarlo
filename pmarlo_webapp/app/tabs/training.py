@@ -13,13 +13,12 @@ from core.session import (
 )
 from core.constants import DEEPTICA_SKIP_MESSAGE
 from core.view_helpers import (
-    _select_shard_paths,
     _summarize_selected_shards,
     _show_build_outputs,
     _render_deeptica_summary,
 )
 from backend.types import TrainingConfig, TrainingResult
-from pmarlo.api import parse_tau_schedule
+from pmarlo.api import parse_tau_schedule, select_shard_paths
 
 def render_training_tab(ctx: AppContext) -> None:
     """Render the model training tab."""
@@ -48,7 +47,11 @@ def render_training_tab(ctx: AppContext) -> None:
                 options=run_ids,
                 default=run_ids[-1:] if run_ids else [],
             )
-            selected_paths = _select_shard_paths(shard_groups, selected_runs)
+            try:
+                selected_paths = select_shard_paths(shard_groups, selected_runs)
+            except ValueError as exc:
+                st.error(f"Shard selection invalid: {exc}")
+                st.stop()
             try:
                 _selection_runs, selection_text = _summarize_selected_shards(
                     selected_paths

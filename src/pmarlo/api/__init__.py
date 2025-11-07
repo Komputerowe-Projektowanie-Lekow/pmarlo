@@ -41,6 +41,7 @@ from .shards import (
     build_from_shards,
     emit_shards_rg_rmsd,
     emit_shards_rg_rmsd_windowed,
+    select_shard_paths,
     _build_opts,
 )
 from .trajectory_utils import (
@@ -85,6 +86,7 @@ __all__ = [
     "run_replica_exchange",
     "sanitize_label_for_filename",
     "select_fes_pair",
+    "select_shard_paths",
     "trig_expand_periodic",
     "_trig_expand_periodic",
     "_build_opts",
