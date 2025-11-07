@@ -47,6 +47,7 @@ dependencies = [
   "mlcolvar>=1.2",
   "scikit-learn>=1.2,<2.0",
   "deeptime>=0.4.5,<0.5",
+  "matplotlib>=3.8,<4.0",
   "tomli>=2.0,<3.0",
   "typing-extensions>=4.8",
   "pyyaml>=6.0,<7.0",
@@ -115,11 +116,11 @@ pygount = ">=2.6,<3.2"
 mlcolvar = ">=1.2"
 scikit-learn = ">=1.2,<2.0"
 deeptime = ">=0.4.5,<0.5"
+matplotlib = ">=3.8,<4.0"
 tomli = ">=2.0,<3.0"
 typing-extensions = ">=4.8"
 pyyaml = ">=6.0,<7.0"
 # Optional dependencies (enabled via extras)
-matplotlib = {version = ">=3.8", optional = true}
 plotly = {version = ">=5.15", optional = true}
 streamlit = {version = ">=1.31", optional = true}
 torch = {version = ">=2.2,<3.0", optional = true, source = "pytorch-cpu"}

@@ -7,7 +7,7 @@ from core.context import AppContext
 from core.view_helpers import (
     _summarize_selected_shards,
 )
-from plots.diagnostics import (
+from pmarlo.visualization.diagnostics import (
     create_sampling_validation_plot,
     create_fes_validation_plot,
 )
@@ -320,14 +320,13 @@ def render_validation_tab(ctx: AppContext) -> None:
                         st.subheader("Sampling Connectivity")
                         with st.spinner("Generating sampling plot..."):
                             try:
-                                # Create a mock app_state object with projection data and labels
-                                class MockAppState:
-                                    def __init__(self, proj_list, labels):
-                                        self.projection_data = proj_list
-                                        self.run_labels = labels
-
-                                mock_state = MockAppState(projection_list, run_labels)
-                                sampling_fig = create_sampling_validation_plot(mock_state)
+                                sampling_fig = create_sampling_validation_plot(
+                                    projection_data=projection_list,
+                                    run_labels=run_labels,
+                                    max_length=int(st.session_state.get("val_plot_max_len", 1000)),
+                                    hist_bins=int(st.session_state.get("val_plot_hist_bins", 150)),
+                                    stride=int(st.session_state.get("val_plot_stride", 10)),
+                                )
 
                                 if sampling_fig and hasattr(sampling_fig, 'axes'):
                                     st.pyplot(
@@ -355,21 +354,18 @@ def render_validation_tab(ctx: AppContext) -> None:
                                     )
 
                                     # Create a mock app_state object with FES data
-                                    class MockAppStateFES:
-                                        def __init__(self, fes_result):
-                                            # Extract bin centers from edges
-                                            x_centers = 0.5 * (fes_result.xedges[:-1] + fes_result.xedges[1:])
-                                            y_centers = 0.5 * (fes_result.yedges[:-1] + fes_result.yedges[1:])
+                                    x_centers = 0.5 * (fes_result.xedges[:-1] + fes_result.xedges[1:])
+                                    y_centers = 0.5 * (fes_result.yedges[:-1] + fes_result.yedges[1:])
+                                    xx, yy = np.meshgrid(x_centers, y_centers)
 
-                                            # Create meshgrid
-                                            xx, yy = np.meshgrid(x_centers, y_centers)
-                                            self.fes_grid = [xx, yy]
-
-                                            # Extract free energy values
-                                            self.fes_data = fes_result.F
-
-                                    mock_state_fes = MockAppStateFES(fes_result)
-                                    fes_fig = create_fes_validation_plot(mock_state_fes)
+                                    fes_fig = create_fes_validation_plot(
+                                        fes_grid=(xx, yy),
+                                        fes_data=fes_result.F,
+                                        max_kt=float(st.session_state.get("fes_plot_max_kt", 7.0)),
+                                        levels=int(st.session_state.get("fes_plot_levels", 25)),
+                                        cmap=st.session_state.get("fes_plot_cmap", "viridis"),
+                                        show_lines=bool(st.session_state.get("fes_plot_lines", True)),
+                                    )
 
                                     if fes_fig and hasattr(fes_fig, 'axes'):
                                         st.pyplot(
@@ -431,19 +427,15 @@ def render_validation_tab(ctx: AppContext) -> None:
                                 else:
                                     dtraj_list.append(np.array([], dtype=np.int32))
 
-                            # Create mock state with discrete trajectory data
-                            class MockAppStateDiscrete:
-                                def __init__(self, proj_list, dtraj_list, centers, labels):
-                                    self.projection_data = proj_list
-                                    self.dtraj_data = dtraj_list
-                                    self.cluster_centers = centers
-                                    self.run_labels = labels
-
-                            mock_state_discrete = MockAppStateDiscrete(
-                                projection_list, dtraj_list, cluster_centers, run_labels
+                            discrete_fig = create_sampling_validation_plot(
+                                projection_data=projection_list,
+                                run_labels=run_labels,
+                                dtraj_data=dtraj_list,
+                                cluster_centers=cluster_centers,
+                                max_length=int(st.session_state.get("val_plot_max_len", 1000)),
+                                hist_bins=int(st.session_state.get("val_plot_hist_bins", 150)),
+                                stride=int(st.session_state.get("val_plot_stride", 10)),
                             )
-
-                            discrete_fig = create_sampling_validation_plot(mock_state_discrete)
 
                             if discrete_fig and hasattr(discrete_fig, 'axes'):
                                 st.pyplot(

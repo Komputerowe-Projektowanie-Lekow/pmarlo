@@ -2,13 +2,13 @@ from __future__ import annotations
 
 """Plot helpers for diagnostic metrics displayed in the Streamlit app."""
 
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
 import streamlit as st
 
-from pmarlo.reporting import plots as pmarlo_plots
+from pmarlo.visualization import diagnostics as viz_diagnostics
 
 __all__ = [
     "plot_canonical_correlations",
@@ -17,6 +17,13 @@ __all__ = [
     "create_sampling_validation_plot",
     "create_fes_validation_plot",
 ]
+
+
+def _session_value(key: str, default: Any) -> Any:
+    try:
+        return st.session_state.get(key, default)
+    except Exception:  # Streamlit runtime guard (e.g. during tests)
+        return default
 
 
 def plot_canonical_correlations(diagnostics: Dict[str, Any]) -> plt.Figure:
@@ -83,137 +90,108 @@ def format_warnings(diagnostics: Dict[str, Any]) -> list[str]:
     return []
 
 
-def create_sampling_validation_plot(app_state) -> plt.Figure:
-    """Generate the sampling validation plot using parameters from session state if available.
+def create_sampling_validation_plot(
+    app_state: Any | None = None,
+    *,
+    projection_data: Sequence[np.ndarray] | None = None,
+    run_labels: Iterable[str] | None = None,
+    dtraj_data: Sequence[np.ndarray] | None = None,
+    cluster_centers: np.ndarray | None = None,
+    component_index: int = 0,
+    max_length: int | None = None,
+    hist_bins: int | None = None,
+    stride: int | None = None,
+    figsize: tuple[float, float] | None = None,
+) -> plt.Figure:
+    """Generate the sampling validation plot for the current selection."""
 
-    Parameters
-    ----------
-    app_state
-        Application state object containing projection_data, run_labels, and optionally
-        dtraj_data and cluster_centers for discrete overlay.
-
-    Returns
-    -------
-    plt.Figure
-        Matplotlib figure ready for display.
-    """
-    projection = app_state.projection_data
-
-    # Debug: Check projection data
-    print(f"[DEBUG] projection is None: {projection is None}")
-    if projection is not None:
-        print(f"[DEBUG] projection type: {type(projection)}")
-        print(f"[DEBUG] projection length: {len(projection)}")
-
-    if projection is None:
+    if projection_data is None and app_state is not None:
+        projection_data = getattr(app_state, "projection_data", None)
+    if projection_data is None:
         raise ValueError("Projection data not found - cannot create sampling plot")
 
-    # Get run labels if available
-    run_labels = getattr(app_state, 'run_labels', None)
+    if run_labels is None and app_state is not None:
+        run_labels = getattr(app_state, "run_labels", None)
+    if dtraj_data is None and app_state is not None:
+        dtraj_data = getattr(app_state, "dtraj_data", None)
+    if cluster_centers is None and app_state is not None:
+        cluster_centers = getattr(app_state, "cluster_centers", None)
 
-    # Check if discrete trajectory data is available
-    dtraj_data = getattr(app_state, 'dtraj_data', None)
-    cluster_centers = getattr(app_state, 'cluster_centers', None)
-    has_discrete = dtraj_data is not None and cluster_centers is not None
-
-    # Debug: Check each trajectory shape before filtering
-    print(f"[DEBUG] Number of trajectories in projection: {len(projection)}")
-    print(f"[DEBUG] Has discrete overlay: {has_discrete}")
-    for i, traj in enumerate(projection):
-        print(f"[DEBUG] Trajectory {i}: shape={traj.shape}, dtype={traj.dtype}")
-
-    # Extract first component from each trajectory, filtering out empty trajectories
-    projected_data_1d = [traj[:, 0] for traj in projection if traj.ndim == 2 and traj.shape[0] > 0 and traj.shape[1] > 0]
-
-    # Debug: Check filtered results
-    print(f"[DEBUG] Length of projected_data_1d after filtering: {len(projected_data_1d)}")
-    for i, arr in enumerate(projected_data_1d):
-        print(f"[DEBUG] projected_data_1d[{i}]: shape={arr.shape}, length={len(arr)}, dtype={arr.dtype}")
-
-    if not projected_data_1d:
-        raise ValueError("No valid 1D projection data found - projection data has insufficient dimensions")
-
-    # Get parameters from session state (set by UI widgets in app.py)
-    # Provide sensible defaults if not found in state
-    max_len = st.session_state.get("val_plot_max_len", 1000)
-    bins = st.session_state.get("val_plot_hist_bins", 150)
-    stride = st.session_state.get("val_plot_stride", 10)
-
-    print(f"[DEBUG] Parameters: max_len={max_len}, bins={bins}, stride={stride}")
-
-    # Prepare discrete data if available
-    discrete_data_1d = None
-    if has_discrete:
-        discrete_data_1d = []
-        for dtraj in dtraj_data:
-            if len(dtraj) > 0:
-                # Map discrete trajectory to cluster centers in TICA component 1
-                discrete_x = cluster_centers[dtraj, 0]
-                discrete_data_1d.append(discrete_x)
-            else:
-                discrete_data_1d.append(np.array([]))
-
-    # Call the updated library function with parameters
-    fig = pmarlo_plots.plot_sampling_validation(
-        projected_data_1d=projected_data_1d,
-        max_traj_length_plot=max_len,
-        bins=bins,
-        stride=stride,
-        alpha_hist=0.15,
-        alpha_traj=0.7,
-        lw_traj=0.8,
-        cmap_name='tab20',
-        trajectory_labels=run_labels,
-        discrete_data_1d=discrete_data_1d  # Pass discrete overlay data
+    max_length = int(max_length) if max_length is not None else int(
+        _session_value("val_plot_max_len", 1000)
     )
-    return fig
+    hist_bins = int(hist_bins) if hist_bins is not None else int(
+        _session_value("val_plot_hist_bins", 150)
+    )
+    stride = int(stride) if stride is not None else int(
+        _session_value("val_plot_stride", 10)
+    )
+    figsize = figsize or (10.0, 6.0)
+
+    return viz_diagnostics.create_sampling_validation_plot(
+        projection_data=projection_data,
+        run_labels=run_labels,
+        dtraj_data=dtraj_data,
+        cluster_centers=cluster_centers,
+        component_index=component_index,
+        max_length=max_length,
+        hist_bins=hist_bins,
+        stride=stride,
+        figsize=figsize,
+    )
 
 
-def create_fes_validation_plot(app_state) -> plt.Figure:
-    """Generate the 2D FES plot using parameters from session state if available.
+def create_fes_validation_plot(
+    app_state: Any | None = None,
+    *,
+    fes_grid: tuple[np.ndarray, np.ndarray] | None = None,
+    fes_data: np.ndarray | None = None,
+    max_kt: float | None = None,
+    levels: int | None = None,
+    cmap: str | None = None,
+    show_lines: bool | None = None,
+    figsize: tuple[float, float] | None = None,
+) -> plt.Figure:
+    """Generate the 2D FES plot using parameters from session state if available."""
 
-    Parameters
-    ----------
-    app_state
-        Application state object containing fes_grid and fes_data.
+    if app_state is not None:
+        if fes_grid is None:
+            fes_grid = getattr(app_state, "fes_grid", None)
+        if fes_data is None:
+            fes_data = getattr(app_state, "fes_data", None)
 
-    Returns
-    -------
-    plt.Figure
-        Matplotlib figure ready for display.
-    """
-    try:
-        grid = app_state.fes_grid
-        fes = app_state.fes_data
-
-        if grid is None or fes is None:
-            st.warning("FES data not found. Cannot create FES plot.")
-            fig, ax = plt.subplots(figsize=(8, 6))
-            ax.text(0.5, 0.5, "No FES data available", ha="center", va="center")
-            ax.axis("off")
-            return fig
-
-        # Get parameters from session state
-        max_energy_kt = st.session_state.get("fes_plot_max_kt", 7.0)
-        levels = st.session_state.get("fes_plot_levels", 25)
-        cmap = st.session_state.get("fes_plot_cmap", "viridis")
-        add_lines = st.session_state.get("fes_plot_lines", True)
-
-        # Call the updated library function with parameters
-        fig = pmarlo_plots.plot_free_energy_2d(
-            grid=grid,
-            fes=fes,
-            max_energy_kt=max_energy_kt,
-            levels=levels,
-            cmap=cmap,
-            add_contour_lines=add_lines
-        )
+    if fes_grid is None or fes_data is None:
+        st.warning("FES data not found. Cannot create FES plot.")
+        fig, ax = plt.subplots(figsize=figsize or (8.0, 6.0))
+        ax.text(0.5, 0.5, "No FES data available", ha="center", va="center")
+        ax.axis("off")
         return fig
 
-    except Exception as e:
-        st.error(f"Error creating FES plot: {e}")
-        # Ensure a figure object is always returned
-        fig, ax = plt.subplots(figsize=(8, 6))
-        ax.text(0.5, 0.5, "Error generating plot", ha='center', va='center')
+    max_kt = float(max_kt) if max_kt is not None else float(
+        _session_value("fes_plot_max_kt", 7.0)
+    )
+    levels = int(levels) if levels is not None else int(
+        _session_value("fes_plot_levels", 25)
+    )
+    cmap = cmap or str(_session_value("fes_plot_cmap", "viridis"))
+    show_lines = bool(show_lines) if show_lines is not None else bool(
+        _session_value("fes_plot_lines", True)
+    )
+    figsize = figsize or (8.0, 6.0)
+
+    try:
+        return viz_diagnostics.create_fes_validation_plot(
+            fes_grid=fes_grid,
+            fes_data=fes_data,
+            max_kt=max_kt,
+            levels=levels,
+            cmap=cmap,
+            show_lines=show_lines,
+            figsize=figsize,
+        )
+    except Exception as exc:  # Keep UI-friendly fallback behaviour
+        st.error(f"Error creating FES plot: {exc}")
+        fig, ax = plt.subplots(figsize=figsize)
+        ax.text(0.5, 0.5, "Error generating plot", ha="center", va="center")
         ax.axis("off")
         return fig

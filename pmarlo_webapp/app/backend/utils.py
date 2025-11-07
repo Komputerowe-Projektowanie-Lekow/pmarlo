@@ -1,17 +1,17 @@
 import json
-import re
-import unicodedata
-from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple, cast
 
 import numpy as np
 
-from pmarlo.api import choose_sim_seed
+from pmarlo.api import choose_sim_seed, coerce_path_list, slugify, timestamp
 from pmarlo.utils.path_utils import ensure_directory
 
-_UNSAFE_SLUG_CHARS = re.compile(r"[^a-z0-9_-]")
+# Re-export for backward compatibility within webapp
+_timestamp = timestamp
+_slugify = slugify
+_coerce_path_list = coerce_path_list
 
 _STRUCTURE_EXTENSIONS: tuple[str, ...] = (
     ".dcd",
@@ -38,24 +38,6 @@ def _resolve_workspace_path(base: Path, candidate: Path) -> Path:
         return candidate.expanduser().resolve()
     return (base / candidate).expanduser().resolve()
 
-
-def _timestamp() -> str:
-    return datetime.now().strftime("%Y%m%d-%H%M%S")
-
-
-def _slugify(label: Optional[str]) -> Optional[str]:
-    """Return a deterministic slug for ``label`` suitable for filenames."""
-    if not label:
-        return None
-    normalised = unicodedata.normalize("NFKD", str(label)).strip()
-    ascii_label = normalised.encode("ascii", "ignore").decode("ascii")
-    slug = _UNSAFE_SLUG_CHARS.sub("_", ascii_label.lower())
-    slug = slug.strip("_")
-    return slug or None
-
-
-def _coerce_path_list(paths: Iterable[str | Path]) -> List[Path]:
-    return [Path(p).resolve() for p in paths]
 
 
 def _is_transition_matrix_reversible(
