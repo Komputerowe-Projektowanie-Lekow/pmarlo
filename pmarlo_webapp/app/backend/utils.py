@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 import numpy as np
 
+from pmarlo.api import choose_sim_seed
 from pmarlo.utils.path_utils import ensure_directory
 
 _UNSAFE_SLUG_CHARS = re.compile(r"[^a-z0-9_-]")
@@ -55,20 +56,6 @@ def _slugify(label: Optional[str]) -> Optional[str]:
 
 def _coerce_path_list(paths: Iterable[str | Path]) -> List[Path]:
     return [Path(p).resolve() for p in paths]
-
-
-def choose_sim_seed(mode: str, *, fixed: Optional[int] = None) -> Optional[int]:
-    """Choose simulation seed based on mode."""
-    import random
-
-    if mode == "none":
-        return None
-    elif mode == "fixed":
-        return fixed
-    elif mode == "auto":
-        return random.randint(1, 1000000)
-    else:
-        raise ValueError(f"Unknown seed mode: {mode}")
 
 
 def _is_transition_matrix_reversible(

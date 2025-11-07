@@ -48,6 +48,7 @@ from .trajectory_utils import (
     extract_random_highT_frame_to_pdb,
 )
 from .workflow import build_joint_workflow
+from pmarlo.utils.seed import choose_sim_seed
 
 # Backward compatibility for code importing the underscored helper directly.
 _trig_expand_periodic = trig_expand_periodic
@@ -57,6 +58,7 @@ __all__ = [
     "analyze_msm",
     "build_from_shards",
     "build_joint_workflow",
+    "choose_sim_seed",
     "build_msm_from_labels",
     "cluster_microstates",
     "compute_features",
