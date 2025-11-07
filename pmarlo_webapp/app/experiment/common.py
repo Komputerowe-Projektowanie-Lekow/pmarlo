@@ -14,6 +14,7 @@ from typing import Any, Dict, Iterable, Mapping, MutableMapping, Sequence
 
 import yaml
 
+from pmarlo.api import deep_merge
 from pmarlo.data.aggregate import load_shards_as_dataset
 from pmarlo.shards.format import read_shard
 from pmarlo.shards.schema import Shard
@@ -115,25 +116,6 @@ def _read_yaml(path: Path) -> MutableMapping[str, Any]:
     return data
 
 
-def _deep_merge(base: Mapping[str, Any] | None, override: Mapping[str, Any] | None) -> Dict[str, Any]:
-    """Recursively merge two mapping objects."""
-
-    result: Dict[str, Any] = {}
-    if base:
-        for key, value in base.items():
-            if isinstance(value, Mapping):
-                result[key] = _deep_merge(value, None)
-            else:
-                result[key] = value
-    if override:
-        for key, value in override.items():
-            if isinstance(value, Mapping) and isinstance(result.get(key), Mapping):
-                result[key] = _deep_merge(result[key], value)
-            else:
-                result[key] = value
-    return result
-
-
 def _select_experiment_section(
     data: Mapping[str, Any],
     experiment_name: str,
@@ -149,7 +131,7 @@ def _select_experiment_section(
     common = data.get("common") if allow_common else None
     if common is not None and not isinstance(common, Mapping):
         raise ExperimentConfigError("Top-level 'common' section must be a mapping if present.")
-    return _deep_merge(common, selected)
+    return deep_merge(common, selected)
 
 
 def _resolve_manifest(layout: ExperimentLayout, paths: ExperimentPaths) -> Path:

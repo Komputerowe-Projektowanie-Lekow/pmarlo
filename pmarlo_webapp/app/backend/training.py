@@ -2,7 +2,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-from pmarlo.api import normalize_training_metrics
+from pmarlo.api import normalize_training_metrics, coerce_tau_schedule
 from pmarlo.utils.path_utils import ensure_directory
 
 from .types import TrainingConfig, TrainingResult
@@ -17,55 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 # Module-level helper functions
-def _coerce_hidden_layers(raw: Any) -> tuple[int, ...]:
-    """Parse hidden layer specification from various formats."""
-    layers: List[int] = []
-    if isinstance(raw, (list, tuple)):
-        for item in raw:
-            try:
-                layers.append(int(item))
-            except (TypeError, ValueError):
-                continue
-    elif isinstance(raw, str):
-        for token in raw.split(","):
-            token = token.strip()
-            if not token:
-                continue
-            try:
-                layers.append(int(token))
-            except ValueError:
-                continue
-    if layers:
-        return tuple(layers)
-    return (128, 128)
-
-
-def _coerce_tau_schedule(raw: Any) -> tuple[int, ...]:
-    """Parse tau schedule from various formats."""
-    values: List[int] = []
-    if isinstance(raw, (list, tuple)):
-        for item in raw:
-            try:
-                v = int(item)
-                if v > 0:
-                    values.append(v)
-            except (TypeError, ValueError):
-                continue
-    elif isinstance(raw, str):
-        tokens = raw.replace(";", ",").split(",")
-        for token in tokens:
-            token = token.strip()
-            if not token:
-                continue
-            try:
-                v = int(token)
-                if v > 0:
-                    values.append(v)
-            except ValueError:
-                continue
-    if not values:
-        return ()
-    return tuple(sorted(set(values)))
+# Note: _coerce_tau_schedule has been moved to pmarlo.api as coerce_tau_schedule
 
 
 class TrainingMixin:

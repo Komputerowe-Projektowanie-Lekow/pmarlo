@@ -15,11 +15,19 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, MutableMapping, Sequence, Tuple
+from typing import Any, Dict, Mapping, MutableMapping, Sequence, Tuple
 
 import numpy as np
 
-from pmarlo.api import relativize
+from pmarlo.api import (
+    extract_seed,
+    normalize_reweight_mode,
+    relativize,
+    resolve_deeptica,
+    sanitize,
+    sanitize_deeptica_payload,
+    write_json,
+)
 from pmarlo.utils.coercion import coerce_finite_float
 from pmarlo.utils.path_utils import ensure_directory
 
@@ -42,32 +50,6 @@ DEFAULT_FES_BINS = 72
 # --------------------------------------------------------------------------- #
 
 
-def _sanitize(obj: Any) -> Any:
-    """Recursively convert arbitrary objects into JSON-serialisable structures."""
-
-    if obj is None or isinstance(obj, (bool, int, float, str)):
-        if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
-            return None
-        return obj
-    if isinstance(obj, Path):
-        return str(obj)
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    if isinstance(obj, np.generic):
-        return obj.item()
-    if isinstance(obj, Mapping):
-        return {str(k): _sanitize(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple, set)):
-        return [_sanitize(v) for v in obj]
-    return str(obj)
-
-
-def _write_json(path: Path, payload: Mapping[str, Any]) -> Path:
-    ensure_directory(path.parent)
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(_sanitize(payload), handle, indent=2, sort_keys=True)
-    return path
-
 
 def _determine_bins(shards: Sequence[Any], config: Mapping[str, Any]) -> Dict[str, int]:
     if not shards:
@@ -89,46 +71,6 @@ def _determine_bins(shards: Sequence[Any], config: Mapping[str, Any]) -> Dict[st
     return bins
 
 
-def _extract_seed(transform_cfg: Mapping[str, Any]) -> int:
-    seeds = transform_cfg.get("seeds")
-    if isinstance(seeds, Mapping):
-        for key in ("analysis", "global", "shuffle", "deeptica"):
-            if key in seeds:
-                try:
-                    return int(seeds[key])
-                except (TypeError, ValueError):
-                    continue
-    return 2025
-
-
-def _resolve_deeptica(transform_cfg: Mapping[str, Any]) -> tuple[bool, Dict[str, Any] | None]:
-    deeptica_cfg = transform_cfg.get("deeptica")
-    if not isinstance(deeptica_cfg, MutableMapping):
-        return False, None
-    cfg = dict(deeptica_cfg)
-    enabled = bool(cfg.pop("enabled", True))
-
-    if "skip_on_failure" in cfg:
-        cfg["skip_on_failure"] = bool(cfg["skip_on_failure"])
-
-    if "min_pairs" in cfg:
-        try:
-            cfg["min_pairs"] = int(cfg["min_pairs"])
-        except (TypeError, ValueError):
-            cfg.pop("min_pairs", None)
-
-    return enabled, cfg if cfg else None
-
-
-def _normalize_reweight_mode(mode: str | None) -> str:
-    if mode is None:
-        return "IDENTITY"
-    value = str(mode).strip().upper()
-    if value in {"MBAR", "TRAM"}:
-        return value
-    if value == "NONE":
-        return "IDENTITY"
-    return "IDENTITY" if value == "" else value
 
 
 def _compute_uniform_weights(length: int) -> np.ndarray:
@@ -154,7 +96,7 @@ def _compute_weights_summary(
     reweight_cfg: Mapping[str, Any],
 ) -> WeightSummary:
     mode_raw = reweight_cfg.get("mode", "identity")
-    mode = _normalize_reweight_mode(mode_raw)
+    mode = normalize_reweight_mode(mode_raw)
     ref_temp = float(bundle.manifest.get("reference_temperature_K", 0.0))
     notes = reweight_cfg.get("notes")
     guardrails = reweight_cfg.get("guardrails", {})
@@ -272,9 +214,9 @@ def _build_config(bundle: ExperimentBundle, shards: Sequence[Any]) -> BuildConfi
 
     bins = _determine_bins(shards, transform_cfg)
     lag = int(discretize_cfg.get("lag_steps", 6))
-    seed = _extract_seed(transform_cfg)
+    seed = extract_seed(transform_cfg)
     temperature = float(bundle.manifest.get("reference_temperature_K", 300.0))
-    learn_cv, deeptica_params = _resolve_deeptica(transform_cfg)
+    learn_cv, deeptica_params = resolve_deeptica(transform_cfg)
     preprocess = transform_cfg.get("preprocessing", {}) if isinstance(transform_cfg, Mapping) else {}
     cluster_mode = discretize_cfg.get("engine") or discretize_cfg.get("mode") or "kmeans"
     n_microstates = int(discretize_cfg.get("n_clusters", 150))
@@ -283,7 +225,7 @@ def _build_config(bundle: ExperimentBundle, shards: Sequence[Any]) -> BuildConfi
     notes = {
         "experiment": bundle.layout.name,
         "manifest_path": str(bundle.manifest_path),
-        "reweight_mode_requested": _normalize_reweight_mode(reweight_cfg.get("mode")),
+        "reweight_mode_requested": normalize_reweight_mode(reweight_cfg.get("mode")),
         "config_snapshot": {
             "transform": transform_cfg,
             "discretize": discretize_cfg,
@@ -299,11 +241,11 @@ def _build_config(bundle: ExperimentBundle, shards: Sequence[Any]) -> BuildConfi
         temperature=temperature,
         learn_cv=learn_cv,
         deeptica_params=deeptica_params,
-        notes=_sanitize(notes),
+        notes=sanitize(notes),
         apply_cv_whitening=bool(preprocess.get("whitening", True)),
         cluster_mode=str(cluster_mode),
         n_microstates=n_microstates,
-        reweight_mode=_normalize_reweight_mode(reweight_cfg.get("mode")),
+        reweight_mode=normalize_reweight_mode(reweight_cfg.get("mode")),
         fes_method=str(fes_cfg.get("method", "kde")),
         fes_bandwidth=fes_cfg.get("bandwidth", "scott"),
         fes_min_count_per_bin=int(fes_cfg.get("min_count", 1)),
@@ -316,7 +258,7 @@ def _collect_debug_outputs(artifact: Any, output_dir: Path) -> Dict[str, Any]:
 
     summary_payload = dict(artifact.debug_summary or {})
     summary_path = analysis_debug_dir / "summary.json"
-    _write_json(summary_path, summary_payload)
+    write_json(summary_path, summary_payload)
 
     # If export directory differs, replicate summary entry for easy discovery
     if artifact.debug_dir:
@@ -457,65 +399,6 @@ def _evaluate_guardrails(
     return violations, metrics
 
 
-def _sanitize_deeptica_payload(raw: Mapping[str, Any]) -> Dict[str, Any]:
-    summary: Dict[str, Any] = {}
-    fields = [
-        "applied",
-        "skipped",
-        "reason",
-        "method",
-        "lag",
-        "lag_used",
-        "n_out",
-        "pairs_total",
-        "warnings",
-        "lag_candidates",
-    ]
-    for field in fields:
-        if field in raw:
-            summary[field] = raw[field]
-
-    attempts = raw.get("attempts")
-    if isinstance(attempts, list):
-        trimmed: list[Dict[str, Any]] = []
-        for attempt in attempts[:5]:
-            if not isinstance(attempt, Mapping):
-                continue
-            trimmed.append(
-                {
-                    "lag": attempt.get("lag"),
-                    "pairs_total": attempt.get("pairs_total"),
-                    "status": attempt.get("status"),
-                    "warnings": attempt.get("warnings"),
-                }
-            )
-        if trimmed:
-            summary["attempts"] = trimmed
-
-    per_shard = raw.get("per_shard")
-    if isinstance(per_shard, list):
-        trimmed_shards: list[Dict[str, Any]] = []
-        for shard_info in per_shard:
-            if not isinstance(shard_info, Mapping):
-                continue
-            trimmed_shards.append(
-                {
-                    "shard_id": shard_info.get("shard_id") or shard_info.get("id"),
-                    "pairs": shard_info.get("pairs"),
-                    "frames": shard_info.get("frames"),
-                }
-            )
-        if trimmed_shards:
-            summary["per_shard"] = trimmed_shards
-
-    training_metrics = raw.get("training_metrics")
-    if isinstance(training_metrics, Mapping):
-        summary["training_metrics"] = {
-            "wall_time_s": training_metrics.get("wall_time_s"),
-            "final_objective": training_metrics.get("final_objective"),
-            "output_variance": training_metrics.get("output_variance"),
-        }
-    return summary
 
 
 def _collect_deeptica_summary(
@@ -545,7 +428,7 @@ def _collect_deeptica_summary(
         violations.append({"code": "deeptica_summary_missing"})
         return summary, violations
 
-    sanitized = _sanitize_deeptica_payload(raw_mlcv)
+    sanitized = sanitize_deeptica_payload(raw_mlcv)
     applied = bool(sanitized.get("applied"))
     skipped = bool(sanitized.get("skipped"))
     reason = sanitized.get("reason")
@@ -601,17 +484,17 @@ def _build_msm_summary(bundle: ExperimentBundle, artifact: Any) -> Dict[str, Any
     analysis_ok = artifact.analysis_healthy and not combined_violations
     return {
         "status": "ok" if analysis_ok else "fail",
-        "guardrail_violations": _sanitize(combined_violations),
+        "guardrail_violations": sanitize(combined_violations),
         "n_frames": int(getattr(br, "n_frames", 0)),
         "n_shards": int(getattr(br, "n_shards", 0)),
         "tau_frames": artifact.tau_frames,
         "effective_tau_frames": artifact.effective_tau_frames,
-        "flags": _sanitize(getattr(br, "flags", {})),
-        "messages": _sanitize(getattr(br, "messages", [])),
-        "artifacts": _sanitize(getattr(br, "artifacts", {})),
-        "metrics": _sanitize(guardrail_metrics),
-        "deeptica": _sanitize(deeptica_summary),
-        "deeptica_violations": _sanitize(deeptica_violations),
+        "flags": sanitize(getattr(br, "flags", {})),
+        "messages": sanitize(getattr(br, "messages", [])),
+        "artifacts": sanitize(getattr(br, "artifacts", {})),
+        "metrics": sanitize(guardrail_metrics),
+        "deeptica": sanitize(deeptica_summary),
+        "deeptica_violations": sanitize(deeptica_violations),
     }
 
 
@@ -648,7 +531,7 @@ def _generate_acceptance_report(
     if violations:
         lines.append("- Violations:")
         for violation in violations:
-            lines.append(f"  - {json.dumps(_sanitize(violation))}")
+            lines.append(f"  - {json.dumps(sanitize(violation))}")
     else:
         lines.append("- Violations: None")
 
@@ -663,7 +546,7 @@ def _generate_acceptance_report(
     if analysis_violations:
         lines.append("- Guardrail Violations:")
         for violation in analysis_violations:
-            lines.append(f"  - {json.dumps(_sanitize(violation))}")
+            lines.append(f"  - {json.dumps(sanitize(violation))}")
     else:
         lines.append("- Guardrail Violations: None")
 
@@ -683,7 +566,7 @@ def _generate_acceptance_report(
     if deeptica_violations:
         lines.append("- DeepTICA Violations:")
         for violation in deeptica_violations:
-            lines.append(f"  - {json.dumps(_sanitize(violation))}")
+            lines.append(f"  - {json.dumps(sanitize(violation))}")
     elif deeptica_summary:
         lines.append("- DeepTICA Violations: None")
 
@@ -742,14 +625,14 @@ def run_experiment(
         weight_summary = WeightSummary(
             status="error",
             info={
-                "mode": _normalize_reweight_mode(bundle.configs.reweighter.get("mode")),
+                "mode": normalize_reweight_mode(bundle.configs.reweighter.get("mode")),
                 "reference_temperature_K": bundle.manifest.get("reference_temperature_K"),
                 "error": str(exc),
                 "violations": violations,
             },
             violations=violations,
         )
-    weights_path = _write_json(output_dir / "weights_summary.json", weight_summary.info)
+    weights_path = write_json(output_dir / "weights_summary.json", weight_summary.info)
 
     expected_failure = bool(
         bundle.configs.msm.get("acceptance_checks", {}).get("expect_failure", False)
@@ -766,7 +649,7 @@ def run_experiment(
         analysis_artifact = backend.build_analysis(bundle.shard_jsons, config)
         _collect_debug_outputs(analysis_artifact, output_dir)
         msm_summary = _build_msm_summary(bundle, analysis_artifact)
-        msm_path = _write_json(output_dir / "msm_summary.json", msm_summary)
+        msm_path = write_json(output_dir / "msm_summary.json", msm_summary)
         analysis_status = msm_summary.get("status", "fail")
     else:
         # Produce placeholder MSM summary since analysis was skipped intentionally.
@@ -777,12 +660,12 @@ def run_experiment(
             "deeptica": {"status": "analysis_skipped"},
             "deeptica_violations": [],
         }
-        msm_path = _write_json(output_dir / "msm_summary.json", msm_summary)
+        msm_path = write_json(output_dir / "msm_summary.json", msm_summary)
         placeholder_debug = {
             "status": "skipped",
             "reason": "Analysis not executed because weight guardrails failed.",
         }
-        _write_json(output_dir / "analysis_debug" / "summary.json", placeholder_debug)
+        write_json(output_dir / "analysis_debug" / "summary.json", placeholder_debug)
 
     artifact_paths = _collect_artifact_paths(
         output_dir=output_dir,
@@ -790,8 +673,8 @@ def run_experiment(
         weights_summary=weights_path,
         msm_summary=msm_path,
     )
-    msm_summary["artifact_paths"] = _sanitize(artifact_paths)
-    _write_json(msm_path, msm_summary)
+    msm_summary["artifact_paths"] = sanitize(artifact_paths)
+    write_json(msm_path, msm_summary)
 
     report_path, overall_pass = _generate_acceptance_report(
         output_dir,

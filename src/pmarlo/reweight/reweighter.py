@@ -20,6 +20,35 @@ from pmarlo import constants as const
 AnalysisDataset = Mapping[str, object] | MutableMapping[str, object]
 
 
+def normalize_reweight_mode(mode: str | None) -> str:
+    """Normalize reweighting mode strings to canonical values.
+
+    Args:
+        mode: Reweighting mode string (case-insensitive), or None.
+
+    Returns:
+        Normalized mode string. Returns "IDENTITY" for None, empty strings,
+        or "NONE". Returns "MBAR" or "TRAM" for those specific modes.
+        Any other non-empty value is returned as-is (uppercased).
+
+    Examples:
+        >>> normalize_reweight_mode(None)
+        'IDENTITY'
+        >>> normalize_reweight_mode("mbar")
+        'MBAR'
+        >>> normalize_reweight_mode("none")
+        'IDENTITY'
+    """
+    if mode is None:
+        return "IDENTITY"
+    value = str(mode).strip().upper()
+    if value in {"MBAR", "TRAM"}:
+        return value
+    if value == "NONE":
+        return "IDENTITY"
+    return "IDENTITY" if value == "" else value
+
+
 class AnalysisReweightMode:
     """Enumeration of supported analysis reweighting modes."""
 

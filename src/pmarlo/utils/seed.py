@@ -10,7 +10,7 @@ entrypoints to standardize determinism across runs and processes.
 import logging
 import os
 import random
-from typing import Optional
+from typing import Any, Mapping, Optional
 
 import numpy as np
 import torch
@@ -36,6 +36,44 @@ def choose_sim_seed(mode: str, *, fixed: Optional[int] = None) -> Optional[int]:
     if normalized == "auto":
         return random.randint(1, 1_000_000)
     raise ValueError(f"Unknown seed mode: {mode}")
+
+
+def extract_seed(transform_cfg: Mapping[str, Any]) -> int:
+    """Extract seed value from nested configuration structures.
+
+    Searches for seed values in a hierarchical configuration dictionary,
+    looking in common locations used throughout the PMARLO workflow.
+
+    Parameters
+    ----------
+    transform_cfg:
+        Configuration mapping that may contain a ``seeds`` key with nested
+        seed values. Supported keys include: ``analysis``, ``global``,
+        ``shuffle``, and ``deeptica``.
+
+    Returns
+    -------
+    int
+        The first valid seed found in the hierarchy, or 2025 as a default.
+
+    Examples
+    --------
+    >>> extract_seed({"seeds": {"analysis": 42}})
+    42
+    >>> extract_seed({"seeds": {"global": 100, "shuffle": 200}})
+    100
+    >>> extract_seed({})
+    2025
+    """
+    seeds = transform_cfg.get("seeds")
+    if isinstance(seeds, Mapping):
+        for key in ("analysis", "global", "shuffle", "deeptica"):
+            if key in seeds:
+                try:
+                    return int(seeds[key])
+                except (TypeError, ValueError):
+                    continue
+    return 2025
 
 
 def set_global_seed(seed: Optional[int]) -> None:
