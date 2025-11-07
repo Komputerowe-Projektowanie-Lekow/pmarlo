@@ -48,6 +48,7 @@ from .trajectory_utils import (
     extract_random_highT_frame_to_pdb,
 )
 from .workflow import build_joint_workflow
+from pmarlo.utils.input_parsing import parse_temperature_ladder, parse_tau_schedule
 from pmarlo.utils.seed import choose_sim_seed
 
 # Backward compatibility for code importing the underscored helper directly.
@@ -78,6 +79,8 @@ __all__ = [
     "macro_transition_matrix",
     "macrostate_populations",
     "normalize_training_metrics",
+    "parse_tau_schedule",
+    "parse_temperature_ladder",
     "reduce_features",
     "run_replica_exchange",
     "sanitize_label_for_filename",

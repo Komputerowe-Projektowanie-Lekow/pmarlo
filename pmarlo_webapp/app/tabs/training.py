@@ -12,7 +12,6 @@ from core.session import (
     _TRAIN_CONFIG_PENDING,
 )
 from core.constants import DEEPTICA_SKIP_MESSAGE
-from core.parsers import _parse_tau_schedule
 from core.view_helpers import (
     _select_shard_paths,
     _summarize_selected_shards,
@@ -20,6 +19,7 @@ from core.view_helpers import (
     _render_deeptica_summary,
 )
 from backend.types import TrainingConfig, TrainingResult
+from pmarlo.api import parse_tau_schedule
 
 def render_training_tab(ctx: AppContext) -> None:
     """Render the model training tab."""
@@ -152,7 +152,7 @@ def render_training_tab(ctx: AppContext) -> None:
                 key="train_button",
         ):
             try:
-                tau_values = _parse_tau_schedule(tau_raw)
+                tau_values = parse_tau_schedule(tau_raw)
             except ValueError as exc:
                 st.error(f"Tau schedule error: {exc}")
             else:

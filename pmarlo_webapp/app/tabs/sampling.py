@@ -7,8 +7,8 @@ from core.session import (
     _LAST_SIM,
     _LAST_SHARDS,
 )
-from core.parsers import _parse_temperature_ladder
 from backend.types import SimulationConfig, ShardRequest
+from pmarlo.api import parse_temperature_ladder
 
 
 def render_sampling_tab(ctx: AppContext) -> None:
@@ -167,7 +167,7 @@ def render_sampling_tab(ctx: AppContext) -> None:
         ):
             # Button was just clicked - prepare config and run IMMEDIATELY
             try:
-                temps = _parse_temperature_ladder(temps_raw)
+                temps = parse_temperature_ladder(temps_raw)
                 seed_val = int(random_seed_str) if random_seed_str.strip() else None
                 config = SimulationConfig(
                     pdb_path=input_choice,
