@@ -31,6 +31,19 @@ def render_its_tab(ctx: AppContext) -> None:
     if not shard_groups:
         st.info("Emit shard batches to compute implied timescales.")
     else:
+        # Build display labels with CV-informed indicators
+        run_display_options = []
+        run_id_map = {}
+        for entry in shard_groups:
+            run_id = str(entry.get("run_id"))
+            is_cv_informed = entry.get("cv_informed", False)
+            if is_cv_informed:
+                display_label = f"{run_id} 🔴 [CV-BIASED]"
+            else:
+                display_label = f"{run_id} 🟢 [UNBIASED]"
+            run_display_options.append(display_label)
+            run_id_map[display_label] = run_id
+
         run_ids = [str(entry.get("run_id")) for entry in shard_groups]
         stored_selection = [
             run_id
@@ -67,12 +80,22 @@ def render_its_tab(ctx: AppContext) -> None:
             st.session_state[_ITS_PENDING_FEATURE_SPEC] = None
 
         with st.form("its_configuration"):
-            selected_runs = st.multiselect(
+            # Map stored selection to display labels
+            stored_display = [
+                next((display for display, rid in run_id_map.items() if rid == run_id), None)
+                for run_id in stored_selection
+            ]
+            stored_display = [d for d in stored_display if d is not None]
+
+            selected_display = st.multiselect(
                 "Shard groups",
-                options=run_ids,
-                key="its_selected_runs",
-                help="Select shard batches that should contribute to the ITS analysis.",
+                options=run_display_options,
+                default=stored_display,
+                key="its_selected_runs_display",
+                help="🔴 CV-BIASED = DeepTICA/metabias, 🟢 UNBIASED = Regular MD"
             )
+            selected_runs = [run_id_map[display] for display in selected_display]
+            st.session_state["its_selected_runs"] = selected_runs
             try:
                 selected_paths = select_shard_paths(shard_groups, selected_runs)
             except ValueError as exc:

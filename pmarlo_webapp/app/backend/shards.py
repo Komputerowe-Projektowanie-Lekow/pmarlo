@@ -150,6 +150,8 @@ class ShardsMixin:
                     else None
                 ),
                 "created_at": created,
+                "cv_informed": provenance.get("cv_informed", False) if provenance else False,
+                "cv_model_bundle": provenance.get("cv_model_bundle") if provenance else None,
             }
         )
 

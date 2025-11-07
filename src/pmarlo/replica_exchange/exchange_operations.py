@@ -6,7 +6,7 @@ Exchange probability calculation and execution for replica exchange simulations.
 """
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import openmm
@@ -68,12 +68,12 @@ class ExchangeOperations:
     @staticmethod
     def calculate_probability_from_cached(
         replica_states: List[int],
-        energies: List[Any],
+        energies: List[float],  # Now expects pre-converted floats
         replica_i: int,
         replica_j: int,
         exchange_engine: ExchangeEngine,
     ) -> float:
-        """Calculate exchange probability from cached energies."""
+        """Calculate exchange probability from cached energies (already converted to floats)."""
         return exchange_engine.calculate_probability(
             replica_states,
             energies,
@@ -145,10 +145,15 @@ class ExchangeOperations:
                 )
             )
         )
-        vi = contexts[replica_i].getState(getVelocities=True).getVelocities()
-        vj = contexts[replica_j].getState(getVelocities=True).getVelocities()
-        contexts[replica_i].setVelocities(vi * scale_ij)
-        contexts[replica_j].setVelocities(vj / scale_ij)
+        # Use numpy views to rescale without constructing Vec3 lists (avoids deepcopy hot path)
+        state_i = contexts[replica_i].getState(getVelocities=True)
+        state_j = contexts[replica_j].getState(getVelocities=True)
+        vi = state_i.getVelocities(asNumpy=True)
+        vj = state_j.getVelocities(asNumpy=True)
+        np.multiply(vi._value, scale_ij, out=vi._value, casting="unsafe")
+        np.divide(vj._value, scale_ij, out=vj._value, casting="unsafe")
+        contexts[replica_i].setVelocities(vi)
+        contexts[replica_j].setVelocities(vj)
 
         return replica_states, state_replicas
 
@@ -182,7 +187,7 @@ class ExchangeOperations:
         state_replicas: List[int],
         temperatures: List[float],
         integrators: List[openmm.Integrator],
-        energies: List[Any],
+        energies: List[float],  # Now expects pre-converted floats
         exchange_engine: ExchangeEngine,
         pair_attempt_counts: Dict[Tuple[int, int], int],
         pair_accept_counts: Dict[Tuple[int, int], int],
@@ -190,6 +195,8 @@ class ExchangeOperations:
     ) -> Tuple[int, int, np.ndarray]:
         """
         Attempt exchanges for all neighboring replica pairs.
+
+        Energies should be pre-converted to floats (kJ/mol) to avoid unit conversion overhead.
 
         Returns:
             Tuple of (total_attempts, total_accepted, updated_acceptance_matrix)

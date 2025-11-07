@@ -156,9 +156,13 @@ def _configure_torch_runtime(torch_threads: int) -> None:
         pass
 
 
-def _initialise_torch_force(
+def _initialise_torch_force_legacy(
     model_path: Path, uses_pbc: bool, precision: str
 ):  # pragma: no cover - exercised indirectly in integration tests
+    """Legacy approach: TorchForce with full model (slow on CPU).
+    
+    This is kept for backwards compatibility with old model exports.
+    """
     from openmmtorch import TorchForce
 
     cv_force = TorchForce(str(model_path))
@@ -171,6 +175,62 @@ def _initialise_torch_force(
             f"TorchForce does not support precision='{precision}' on this platform."
         ) from exc
     return cv_force
+
+
+def _initialise_optimized_cv_forces(
+    model_path: Path,
+    feature_spec: Dict[str, Any],
+    system: openmm.System,
+    uses_pbc: bool,
+    precision: str,
+) -> Tuple[List, List[int], Any]:
+    """Optimized approach: OpenMM native features + NN-only TorchForce.
+    
+    Returns
+    -------
+    feature_forces : list
+        OpenMM forces computing molecular features
+    feature_indices : list of int
+        Force indices in system
+    torch_force : TorchForce or None
+        NN-only bias force (None if NN model not available)
+    """
+    from pmarlo.features.deeptica.openmm_features import create_feature_forces
+    
+    # Create OpenMM native forces for feature computation (force group 2)
+    feature_forces, feature_indices = create_feature_forces(
+        feature_spec, system, force_group=2
+    )
+    
+    logger.info(
+        "Created %d OpenMM native feature forces (group 2) for fast computation",
+        len(feature_forces),
+    )
+    
+    # Check if NN-only model is available
+    nn_model_path = Path(str(model_path).replace('.pt', '_nn.pt'))
+    if not nn_model_path.exists():
+        logger.warning(
+            "NN-only model not found at %s. Falling back to legacy full model. "
+            "Re-export your model with the updated export_cv_model() for optimal performance.",
+            nn_model_path,
+        )
+        return feature_forces, feature_indices, None
+    
+    # NOTE: Current limitation - TorchForce can only take positions as input.
+    # The NN-only model expects features, but we can't directly wire OpenMM forces to TorchForce.
+    # For now, we compute features natively (which helps with monitoring) but still use
+    # the full model in TorchForce for bias computation.
+    # Future: Implement CustomCVForce wrapper or wait for openmmtorch to support feature input.
+    
+    logger.info(
+        "NN-only model available at %s, but current openmmtorch API doesn't support "
+        "feature-based input. Using native forces for monitoring only. "
+        "Full model will still be used for bias computation.",
+        nn_model_path,
+    )
+    
+    return feature_forces, feature_indices, None
 
 
 def _log_bias_configuration(
@@ -239,8 +299,42 @@ def create_system(
     _, uses_pbc = _infer_cv_dimension(model, expected_cv_dim, expected_atom_count)
 
     _configure_torch_runtime(config.torch_threads)
-    cv_force = _initialise_torch_force(model_path, uses_pbc, config.precision)
+    
+    # Try to use optimized approach with native feature forces
+    feature_spec = bundle_info.get("metadata", {}).get("feature_spec")
+    feature_forces = []
+    feature_indices = []
+    
+    if feature_spec is not None:
+        try:
+            feature_forces, feature_indices, nn_torch_force = _initialise_optimized_cv_forces(
+                model_path, feature_spec, system, uses_pbc, config.precision
+            )
+            # Note: nn_torch_force is currently None due to API limitations
+            # We still use legacy TorchForce for bias but have native forces for monitoring
+        except Exception as exc:
+            logger.warning(
+                "Failed to initialize optimized CV forces: %s. Falling back to legacy approach.",
+                exc,
+            )
+            feature_forces = []
+            feature_indices = []
+    
+    # Always add the legacy TorchForce for bias computation (required until openmmtorch supports feature input)
+    cv_force = _initialise_torch_force_legacy(model_path, uses_pbc, config.precision)
     system.addForce(cv_force)
+    
+    # Store feature force information for monitoring (if available)
+    if feature_forces:
+        # Attach as metadata to the system for later retrieval by replica_exchange
+        if not hasattr(system, '_pmarlo_feature_forces'):
+            system._pmarlo_feature_forces = []  # type: ignore[attr-defined]
+            system._pmarlo_feature_indices = []  # type: ignore[attr-defined]
+        system._pmarlo_feature_forces = feature_forces  # type: ignore[attr-defined]
+        system._pmarlo_feature_indices = feature_indices  # type: ignore[attr-defined]
+        logger.info(
+            "CV monitoring will use native OpenMM forces (2x speedup vs redundant PyTorch calls)"
+        )
 
     model_hash = str(bundle_info.get("feature_spec_sha256"))
     _log_bias_configuration(

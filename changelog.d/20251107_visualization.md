@@ -4,4 +4,5 @@ added:
 changed:
 - Streamlit validation workflows now call the shared visualization helpers directly, eliminating mock state shims.
 - Base dependencies now include `matplotlib`, and README documents how to generate validation plots outside the web app.
+- Sampling connectivity plots distinguish metabiased trajectories with dashed styling and legend keys, mirrored in the discrete overlay view.
 

@@ -28,6 +28,7 @@ if not hasattr(openmm.XmlSerializer, "load"):  # pragma: no cover - compatibilit
 from pmarlo import api
 
 from .bias_hook import BiasHook
+from .trajectory import FastDCDReporter
 
 # PDBFixer is optional - users can install with: pip install "pmarlo[fixer]"
 try:
@@ -444,7 +445,7 @@ class Simulation:
             simulation.reporters.append(state_reporter)
 
             if save_trajectory:
-                dcd_reporter = app.DCDReporter(str(trajectory_path), stride)
+                dcd_reporter = FastDCDReporter(str(trajectory_path), stride)
                 new_reporters.append(dcd_reporter)
                 simulation.reporters.append(dcd_reporter)
 
