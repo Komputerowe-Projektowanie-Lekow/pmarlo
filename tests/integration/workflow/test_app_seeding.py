@@ -51,7 +51,8 @@ def test_fixed_seed_determinism_two_runs(test_fixed_pdb_file: Path, tmp_path: Pa
 )
 def test_auto_seed_varies_trajectories(test_fixed_pdb_file: Path, tmp_path: Path):
     from pmarlo.io.trajectory_reader import MDTrajReader
-    from pmarlo_webapp.app.backend import choose_sim_seed, run_short_sim
+    from pmarlo.api import choose_sim_seed
+    from pmarlo_webapp.app.backend import run_short_sim
 
     ws = tmp_path
     temps = [300.0, 320.0, 340.0]

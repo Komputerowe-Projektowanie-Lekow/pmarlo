@@ -16,6 +16,28 @@ import numpy as np
 import torch
 
 
+def choose_sim_seed(mode: str, *, fixed: Optional[int] = None) -> Optional[int]:
+    """Select a simulation seed for deterministic or stochastic modes.
+
+    Parameters
+    ----------
+    mode:
+        One of ``\"none\"``, ``\"fixed\"``, or ``\"auto\"``. Matching is case-insensitive.
+    fixed:
+        Seed value required when ``mode == \"fixed\"``.
+    """
+    normalized = mode.strip().lower()
+    if normalized == "none":
+        return None
+    if normalized == "fixed":
+        if fixed is None:
+            raise ValueError("fixed seed mode requires a `fixed` seed value")
+        return int(fixed)
+    if normalized == "auto":
+        return random.randint(1, 1_000_000)
+    raise ValueError(f"Unknown seed mode: {mode}")
+
+
 def set_global_seed(seed: Optional[int]) -> None:
     """Set global RNG seeds for reproducibility.
 
