@@ -50,6 +50,8 @@ from .trajectory_utils import (
 )
 from .workflow import build_joint_workflow
 from pmarlo.utils.input_parsing import parse_temperature_ladder, parse_tau_schedule
+from pmarlo.utils.naming import slugify, timestamp
+from pmarlo.utils.path_utils import coerce_path_list, relativize
 from pmarlo.utils.seed import choose_sim_seed
 
 # Backward compatibility for code importing the underscored helper directly.
@@ -63,6 +65,7 @@ __all__ = [
     "choose_sim_seed",
     "build_msm_from_labels",
     "cluster_microstates",
+    "coerce_path_list",
     "compute_features",
     "compute_macrostates",
     "compute_universal_embedding",
@@ -83,10 +86,13 @@ __all__ = [
     "parse_tau_schedule",
     "parse_temperature_ladder",
     "reduce_features",
+    "relativize",
     "run_replica_exchange",
     "sanitize_label_for_filename",
     "select_fes_pair",
     "select_shard_paths",
+    "slugify",
+    "timestamp",
     "trig_expand_periodic",
     "_trig_expand_periodic",
     "_build_opts",

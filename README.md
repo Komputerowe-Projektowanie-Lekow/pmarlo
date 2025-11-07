@@ -130,6 +130,53 @@ pipeline = Pipeline(
 )
 results = pipeline.run()
 ```
+
+## Visualization Diagnostics
+
+PMARLO exposes reusable plotting helpers that mirror the Streamlit validation
+tab while remaining UI-agnostic. The functions live in
+`pmarlo.visualization.diagnostics` and return ready-to-use Matplotlib figures.
+
+```python
+import numpy as np
+from pmarlo.visualization.diagnostics import (
+    create_sampling_validation_plot,
+    create_fes_validation_plot,
+)
+
+# Sampling connectivity plot from per-run projections (TICA component 0)
+projection_data = [traj[:, :2] for traj in trajectory_list]  # list of arrays (frames × features)
+sampling_fig = create_sampling_validation_plot(
+    projection_data=projection_data,
+    run_labels=["run-001", "run-002"],
+    max_length=1500,
+    hist_bins=120,
+    stride=5,
+)
+sampling_fig.savefig("sampling.png", dpi=200)
+
+# 2D FES plot – provide the mesh grid and FES matrix (in kBT)
+x_centers = 0.5 * (fes_result.xedges[:-1] + fes_result.xedges[1:])
+y_centers = 0.5 * (fes_result.yedges[:-1] + fes_result.yedges[1:])
+xx, yy = np.meshgrid(x_centers, y_centers)
+fes_fig = create_fes_validation_plot(
+    fes_grid=(xx, yy),
+    fes_data=fes_result.F,
+    max_kt=6.0,
+    levels=20,
+    cmap="plasma",
+)
+fes_fig.savefig("fes.png", dpi=200)
+```
+
+Input expectations:
+- `projection_data`: sequence of 1D or 2D NumPy arrays (one per trajectory);
+  empty trajectories are ignored automatically.
+- Optional `dtraj_data` and `cluster_centers` overlay discrete microstate traces.
+- `fes_grid`: tuple `(xx, yy)` of 2D grids matching the shape of `fes_data`.
+- All helpers raise `ValueError` on inconsistent or empty inputs, making them
+  suitable for CLI or notebook workflows where failures should surface early.
+
 ## Verification and CLI
 
 ```bash

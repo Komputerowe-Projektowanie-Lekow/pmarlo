@@ -19,6 +19,7 @@ from typing import Any, Dict, Iterable, Mapping, MutableMapping, Sequence, Tuple
 
 import numpy as np
 
+from pmarlo.api import relativize
 from pmarlo.utils.coercion import coerce_finite_float
 from pmarlo.utils.path_utils import ensure_directory
 
@@ -338,11 +339,8 @@ def _collect_debug_outputs(artifact: Any, output_dir: Path) -> Dict[str, Any]:
     }
 
 
-def _relativize(path: Path, base: Path) -> str:
-    try:
-        return str(path.relative_to(base))
-    except ValueError:
-        return str(path)
+# Backward-compatible alias
+_relativize = relativize
 
 
 def _collect_artifact_paths(

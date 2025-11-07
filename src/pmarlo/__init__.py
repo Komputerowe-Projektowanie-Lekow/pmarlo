@@ -54,6 +54,7 @@ _MANDATORY_EXPORTS: Dict[str, Tuple[str, str]] = {
 
 _MODULE_EXPORTS: Dict[str, str] = {
     "api": "pmarlo.api",
+    "visualization": "pmarlo.visualization",
 }
 
 _OPTIONAL_EXPORTS: Dict[str, Tuple[str, str]] = {
