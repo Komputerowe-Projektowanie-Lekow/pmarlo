@@ -4,7 +4,7 @@ import json
 import numpy as np
 import mdtraj as md
 
-from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence, Tuple
 from pathlib import Path
 
 # Import reduction methods directly
@@ -17,6 +17,9 @@ from pmarlo.utils.path_utils import ensure_directory
 
 from pmarlo.features import get_feature
 from pmarlo.features.base import parse_feature_spec
+from pmarlo.features.deeptica.metrics import (
+    normalize_training_metrics as _deeptica_normalize_training_metrics,
+)
 
 
 logger = logging.getLogger("pmarlo")
@@ -201,6 +204,25 @@ def compute_features(
     X_all, columns, periodic = _compute_features_without_cache(traj, feature_specs)
     _maybe_save_cached_features(cache_file, X_all, columns, periodic)
     return X_all, columns, periodic
+
+
+def normalize_training_metrics(
+    metrics: Mapping[str, Any] | None,
+    *,
+    tau_schedule: Optional[Sequence[Any]] = None,
+    epochs_per_tau: Optional[int | float] = None,
+) -> Dict[str, Any]:
+    """Normalize DeepTICA training history dictionaries.
+
+    This helper infers ``best_val_score``, ``best_epoch``, and ``best_tau`` when
+    the raw history does not expose them directly.
+    """
+
+    return _deeptica_normalize_training_metrics(
+        metrics,
+        tau_schedule=tau_schedule,
+        epochs_per_tau=epochs_per_tau,
+    )
 
 def _parse_spec(spec: str) -> tuple[str, Dict[str, Any]]:
     feat_name, kwargs = parse_feature_spec(spec)

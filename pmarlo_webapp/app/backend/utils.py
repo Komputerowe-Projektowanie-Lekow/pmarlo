@@ -1,11 +1,10 @@
 import json
-import math
 import re
 import unicodedata
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, cast
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple, cast
 
 import numpy as np
 
@@ -70,89 +69,6 @@ def choose_sim_seed(mode: str, *, fixed: Optional[int] = None) -> Optional[int]:
         return random.randint(1, 1000000)
     else:
         raise ValueError(f"Unknown seed mode: {mode}")
-
-
-def _normalize_training_metrics(
-    metrics: Mapping[str, Any] | None,
-    *,
-    tau_schedule: Optional[Sequence[Any]] = None,
-    epochs_per_tau: Optional[int] = None,
-) -> Dict[str, Any]:
-    """Ensure Deep-TICA metrics expose best score/epoch/tau values."""
-
-    if not isinstance(metrics, Mapping):
-        return {}
-
-    normalized: Dict[str, Any] = dict(metrics)
-
-    raw_curve = normalized.get("val_score_curve")
-    finite_scores: List[tuple[int, float]] = []
-    if isinstance(raw_curve, Sequence):
-        for idx, value in enumerate(raw_curve):
-            try:
-                score = float(value)
-            except (TypeError, ValueError):
-                continue
-            if math.isfinite(score):
-                finite_scores.append((idx, score))
-
-    best_val_score = normalized.get("best_val_score")
-    if best_val_score is None and finite_scores:
-        best_idx, best_score = max(finite_scores, key=lambda item: item[1])
-        normalized["best_val_score"] = float(best_score)
-        normalized.setdefault("_best_epoch_index", best_idx)
-    elif finite_scores and isinstance(normalized.get("best_epoch"), (int, float)):
-        idx = int(normalized["best_epoch"]) - 1
-        if 0 <= idx < len(finite_scores):
-            normalized.setdefault("_best_epoch_index", idx)
-
-    best_epoch = normalized.get("best_epoch")
-    if best_epoch is None and finite_scores:
-        best_idx = normalized.get("_best_epoch_index")
-        if not isinstance(best_idx, int):
-            best_idx = max(finite_scores, key=lambda item: item[1])[0]
-        normalized["best_epoch"] = int(best_idx + 1)
-        if normalized.get("best_val_score") is None:
-            normalized["best_val_score"] = float(finite_scores[best_idx][1])
-    elif isinstance(best_epoch, (int, float)):
-        normalized["best_epoch"] = int(best_epoch)
-
-    if normalized.get("best_val_score") is not None:
-        try:
-            normalized["best_val_score"] = float(normalized["best_val_score"])
-        except (TypeError, ValueError):
-            normalized["best_val_score"] = None
-
-    best_tau = normalized.get("best_tau")
-    if best_tau is None:
-        schedule: List[int] = []
-        if isinstance(tau_schedule, Sequence):
-            for item in tau_schedule:
-                try:
-                    schedule.append(int(item))
-                except (TypeError, ValueError):
-                    continue
-        epochs = None
-        if isinstance(epochs_per_tau, (int, float)):
-            epochs = int(epochs_per_tau)
-        if schedule and epochs and epochs > 0:
-            idx = normalized.get("_best_epoch_index")
-            if not isinstance(idx, int):
-                if finite_scores:
-                    idx = max(finite_scores, key=lambda item: item[1])[0]
-                else:
-                    idx = None
-            if isinstance(idx, int):
-                stage = max(0, min(idx // epochs, len(schedule) - 1))
-                normalized["best_tau"] = schedule[stage]
-    else:
-        try:
-            normalized["best_tau"] = int(best_tau)
-        except (TypeError, ValueError):
-            normalized["best_tau"] = None
-
-    normalized.pop("_best_epoch_index", None)
-    return normalized
 
 
 def _is_transition_matrix_reversible(
