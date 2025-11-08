@@ -262,7 +262,7 @@ def render_run_discovery_tab(ctx: AppContext) -> None:
                     if not st.session_state[confirm_key]:
                         # Show initial delete button
                         button_type = "secondary" if selected_validation.status == RunStatus.CORRUPTED else "secondary"
-                        if st.button("🗑️ Delete Run", key=delete_key, type=button_type):
+                        if st.button("Delete Run", key=delete_key, type=button_type):
                             st.session_state[confirm_key] = True
                             st.rerun()
                     else:
@@ -270,7 +270,7 @@ def render_run_discovery_tab(ctx: AppContext) -> None:
                         st.warning(f"Really delete {selected_run_id}?")
                         confirm_col1, confirm_col2 = st.columns(2)
                         with confirm_col1:
-                            if st.button("✓ Yes, Delete", key=f"{delete_key}_yes", type="primary"):
+                            if st.button("Yes, Delete", key=f"{delete_key}_yes", type="primary"):
                                 import shutil
                                 try:
                                     # Remove from state if present
@@ -293,7 +293,7 @@ def render_run_discovery_tab(ctx: AppContext) -> None:
                                     st.error(f"Failed to delete run: {e}")
                                     st.session_state[confirm_key] = False
                         with confirm_col2:
-                            if st.button("✗ Cancel", key=f"{delete_key}_no"):
+                            if st.button("Cancel", key=f"{delete_key}_no"):
                                 st.session_state[confirm_key] = False
                                 st.rerun()
 
@@ -339,4 +339,3 @@ def render_run_discovery_tab(ctx: AppContext) -> None:
                 for v in missing_state
             ])
             st.dataframe(missing_df, use_container_width=True, hide_index=True)
-

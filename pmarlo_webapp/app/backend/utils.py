@@ -99,6 +99,9 @@ def _pmarlo_handles() -> Dict[str, Any]:
     from pmarlo.api.replica_exchange import (
         run_replica_exchange as _run_replica_exchange,
     )
+    from pmarlo.api.single_temp_md import (
+        run_single_temperature_md as _run_single_temperature_md,
+    )
     from pmarlo.data.shard import read_shard as _read_shard
     from pmarlo.transform.build import BuildResult as _BuildResultRuntime
     from pmarlo.transform.build import _sanitize_artifacts as _sanitize
@@ -107,6 +110,7 @@ def _pmarlo_handles() -> Dict[str, Any]:
         "build_from_shards": _build_from_shards,
         "emit_shards_rg_rmsd_windowed": _emit_shards,
         "run_replica_exchange": _run_replica_exchange,
+        "run_single_temperature_md": _run_single_temperature_md,
         "read_shard": _read_shard,
         "BuildResult": _BuildResultRuntime,
         "_sanitize_artifacts": _sanitize,
@@ -119,6 +123,10 @@ def build_from_shards(*args: Any, **kwargs: Any) -> Any:
 
 def emit_shards_rg_rmsd_windowed(*args: Any, **kwargs: Any) -> Any:
     return _pmarlo_handles()["emit_shards_rg_rmsd_windowed"](*args, **kwargs)
+
+
+def run_single_temperature_md(*args: Any, **kwargs: Any) -> Any:
+    return _pmarlo_handles()["run_single_temperature_md"](*args, **kwargs)
 
 
 def run_replica_exchange(*args: Any, **kwargs: Any) -> Any:

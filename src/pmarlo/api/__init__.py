@@ -37,6 +37,7 @@ from .msm import (
     macrostate_populations,
 )
 from .replica_exchange import run_replica_exchange
+from .single_temp_md import run_single_temperature_md
 from .shards import (
     build_from_shards,
     emit_shards_rg_rmsd,

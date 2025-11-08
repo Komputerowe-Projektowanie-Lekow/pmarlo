@@ -64,6 +64,7 @@ class SimulationConfig:
     save_state_frequency: Optional[int] = None
     resume_context: Optional[Dict[str, Any]] = None
     force_run_id: Optional[str] = None
+    single_temperature_mode: bool = False  # Use single-T MD instead of REMD
 
     def snapshot(self) -> Dict[str, Any]:
         """Serialize configuration to a JSON-friendly dict."""
@@ -101,6 +102,7 @@ class SimulationConfig:
             "resume_context": dict(self.resume_context)
             if isinstance(self.resume_context, Mapping)
             else self.resume_context,
+            "single_temperature_mode": bool(self.single_temperature_mode),
             "force_run_id": self.force_run_id,
         }
 
@@ -152,6 +154,7 @@ class SimulationConfig:
                 if isinstance(snapshot.get("resume_context"), Mapping)
                 else snapshot.get("resume_context")
             ),
+            single_temperature_mode=bool(snapshot.get("single_temperature_mode", False)),
             force_run_id=snapshot.get("force_run_id"),
         )
 

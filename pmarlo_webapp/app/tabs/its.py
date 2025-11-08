@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Sequence
 
 import streamlit as st
 
@@ -21,6 +21,18 @@ from core.view_helpers import (
 from core.tables import _timescales_dataframe
 from backend.its import calculate_its, plot_its
 from pmarlo.api import select_shard_paths
+from pmarlo.data.shard import read_shard
+from pmarlo.visualization.diagnostics import create_shard_frame_histogram
+
+
+def _shard_frame_counts(shard_paths: Sequence[Path]) -> list[int]:
+    """Return the frame counts for each shard path."""
+
+    counts: list[int] = []
+    for raw_path in shard_paths:
+        details, _, _ = read_shard(Path(raw_path))
+        counts.append(int(details.n_frames))
+    return counts
 
 
 def render_its_tab(ctx: AppContext) -> None:
@@ -103,6 +115,36 @@ def render_its_tab(ctx: AppContext) -> None:
         else:
             st.info("Select at least one shard group to compute implied timescales.")
             selected_paths = []
+
+        frames_button = st.button(
+            "Frames per shard",
+            key="its_frames_per_shard",
+            disabled=not selected_paths,
+        )
+
+        if frames_button:
+            if not selected_paths:
+                st.error("Select shard files before plotting frame counts.")
+            else:
+                try:
+                    with st.spinner("Loading shard frame counts..."):
+                        resolved_paths = [Path(p) for p in selected_paths]
+                        frame_counts = _shard_frame_counts(resolved_paths)
+                except Exception as exc:
+                    st.error(f"Unable to load shard frame counts: {exc}")
+                else:
+                    labels = [path.stem for path in resolved_paths]
+                    fig = create_shard_frame_histogram(frame_counts, labels)
+                    st.pyplot(fig, clear_figure=True, width="stretch")
+                    total_frames = sum(frame_counts)
+                    avg_frames = (
+                        total_frames / len(frame_counts) if frame_counts else 0.0
+                    )
+                    metric_cols = st.columns(2)
+                    metric_cols[0].metric("Sum of frames", f"{total_frames:,}")
+                    metric_cols[1].metric(
+                        "Average frames per shard", f"{avg_frames:,.2f}"
+                    )
 
         with st.expander("Configuration", expanded=True):
 

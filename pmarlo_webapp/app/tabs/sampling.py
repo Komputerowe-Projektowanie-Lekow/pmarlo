@@ -94,12 +94,29 @@ def render_sampling_tab(ctx: AppContext) -> None:
                 index=default_index,
                 key="sim_input_choice",
             )
-            temps_raw = st.text_input(
-                "Temperature ladder (K)",
-                "300, 320, 340",
-                key="sim_temperature_ladder",
-                help="Comma-separated temperatures for replica exchange MD"
+            # Single-temperature mode toggle
+            single_temp_mode = st.checkbox(
+                "Single-temperature mode",
+                value=False,
+                key="sim_single_temp_mode",
+                help="Run MD at a single temperature without replica exchange"
             )
+
+            if single_temp_mode:
+                temps_raw = st.text_input(
+                    "Target temperature (K)",
+                    "300",
+                    key="sim_temperature_ladder",
+                    help="Temperature for MD simulation"
+                )
+            else:
+                temps_raw = st.text_input(
+                    "Temperature ladder (K)",
+                    "300, 320, 340",
+                    key="sim_temperature_ladder",
+                    help="Comma-separated temperatures for replica exchange"
+                )
+
             steps = st.number_input(
                 "Total MD steps",
                 min_value=1000,
@@ -224,9 +241,12 @@ def render_sampling_tab(ctx: AppContext) -> None:
 
         run_in_progress = bool(st.session_state.get(_RUN_PENDING, False))
 
+        # Dynamic button text based on mode
+        button_text = "Run single-temperature MD" if single_temp_mode else "Run replica exchange"
+
         # CRITICAL: Only trigger simulation on button click, not on every rerun
         if st.button(
-                "Run replica exchange",
+                button_text,
                 type="primary",
                 disabled=run_in_progress,
                 key="sim_run_button",
@@ -256,12 +276,14 @@ def render_sampling_tab(ctx: AppContext) -> None:
                     ),
                     temperature_schedule_mode=schedule_mode,
                     cv_model_bundle=cv_model_path,
+                    single_temperature_mode=bool(single_temp_mode),
                 )
 
                 # Mark as in progress BEFORE running to prevent double-clicks
                 st.session_state[_RUN_PENDING] = True
 
-                with st.spinner("Running replica exchange..."):
+                spinner_msg = "Running single-temperature MD..." if single_temp_mode else "Running replica exchange..."
+                with st.spinner(spinner_msg):
                     sim_result = backend.run_sampling(config)
 
                 st.session_state[_LAST_SIM] = sim_result

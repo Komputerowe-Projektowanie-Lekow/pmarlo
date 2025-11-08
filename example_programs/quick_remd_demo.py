@@ -96,15 +96,15 @@ def main():
         steps_per_sec = total_steps * len(temperatures) / elapsed
 
         if steps_per_sec > 20:
-            print("✅ PERFORMANCE: GOOD")
+            print("PASS: PERFORMANCE GOOD")
             print(f"   Throughput ({steps_per_sec:.1f} steps/s) is within expected range.")
             print("   Platform selection fix is working correctly!")
         elif steps_per_sec > 10:
-            print("⚠️  PERFORMANCE: MARGINAL")
+            print("WARNING: PERFORMANCE MARGINAL")
             print(f"   Throughput ({steps_per_sec:.1f} steps/s) is slower than expected.")
             print("   Check CPU load and available memory.")
         else:
-            print("❌ PERFORMANCE: POOR")
+            print("FAIL: PERFORMANCE POOR")
             print(f"   Throughput ({steps_per_sec:.1f} steps/s) is very slow.")
             print("   The Reference platform bug may still be present!")
             print("   Check logs for 'Using Reference platform' message.")

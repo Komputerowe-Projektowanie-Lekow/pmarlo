@@ -144,7 +144,7 @@ After running the setup script:
 source /workspace/.venv/bin/activate
 
 # Quick test
-python -c "import pmarlo, torch, numpy, openmm; print('✓ All imports successful')"
+python -c "import pmarlo, torch, numpy, openmm; print('OK All imports successful')"
 
 # Run unit tests
 poetry run pytest tests/unit -n auto
@@ -183,10 +183,10 @@ The enhanced setup script now ensures OpenMM and all other dependencies are prop
 ### Verification
 
 Both scripts have been:
-- ✓ Syntax checked with `bash -n`
-- ✓ Reviewed for best practices
-- ✓ Documented thoroughly
-- ✓ Tested for idempotency (can run multiple times)
+- OK Syntax checked with `bash -n`
+- OK Reviewed for best practices
+- OK Documented thoroughly
+- OK Tested for idempotency (can run multiple times)
 
 ### Related Documentation
 
