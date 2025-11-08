@@ -349,7 +349,8 @@ class ReplicaExchange:
     def from_config(cls, config: RemdConfig) -> "ReplicaExchange":
         """Construct instance using immutable RemdConfig as single source of truth."""
         # Normalize pdb_file to str
-        assert config.pdb_file is not None, "pdb_file must be set in config"
+        if config.pdb_file is None:
+            raise ValueError("RemdConfig.pdb_file must be set for ReplicaExchange.from_config")
         pdb_file_str = str(config.pdb_file)
 
         return cls(

@@ -44,6 +44,9 @@ def _apply_training_config_to_state(cfg: "TrainingConfig") -> None:
         train_tau_schedule=_format_tau_schedule(cfg.tau_schedule),
         train_val_tau=int(cfg.val_tau),
         train_epochs_per_tau=int(cfg.epochs_per_tau),
+        train_gradient_clip_val=float(cfg.gradient_clip_val),
+        train_learning_rate=float(cfg.learning_rate),
+        train_weight_decay=float(cfg.weight_decay),
     )
 
 def _consume_pending_training_config() -> None:
@@ -76,6 +79,9 @@ def _ensure_session_defaults() -> None:
     st.session_state.setdefault("train_tau_schedule", "2,5,10,20")
     st.session_state.setdefault("train_val_tau", 20)
     st.session_state.setdefault("train_epochs_per_tau", 15)
+    st.session_state.setdefault("train_gradient_clip_val", 1.0)
+    st.session_state.setdefault("train_learning_rate", 3e-4)
+    st.session_state.setdefault("train_weight_decay", 0.0)
     st.session_state.setdefault("analysis_cluster_mode", "kmeans")
     st.session_state.setdefault("analysis_n_microstates", 20)
     st.session_state.setdefault("analysis_reweight_mode", "MBAR")

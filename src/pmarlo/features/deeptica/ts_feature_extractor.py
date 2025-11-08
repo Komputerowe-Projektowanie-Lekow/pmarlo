@@ -327,7 +327,26 @@ class TorchscriptFeatureExtractor(nn.Module):
         self.register_buffer("dihedral_positions", spec.dihedral_positions)
         self.register_buffer("dihedral_pbc_mask", spec.dihedral_pbc)
         self.register_buffer("feature_weights", spec.feature_weights)
-        self.register_buffer("eps", torch.tensor(1.0e-12, dtype=torch.float32))
+        self._feature_dtype = self.feature_weights.dtype
+        feature_device = self.feature_weights.device
+        self.register_buffer(
+            "eps",
+            torch.tensor(
+                1.0e-12,
+                dtype=self._feature_dtype,
+                device=feature_device,
+            ),
+        )
+
+        # Pre-allocate feature buffer to avoid repeated allocations in forward pass
+        self.register_buffer(
+            "_feature_buffer",
+            torch.zeros(
+                self.feature_count,
+                dtype=self._feature_dtype,
+                device=feature_device,
+            ),
+        )
 
     def forward(self, positions: Tensor, box: Tensor) -> Tensor:  # noqa: D401
         """
@@ -356,31 +375,41 @@ class TorchscriptFeatureExtractor(nn.Module):
         if box.dim() != 2 or box.size(0) != 3 or box.size(1) != 3:
             raise RuntimeError("box tensor must have shape (3, 3)")
 
-        pos = positions.to(dtype=torch.float32)
-        box32 = box.to(dtype=torch.float32)
+        target_device = self._feature_buffer.device
+        dtype = self._feature_dtype
+        if positions.dtype == dtype and positions.device == target_device:
+            pos = positions
+        else:
+            pos = positions.to(device=target_device, dtype=dtype)
+        if box.dtype == dtype and box.device == target_device:
+            box_tensor = box
+        else:
+            box_tensor = box.to(device=target_device, dtype=dtype)
 
-        features = torch.zeros(
-            self.feature_count, dtype=torch.float32, device=pos.device
-        )
+        # Clone pre-allocated buffer instead of allocating new tensor
+        features = self._feature_buffer.clone()
 
         if self.use_pbc:
-            inv_box = torch.inverse(box32)
+            inv_box = torch.inverse(box_tensor)
         else:
-            inv_box = torch.eye(3, dtype=torch.float32, device=pos.device)
+            inv_box = torch.eye(3, dtype=dtype, device=target_device)
 
         if self.distance_pairs.size(0) > 0:
-            values = self._compute_distances(pos, box32, inv_box)
+            values = self._compute_distances(pos, box_tensor, inv_box)
             features = features.index_put_((self.distance_positions,), values)
 
         if self.angle_triplets.size(0) > 0:
-            values = self._compute_angles(pos, box32, inv_box)
+            values = self._compute_angles(pos, box_tensor, inv_box)
             features = features.index_put_((self.angle_positions,), values)
 
         if self.dihedral_quads.size(0) > 0:
-            values = self._compute_dihedrals(pos, box32, inv_box)
+            values = self._compute_dihedrals(pos, box_tensor, inv_box)
             features = features.index_put_((self.dihedral_positions,), values)
 
-        return features * self.feature_weights
+        weights = self.feature_weights
+        if weights.device != target_device:
+            weights = weights.to(device=target_device)
+        return features * weights
 
     def _apply_minimum_image(
         self, vectors: Tensor, box: Tensor, inv_box: Tensor
@@ -401,7 +430,7 @@ class TorchscriptFeatureExtractor(nn.Module):
         else:
             disp = wrapped
         squared = torch.sum(disp * disp, dim=-1)
-        return torch.sqrt(torch.clamp_min(squared, self.eps)).to(torch.float32)
+        return torch.sqrt(torch.clamp_min(squared, self.eps))
 
     def _compute_angles(self, pos: Tensor, box: Tensor, inv_box: Tensor) -> Tensor:
         idx_i = self.angle_triplets[:, 0]

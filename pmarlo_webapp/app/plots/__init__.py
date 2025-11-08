@@ -34,7 +34,6 @@ def plot_msm(
     axP = fig.add_subplot(gs[0, 1])
 
     im = axT.imshow(T, cmap="viridis", origin="lower", aspect="auto")
-    axT.set_title("Transition Matrix T")
     axT.set_xlabel("j")
     axT.set_ylabel("i")
     fig.colorbar(im, ax=axT, fraction=0.046, pad=0.04)
@@ -42,19 +41,27 @@ def plot_msm(
     x = np.arange(n)
     axP.barh(x, pi, color="tab:blue")
     axP.set_ylim(-0.5, n - 0.5)
-    axP.set_title("Stationary π")
     axP.set_xlabel("probability")
     axP.set_yticks([])
+
+    # Build metadata annotation
     annotation_fragments: list[str] = []
     if msm_n_states is not None:
         annotation_fragments.append(f"states={int(msm_n_states)}")
     if msm_run_id:
         annotation_fragments.append(f"run={msm_run_id}")
+
     if annotation_fragments:
-        fig.suptitle("MSM metadata: " + " | ".join(annotation_fragments), fontsize=10)
-        # Use subplots_adjust instead of tight_layout to avoid warning with gridspec
-        fig.subplots_adjust(top=0.93, bottom=0.1, left=0.1, right=0.95)
+        # Set subplot titles
+        axT.set_title("Transition Matrix T", pad=10)
+        axP.set_title("Stationary π", pad=10)
+        # Add metadata as suptitle with proper spacing
+        fig.suptitle("MSM metadata: " + " | ".join(annotation_fragments), fontsize=10, y=0.98)
+        fig.subplots_adjust(top=0.88, bottom=0.12, left=0.1, right=0.95)
     else:
+        # Without metadata, use simpler titles
+        axT.set_title("Transition Matrix T")
+        axP.set_title("Stationary π")
         fig.tight_layout()
     return fig
 
@@ -97,34 +104,42 @@ def plot_fes(fes: Any | None) -> plt.Figure:
         ax.set_xlabel("cv1")
         ax.set_ylabel("cv2")
 
+    # Handle sparse data warnings/banners
+    title_pad = 10
+    has_banner = False
     try:
         frac = meta.get("empty_bins_fraction") if isinstance(meta, dict) else None
         if frac is not None and float(frac) > 0.30:
             ax.text(
                 0.5,
-                1.02,
+                1.08,
                 "Sparse sampling: >30% empty bins",
                 transform=ax.transAxes,
                 ha="center",
                 va="bottom",
                 color="crimson",
-                fontsize=10,
+                fontsize=9,
                 fontweight="bold",
             )
+            has_banner = True
+            title_pad = 30
         if isinstance(meta, dict) and meta.get("sparse_banner"):
+            y_pos = 1.12 if has_banner else 1.08
             ax.text(
                 0.5,
-                1.06,
+                y_pos,
                 str(meta.get("sparse_banner")),
                 transform=ax.transAxes,
                 ha="center",
                 va="bottom",
                 color="darkorange",
-                fontsize=10,
+                fontsize=9,
                 fontweight="bold",
             )
+            title_pad = 40 if has_banner else 30
     except Exception:
         pass
 
-    ax.set_title("Free Energy Surface")
+    ax.set_title("Free Energy Surface", pad=title_pad)
+    fig.tight_layout()
     return fig

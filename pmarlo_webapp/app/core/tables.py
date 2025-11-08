@@ -29,17 +29,19 @@ def _shards_dataframe(entries: Sequence[Mapping[str, Any]]) -> pd.DataFrame:
     rows: List[Dict[str, Any]] = []
     for idx, entry in enumerate(entries):
         paths = entry.get("paths") or []
+        created_at = entry.get("created_at")
+        directory = entry.get("directory")
         rows.append(
             {
                 "Index": idx,
                 "Run ID": str(entry.get("run_id", "")),
-                "Created": entry.get("created_at", ""),
+                "Created": str(created_at) if created_at is not None else "",
                 "Shards": len(paths) if isinstance(paths, Sequence) else None,
                 "Frames": entry.get("n_frames"),
                 "Stride": entry.get("stride"),
                 "Hop": entry.get("hop_frames"),
                 "Temperature (K)": entry.get("temperature"),
-                "Directory": entry.get("directory", ""),
+                "Directory": str(directory) if directory is not None else "",
             }
         )
     return pd.DataFrame(rows)
@@ -48,15 +50,17 @@ def _runs_dataframe(entries: Sequence[Mapping[str, Any]]) -> pd.DataFrame:
     rows: List[Dict[str, Any]] = []
     for idx, entry in enumerate(entries):
         traj_files = entry.get("traj_files") or []
+        created_at = entry.get("created_at")
+        run_dir = entry.get("run_dir")
         rows.append(
             {
                 "Index": idx,
                 "Run ID": str(entry.get("run_id", "")),
-                "Created": entry.get("created_at", ""),
+                "Created": str(created_at) if created_at is not None else "",
                 "Steps": entry.get("steps"),
                 "Trajectories": len(traj_files) if isinstance(traj_files, Sequence) else None,
                 "Quick": bool(entry.get("quick", False)),
-                "Directory": entry.get("run_dir", ""),
+                "Directory": str(run_dir) if run_dir is not None else "",
             }
         )
     return pd.DataFrame(rows)
@@ -66,16 +70,19 @@ def _models_dataframe(entries: Sequence[Mapping[str, Any]]) -> pd.DataFrame:
     for idx, entry in enumerate(entries):
         tau_schedule = entry.get("tau_schedule") or []
         hidden = entry.get("hidden") or []
+        created_at = entry.get("created_at")
+        dataset_hash = entry.get("dataset_hash")
+        bundle = entry.get("bundle")
         rows.append(
             {
                 "Index": idx,
-                "Created": entry.get("created_at", ""),
+                "Created": str(created_at) if created_at is not None else "",
                 "Lag": entry.get("lag"),
                 "Seed": entry.get("seed"),
                 "Tau schedule": _format_tau_schedule(tau_schedule) if tau_schedule else "",
                 "Hidden layers": ", ".join(str(h) for h in hidden) if hidden else "",
-                "Dataset hash": entry.get("dataset_hash", ""),
-                "Bundle": entry.get("bundle", ""),
+                "Dataset hash": str(dataset_hash) if dataset_hash is not None else "",
+                "Bundle": str(bundle) if bundle is not None else "",
             }
         )
     return pd.DataFrame(rows)
@@ -84,15 +91,19 @@ def _models_dataframe(entries: Sequence[Mapping[str, Any]]) -> pd.DataFrame:
 def _builds_dataframe(entries: Sequence[Mapping[str, Any]]) -> pd.DataFrame:
     rows: List[Dict[str, Any]] = []
     for idx, entry in enumerate(entries):
+        created_at = entry.get("created_at")
+        reweight_mode = entry.get("reweight_mode")
+        bundle = entry.get("bundle")
+        debug_dir = entry.get("debug_dir")
         rows.append(
             {
                 "Index": idx,
-                "Created": entry.get("created_at", ""),
+                "Created": str(created_at) if created_at is not None else "",
                 "Lag": entry.get("lag"),
                 "Microstates": entry.get("n_microstates"),
-                "Reweight": entry.get("reweight_mode"),
-                "Bundle": entry.get("bundle", ""),
-                "Debug dir": entry.get("debug_dir", ""),
+                "Reweight": str(reweight_mode) if reweight_mode is not None else "",
+                "Bundle": str(bundle) if bundle is not None else "",
+                "Debug dir": str(debug_dir) if debug_dir is not None else "",
             }
         )
     return pd.DataFrame(rows)
@@ -101,13 +112,16 @@ def _builds_dataframe(entries: Sequence[Mapping[str, Any]]) -> pd.DataFrame:
 def _conformations_dataframe(entries: Sequence[Mapping[str, Any]]) -> pd.DataFrame:
     rows: List[Dict[str, Any]] = []
     for idx, entry in enumerate(entries):
+        created_at = entry.get("created_at")
+        output_dir = entry.get("output_dir")
+        error = entry.get("error")
         rows.append(
             {
                 "Index": idx,
-                "Created": entry.get("created_at", ""),
-                "Output": entry.get("output_dir", ""),
+                "Created": str(created_at) if created_at is not None else "",
+                "Output": str(output_dir) if output_dir is not None else "",
                 "Converged": entry.get("tpt_converged"),
-                "Error": entry.get("error", ""),
+                "Error": str(error) if error is not None else "",
             }
         )
     return pd.DataFrame(rows)

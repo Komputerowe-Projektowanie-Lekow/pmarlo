@@ -11,6 +11,7 @@ from core.session import (
     _apply_analysis_config_to_state,
 )
 from backend.types import BuildConfig, BuildArtifact, TrainingConfig
+from core.view_helpers import SHARD_SELECTOR_HELP, build_shard_selector_options
 from pmarlo.api import select_shard_paths, parse_hidden_layers
 from plots.diagnostics import (
     plot_canonical_correlations,
@@ -71,23 +72,13 @@ def render_msm_fes_tab(ctx: AppContext) -> None:
         st.info("Emit shards to build an MSM/FES bundle.")
     else:
         # Build display labels with CV-informed indicators
-        run_display_options = []
-        run_id_map = {}
-        for entry in shard_groups:
-            run_id = str(entry.get("run_id"))
-            is_cv_informed = entry.get("cv_informed", False)
-            if is_cv_informed:
-                display_label = f"{run_id} 🔴 [CV-BIASED]"
-            else:
-                display_label = f"{run_id} 🟢 [UNBIASED]"
-            run_display_options.append(display_label)
-            run_id_map[display_label] = run_id
+        run_display_options, run_id_map = build_shard_selector_options(shard_groups)
 
         selected_display = st.multiselect(
             "Shard groups for analysis",
             options=run_display_options,
             default=run_display_options,
-            help="🔴 CV-BIASED = DeepTICA/metabias, 🟢 UNBIASED = Regular MD"
+            help=SHARD_SELECTOR_HELP
         )
         selected_runs = [run_id_map[display] for display in selected_display]
         try:

@@ -13,9 +13,11 @@ from core.session import (
 )
 from core.constants import DEEPTICA_SKIP_MESSAGE
 from core.view_helpers import (
+    SHARD_SELECTOR_HELP,
     _summarize_selected_shards,
     _show_build_outputs,
     _render_deeptica_summary,
+    build_shard_selector_options,
 )
 from backend.types import TrainingConfig, TrainingResult
 from pmarlo.api import parse_tau_schedule, select_shard_paths, parse_hidden_layers
@@ -42,23 +44,15 @@ def render_training_tab(ctx: AppContext) -> None:
         # Data Selection
         with st.expander("Data Selection", expanded=True):
             # Build display labels with CV-informed indicators
-            run_display_options = []
-            run_id_map = {}
-            for entry in shard_groups:
-                run_id = str(entry.get("run_id"))
-                is_cv_informed = entry.get("cv_informed", False)
-                if is_cv_informed:
-                    display_label = f"{run_id} 🔴 [CV-BIASED]"
-                else:
-                    display_label = f"{run_id} 🟢 [UNBIASED]"
-                run_display_options.append(display_label)
-                run_id_map[display_label] = run_id
+            run_display_options, run_id_map = build_shard_selector_options(
+                shard_groups
+            )
 
             selected_display = st.multiselect(
                 "Shard groups",
                 options=run_display_options,
                 default=run_display_options[-1:] if run_display_options else [],
-                help="🔴 CV-BIASED = DeepTICA/metabias, 🟢 UNBIASED = Regular MD"
+                help=SHARD_SELECTOR_HELP
             )
             selected_runs = [run_id_map[display] for display in selected_display]
             try:
@@ -132,6 +126,38 @@ def render_training_tab(ctx: AppContext) -> None:
             )
             hidden_layers = parse_hidden_layers(hidden)
 
+        # Optimization & Regularization
+        with st.expander("Optimization & Regularization", expanded=False):
+            st.write("Configure optimizer settings and gradient clipping")
+            col_opt_a, col_opt_b = st.columns(2)
+            learning_rate = col_opt_a.number_input(
+                "Learning rate",
+                min_value=1e-6,
+                max_value=1e-2,
+                value=float(st.session_state.get("train_learning_rate", 3e-4)),
+                format="%.6f",
+                key="train_learning_rate",
+                help="Peak learning rate for AdamW optimizer (default: 3e-4). Reduce to 1e-4 if training is unstable."
+            )
+            weight_decay = col_opt_b.number_input(
+                "Weight decay",
+                min_value=0.0,
+                max_value=0.1,
+                value=float(st.session_state.get("train_weight_decay", 0.0)),
+                format="%.6f",
+                key="train_weight_decay",
+                help="L2 regularization strength for AdamW (default: 0.0). Try 1e-5 to 1e-3 for regularization."
+            )
+            gradient_clip_val = st.number_input(
+                "Gradient clip norm",
+                min_value=0.1,
+                max_value=10.0,
+                value=float(st.session_state.get("train_gradient_clip_val", 1.0)),
+                step=0.5,
+                key="train_gradient_clip_val",
+                help="Maximum gradient norm for clipping (default: 1.0). Increase to 2-5 to allow larger gradients, or set to None to disable."
+            )
+
         # Curriculum Learning
         with st.expander("Curriculum Learning", expanded=False):
             st.write("Configure the multi-tau curriculum training strategy")
@@ -183,6 +209,9 @@ def render_training_tab(ctx: AppContext) -> None:
                         tau_schedule=tuple(tau_values),
                         val_tau=int(val_tau),
                         epochs_per_tau=int(epochs_per_tau),
+                        gradient_clip_val=float(gradient_clip_val),
+                        learning_rate=float(learning_rate),
+                        weight_decay=float(weight_decay),
                     )
 
                     # Use st.status to show progress during training

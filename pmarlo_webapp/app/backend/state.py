@@ -132,6 +132,20 @@ class StateManager:
         self._data.runs.append(dict(entry))
         self._save()
 
+    def upsert_run(self, entry: Dict[str, Any]) -> None:
+        """Insert or replace a run entry keyed by ``run_id``."""
+        run_id = entry.get("run_id")
+        if not run_id:
+            raise ValueError("run metadata missing run_id")
+        run_id_str = str(run_id)
+        for idx, existing in enumerate(self._data.runs):
+            if str(existing.get("run_id")) == run_id_str:
+                self._data.runs[idx] = dict(entry)
+                self._save()
+                return
+        self._data.runs.append(dict(entry))
+        self._save()
+
     def append_shards(self, entry: Dict[str, Any]) -> None:
         self._data.shards.append(dict(entry))
         self._save()

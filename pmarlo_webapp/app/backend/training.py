@@ -125,25 +125,27 @@ class TrainingMixin:
             cv_model_bundle=cv_model_bundle_info,
         )
 
-        self.state.append_model(
-            {
-                "bundle": str(bundle_path.resolve()),
-                "checkpoint_dir": str(checkpoint_dir.resolve()),
-                "dataset_hash": ds_hash,
-                "lag": int(config.lag),
-                "bins": dict(config.bins),
-                "seed": int(config.seed),
-                "temperature": float(config.temperature),
-                "hidden": [int(h) for h in config.hidden],
-                "max_epochs": int(config.max_epochs),
-                "early_stopping": int(config.early_stopping),
-                "tau_schedule": [int(t) for t in config.tau_schedule],
-                "val_tau": int(config.val_tau),
-                "epochs_per_tau": int(config.epochs_per_tau),
-                "created_at": stamp,
-                "metrics": normalized_metrics,
-            }
-        )
+        model_entry: Dict[str, Any] = {
+            "bundle": str(bundle_path.resolve()),
+            "checkpoint_dir": str(checkpoint_dir.resolve()),
+            "dataset_hash": ds_hash,
+            "lag": int(config.lag),
+            "bins": dict(config.bins),
+            "seed": int(config.seed),
+            "temperature": float(config.temperature),
+            "hidden": [int(h) for h in config.hidden],
+            "max_epochs": int(config.max_epochs),
+            "early_stopping": int(config.early_stopping),
+            "tau_schedule": [int(t) for t in config.tau_schedule],
+            "val_tau": int(config.val_tau),
+            "epochs_per_tau": int(config.epochs_per_tau),
+            "created_at": stamp,
+            "metrics": normalized_metrics,
+        }
+        if cv_model_bundle_info:
+            model_entry["cv_model_bundle"] = dict(cv_model_bundle_info)
+
+        self.state.append_model(model_entry)
 
         logger.info(f"Trained model saved to {bundle_path}")
         return result
@@ -235,6 +237,9 @@ class TrainingMixin:
             tau_schedule=tuple(entry.get("tau_schedule", [])),
             val_tau=int(entry.get("val_tau", 10)),
             epochs_per_tau=int(entry.get("epochs_per_tau", 100)),
+            gradient_clip_val=float(entry.get("gradient_clip_val", 1.0)),
+            learning_rate=float(entry.get("learning_rate", 3e-4)),
+            weight_decay=float(entry.get("weight_decay", 0.0)),
         )
 
     def latest_model_path(self) -> Optional[Path]:
@@ -276,6 +281,7 @@ class TrainingMixin:
             dataset_hash=dataset_hash,
             build_result=br,
             created_at=created_at,
+            cv_model_bundle=entry.get("cv_model_bundle"),
         )
 
     def _load_build_result_from_path(self, path: Path) -> Optional[Any]:

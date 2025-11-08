@@ -15,6 +15,10 @@ if TYPE_CHECKING:
     from backend.layout import WorkspaceLayout
     from backend.types import BuildArtifact, TrainingResult, ConformationsResult
 
+SHARD_SELECTOR_HELP = (
+    "🩷 CV-BIASED = DeepTICA/metabias, 🟢 UNBIASED = Regular MD"
+)
+
 
 def _format_run_selection_summary(runs: Sequence[ShardRunSummary]) -> str:
     if not runs:
@@ -36,6 +40,25 @@ def _summarize_selected_shards(
         return [], ""
     summaries = summarize_shard_runs(shard_paths)
     return summaries, _format_run_selection_summary(summaries)
+
+
+def build_shard_selector_options(
+    entries: Sequence[Mapping[str, Any]],
+) -> tuple[List[str], Dict[str, str]]:
+    """Construct display labels for shard selectors with bias markers."""
+
+    options: List[str] = []
+    run_id_map: Dict[str, str] = {}
+    for entry in entries:
+        run_id = str(entry.get("run_id"))
+        is_cv_informed = bool(entry.get("cv_informed", False))
+        bias_tag = "[CV-BIASED]" if is_cv_informed else "[UNBIASED]"
+        color_emoji = "🩷" if is_cv_informed else "🟢"
+        display_label = f"{color_emoji} {run_id} {bias_tag}"
+        options.append(display_label)
+        run_id_map[display_label] = run_id
+
+    return options, run_id_map
 
 def _default_feature_spec_path(layout: "WorkspaceLayout") -> Optional[Path]:
     """Return the packaged feature specification if it exists."""

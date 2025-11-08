@@ -6,7 +6,13 @@ from pmarlo.data.shard import read_shard
 from pmarlo.utils.path_utils import ensure_directory
 
 from .types import ShardRequest, ShardResult, SimulationResult
-from .utils import _coerce_path_list, _timestamp, emit_shards_rg_rmsd_windowed
+from .utils import (
+    _coerce_path_list,
+    _timestamp,
+    emit_shards_rg_rmsd_windowed,
+    infer_run_cv_flag,
+    infer_shard_cv_flag,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -226,6 +232,9 @@ class ShardsMixin:
             List of shard batch summaries
         """
         info: List[Dict[str, Any]] = []
+        run_lookup: Dict[str, Dict[str, Any]] = {
+            str(run.get("run_id", "")): run for run in self.state.runs
+        }
         for entry in self.state.shards:
             resolved_paths: List[str] = []
             for raw_path in entry.get("paths", []):
@@ -237,9 +246,18 @@ class ShardsMixin:
                 # Skip batches that no longer have files on disk
                 continue
 
+            run_id = str(entry.get("run_id", ""))
+            run_entry = run_lookup.get(run_id)
+
             e = dict(entry)
             e["paths"] = resolved_paths
             e["n_shards"] = len(resolved_paths)
+            if "cv_informed" not in e or not e["cv_informed"]:
+                e["cv_informed"] = infer_shard_cv_flag(e, run_entry)
+            if "cv_model_bundle" not in e and run_entry is not None:
+                model_bundle = run_entry.get("cv_model_bundle")
+                if model_bundle:
+                    e["cv_model_bundle"] = model_bundle
             info.append(e)
 
         return info

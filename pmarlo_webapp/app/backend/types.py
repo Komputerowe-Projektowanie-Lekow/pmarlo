@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Sequence, Tuple
+from typing import Dict, List, Optional, Any, Sequence, Tuple, Mapping
 
 from pmarlo.conformations.representative_picker import (
     TrajectoryFrameLocator,
@@ -60,6 +60,100 @@ class SimulationConfig:
     save_restart_pdb: bool = False
     restart_temperature: Optional[float] = None
     start_from_pdb: Optional[Path] = None
+    start_from_checkpoint: Optional[Path] = None
+    save_state_frequency: Optional[int] = None
+    resume_context: Optional[Dict[str, Any]] = None
+    force_run_id: Optional[str] = None
+
+    def snapshot(self) -> Dict[str, Any]:
+        """Serialize configuration to a JSON-friendly dict."""
+        def _path_str(value: Optional[Path]) -> Optional[str]:
+            if value is None:
+                return None
+            return str(Path(value).expanduser().resolve())
+
+        return {
+            "pdb_path": _path_str(self.pdb_path),
+            "temperatures": [float(t) for t in self.temperatures],
+            "steps": int(self.steps),
+            "quick": bool(self.quick),
+            "random_seed": int(self.random_seed)
+            if self.random_seed is not None
+            else None,
+            "label": self.label,
+            "jitter_start": bool(self.jitter_start),
+            "jitter_sigma_A": float(self.jitter_sigma_A),
+            "exchange_frequency_steps": int(self.exchange_frequency_steps)
+            if self.exchange_frequency_steps is not None
+            else None,
+            "temperature_schedule_mode": self.temperature_schedule_mode,
+            "cv_model_bundle": _path_str(self.cv_model_bundle),
+            "stub_result": bool(self.stub_result),
+            "save_restart_pdb": bool(self.save_restart_pdb),
+            "restart_temperature": float(self.restart_temperature)
+            if self.restart_temperature is not None
+            else None,
+            "start_from_pdb": _path_str(self.start_from_pdb),
+            "start_from_checkpoint": _path_str(self.start_from_checkpoint),
+            "save_state_frequency": int(self.save_state_frequency)
+            if self.save_state_frequency is not None
+            else None,
+            "resume_context": dict(self.resume_context)
+            if isinstance(self.resume_context, Mapping)
+            else self.resume_context,
+            "force_run_id": self.force_run_id,
+        }
+
+    @classmethod
+    def from_snapshot(cls, snapshot: Mapping[str, Any]) -> "SimulationConfig":
+        """Reconstruct configuration from a serialized snapshot."""
+        def _path(value: Any) -> Optional[Path]:
+            if value in (None, ""):
+                return None
+            return Path(str(value)).expanduser()
+
+        temps = snapshot.get("temperatures") or []
+        return cls(
+            pdb_path=_path(snapshot["pdb_path"]) or Path(snapshot["pdb_path"]),
+            temperatures=[float(t) for t in temps],
+            steps=int(snapshot.get("steps", 0)),
+            quick=bool(snapshot.get("quick", True)),
+            random_seed=(
+                int(snapshot["random_seed"])
+                if snapshot.get("random_seed") is not None
+                else None
+            ),
+            label=snapshot.get("label"),
+            jitter_start=bool(snapshot.get("jitter_start", False)),
+            jitter_sigma_A=float(snapshot.get("jitter_sigma_A", 0.05)),
+            exchange_frequency_steps=(
+                int(snapshot["exchange_frequency_steps"])
+                if snapshot.get("exchange_frequency_steps") is not None
+                else None
+            ),
+            temperature_schedule_mode=snapshot.get("temperature_schedule_mode"),
+            cv_model_bundle=_path(snapshot.get("cv_model_bundle")),
+            stub_result=bool(snapshot.get("stub_result", False)),
+            save_restart_pdb=bool(snapshot.get("save_restart_pdb", False)),
+            restart_temperature=(
+                float(snapshot["restart_temperature"])
+                if snapshot.get("restart_temperature") is not None
+                else None
+            ),
+            start_from_pdb=_path(snapshot.get("start_from_pdb")),
+            start_from_checkpoint=_path(snapshot.get("start_from_checkpoint")),
+            save_state_frequency=(
+                int(snapshot["save_state_frequency"])
+                if snapshot.get("save_state_frequency") is not None
+                else None
+            ),
+            resume_context=(
+                dict(snapshot["resume_context"])
+                if isinstance(snapshot.get("resume_context"), Mapping)
+                else snapshot.get("resume_context")
+            ),
+            force_run_id=snapshot.get("force_run_id"),
+        )
 
 @dataclass
 class TrainingConfig:
@@ -73,6 +167,9 @@ class TrainingConfig:
     tau_schedule: Sequence[int] = (2, 5, 10, 20)
     val_tau: int = 20
     epochs_per_tau: int = 15
+    gradient_clip_val: float = 1.0
+    learning_rate: float = 3e-4  # Default from DEEPTICA_DEFAULT_LEARNING_RATE
+    weight_decay: float = 0.0  # Default from DEEPTICA_DEFAULT_WEIGHT_DECAY
 
     def deeptica_params(self) -> Dict[str, Any]:
         return {
@@ -85,6 +182,9 @@ class TrainingConfig:
             "val_tau": int(self.val_tau),
             "epochs_per_tau": int(self.epochs_per_tau),
             "reweight_mode": "scaled_time",
+            "gradient_clip_val": float(self.gradient_clip_val),
+            "learning_rate": float(self.learning_rate),
+            "weight_decay": float(self.weight_decay),
         }
 
 @dataclass

@@ -311,14 +311,42 @@ def _run_streaming_demux(
 
 
 def _build_temperature_schedule(remd: Any) -> dict[str, dict[str, float]]:
-    schedule: dict[str, dict[str, float]] = {
-        str(i): {} for i in range(int(remd.n_replicas))
-    }
-    for step_index, states in enumerate(remd.exchange_history):
-        for replica_idx, temp_idx in enumerate(states):
-            schedule[str(replica_idx)][str(step_index)] = float(
-                remd.temperatures[int(temp_idx)]
-            )
+    """Build temperature schedule using vectorized operations for performance.
+
+    Converts exchange_history to a 2D array and uses NumPy indexing to map
+    temperature indices to actual temperatures, avoiding nested Python loops.
+    """
+    n_replicas = int(remd.n_replicas)
+    exchange_history = remd.exchange_history
+    n_steps = len(exchange_history)
+
+    # Handle empty exchange history
+    if n_steps == 0:
+        return {str(i): {} for i in range(n_replicas)}
+
+    # Convert exchange history to numpy array for vectorized operations
+    # Shape: (n_steps, n_replicas)
+    exchange_array = np.array(exchange_history, dtype=np.int32)
+
+    # Convert temperatures to numpy array
+    temps_array = np.array([float(t) for t in remd.temperatures], dtype=np.float64)
+
+    # Vectorized temperature lookup: for each step and replica, map temp_idx -> temperature
+    # This replaces the nested loop with a single vectorized indexing operation
+    temp_matrix = temps_array[exchange_array]  # Shape: (n_steps, n_replicas)
+
+    # Build the output dictionary structure efficiently
+    schedule: dict[str, dict[str, float]] = {}
+    for replica_idx in range(n_replicas):
+        replica_key = str(replica_idx)
+        # Extract the temperature timeline for this replica across all steps
+        replica_temps = temp_matrix[:, replica_idx]
+        # Build the step_index -> temperature mapping for this replica
+        schedule[replica_key] = {
+            str(step_idx): float(temp)
+            for step_idx, temp in enumerate(replica_temps)
+        }
+
     return schedule
 
 

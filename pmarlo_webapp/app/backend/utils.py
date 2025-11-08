@@ -130,3 +130,60 @@ def read_shard(*args: Any, **kwargs: Any) -> Any:
 
 # Module-level constants
 _STRUCTURE_EXTENSIONS = {".pdb", ".gro", ".cif", ".dcd", ".xtc", ".trr", ".nc"}
+
+
+def _has_cv_payload(value: Any) -> bool:
+    """Return True when ``value`` contains a usable CV bundle pointer."""
+
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (str, Path)):
+        return bool(str(value).strip())
+    if isinstance(value, Mapping):
+        return any(_has_cv_payload(subvalue) for subvalue in value.values())
+    return False
+
+
+def infer_run_cv_flag(run_entry: Mapping[str, Any] | None) -> bool:
+    """Infer whether a run was CV-informed from any recorded metadata."""
+
+    if not isinstance(run_entry, Mapping):
+        return False
+
+    if _has_cv_payload(run_entry.get("cv_informed")):
+        return True
+    if _has_cv_payload(run_entry.get("cv_model_bundle")):
+        return True
+
+    snapshot = run_entry.get("config_snapshot")
+    if isinstance(snapshot, Mapping) and _has_cv_payload(snapshot.get("cv_model_bundle")):
+        return True
+
+    run_plan = run_entry.get("run_plan")
+    if isinstance(run_plan, Mapping):
+        plan_config = run_plan.get("config")
+        if isinstance(plan_config, Mapping) and _has_cv_payload(
+            plan_config.get("cv_model_bundle")
+        ):
+            return True
+
+    return False
+
+
+def infer_shard_cv_flag(
+    shard_entry: Mapping[str, Any] | None,
+    run_entry: Mapping[str, Any] | None = None,
+) -> bool:
+    """Infer whether a shard batch was derived from a CV-biased simulation."""
+
+    if not isinstance(shard_entry, Mapping):
+        return infer_run_cv_flag(run_entry)
+
+    if _has_cv_payload(shard_entry.get("cv_informed")):
+        return True
+    if _has_cv_payload(shard_entry.get("cv_model_bundle")):
+        return True
+
+    return infer_run_cv_flag(run_entry)

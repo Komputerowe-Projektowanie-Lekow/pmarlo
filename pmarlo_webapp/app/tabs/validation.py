@@ -5,7 +5,9 @@ import streamlit as st
 
 from core.context import AppContext
 from core.view_helpers import (
+    SHARD_SELECTOR_HELP,
     _summarize_selected_shards,
+    build_shard_selector_options,
 )
 from pmarlo.visualization.diagnostics import (
     create_sampling_validation_plot,
@@ -25,24 +27,14 @@ def render_validation_tab(ctx: AppContext) -> None:
         st.info("Emit shards first to generate validation plots.")
     else:
         # Build display labels with CV-informed indicators
-        run_display_options = []
-        run_id_map = {}
-        for entry in shard_groups:
-            run_id = str(entry.get("run_id"))
-            is_cv_informed = entry.get("cv_informed", False)
-            if is_cv_informed:
-                display_label = f"{run_id} 🔴 [CV-BIASED]"
-            else:
-                display_label = f"{run_id} 🟢 [UNBIASED]"
-            run_display_options.append(display_label)
-            run_id_map[display_label] = run_id
+        run_display_options, run_id_map = build_shard_selector_options(shard_groups)
 
         selected_display = st.multiselect(
             "Select shard groups for validation",
             options=run_display_options,
             default=run_display_options,
             key="validation_selected_runs",
-            help="🔴 CV-BIASED = DeepTICA/metabias, 🟢 UNBIASED = Regular MD"
+            help=SHARD_SELECTOR_HELP
         )
         selected_runs = [run_id_map[display] for display in selected_display]
         try:
@@ -111,7 +103,7 @@ def render_validation_tab(ctx: AppContext) -> None:
 
             # Show warning if only 1 feature available
             if n_features_available == 1:
-                st.warning("⚠️ Only 1 feature detected in shards. TICA requires at least 2 features. Consider using shards with more features (e.g., Rg + RMSD).")
+                st.warning("️ Only 1 feature detected in shards. TICA requires at least 2 features. Consider using shards with more features (e.g., Rg + RMSD).")
 
             val_lag = col2.number_input(
                 "TICA lag",
@@ -127,6 +119,20 @@ def render_validation_tab(ctx: AppContext) -> None:
                 step=10.0,
                 key="validation_temperature",
             )
+
+            # Clustering Parameters
+            st.subheader("Clustering Parameters")
+            col_cluster1, col_cluster2, col_cluster3 = st.columns(3)
+            with col_cluster1:
+                st.number_input(
+                    "Number of clusters",
+                    min_value=10,
+                    max_value=500,
+                    value=st.session_state.get("val_n_clusters", 100),
+                    step=10,
+                    key="val_n_clusters",
+                    help="Number of microstates for discretization (used in discrete trajectory overlay)"
+                )
 
             st.divider()
 
@@ -401,16 +407,6 @@ def render_validation_tab(ctx: AppContext) -> None:
                     # Discrete Trajectory Overlay Plot
                     st.subheader("Discrete Trajectory Overlay")
 
-                    with st.expander("Clustering Parameters", expanded=False):
-                        n_clusters = st.number_input(
-                            "Number of clusters",
-                            min_value=10,
-                            max_value=500,
-                            value=st.session_state.get("val_n_clusters", 100),
-                            step=10,
-                            key="val_n_clusters",
-                            help="Number of microstates for discretization"
-                        )
 
                     with st.spinner("Computing discrete trajectories..."):
                         try:
@@ -493,7 +489,7 @@ def render_validation_tab(ctx: AppContext) -> None:
 
                             if fraction_reaching < 0.5:
                                 st.warning(
-                                    f"⚠️ Only {fraction_reaching:.1%} of runs reach the full TICA range. "
+                                    f" Only {fraction_reaching:.1%} of runs reach the full TICA range. "
                                     "MSM may only be valid for the largest connected component."
                                 )
 
