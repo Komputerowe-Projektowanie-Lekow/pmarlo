@@ -1,3 +1,75 @@
+<a id='changelog-1.0.56'></a>
+# 1.0.56 — 2025-11-08
+
+### Fixed
+- Replica-exchange checkpoints are saved based on elapsed MD steps (with an automatic final checkpoint), eliminating cases where long runs only produced a single checkpoint.
+- MDAnalysis-backed trajectory reader and writer now properly import MDAnalysis during `_require()` so missing dependencies raise the intended `TrajectoryIOError`/`TrajectoryWriteError` instead of generic import failures.
+- Replaced the `ReplicaExchange.from_config` assert that enforced `pdb_file` presence with an explicit `ValueError`, preserving fail-fast validation even when Python optimization flags disable asserts.
+- Redundant CV computation in replica exchange monitoring removed - feature values are now computed once via OpenMM forces instead of being recalculated through separate PyTorch model inference.
+- CV monitoring initialization is more robust, with graceful fallback to legacy PyTorch monitoring if native forces are not available.
+- Eliminated redundant garbage collection that was degrading performance in trajectory finalization (previously added ~560ms per run unnecessarily).
+- Minimization now uses more aggressive iteration caps optimized for REMD workflows, preventing excessive minimization time while ensuring stable starting configurations.
+- Replica setup now imports OpenMM units via `openmm.unit` to avoid AttributeErrors on platforms where `nanometer` and related constants are not exported at module scope, restoring the replica-exchange core tests.
+- Removed all per-report/step imports in REMD monitoring and demux execution paths by caching the PyTorch module loader, hoisting `openmm` feature helpers, and preloading demux worker dependencies, eliminating thousands of redundant bytecode loads flagged in the profiler.
+- Deepcopy-heavy Vec3 velocity scaling inside the exchange hot path now uses numpy views directly, removing ~5–6 seconds of `copy.deepcopy` overhead per benchmark sweep and keeping exchanges purely scalar.
+- Issue where simulation runs existing on disk but not in state.json would not appear in the UI dropdowns.
+- Missing visibility into incomplete or failed simulation runs that could not be used for shard creation.
+- Training now persists CV bundle metadata in state and shard/run selectors infer metabiased status from recorded provenance, preventing CV-biased runs from appearing as unbiased chips.
+- TorchScript feature extraction now consumes tensors in the module's feature dtype/device, removing repeated `.to(torch.float32)` casts and ensuring the exported DeepTICA models no longer bounce between float64 OpenMM positions and float32 PyTorch weights during runtime.
+
+
+### Changed
+- Streamlined the Sampling tab by removing verbose resume instructions; manual checkpoint preparation is no longer needed because recovery is handled directly from Run Discovery.
+- State updates now upsert run metadata, ensuring resumed runs reuse the same run ID instead of creating duplicates, while UI messaging stays concise.
+- Restored the `pmarlo.api` facade to re-export the public helpers now housed in the package modules so existing imports keep working.
+- Updated example programs and the Streamlit webapp backend to import helpers from the new package submodules.
+- Promoted `choose_sim_seed` into `pmarlo.utils.seed` and exposed it via `pmarlo.api` so every client (including the webapp) relies on the same simulation seeding logic.
+- Rewired the Streamlit app to consume the new parsing utilities directly from `pmarlo.api`, eliminating duplicate logic inside `pmarlo_webapp`.
+- Updated the Streamlit tabs to consume `pmarlo.api.select_shard_paths`, ensuring shard selections raise actionable errors instead of relying on UI-only helpers.
+- CV monitoring in replica exchange now uses OpenMM native forces (CustomBondForce, CustomAngleForce, CustomTorsionForce) for feature extraction when available, eliminating redundant PyTorch model inference and providing 2x speedup in monitoring overhead.
+- Model export (`export_cv_model`, `export_cv_bias_potential`) now generates an additional NN-only TorchScript model (`*_nn.pt`) alongside the full model, designed for future integration with OpenMM native feature computation.
+- System builder attempts to create OpenMM native feature forces for CV monitoring, falling back gracefully to legacy approach if feature specification is unavailable.
+- Feature specification is now stored in model bundle metadata to enable native force creation during system setup.
+- Energy minimization during replica setup is now significantly faster: reduced iteration counts from 350 to 250 maximum iterations for initial minimization (stage 1: 250 instead of 350 iterations) and from 100 to 50 for refinement (stage 2). Quick refinement when reusing cached states reduced from 50 to 25 iterations. These changes provide 2-3x speedup in setup time while maintaining adequate convergence for REMD simulations.
+- Removed manual garbage collection call in DCD file closing routine, eliminating ~0.5s overhead that was causing unnecessary performance degradation in long-running simulations.
+- Gradual heating progress logging now reuses a pre-sized temperature preview buffer populated during the heating step itself, eliminating a high-frequency list comprehension from the heating loop hot path.
+- Sampling tab now includes a scan button to detect runs not tracked in state, with direct links to the Run Discovery tab.
+- Backend state management now supports adding discovered runs with automatic metadata extraction from filesystem and provenance files.
+- Streamlit validation workflows now call the shared visualization helpers directly, eliminating mock state shims.
+- Base dependencies now include `matplotlib`, and README documents how to generate validation plots outside the web app.
+- Sampling connectivity plots distinguish metabiased trajectories with dashed styling and legend keys, mirrored in the discrete overlay view.
+- Shard selectors in every analysis tab now color-code DeepTICA/metabiased shard groups with pink chips so they are distinguishable from unbiased selections.
+- CV-informed sampling selection now validates the exported DeepTICA bundle and passes the bundle directory through `SimulationConfig`, so biased runs are tagged correctly when launched from the app.
+- RunningStats can now be constructed with an explicit numpy dtype, letting REMD bias monitors store float32 collective variable traces without incurring per-sample float64 copies while keeping float64 support for OpenMM energies.
+
+
+### Added
+- Run Discovery now offers a single `Resume Run` action that deletes corrupted artifacts, loads the latest checkpoint, and relaunches the simulation with the original parameters automatically.
+- Sampling backend persists a structured run plan (`run_plan.json`) and configuration snapshot for every run so recovery data is always available in both the filesystem and `state.json`.
+- Introduced `pmarlo.utils.input_parsing` with shared `parse_temperature_ladder` and `parse_tau_schedule` helpers plus regression tests so every client validates user-provided ladders and tau schedules the same way.
+- Promoted the shard run selection helper into `pmarlo.data.shard_io.select_shard_paths` and re-exported it via `pmarlo.api` for reuse outside the webapp.
+- New module `pmarlo.features.deeptica.openmm_features` with utilities to create OpenMM forces from feature specifications, including `create_feature_forces()`, `load_feature_spec_from_model()`, and `extract_cv_values_from_context()`.
+- Function `extract_nn_only_from_bias_module()` in `ts_feature_extractor.py` to extract neural network layers separately from feature extraction for potential future optimizations.
+- Native OpenMM feature forces (force group 2) are created during system setup when feature specification is available in model metadata.
+- Optimized CV monitoring path `_update_bias_monitor_native()` that uses OpenMM forces instead of PyTorch, with automatic fallback to legacy `_update_bias_monitor_pytorch()` for older models.
+- Selective trajectory writing via `write_replica_indices` parameter in `RemdConfig` and `ReplicaExchange` constructor. Setting this to `[0]` writes only the lowest-temperature replica trajectory, reducing I/O overhead by 70-90% for large replica counts. This is the recommended setting for most REMD analyses where only the lowest-temperature trajectory is needed. If `None` or empty, all replicas write trajectories (default, backward compatible).
+- Performance-focused docstrings and comments added to minimization and trajectory writing code to explain optimization rationale.
+- Run discovery and validation system in `pmarlo_webapp` that scans simulation directories and identifies issues like missing files, incomplete runs, and runs not tracked in state.
+- New `Run Discovery` tab in the webapp UI that displays comprehensive validation information for all simulation directories with filtering and detailed inspection capabilities.
+- `ValidationMixin` backend module providing methods to discover, validate, and automatically add discovered runs to state.
+- Run status enums (`RunStatus`) for categorizing simulation completeness: complete, incomplete, empty, missing analysis, missing demux, in progress, and missing state entry.
+- Detailed validation reports showing trajectory counts, demux status, exchange diagnostics, and per-run issues with severity levels.
+- Reusable sampling and FES validation plot helpers in `pmarlo.visualization.diagnostics`, covered by dedicated unit tests.
+- ITS analysis tab now provides a frames-per-shard inspection button that plots shard sizes and reports total plus average frame counts to guide parameter choices.
+- Shared visualization APIs now include a frames-per-shard histogram helper so notebooks, CLIs, and the web app render the same diagnostic plot.
+
+
+
+### Removed
+- Dropped the legacy `pmarlo/api.py` god-module in favour of the new modular API package structure.
+
+
+
 <a id='changelog-1.0.39'></a>
 # 1.0.39 — 2025-10-16
 
@@ -538,7 +610,7 @@ Refactored across ~15 modules to align logging (visibility), remove lazy imports
   - All console output uses consistent 80-character separator lines for visual clarity
   - Completion messages show trajectory counts, frame counts, and output file paths for verification
   - Both `print()` (for console) and `logger` (for file-based logging) are used to ensure traceability
-- **Explained demultiplexing lag after Ctrl+C**: The two progress bars users see are (1) the MD simulation which CAN be cancelled, and (2) the demultiplexing phase which CANNOT be cancelled and runs to completion. This is now clearly documented in the console output with warning symbols (⚠️).
+- **Explained demultiplexing lag after Ctrl+C**: The two progress bars users see are (1) the MD simulation which CAN be cancelled, and (2) the demultiplexing phase which CANNOT be cancelled and runs to completion. This is now clearly documented in the console output with warning symbols (WARNING).
 
 ### Testing
 - Loaded every example shard with `pmarlo.data.shard_io.load_shard_meta`.

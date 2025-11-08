@@ -29,9 +29,9 @@ CURRENT_BRANCH=$(git branch --show-current)
 echo "  Current branch: $CURRENT_BRANCH"
 
 if git pull origin "$CURRENT_BRANCH" --ff-only; then
-    echo "  ✓ Repository updated successfully"
+    echo "  OK Repository updated successfully"
 else
-    echo "  ⚠ Could not fast-forward. You may need to resolve conflicts manually."
+    echo "  WARNING Could not fast-forward. You may need to resolve conflicts manually."
     echo "  Continuing with current state..."
 fi
 
@@ -72,7 +72,7 @@ python -m pip install --upgrade \
     "hypothesis>=6.112" \
     "filelock>=3.20"
 
-echo "  ✓ Dependencies updated successfully"
+echo "  OK Dependencies updated successfully"
 
 # 5) Ensure CPU-only PyTorch (lightning comes from PyPI)
 echo "[Step 5/6] Ensuring CPU-only PyTorch..."
@@ -109,46 +109,46 @@ for module_name, display_name in required_imports:
     try:
         module = __import__(module_name)
         version = getattr(module, "__version__", "unknown")
-        print(f"✓ {display_name}: {version}")
+        print(f"OK {display_name}: {version}")
     except ImportError as e:
-        print(f"✗ {display_name}: FAILED - {e}")
+        print(f"FAIL {display_name}: FAILED - {e}")
         failures.append(display_name)
 
 # Test pmarlo
 try:
     import pmarlo
     version = getattr(pmarlo, "__version__", "unknown")
-    print(f"✓ pmarlo: {version}")
+    print(f"OK pmarlo: {version}")
 
     # Test main API
     from pmarlo import Protein, ReplicaExchange, Simulation, Pipeline
-    print("✓ Main API imports successful")
+    print("OK Main API imports successful")
 except ImportError as e:
-    print(f"✗ pmarlo: FAILED - {e}")
+    print(f"FAIL pmarlo: FAILED - {e}")
     failures.append("pmarlo")
 
 # Test PyTorch CPU
 try:
     import torch
     if torch.cuda.is_available():
-        print("⚠ Warning: CUDA build detected. Expected CPU-only build.")
+        print("WARNING Warning: CUDA build detected. Expected CPU-only build.")
         print("  This may cause issues on CPU-only systems.")
     else:
-        print("✓ PyTorch CPU-only build confirmed")
+        print("OK PyTorch CPU-only build confirmed")
 except Exception as e:
-    print(f"⚠ Could not verify PyTorch build type: {e}")
+    print(f"WARNING Could not verify PyTorch build type: {e}")
 
 # Summary
 print("\n" + "="*50)
 if failures:
-    print(f"✗ Verification completed with {len(failures)} failures:")
+    print(f"FAIL Verification completed with {len(failures)} failures:")
     for pkg in failures:
         print(f"  - {pkg}")
     print("\nSome dependencies are missing. Consider re-running setup.")
     sys.exit(1)
 else:
-    print("✓ All dependencies verified successfully!")
-    print("\n🎉 Environment is up to date!")
+    print("OK All dependencies verified successfully!")
+    print("\nSUCCESS Environment is up to date!")
     sys.exit(0)
 PY
 

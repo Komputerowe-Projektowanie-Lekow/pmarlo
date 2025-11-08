@@ -86,7 +86,7 @@ remd = ReplicaExchange.from_config(config)
 
 ### 4. Optimized getState() Calls
 
-**Status**: ✅ Optimized! All getState() calls now follow best practices:
+**Status**: PASS Optimized! All getState() calls now follow best practices:
 
 **What was done**:
 - Exchange calculations only request `getEnergy=True` (no positions/velocities/forces)

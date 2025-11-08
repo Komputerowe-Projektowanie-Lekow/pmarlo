@@ -19,6 +19,7 @@ from pmarlo.reporting import plots as reporting_plots
 __all__ = [
     "create_sampling_validation_plot",
     "create_fes_validation_plot",
+    "create_shard_frame_histogram",
 ]
 
 
@@ -42,6 +43,78 @@ def _ensure_figsize(name: str, value: tuple[float, float]) -> tuple[float, float
     if width <= 0 or height <= 0:
         raise ValueError(f"{name} values must be positive (got {value!r})")
     return float(width), float(height)
+
+
+def create_shard_frame_histogram(
+    frame_counts: Sequence[int | float],
+    shard_labels: Sequence[str] | None = None,
+    *,
+    max_label_count: int = 24,
+    figsize: tuple[float, float] | None = None,
+    color: str = "#4a90e2",
+) -> Figure:
+    """Render a histogram showing the number of frames per shard.
+
+    Parameters
+    ----------
+    frame_counts
+        Iterable of per-shard frame counts. All values must be finite and
+        non-negative.
+    shard_labels
+        Optional labels aligned with ``frame_counts`` that annotate each bar on
+        the x-axis. When omitted, bars are labelled by ordinal index.
+    max_label_count
+        Maximum number of shard labels to display before falling back to ordinal
+        numbering. Helps keep large selections legible.
+    figsize
+        Optional ``(width, height)`` hint for the Matplotlib canvas. When not
+        provided, the width automatically scales with the number of shards while
+        the height defaults to 4 inches.
+    color
+        Matplotlib-compatible colour specification for the bar fill.
+
+    Returns
+    -------
+    Figure
+        Matplotlib figure containing the histogram.
+    """
+
+    values = np.asarray(list(frame_counts), dtype=float)
+    if values.size == 0:
+        raise ValueError("frame_counts must contain at least one value")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("frame_counts must contain only finite values")
+    if np.any(values < 0):
+        raise ValueError("frame_counts must be non-negative")
+
+    resolved_labels: list[str] | None = None
+    if shard_labels is not None:
+        resolved_labels = [str(label) for label in shard_labels]
+        if len(resolved_labels) != values.size:
+            raise ValueError("shard_labels length must match frame_counts length")
+
+    _validate_positive("max_label_count", int(max_label_count))
+    if figsize is None:
+        adaptive_width = max(6.0, values.size * 0.35)
+        figsize = (adaptive_width, 4.0)
+    figsize = _ensure_figsize("figsize", figsize)
+
+    positions = np.arange(values.size)
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.bar(positions, values, color=color)
+    ax.set_title("Frames per shard")
+    ax.set_ylabel("Frames")
+    ax.set_xlabel("Shard")
+    ax.set_xticks(positions)
+
+    if resolved_labels is not None and values.size <= max_label_count:
+        xtick_labels = resolved_labels
+    else:
+        xtick_labels = [str(idx + 1) for idx in positions]
+    ax.set_xticklabels(xtick_labels, rotation=45, ha="right")
+
+    fig.tight_layout()
+    return fig
 
 
 def _normalise_projection_data(

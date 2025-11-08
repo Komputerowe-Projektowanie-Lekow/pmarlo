@@ -1043,8 +1043,11 @@ class ReplicaExchange:
     def _validate_temperature_ladder(temps: List[float]) -> None:
         if temps is None:
             raise ValueError("Temperature ladder is None")
-        if len(temps) < 2:
-            raise ValueError("Temperature ladder must have at least 2 values")
+        if len(temps) < 1:
+            raise ValueError("Temperature ladder must have at least 1 value")
+
+        # Single temperature is valid (for single-temperature MD)
+        # Multiple temperatures require strict ordering (for REMD)
         last = None
         for t in temps:
             if float(t) <= 0.0:
@@ -1671,16 +1674,22 @@ class ReplicaExchange:
         print("\n" + "=" * 80, flush=True)
         print(f"SIMULATION STAGE 2: PRODUCTION ({production_steps} steps)", flush=True)
         print("=" * 80, flush=True)
-        print(f"Running {self.n_replicas} replicas in parallel", flush=True)
-        print(f"Exchange attempts every {self.exchange_frequency} steps", flush=True)
+        if self.n_replicas > 1:
+            print(f"Running {self.n_replicas} replicas in parallel", flush=True)
+            print(f"Exchange attempts every {self.exchange_frequency} steps", flush=True)
+        else:
+            print("Running single-temperature MD simulation", flush=True)
         print("=" * 80 + "\n", flush=True)
 
         # Also log
         logger.info("=" * 80)
         logger.info(f"SIMULATION STAGE 2: PRODUCTION ({production_steps} steps)")
         logger.info("=" * 80)
-        logger.info(f"Running {self.n_replicas} replicas in parallel")
-        logger.info(f"Exchange attempts every {self.exchange_frequency} steps")
+        if self.n_replicas > 1:
+            logger.info(f"Running {self.n_replicas} replicas in parallel")
+            logger.info(f"Exchange attempts every {self.exchange_frequency} steps")
+        else:
+            logger.info("Running single-temperature MD simulation")
         logger.info("=" * 80)
 
         production_start = time.perf_counter()
@@ -1778,8 +1787,11 @@ class ReplicaExchange:
             )
 
     def _log_run_start(self, total_steps: int) -> None:
-        logger.info(f"Starting REMD simulation: {total_steps} steps")
-        logger.info(f"Exchange attempts every {self.exchange_frequency} steps")
+        if self.n_replicas > 1:
+            logger.info(f"Starting REMD simulation: {total_steps} steps")
+            logger.info(f"Exchange attempts every {self.exchange_frequency} steps")
+        else:
+            logger.info(f"Starting single-temperature MD simulation: {total_steps} steps")
 
     def _run_equilibration_phase(
         self,
@@ -2243,6 +2255,26 @@ class ReplicaExchange:
         should_cancel: Callable[[], bool] | None,
     ) -> bool:
         production_steps = total_steps - equilibration_steps
+        
+        # Special handling for single-temperature MD (n_replicas == 1)
+        # or when exchange_frequency is very large (effectively no exchanges)
+        is_single_temp = self.n_replicas == 1 or production_steps < self.exchange_frequency
+        
+        if is_single_temp:
+            logger.info(
+                f"Production: {production_steps} steps (single-temperature MD, no exchanges)"
+            )
+            return self._run_single_temp_production(
+                production_steps,
+                total_steps,
+                equilibration_steps,
+                save_state_frequency,
+                checkpoint_manager,
+                reporter,
+                should_cancel,
+            )
+        
+        # Normal REMD production with exchanges
         exchange_steps = production_steps // self.exchange_frequency
         logger.info(
             (
@@ -2331,6 +2363,90 @@ class ReplicaExchange:
                 self.save_checkpoint(step + 1)
         if prod_progress is not None:
             prod_progress.close()
+        return False
+    
+    def _run_single_temp_production(
+        self,
+        production_steps: int,
+        total_steps: int,
+        equilibration_steps: int,
+        save_state_frequency: int,
+        checkpoint_manager,
+        reporter: ProgressReporter | None,
+        should_cancel: Callable[[], bool] | None,
+    ) -> bool:
+        """Run production phase for single-temperature MD (no exchanges).
+        
+        This method is used when n_replicas == 1 or when exchange_frequency
+        is larger than production_steps.
+        """
+        # Use reasonable chunk size for progress tracking
+        chunk_size = min(1000, max(100, production_steps // 20))
+        num_chunks = (production_steps + chunk_size - 1) // chunk_size
+        
+        prod_progress = ProgressPrinter(production_steps)
+        prod_milestones: set[int] = set()
+        steps_completed = 0
+        
+        for chunk_idx in range(num_chunks):
+            if should_cancel is not None and should_cancel():
+                return True
+            
+            current_chunk = min(chunk_size, production_steps - steps_completed)
+            
+            # Run MD steps for all replicas (typically just 1 for single-temp)
+            for replica_idx, replica in enumerate(self.replicas):
+                try:
+                    replica.step(current_chunk)
+                except Exception as exc:
+                    if "nan" in str(exc).lower():
+                        logger.error(
+                            "NaN detected in replica %d during production phase",
+                            replica_idx,
+                        )
+                        raise RuntimeError(
+                            f"Simulation became unstable for replica {replica_idx}. "
+                            "Consider: 1) Longer equilibration, 2) Smaller timestep, "
+                            "3) Different initial structure"
+                        )
+                    else:
+                        raise
+            
+            steps_completed += current_chunk
+            self._update_bias_monitor()
+            
+            # Update progress
+            prod_progress.draw(steps_completed)
+            prod_progress.newline_if_active()
+            
+            # Log milestones
+            progress_fraction = steps_completed / production_steps
+            progress_percent = int(round(progress_fraction * 100))
+            for threshold in (25, 50, 75, 100):
+                if progress_percent >= threshold and threshold not in prod_milestones:
+                    milestone_message = (
+                        f"Production progress {threshold}% "
+                        f"({steps_completed}/{production_steps} steps)"
+                    )
+                    print(milestone_message, flush=True)
+                    logger.info(milestone_message)
+                    prod_milestones.add(threshold)
+            
+            # Report progress
+            if reporter is not None:
+                reporter.emit(
+                    "simulate",
+                    {
+                        "current_step": int(steps_completed),
+                        "total_steps": int(production_steps),
+                    },
+                )
+            
+            # Save checkpoint if needed
+            if steps_completed % save_state_frequency == 0:
+                self.save_checkpoint(steps_completed // chunk_size)
+        
+        prod_progress.close()
         return False
 
     def _production_step_all_replicas(self, step: int, checkpoint_manager) -> None:
@@ -2618,6 +2734,13 @@ class ReplicaExchange:
             )
 
     def _log_final_stats(self) -> None:
+        # Skip REMD-specific statistics for single-temperature MD
+        if self.n_replicas == 1:
+            logger.info("=" * 60)
+            logger.info("SINGLE-TEMPERATURE MD SIMULATION COMPLETED")
+            logger.info("=" * 60)
+            return
+        
         final_acceptance = self.exchanges_accepted / max(1, self.exchange_attempts)
         logger.info("=" * 60)
         logger.info("REPLICA EXCHANGE SIMULATION COMPLETED")

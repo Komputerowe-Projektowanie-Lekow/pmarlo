@@ -344,7 +344,7 @@ class TrainingMixin:
                     feature_spec=feature_spec,
                 )
 
-                logger.info("✓ CV bias potential exported successfully")
+                logger.info("OK CV bias potential exported successfully")
                 return {
                     "model_path": str(cv_bundle.model_path),
                     "scaler_path": str(cv_bundle.scaler_path),

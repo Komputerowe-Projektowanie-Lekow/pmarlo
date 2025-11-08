@@ -103,6 +103,16 @@ def _resolve_save_state_frequency(config: SimulationConfig) -> int:
     return int(config.save_state_frequency or DEFAULT_SAVE_STATE_FREQUENCY)
 
 
+def _resolve_primary_temperature(config: SimulationConfig) -> float:
+    """Return the primary simulation temperature."""
+
+    if config.temperatures:
+        return float(config.temperatures[0])
+    if config.restart_temperature is not None:
+        return float(config.restart_temperature)
+    return 300.0
+
+
 def _derive_characteristics(config: SimulationConfig) -> Tuple[int, int, int]:
     equilibration_steps, exchange_frequency, dcd_stride = _derive_run_plan(
         int(config.steps),
@@ -355,7 +365,7 @@ class SamplingMixin:
             cv_kwargs["cv_scaler_mean"] = cv_info["scaler_params"]["mean"]
             cv_kwargs["cv_scaler_scale"] = cv_info["scaler_params"]["scale"]
 
-            logger.info("✓ CV bias potential loaded successfully")
+            logger.info("OK CV bias potential loaded successfully")
             logger.info(f"  Model path: {cv_info['model_path']}")
             logger.info(f"  CV dimensions: {cv_info['config']['cv_dim']}")
             logger.info(f"  Bias type: {cv_info['config'].get('bias_type', 'harmonic_expansion')}")
@@ -380,12 +390,10 @@ class SamplingMixin:
         restart_paths: Optional[Tuple[Path, Path]] = None
         restart_target_temperature: Optional[float] = None
         if config.save_restart_pdb:
-            if not config.temperatures:
-                raise ValueError("Temperature ladder required when saving restart PDB.")
             restart_target_temperature = (
                 float(config.restart_temperature)
                 if config.restart_temperature is not None
-                else float(config.temperatures[0])
+                else _resolve_primary_temperature(config)
             )
             restart_paths = self._plan_restart_snapshot_paths(
                 run_label=run_label,
@@ -448,89 +456,16 @@ class SamplingMixin:
                     restart_temperature=restart_target_temperature,
                 )
             else:
-                traj_files, temps = run_replica_exchange(
-                    pdb_file=str(config.pdb_path),
-                    output_dir=str(run_dir),
-                    temperatures=[float(t) for t in config.temperatures],
-                    total_steps=int(config.steps),
-                    quick=bool(config.quick),
-                    random_seed=(
-                        int(config.random_seed)
-                        if config.random_seed is not None
-                        else None
-                    ),
-                    jitter_start=bool(config.jitter_start),
-                    jitter_sigma_A=float(config.jitter_sigma_A),
-                    exchange_frequency_steps=(
-                        int(config.exchange_frequency_steps)
-                        if config.exchange_frequency_steps is not None
-                        else None
-                    ),
-                    temperature_schedule_mode=config.temperature_schedule_mode,
-                    start_from_checkpoint=(
-                        str(config.start_from_checkpoint)
-                        if config.start_from_checkpoint
-                        else None
-                    ),
-                    start_from_pdb=(
-                        str(config.start_from_pdb) if config.start_from_pdb else None
-                    ),
-                    save_final_pdb=bool(config.save_restart_pdb),
-                    final_pdb_path=str(restart_paths[0]) if restart_paths else None,
-                    final_pdb_temperature=restart_target_temperature,
+                result, run_metadata = self._run_real_sampling(
+                    config=config,
+                    run_label=run_label,
+                    run_dir=run_dir,
                     save_state_frequency=int(save_state_frequency),
-                    **cv_kwargs,
+                    restart_paths=restart_paths,
+                    restart_target_temperature=restart_target_temperature,
+                    cv_kwargs=cv_kwargs,
+                    dcd_stride=int(dcd_stride),
                 )
-                completed_at = _timestamp()
-                restart_pdb_path: Optional[Path] = None
-                restart_inputs_entry: Optional[Path] = None
-                if restart_paths:
-                    restart_pdb_path = restart_paths[0].resolve()
-                    if not restart_pdb_path.exists():
-                        raise FileNotFoundError(
-                            f"Expected restart snapshot at {restart_pdb_path} was not produced."
-                        )
-                    target_copy = restart_paths[1]
-                    ensure_directory(target_copy.parent)
-                    shutil.copy2(restart_pdb_path, target_copy)
-                    restart_inputs_entry = target_copy.resolve()
-
-                result = SimulationResult(
-                    run_id=run_label,
-                    run_dir=run_dir.resolve(),
-                    pdb_path=Path(config.pdb_path).resolve(),
-                    traj_files=_coerce_path_list(traj_files),
-                    analysis_temperatures=[float(t) for t in temps],
-                    steps=int(config.steps),
-                    created_at=completed_at,
-                    restart_pdb_path=restart_pdb_path,
-                    restart_inputs_entry=restart_inputs_entry,
-                )
-                run_metadata = {
-                    "run_id": run_label,
-                    "run_dir": str(result.run_dir),
-                    "pdb": str(result.pdb_path),
-                    "temperatures": [float(t) for t in config.temperatures],
-                    "analysis_temperatures": result.analysis_temperatures,
-                    "steps": int(config.steps),
-                    "quick": bool(config.quick),
-                    "random_seed": (
-                        int(config.random_seed)
-                        if config.random_seed is not None
-                        else None
-                    ),
-                    "traj_files": [str(p) for p in result.traj_files],
-                    "created_at": completed_at,
-                    "stub_result": bool(use_stub),
-                }
-                if restart_pdb_path:
-                    run_metadata["restart_pdb"] = str(restart_pdb_path)
-                if restart_inputs_entry:
-                    run_metadata["restart_input_entry"] = str(restart_inputs_entry)
-                if restart_target_temperature is not None:
-                    run_metadata["restart_temperature"] = float(
-                        restart_target_temperature
-                    )
         except Exception as exc:
             plan_payload["status"] = "failed"
             plan_payload["last_error"] = str(exc)
@@ -777,3 +712,141 @@ class SamplingMixin:
         if restart_temperature is not None:
             metadata["restart_temperature"] = float(restart_temperature)
         return result, metadata
+
+    def _run_real_sampling(
+        self,
+        *,
+        config: SimulationConfig,
+        run_label: str,
+        run_dir: Path,
+        save_state_frequency: int,
+        restart_paths: Optional[Tuple[Path, Path]],
+        restart_target_temperature: Optional[float],
+        cv_kwargs: Dict[str, Any],
+        dcd_stride: int,
+    ) -> Tuple[SimulationResult, Dict[str, Any]]:
+        """Execute either REMD or single-temperature MD based on config."""
+
+        recorded_temperatures: List[float] = [float(t) for t in config.temperatures]
+        restart_pdb_path: Optional[Path] = None
+        restart_inputs_entry: Optional[Path] = None
+
+        if config.single_temperature_mode:
+            from .utils import run_single_temperature_md
+
+            target_temp = _resolve_primary_temperature(config)
+            logger.info(
+                "[sampling] Running single-temperature MD at %.1fK (no replicas)",
+                target_temp,
+            )
+            traj_files, temp = run_single_temperature_md(
+                pdb_file=str(config.pdb_path),
+                output_dir=str(run_dir),
+                temperature=target_temp,
+                total_steps=int(config.steps),
+                quick=bool(config.quick),
+                random_seed=(
+                    int(config.random_seed) if config.random_seed is not None else None
+                ),
+                jitter_start=bool(config.jitter_start),
+                jitter_sigma_A=float(config.jitter_sigma_A),
+                start_from_checkpoint=(
+                    str(config.start_from_checkpoint)
+                    if config.start_from_checkpoint
+                    else None
+                ),
+                start_from_pdb=(
+                    str(config.start_from_pdb) if config.start_from_pdb else None
+                ),
+                save_state_frequency=int(save_state_frequency),
+                dcd_stride=int(dcd_stride),
+                save_final_pdb=bool(config.save_restart_pdb),
+                final_pdb_path=str(restart_paths[0]) if restart_paths else None,
+                final_pdb_temperature=(
+                    float(restart_target_temperature)
+                    if restart_target_temperature is not None
+                    else float(target_temp)
+                ),
+            )
+            temps = [float(temp)]
+            recorded_temperatures = [float(target_temp)]
+        else:
+            exchange_override = (
+                int(config.exchange_frequency_steps)
+                if config.exchange_frequency_steps is not None
+                else None
+            )
+            traj_files, temps = run_replica_exchange(
+                pdb_file=str(config.pdb_path),
+                output_dir=str(run_dir),
+                temperatures=[float(t) for t in config.temperatures],
+                total_steps=int(config.steps),
+                quick=bool(config.quick),
+                random_seed=(
+                    int(config.random_seed) if config.random_seed is not None else None
+                ),
+                jitter_start=bool(config.jitter_start),
+                jitter_sigma_A=float(config.jitter_sigma_A),
+                exchange_frequency_steps=exchange_override,
+                temperature_schedule_mode=config.temperature_schedule_mode,
+                start_from_checkpoint=(
+                    str(config.start_from_checkpoint)
+                    if config.start_from_checkpoint
+                    else None
+                ),
+                start_from_pdb=(
+                    str(config.start_from_pdb) if config.start_from_pdb else None
+                ),
+                save_final_pdb=bool(config.save_restart_pdb),
+                final_pdb_path=str(restart_paths[0]) if restart_paths else None,
+                final_pdb_temperature=restart_target_temperature,
+                save_state_frequency=int(save_state_frequency),
+                **cv_kwargs,
+            )
+
+        completed_at = _timestamp()
+
+        if restart_paths:
+            restart_pdb_path = restart_paths[0].resolve()
+            if not restart_pdb_path.exists():
+                raise FileNotFoundError(
+                    f"Expected restart snapshot at {restart_pdb_path} was not produced."
+                )
+            target_copy = restart_paths[1]
+            ensure_directory(target_copy.parent)
+            shutil.copy2(restart_pdb_path, target_copy)
+            restart_inputs_entry = target_copy.resolve()
+
+        result = SimulationResult(
+            run_id=run_label,
+            run_dir=run_dir.resolve(),
+            pdb_path=Path(config.pdb_path).resolve(),
+            traj_files=_coerce_path_list(traj_files),
+            analysis_temperatures=[float(t) for t in temps],
+            steps=int(config.steps),
+            created_at=completed_at,
+            restart_pdb_path=restart_pdb_path,
+            restart_inputs_entry=restart_inputs_entry,
+        )
+        run_metadata: Dict[str, Any] = {
+            "run_id": run_label,
+            "run_dir": str(result.run_dir),
+            "pdb": str(result.pdb_path),
+            "temperatures": recorded_temperatures,
+            "analysis_temperatures": result.analysis_temperatures,
+            "steps": int(config.steps),
+            "quick": bool(config.quick),
+            "random_seed": (
+                int(config.random_seed) if config.random_seed is not None else None
+            ),
+            "traj_files": [str(p) for p in result.traj_files],
+            "created_at": completed_at,
+            "stub_result": False,
+        }
+        if restart_pdb_path:
+            run_metadata["restart_pdb"] = str(restart_pdb_path)
+        if restart_inputs_entry:
+            run_metadata["restart_input_entry"] = str(restart_inputs_entry)
+        if restart_target_temperature is not None:
+            run_metadata["restart_temperature"] = float(restart_target_temperature)
+        return result, run_metadata

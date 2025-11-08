@@ -391,7 +391,7 @@ def print_summary(results: Dict[str, Any]):
         logger.info(f"   Expected: {expected:.0f} steps/s (single replica × {n_replicas})")
         logger.info(f"   Actual:   {remd_throughput:.0f} steps/s")
         if efficiency < 70:
-            logger.info("   ⚠️  LOW EFFICIENCY - investigate exchange/reporter overhead")
+            logger.info("   WARNING: LOW EFFICIENCY - investigate exchange/reporter overhead")
 
 def main():
     parser = argparse.ArgumentParser(description="Benchmark REMD performance")
