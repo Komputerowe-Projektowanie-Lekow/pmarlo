@@ -1,5 +1,6 @@
 import streamlit as st
 from pathlib import Path
+from typing import Any, Mapping, Optional
 
 from core.context import AppContext
 from core.session import (
@@ -10,6 +11,65 @@ from core.session import (
 from backend.types import SimulationConfig, ShardRequest
 from pmarlo.api import parse_temperature_ladder
 
+_REQUIRED_CV_FILES = (
+    "deeptica_cv_model.pt",
+    "deeptica_cv_model_scaler.npz",
+)
+
+
+def _unique_path(path_like: Any) -> Optional[Path]:
+    if not path_like:
+        return None
+    try:
+        candidate = Path(path_like).expanduser()
+    except Exception:
+        return None
+    return candidate
+
+
+def _probable_training_dir(bundle_path: Path) -> Optional[Path]:
+    stem = bundle_path.stem
+    suffix = stem.replace("deeptica-", "", 1) if stem.startswith("deeptica-") else stem
+    candidate = bundle_path.parent / f"training-{suffix}"
+    return candidate
+
+
+def _cv_bundle_dir_from_entry(entry: Mapping[str, Any]) -> Optional[Path]:
+    """Return the directory containing exported CV bias assets for a model entry."""
+
+    candidates: list[Path] = []
+
+    def _register(raw: Any) -> None:
+        candidate = _unique_path(raw)
+        if candidate is None:
+            return
+        if candidate.is_file():
+            candidate = candidate.parent
+        candidate = candidate.resolve()
+        if candidate not in candidates:
+            candidates.append(candidate)
+
+    bundle_info = entry.get("cv_model_bundle")
+    if isinstance(bundle_info, Mapping):
+        for key in ("model_path", "scaler_path", "config_path", "metadata_path"):
+            _register(bundle_info.get(key))
+
+    _register(entry.get("checkpoint_dir"))
+
+    bundle = entry.get("bundle")
+    if bundle:
+        bundle_path = _unique_path(bundle)
+        if bundle_path is not None:
+            inferred = _probable_training_dir(bundle_path)
+            if inferred is not None:
+                _register(inferred)
+
+    for candidate in candidates:
+        if candidate.is_dir() and all((candidate / name).exists() for name in _REQUIRED_CV_FILES):
+            return candidate
+
+    return None
+
 
 def render_sampling_tab(ctx: AppContext) -> None:
     """Render the sampling & shard production tab."""
@@ -17,6 +77,9 @@ def render_sampling_tab(ctx: AppContext) -> None:
     layout = ctx.layout
 
     st.header("Sampling & Shard Production")
+
+    st.markdown("---")
+
     inputs = layout.available_inputs()
     if not inputs:
         st.warning("No prepared proteins found. Place a PDB under app_input/.")
@@ -72,11 +135,13 @@ def render_sampling_tab(ctx: AppContext) -> None:
                 key="sim_run_label",
             )
 
+        use_cv_model = False
+        cv_model_path: Optional[Path] = None
+
         # CV-Informed Sampling
         with st.expander("CV-Informed Sampling (Optional)", expanded=False):
             st.write("Use a trained Deep-TICA model to bias the simulation and explore diverse conformations.")
             models = backend.list_models()
-            cv_model_path = None
             if models:
                 use_cv_model = st.checkbox(
                     "Use trained CV model to inform sampling",
@@ -99,13 +164,11 @@ def render_sampling_tab(ctx: AppContext) -> None:
                         format_func=_cv_model_label,
                         key="sim_cv_model_select",
                     )
-                    # Get checkpoint_dir where exported .pt files are, not the .pbz bundle
                     model_entry = models[selected_cv_idx]
-                    checkpoint_dir_str = model_entry.get("checkpoint_dir")
-                    cv_model_path = Path(checkpoint_dir_str) if checkpoint_dir_str else None
+                    cv_model_path = _cv_bundle_dir_from_entry(model_entry)
 
-                    if cv_model_path and cv_model_path.exists():
-                        st.success(f"Selected CV model from: {cv_model_path.name}")
+                    if cv_model_path is not None:
+                        st.success(f"Selected CV bundle: {cv_model_path}")
                         st.info(
                             "**CV-Informed Sampling ENABLED**\n\n"
                             "The trained Deep-TICA model will be used to bias the simulation:\n"
@@ -118,8 +181,11 @@ def render_sampling_tab(ctx: AppContext) -> None:
                             "**Note**: The model expects **molecular features** (distances, angles) as input. "
                             "Feature extraction is automatically configured in the OpenMM system."
                         )
-                    elif cv_model_path:
-                        st.error(f"Model checkpoint directory not found: {cv_model_path}")
+                    else:
+                        st.error(
+                            "Selected model is missing the exported CV bias bundle (deeptica_cv_model.* files). "
+                            "Re-run the training tab after installing the optional ML/CV dependencies to export the bundle."
+                        )
             else:
                 st.info(
                     "No trained CV models available. Train a model in the 'Model Training' tab to enable CV-informed sampling.")
@@ -169,6 +235,12 @@ def render_sampling_tab(ctx: AppContext) -> None:
             try:
                 temps = parse_temperature_ladder(temps_raw)
                 seed_val = int(random_seed_str) if random_seed_str.strip() else None
+
+                if use_cv_model and cv_model_path is None:
+                    raise RuntimeError(
+                        "CV-informed sampling requested but no exported CV bundle was located for the selected model."
+                    )
+
                 config = SimulationConfig(
                     pdb_path=input_choice,
                     temperatures=temps,
@@ -183,9 +255,7 @@ def render_sampling_tab(ctx: AppContext) -> None:
                         int(exchange_override) if exchange_override > 0 else None
                     ),
                     temperature_schedule_mode=schedule_mode,
-                    # DISABLED: CV biasing is not production-ready (causes 10-20x slowdown on CPU)
-                    # cv_model_bundle=cv_model_path if cv_model_path and cv_model_path.exists() else None,
-                    cv_model_bundle=None,
+                    cv_model_bundle=cv_model_path,
                 )
 
                 # Mark as in progress BEFORE running to prevent double-clicks
@@ -212,29 +282,53 @@ def render_sampling_tab(ctx: AppContext) -> None:
 
     if backend.state.runs:
         with st.expander("Load recorded run", expanded=sim is None):
-            run_entries = backend.state.runs
-            run_ids = [str(entry.get("run_id")) for entry in run_entries]
-            if run_ids:
-                current_idx = 0
-                if sim is not None and sim.run_id in run_ids:
-                    current_idx = run_ids.index(sim.run_id)
-                selected_run_id = st.selectbox(
-                    "Select run",
-                    options=run_ids,
-                    index=current_idx,
-                    key="load_run_select",
-                )
-                if st.button("Use this run", key="load_run_button"):
-                    loaded = backend.load_run(selected_run_id)
-                    if loaded is not None:
-                        st.session_state[_LAST_SIM] = loaded
-                        st.session_state[_LAST_SHARDS] = None
-                        sim = loaded
-                        st.success(f"Loaded run {loaded.run_id}.")
-                    else:
-                        st.error("Could not load the selected run from disk.")
-            else:
-                st.info("No recorded runs available yet.")
+            col_load, col_scan = st.columns([3, 1])
+
+            with col_scan:
+                if st.button("Scan for all runs", help="Scan the sims directory for runs not in state"):
+                    with st.spinner("Scanning..."):
+                        missing = backend.get_missing_state_entries()
+                        if missing:
+                            # Count runs by status
+                            complete = sum(1 for v in missing if v.status.value == "complete")
+                            missing_demux = sum(1 for v in missing if v.status.value == "missing_demux")
+                            missing_analysis = sum(1 for v in missing if v.status.value == "missing_analysis")
+
+                            msg = f"Found {len(missing)} valid runs not in state:"
+                            if complete:
+                                msg += f"\n- {complete} complete"
+                            if missing_demux:
+                                msg += f"\n- {missing_demux} with replica files only (no demux)"
+                            if missing_analysis:
+                                msg += f"\n- {missing_analysis} missing analysis"
+                            st.info(msg)
+                        else:
+                            st.success("All runs are in state!")
+
+            with col_load:
+                run_entries = backend.state.runs
+                run_ids = [str(entry.get("run_id")) for entry in run_entries]
+                if run_ids:
+                    current_idx = 0
+                    if sim is not None and sim.run_id in run_ids:
+                        current_idx = run_ids.index(sim.run_id)
+                    selected_run_id = st.selectbox(
+                        "Select run",
+                        options=run_ids,
+                        index=current_idx,
+                        key="load_run_select",
+                    )
+                    if st.button("Use this run", key="load_run_button"):
+                        loaded = backend.load_run(selected_run_id)
+                        if loaded is not None:
+                            st.session_state[_LAST_SIM] = loaded
+                            st.session_state[_LAST_SHARDS] = None
+                            sim = loaded
+                            st.success(f"Loaded run {loaded.run_id}.")
+                        else:
+                            st.error("Could not load the selected run from disk.")
+                else:
+                    st.info("No recorded runs available yet.")
 
     if sim is not None:
         st.success(

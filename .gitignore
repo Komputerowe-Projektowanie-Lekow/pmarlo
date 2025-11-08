@@ -97,3 +97,4 @@ typelog.txt
 
 changes.patch
 example_programs/programs_outputs/remd_benchmark/*
+example_programs/data/*

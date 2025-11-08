@@ -5,12 +5,14 @@ import streamlit as st
 from core.context import build_context
 from core import ensure_session_defaults, consume_pending_training_config
 from ui.sidebar import render_sidebar
+from ui.theme import inject_global_styles
 
 from tabs.sampling import render_sampling_tab
 from tabs.training import render_training_tab
 from tabs.msm_fes import render_msm_fes_tab
 from tabs.conformations import render_conformations_tab
 from tabs.validation import render_validation_tab
+from tabs.run_discovery import render_run_discovery_tab
 from tabs.model_preview import render_model_preview
 from tabs.assets import render_assets_tab
 from tabs.its import render_its_tab
@@ -19,6 +21,7 @@ from tabs.its import render_its_tab
 def main() -> None:
     """Main application entry point."""
     st.set_page_config(page_title="PMARLO Joint Learning", layout="wide")
+    inject_global_styles()
 
     # Initialize session state and consume any pending configs
     ensure_session_defaults()
@@ -44,6 +47,7 @@ def main() -> None:
             tab_msm_fes,
             tab_conformations,
             tab_validation,
+            tab_run_discovery,
             tab_model_preview,
             tab_assets,
         ) = st.tabs([
@@ -52,6 +56,7 @@ def main() -> None:
             "MSM/FES Analysis",
             "Conformation Analysis",
             "Free Energy Validation",
+            "Run Discovery",
             "Model Preview",
             "Assets",
         ])
@@ -70,6 +75,9 @@ def main() -> None:
 
         with tab_validation:
             render_validation_tab(ctx)
+
+        with tab_run_discovery:
+            render_run_discovery_tab(ctx)
 
         with tab_model_preview:
             render_model_preview(ctx)

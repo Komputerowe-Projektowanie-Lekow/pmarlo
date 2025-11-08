@@ -10,6 +10,7 @@ from .shards import ShardsMixin
 from .training import TrainingMixin
 from .analysis import AnalysisMixin
 from .conformations import ConformationsMixin
+from .validation import ValidationMixin
 from .utils import *
 
 logger = logging.getLogger(__name__)
@@ -20,7 +21,8 @@ class Backend(
     ShardsMixin,
     TrainingMixin,
     AnalysisMixin,
-    ConformationsMixin
+    ConformationsMixin,
+    ValidationMixin
 ):
     """Main backend interface for pmarlo-webapp."""
 

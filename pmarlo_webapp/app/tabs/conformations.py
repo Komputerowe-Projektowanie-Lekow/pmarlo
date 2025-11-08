@@ -10,8 +10,10 @@ from core.session import (
     _sync_form_metastable_states,
 )
 from core.view_helpers import (
+    SHARD_SELECTOR_HELP,
     _summarize_selected_shards,
     _render_conformations_result,
+    build_shard_selector_options,
 )
 from backend.types import ConformationsConfig, ConformationsResult
 from pmarlo.api import select_shard_paths
@@ -92,24 +94,14 @@ def render_conformations_tab(ctx: AppContext) -> None:
         st.info("Emit shards to run conformations analysis.")
     else:
         # Build display labels with indicators
-        run_display_options = []
-        run_id_map = {}  # Maps display label to actual run_id
-        for entry in shard_groups:
-            run_id = str(entry.get("run_id"))
-            is_cv_informed = entry.get("cv_informed", False)
-            if is_cv_informed:
-                display_label = f"{run_id} 🔴 [CV-BIASED]"
-            else:
-                display_label = f"{run_id} 🟢 [UNBIASED]"
-            run_display_options.append(display_label)
-            run_id_map[display_label] = run_id
+        run_display_options, run_id_map = build_shard_selector_options(shard_groups)
 
         selected_display = st.multiselect(
             "Shard groups for conformations",
             options=run_display_options,
             default=run_display_options,
             key="conf_selected_runs",
-            help="🔴 CV-BIASED runs used DeepTICA model for enhanced sampling with metabiases, 🟢 UNBIASED = Regular MD"
+            help=SHARD_SELECTOR_HELP
         )
 
         # Map back to actual run_ids
