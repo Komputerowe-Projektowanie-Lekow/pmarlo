@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List, Dict, Sequence, Optional, Mapping, Any, TYPE_CHECKING
+from typing import List, Dict, Sequence, Optional, Mapping, Any, TYPE_CHECKING, Literal
 
 import numpy as np
 import pandas as pd
@@ -16,6 +16,34 @@ if TYPE_CHECKING:
     from backend.types import BuildArtifact, TrainingResult, ConformationsResult
 
 SHARD_SELECTOR_HELP = "M CV-BIASED = DeepTICA/metabias, U UNBIASED = Regular MD"
+
+
+def _aggregate_shard_selector_stats(
+    records: Sequence[Mapping[str, Any]],
+    selected_run_ids: Sequence[str],
+) -> Dict[str, int]:
+    """Summarize selected vs total runs, shards, and frames for the selector UI."""
+
+    selected = {str(run_id) for run_id in selected_run_ids}
+    stats = {
+        "runs_total": len(records),
+        "runs_selected": 0,
+        "shards_total": 0,
+        "shards_selected": 0,
+        "frames_total": 0,
+        "frames_selected": 0,
+    }
+    for record in records:
+        run_id = str(record.get("run_id", ""))
+        n_shards = int(record.get("n_shards", 0) or 0)
+        frames_total = int(record.get("frames_total", 0) or 0)
+        stats["shards_total"] += n_shards
+        stats["frames_total"] += frames_total
+        if run_id in selected:
+            stats["runs_selected"] += 1
+            stats["shards_selected"] += n_shards
+            stats["frames_selected"] += frames_total
+    return stats
 
 
 def _format_run_selection_summary(runs: Sequence[ShardRunSummary]) -> str:
@@ -43,7 +71,7 @@ def _summarize_selected_shards(
 def build_shard_selector_options(
     entries: Sequence[Mapping[str, Any]],
 ) -> tuple[List[str], Dict[str, str]]:
-    """Construct display labels for shard selectors with bias markers."""
+    """Construct display labels for shard selectors with bias markers and frame counts."""
 
     options: List[str] = []
     run_id_map: Dict[str, str] = {}
@@ -52,11 +80,322 @@ def build_shard_selector_options(
         is_cv_informed = bool(entry.get("cv_informed", False))
         bias_tag = "[CV-BIASED]" if is_cv_informed else "[UNBIASED]"
         bias_marker = "M" if is_cv_informed else "U"
-        display_label = f"{bias_marker} {run_id} {bias_tag}"
+        frames_raw = entry.get("n_frames")
+        if frames_raw is None:
+            raise ValueError(
+                f"Shard group for run '{run_id}' is missing 'n_frames' metadata."
+            )
+        try:
+            frames_total = int(frames_raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Shard group for run '{run_id}' has invalid 'n_frames': {frames_raw!r}"
+            ) from exc
+        frames_text = f"{frames_total:,}"
+        display_label = f"{bias_marker} {run_id} {bias_tag}  FRAMES: {frames_text}"
         options.append(display_label)
         run_id_map[display_label] = run_id
 
     return options, run_id_map
+
+
+def render_shard_selection_table(
+    label: str,
+    shard_groups: Sequence[Mapping[str, Any]],
+    *,
+    state_key: str,
+    default_behavior: Literal["latest", "all", "none"] = "latest",
+    help_text: Optional[str] = None,
+) -> List[str]:
+    """Render a fast checkbox-based shard selector that keeps its state visible."""
+
+    if not shard_groups:
+        return []
+
+    if default_behavior not in {"latest", "all", "none"}:
+        raise ValueError(
+            f"Unsupported default_behavior '{default_behavior}'. "
+            "Use one of: 'latest', 'all', 'none'."
+        )
+
+    ordered_run_ids: List[str] = []
+    for entry in shard_groups:
+        run_id_raw = entry.get("run_id")
+        if run_id_raw is None:
+            raise ValueError("Shard group entry is missing 'run_id'.")
+        run_id = str(run_id_raw).strip()
+        if not run_id:
+            raise ValueError("Shard group entry has an empty 'run_id'.")
+        ordered_run_ids.append(run_id)
+
+    stored_selection = [
+        run_id
+        for run_id in st.session_state.get(state_key, [])
+        if run_id in ordered_run_ids
+    ]
+    if not stored_selection:
+        if default_behavior == "all":
+            stored_selection = ordered_run_ids[:]
+        elif default_behavior == "latest" and ordered_run_ids:
+            stored_selection = [ordered_run_ids[-1]]
+        else:
+            stored_selection = []
+
+    prefix = f"{state_key}__"
+    active_checkbox_keys = {f"{prefix}{run_id}" for run_id in ordered_run_ids}
+    stale_keys = [
+        key
+        for key in list(st.session_state.keys())
+        if key.startswith(prefix) and key not in active_checkbox_keys
+    ]
+    for key in stale_keys:
+        st.session_state.pop(key, None)
+
+    def _set_selection(new_selection: Sequence[str]) -> None:
+        nonlocal stored_selection
+        normalized: List[str] = []
+        seen: set[str] = set()
+        for run_id in new_selection:
+            if run_id not in ordered_run_ids or run_id in seen:
+                continue
+            normalized.append(run_id)
+            seen.add(run_id)
+        stored_selection = normalized
+        st.session_state[state_key] = normalized
+        for run_id in ordered_run_ids:
+            st.session_state[f"{prefix}{run_id}"] = run_id in seen
+
+    _set_selection(stored_selection)
+
+    def _normalize_frames(entry: Mapping[str, Any], run_id: str) -> int:
+        frames_raw = entry.get("n_frames")
+        if frames_raw is None:
+            raise ValueError(
+                f"Shard group for run '{run_id}' is missing 'n_frames' metadata."
+            )
+        try:
+            return int(frames_raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Shard group for run '{run_id}' has invalid 'n_frames': {frames_raw!r}"
+            ) from exc
+
+    def _normalize_shards(entry: Mapping[str, Any]) -> int:
+        n_shards_raw = entry.get("n_shards")
+        if n_shards_raw is None:
+            n_shards_raw = len(entry.get("paths", []))
+        try:
+            return int(n_shards_raw)
+        except (TypeError, ValueError):
+            return len(entry.get("paths", []))
+
+    def _normalize_temperature(entry: Mapping[str, Any], run_id: str) -> Optional[float]:
+        temp_raw = entry.get("temperature_K")
+        if temp_raw is None:
+            temp_raw = entry.get("temperature")
+        if temp_raw is None:
+            return None
+        try:
+            return float(temp_raw)
+        except (TypeError, ValueError) as exc:  # pragma: no cover - sanity guard
+            raise ValueError(
+                f"Shard group for run '{run_id}' has invalid temperature: {temp_raw!r}"
+            ) from exc
+
+    def _normalize_analysis_temps(entry: Mapping[str, Any]) -> List[str]:
+        payload = entry.get("analysis_temperatures")
+        if payload is None:
+            return []
+        if isinstance(payload, (list, tuple, set)):
+            iterable = payload
+        else:
+            iterable = [payload]
+        values: List[str] = []
+        for item in iterable:
+            if item is None:
+                continue
+            values.append(str(item))
+        return values
+
+    st.markdown(f"**{label}**")
+    display_help = help_text or SHARD_SELECTOR_HELP
+    if display_help:
+        st.caption(display_help)
+
+    records: List[Dict[str, Any]] = []
+    original_positions: Dict[str, int] = {
+        run_id: idx for idx, run_id in enumerate(ordered_run_ids)
+    }
+    for run_id, entry in zip(ordered_run_ids, shard_groups):
+        frames_total = _normalize_frames(entry, run_id)
+        n_shards = _normalize_shards(entry)
+        temperature = _normalize_temperature(entry, run_id)
+        created_at = entry.get("created_at") or entry.get("created") or ""
+        analysis_temps = _normalize_analysis_temps(entry)
+        frames_per_shard = int(frames_total / n_shards) if n_shards else None
+        bias_flag = bool(entry.get("cv_informed"))
+        bias_label = "CV-BIASED" if bias_flag else "UNBIASED"
+        bias_marker = "M" if bias_flag else "U"
+        search_blob = " ".join(
+            part
+            for part in [
+                run_id.lower(),
+                bias_label.lower(),
+                bias_marker.lower(),
+                str(frames_total),
+                str(n_shards),
+                str(temperature or ""),
+                (created_at or "").lower(),
+                " ".join(t.lower() for t in analysis_temps),
+            ]
+            if part
+        )
+        records.append(
+            {
+                "run_id": run_id,
+                "frames_total": frames_total,
+                "frames_per_shard": frames_per_shard,
+                "n_shards": n_shards,
+                "temperature": temperature,
+                "created_at": created_at,
+                "analysis_temperatures": analysis_temps,
+                "bias_label": bias_label,
+                "bias_marker": bias_marker,
+                "cv_informed": bias_flag,
+                "search_blob": search_blob,
+                "position": original_positions[run_id],
+            }
+        )
+
+    filter_col, sort_col = st.columns([3, 1])
+    filter_query = filter_col.text_input(
+        "Filter shard groups",
+        key=f"{state_key}_filter",
+        placeholder="Search by run id, bias, temperature, or date...",
+    ).strip()
+    sort_choice = sort_col.selectbox(
+        "Sort order",
+        options=(
+            "Original order",
+            "Newest",
+            "Oldest",
+            "Most frames",
+            "Fewest frames",
+            "Run ID",
+        ),
+        key=f"{state_key}_sort",
+    )
+
+    def _filter_records(
+        items: Sequence[Mapping[str, Any]]
+    ) -> List[Mapping[str, Any]]:
+        if not filter_query:
+            return list(items)
+        needle = filter_query.lower()
+        return [
+            record for record in items if needle in record.get("search_blob", "")
+        ]
+
+    def _sort_records(items: Sequence[Mapping[str, Any]]) -> List[Mapping[str, Any]]:
+        sort_map = {
+            "Original order": (lambda rec: rec["position"], False),
+            "Newest": (lambda rec: rec.get("created_at") or "", True),
+            "Oldest": (lambda rec: rec.get("created_at") or "", False),
+            "Most frames": (lambda rec: rec.get("frames_total", 0), True),
+            "Fewest frames": (lambda rec: rec.get("frames_total", 0), False),
+            "Run ID": (lambda rec: rec.get("run_id", ""), False),
+        }
+        key_fn, reverse = sort_map.get(sort_choice, sort_map["Original order"])
+        return sorted(items, key=key_fn, reverse=reverse)
+
+    action_cols = st.columns(3)
+    if action_cols[0].button(
+        "Select all",
+        key=f"{state_key}_select_all",
+        use_container_width=True,
+    ):
+        _set_selection(ordered_run_ids)
+    if action_cols[1].button(
+        "Clear selection",
+        key=f"{state_key}_clear",
+        use_container_width=True,
+    ):
+        _set_selection([])
+    latest_disabled = not ordered_run_ids
+    if action_cols[2].button(
+        "Latest only",
+        key=f"{state_key}_latest",
+        use_container_width=True,
+        disabled=latest_disabled,
+    ):
+        _set_selection(ordered_run_ids[-1:] if ordered_run_ids else [])
+
+    stats = _aggregate_shard_selector_stats(records, stored_selection)
+    summary_cols = st.columns(3)
+    summary_cols[0].markdown(
+        f"**Runs selected**\n{stats['runs_selected']} / {stats['runs_total']}"
+    )
+    summary_cols[1].markdown(
+        f"**Shards selected**\n{stats['shards_selected']} / {stats['shards_total']}"
+    )
+    summary_cols[2].markdown(
+        f"**Frames selected**\n"
+        f"{stats['frames_selected']:,} / {stats['frames_total']:,}"
+    )
+
+    display_records = _sort_records(_filter_records(records))
+    st.divider()
+    if not display_records:
+        st.info("No shard groups match the current filter.")
+    else:
+        for idx, record in enumerate(display_records):
+            run_id = str(record["run_id"])
+            checkbox_key = f"{prefix}{run_id}"
+            select_col, info_col = st.columns([0.12, 0.88])
+            st.checkbox(
+                "Select run",
+                key=checkbox_key,
+                label_visibility="collapsed",
+            )
+            info_col.markdown(
+                f"**{run_id}**  "
+                f"`{record['bias_marker']} {record['bias_label']}`"
+            )
+            summary_line = (
+                f"{record['n_shards']} shard{'s' if record['n_shards'] != 1 else ''} | "
+                f"{record['frames_total']:,} frame{'s' if record['frames_total'] != 1 else ''}"
+            )
+            if record["frames_per_shard"]:
+                summary_line += (
+                    f" | ~{record['frames_per_shard']:,} frames/shard"
+                )
+            info_col.caption(summary_line)
+
+            detail_parts = []
+            temperature = record.get("temperature")
+            if temperature is not None:
+                detail_parts.append(f"{float(temperature):.1f} K")
+            created_at = record.get("created_at")
+            if created_at:
+                detail_parts.append(f"created {created_at}")
+            analysis_temps = record.get("analysis_temperatures") or []
+            if analysis_temps:
+                detail_parts.append(
+                    "analysis temps: " + ", ".join(str(t) for t in analysis_temps)
+                )
+            if detail_parts:
+                info_col.caption(" | ".join(detail_parts))
+
+            if idx < len(display_records) - 1:
+                st.divider()
+
+    selected_runs = [
+        run_id
+        for run_id in ordered_run_ids
+        if st.session_state.get(f"{prefix}{run_id}", False)
+    ]
+    st.session_state[state_key] = selected_runs
+    return selected_runs
 
 
 def _default_feature_spec_path(layout: "WorkspaceLayout") -> Optional[Path]:
@@ -376,3 +715,134 @@ def _render_conformations_result(conf_result: "ConformationsResult") -> None:
         st.write(
             f"{len(conf_result.representative_pdbs)} representative PDB files saved"
         )
+
+
+def plot_ck_errors_with_threshold(
+    ck_errors: Dict[int, float],
+    selected_lag: int,
+    threshold: float = 0.15,
+):
+    """Plot CK errors vs lag time with threshold line and selected lag highlighted.
+
+    Parameters
+    ----------
+    ck_errors : Dict[int, float]
+        CK error for each candidate lag.
+    selected_lag : int
+        The selected optimal lag time.
+    threshold : float
+        CK error threshold to display.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The generated figure.
+    """
+    import matplotlib.pyplot as plt
+
+    lags = sorted(ck_errors.keys())
+    errors = [ck_errors[lag] for lag in lags]
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    # Plot CK errors
+    ax.plot(lags, errors, marker="o", linestyle="-", linewidth=2, label="CK Error")
+
+    # Highlight selected lag
+    if selected_lag in ck_errors:
+        selected_error = ck_errors[selected_lag]
+        ax.scatter(
+            [selected_lag],
+            [selected_error],
+            color="red",
+            s=200,
+            zorder=5,
+            label=f"Selected: τ={selected_lag}",
+            marker="*",
+        )
+
+    # Threshold line
+    ax.axhline(
+        y=threshold,
+        color="green",
+        linestyle="--",
+        linewidth=2,
+        label=f"Threshold ({threshold:.0%})",
+    )
+
+    ax.set_xlabel("Lag time τ (steps)", fontsize=12)
+    ax.set_ylabel("CK Error", fontsize=12)
+    ax.set_title("Chapman-Kolmogorov Test Error vs Lag Time", fontsize=14, fontweight="bold")
+    ax.legend(loc="best", frameon=True)
+    ax.grid(True, linestyle=":", alpha=0.6)
+    fig.tight_layout()
+
+    return fig
+
+
+def plot_its_with_selection(
+    lag_times: np.ndarray,
+    timescales: np.ndarray,
+    selected_lag: int,
+    max_timescales: int = 10,
+):
+    """Plot implied timescales with selected lag highlighted.
+
+    Parameters
+    ----------
+    lag_times : np.ndarray
+        Array of lag times.
+    timescales : np.ndarray
+        Array of timescales (shape: [n_lags, n_timescales]).
+    selected_lag : int
+        The selected optimal lag time.
+    max_timescales : int
+        Maximum number of timescale curves to plot.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The generated figure.
+    """
+    import matplotlib.pyplot as plt
+
+    lags = np.asarray(lag_times, dtype=int)
+    ts = np.asarray(timescales, dtype=float)
+
+    if ts.ndim == 1:
+        ts = ts.reshape(-1, 1)
+
+    n_curves = min(ts.shape[1], max_timescales)
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    for idx in range(n_curves):
+        y_vals = ts[:, idx]
+        valid_mask = np.isfinite(y_vals) & (y_vals > 0)
+        ax.plot(
+            lags[valid_mask],
+            y_vals[valid_mask],
+            marker="o",
+            linestyle="-",
+            label=f"Timescale {idx + 1}",
+        )
+
+    # Highlight selected lag with vertical line
+    if selected_lag in lags:
+        ax.axvline(
+            x=selected_lag,
+            color="red",
+            linestyle="--",
+            linewidth=2,
+            label=f"Selected: τ={selected_lag}",
+        )
+
+    ax.set_xlabel("Lag time τ (steps)", fontsize=12)
+    ax.set_ylabel("Implied timescale (steps)", fontsize=12)
+    ax.set_title("Implied Timescales with Selected Lag", fontsize=14, fontweight="bold")
+    ax.set_yscale("log")
+    ax.legend(loc="best", frameon=True, fontsize=9)
+    ax.grid(True, which="both", linestyle=":", alpha=0.6, linewidth=0.5)
+    fig.tight_layout()
+
+    return fig

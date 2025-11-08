@@ -7,7 +7,7 @@ from core.context import AppContext
 from core.view_helpers import (
     SHARD_SELECTOR_HELP,
     _summarize_selected_shards,
-    build_shard_selector_options,
+    render_shard_selection_table,
 )
 from pmarlo.visualization.diagnostics import (
     create_sampling_validation_plot,
@@ -26,17 +26,16 @@ def render_validation_tab(ctx: AppContext) -> None:
     if not shard_groups:
         st.info("Emit shards first to generate validation plots.")
     else:
-        # Build display labels with CV-informed indicators
-        run_display_options, run_id_map = build_shard_selector_options(shard_groups)
-
-        selected_display = st.multiselect(
+        selected_runs = render_shard_selection_table(
             "Select shard groups for validation",
-            options=run_display_options,
-            default=run_display_options,
-            key="validation_selected_runs",
-            help=SHARD_SELECTOR_HELP
+            shard_groups,
+            state_key="validation_selected_runs",
+            default_behavior="all",
+            help_text=SHARD_SELECTOR_HELP,
         )
-        selected_runs = [run_id_map[display] for display in selected_display]
+        if not selected_runs:
+            st.warning("Choose at least one shard group to generate validation plots.")
+            return
         try:
             selected_paths = select_shard_paths(shard_groups, selected_runs)
         except ValueError as exc:

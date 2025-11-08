@@ -13,6 +13,7 @@ except ImportError:
     dt = None
 
 from pmarlo.analysis.project_cv import apply_whitening_from_metadata
+from pmarlo.api.fes import generate_free_energy_surface
 from pmarlo.conformations import find_conformations
 from pmarlo.conformations.representative_picker import (
     TrajectoryFrameLocator,
@@ -20,10 +21,12 @@ from pmarlo.conformations.representative_picker import (
 )
 from pmarlo.conformations.visualizations import (
     plot_pcca_states,
+    plot_pcca_states_on_fes,
     plot_tpt_summary,
 )
 from pmarlo.data.aggregate import load_shards_as_dataset
 from pmarlo.markov_state_model.clustering import cluster_microstates
+from pmarlo.markov_state_model.free_energy import FESResult
 from pmarlo.markov_state_model.reduction import reduce_features
 from pmarlo.utils.path_utils import ensure_directory
 
@@ -99,6 +102,8 @@ class ConformationsMixin:
         ensure_directory(output_dir)
         config_dict: Dict[str, Any] = {}
         summary_path = output_dir / "conformations_summary.json"
+
+        fes_result: Optional[FESResult] = None
 
         try:
             logger.info(f"Loading {len(shard_jsons)} shards for conformations analysis")
@@ -188,6 +193,40 @@ class ConformationsMixin:
                 )
             else:
                 raise ValueError(f"Unsupported cv_method '{config.cv_method}' for conformations")
+
+            if features_reduced.shape[1] < 2:
+                raise ValueError(
+                    "At least two collective variable components are required to compute the FES overlay."
+                )
+            cv1 = np.asarray(features_reduced[:, 0], dtype=float).reshape(-1)
+            cv2 = np.asarray(features_reduced[:, 1], dtype=float).reshape(-1)
+            frame_count = int(cv1.size)
+            adaptive_bins = max(30, min(150, int(max(1, frame_count) ** 0.5)))
+            fes_label_prefix = "DeepTICA" if cv_method == "deeptica" else "TICA"
+            try:
+                fes_result = generate_free_energy_surface(
+                    cv1,
+                    cv2,
+                    bins=(adaptive_bins, adaptive_bins),
+                    temperature=float(config.temperature),
+                    periodic=(False, False),
+                    smooth=True,
+                    min_count=1,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "Failed to compute the Free Energy Surface required for the metastable overlay plot."
+                ) from exc
+
+            if fes_result is None or fes_result.F is None:
+                raise RuntimeError("Free Energy Surface generation returned an empty result.")
+
+            if fes_result.cv1_name is None:
+                fes_result.cv1_name = f"{fes_label_prefix} 1"
+                fes_result.metadata["cv1_name"] = fes_result.cv1_name
+            if fes_result.cv2_name is None:
+                fes_result.cv2_name = f"{fes_label_prefix} 2"
+                fes_result.metadata["cv2_name"] = fes_result.cv2_name
 
             cluster_mode = (config.cluster_mode or "kmeans").strip().lower()
             method_alias = {
@@ -297,6 +336,7 @@ class ConformationsMixin:
                 'pi': pi,
                 'dtrajs': [labels],
                 'features': features_reduced,
+                'fes': fes_result,
             }
 
             conf_result = find_conformations(
@@ -320,6 +360,7 @@ class ConformationsMixin:
                 tica__dim=tica_dim,
                 committor_thresholds=tuple(config.committor_thresholds),
                 n_metastable=config.n_metastable,
+                temperature=float(config.temperature),
             )
 
             macro_memberships_data = conf_result.metadata.get("macrostate_memberships")
@@ -339,6 +380,15 @@ class ConformationsMixin:
 
             pcca_plot_path = output_dir / "pcca_states.png"
             plot_pcca_states(tica_cluster_coords, pcca_memberships, str(pcca_plot_path))
+            if fes_result is None:
+                raise RuntimeError("Free Energy Surface was not computed; cannot build overlay plot.")
+            pcca_fes_plot_path = output_dir / "pcca_states_on_fes.png"
+            plot_pcca_states_on_fes(
+                fes_result,
+                tica_cluster_coords,
+                pcca_memberships,
+                str(pcca_fes_plot_path),
+            )
 
             tpt_result = conf_result.tpt_result
             if tpt_result is None:
@@ -348,7 +398,10 @@ class ConformationsMixin:
 
             logger.info("Generating visualizations")
             plot_tpt_summary(tpt_result, str(output_dir))
-            plots = {"pcca_states": pcca_plot_path}
+            plots = {
+                "pcca_states": pcca_plot_path,
+                "pcca_states_on_fes": pcca_fes_plot_path,
+            }
             for plot_name in ("committors", "flux_network", "pathways"):
                 plot_path = output_dir / f"{plot_name}.png"
                 if plot_path.exists():

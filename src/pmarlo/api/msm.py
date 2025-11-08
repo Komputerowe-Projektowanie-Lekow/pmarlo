@@ -17,11 +17,14 @@ from pmarlo.markov_state_model._msm_utils import (
     select_lag_from_its,
 )
 from pmarlo.markov_state_model.ck_runner import run_ck
+from pmarlo.markov_state_model.ck_its_selector import select_optimal_lag_ck_its
+from pmarlo.markov_state_model.results import CKITSSelectionResult
 from pmarlo.markov_state_model.free_energy import generate_1d_pmf
 from pmarlo.api.features import compute_universal_embedding
 from pmarlo.api.fes import generate_free_energy_surface
 from pmarlo.reporting.plots import save_pmf_line, save_fes_contour
 from pmarlo.utils.path_utils import ensure_directory
+from pmarlo.data.aggregate import load_shards_as_dataset
 
 logger = logging.getLogger("pmarlo")
 
@@ -483,5 +486,245 @@ def macro_mfpt(T_macro: np.ndarray) -> np.ndarray:
     logger.debug("[msm] Computing macro MFPTs: T_macro_shape=%s", T_macro.shape)
     result = compute_macro_mfpt(T_macro)
     logger.debug("[msm] MFPT matrix computed: shape=%s", result.shape)
+    return result
+
+
+def select_lag_with_ck_validation(
+    shard_paths: List[Path | str],
+    topology_path: Path | str,
+    feature_spec_path: Path | str,
+    n_clusters: int,
+    tica_dim: int,
+    tau_candidates: Optional[List[int]] = None,
+    horizons: Optional[List[int]] = None,
+    ck_threshold: float = 0.15,
+    coverage_threshold: float = 0.98,
+    min_median_count: int = 100,
+    tica_lag: int = 10,
+) -> CKITSSelectionResult:
+    """Select optimal lag using CK+ITS analysis on shard data.
+
+    This function combines Chapman-Kolmogorov (CK) validation with Implied
+    Timescales (ITS) analysis to automatically select the smallest lag time
+    that passes validation criteria.
+
+    The algorithm:
+    1. Loads and aggregates shards
+    2. Computes features and applies TICA reduction
+    3. Clusters into microstates
+    4. For each candidate lag:
+       - Builds MSM at lag τ
+       - Determines macrostates via PCCA+ (eigenvalue gap)
+       - Predicts macro kinetics T^k
+       - Observes macro kinetics at horizons kτ
+       - Computes CK error
+       - Checks sanity criteria (coverage, counts)
+    5. Selects smallest lag passing all criteria
+
+    Parameters
+    ----------
+    shard_paths : List[Path | str]
+        List of shard JSON file paths.
+    topology_path : Path | str
+        Path to topology PDB file (for validation).
+    feature_spec_path : Path | str
+        Path to feature specification YAML file (for validation).
+    n_clusters : int
+        Number of microstates for clustering.
+    tica_dim : int
+        Number of TICA components to retain.
+    tau_candidates : Optional[List[int]]
+        Candidate lag times to evaluate. If None, uses [25, 50, 75, 100].
+    horizons : Optional[List[int]]
+        CK test horizons k. If None, uses [1, 2, 3, 4, 5].
+    ck_threshold : float
+        Maximum acceptable CK error (default: 0.15 = 15%).
+    coverage_threshold : float
+        Minimum coverage fraction (default: 0.98 = 98%).
+    min_median_count : int
+        Minimum median microstate count (default: 100).
+    tica_lag : int
+        Lag time for TICA dimensionality reduction (default: 10).
+
+    Returns
+    -------
+    CKITSSelectionResult
+        Result object containing:
+        - selected_lag: The optimal lag time
+        - ck_errors: CK error for each candidate lag
+        - its_timescales: ITS data for plotting
+        - coverage_fractions: Coverage for each lag
+        - median_counts: Median counts for each lag
+        - macrostate_counts: Number of macrostates for each lag
+        - passed_sanity: Whether each lag passed sanity checks
+        - diagnostics: Additional diagnostic information
+
+    Raises
+    ------
+    FileNotFoundError
+        If topology or feature spec files do not exist.
+    ValueError
+        If no shard files are provided or if data is insufficient.
+
+    Examples
+    --------
+    >>> result = select_lag_with_ck_validation(
+    ...     shard_paths=["shard1.json", "shard2.json"],
+    ...     topology_path="protein.pdb",
+    ...     feature_spec_path="features.yaml",
+    ...     n_clusters=200,
+    ...     tica_dim=10,
+    ... )
+    >>> print(f"Selected lag: {result.selected_lag}")
+    """
+    logger.info(
+        "[CK-ITS API] Starting lag selection with %d shards, %d clusters, TICA dim %d",
+        len(shard_paths),
+        n_clusters,
+        tica_dim,
+    )
+
+    # Validate inputs
+    topo_path = Path(topology_path).expanduser().resolve()
+    if not topo_path.exists():
+        raise FileNotFoundError(f"Topology file not found: {topo_path}")
+
+    spec_path = Path(feature_spec_path).expanduser().resolve()
+    if not spec_path.exists():
+        raise FileNotFoundError(f"Feature specification not found: {spec_path}")
+
+    if not shard_paths:
+        raise ValueError("No shard files provided")
+
+    resolved_shards = [Path(p).expanduser().resolve() for p in shard_paths]
+
+    # Load shards
+    logger.info("[CK-ITS API] Loading %d shard files", len(resolved_shards))
+    dataset = load_shards_as_dataset(resolved_shards)
+
+    features = dataset.get("X")
+    if features is None:
+        raise ValueError("Aggregated shards did not contain feature matrix 'X'")
+
+    X = np.asarray(features, dtype=float)
+    if X.ndim != 2 or X.shape[0] == 0:
+        raise ValueError("Feature matrix must be 2D with at least one frame")
+
+    n_frames, n_features = X.shape
+    logger.info(
+        "[CK-ITS API] Loaded %d frames with %d features", n_frames, n_features
+    )
+
+    # Apply TICA reduction
+    from pmarlo.markov_state_model.reduction import reduce_features
+
+    tica_components = min(tica_dim, X.shape[1])
+    logger.info(
+        "[CK-ITS API] Applying TICA reduction (lag=%d, components=%d)",
+        tica_lag,
+        tica_components,
+    )
+    Y = reduce_features(
+        X,
+        method="tica",
+        lag=tica_lag,
+        n_components=tica_components,
+    )
+
+    # Cluster into microstates
+    from pmarlo.markov_state_model.clustering import cluster_microstates
+
+    logger.info("[CK-ITS API] Clustering into %d microstates", n_clusters)
+    clustering = cluster_microstates(
+        Y,
+        method="kmeans",
+        n_states=n_clusters,
+        random_state=42,
+    )
+
+    discrete = np.asarray(clustering.labels, dtype=np.int32)
+    if discrete.size == 0:
+        raise ValueError("Clustering produced no discrete states")
+
+    unique_states = np.unique(discrete)
+    logger.info(
+        "[CK-ITS API] Clustered into %d unique states (requested %d)",
+        unique_states.size,
+        n_clusters,
+    )
+
+    # Prepare discrete trajectories
+    dtrajs = [discrete]
+
+    # Run CK+ITS selection
+    selected_lag, evaluations = select_optimal_lag_ck_its(
+        dtrajs=dtrajs,
+        tau_candidates=tau_candidates,
+        horizons=horizons,
+        ck_threshold=ck_threshold,
+        coverage_threshold=coverage_threshold,
+        min_median_count=min_median_count,
+    )
+
+    # Collect ITS timescales from evaluations
+    its_lags = []
+    its_times = []
+    for eval_result in evaluations:
+        if eval_result.timescales is not None and eval_result.timescales.size > 0:
+            its_lags.append(eval_result.lag)
+            its_times.append(eval_result.timescales)
+
+    # Pad timescales to same length for array conversion
+    if its_times:
+        max_len = max(ts.size for ts in its_times)
+        padded_times = []
+        for ts in its_times:
+            if ts.size < max_len:
+                padded = np.full(max_len, np.nan, dtype=float)
+                padded[: ts.size] = ts
+                padded_times.append(padded)
+            else:
+                padded_times.append(ts)
+        its_timescales = np.array(padded_times)
+    else:
+        its_timescales = np.empty((0, 0), dtype=float)
+
+    # Build result
+    result = CKITSSelectionResult(
+        selected_lag=selected_lag,
+        ck_errors={e.lag: e.ck_error for e in evaluations},
+        its_timescales=its_timescales,
+        its_lag_times=np.array(its_lags, dtype=int),
+        coverage_fractions={e.lag: e.coverage_fraction for e in evaluations},
+        median_counts={e.lag: e.median_count for e in evaluations},
+        macrostate_counts={e.lag: e.n_macrostates for e in evaluations},
+        passed_sanity={e.lag: e.passed_sanity for e in evaluations},
+        diagnostics={
+            "n_frames": n_frames,
+            "n_features": n_features,
+            "n_clusters": n_clusters,
+            "tica_dim": tica_components,
+            "tica_lag": tica_lag,
+            "n_unique_states": int(unique_states.size),
+            "evaluations": [
+                {
+                    "lag": e.lag,
+                    "ck_error": e.ck_error,
+                    "coverage": e.coverage_fraction,
+                    "median_count": e.median_count,
+                    "n_macrostates": e.n_macrostates,
+                    "passed_sanity": e.passed_sanity,
+                    "failure_reason": e.failure_reason,
+                    "eigenvalue_gap": e.eigenvalue_gap,
+                }
+                for e in evaluations
+            ],
+        },
+    )
+
+    logger.info(
+        "[CK-ITS API] Selection complete: selected_lag=%d", result.selected_lag
+    )
+
     return result
 

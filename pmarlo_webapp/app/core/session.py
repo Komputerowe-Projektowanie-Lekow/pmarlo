@@ -26,6 +26,10 @@ _ASSET_BUILD_SELECTION = "__pmarlo_asset_build_select"
 _ASSET_CONF_SELECTION = "__pmarlo_asset_conf_select"
 _ITS_PENDING_TOPOLOGY = "__pmarlo_its_pending_topology"
 _ITS_PENDING_FEATURE_SPEC = "__pmarlo_its_pending_feature_spec"
+_CK_ITS_PENDING_TOPOLOGY = "__pmarlo_ck_its_pending_topology"
+_CK_ITS_PENDING_FEATURE_SPEC = "__pmarlo_ck_its_pending_feature_spec"
+_LAST_CK_ITS_RESULT = "__pmarlo_last_ck_its"
+_CK_ITS_FEEDBACK = "__pmarlo_ck_its_feedback"
 
 def _apply_training_config_to_state(cfg: "TrainingConfig") -> None:
     from core.parsers import _format_tau_schedule
@@ -122,6 +126,16 @@ def _ensure_session_defaults() -> None:
     st.session_state.setdefault(_ASSET_CONF_SELECTION, None)
     st.session_state.setdefault(_ITS_PENDING_TOPOLOGY, None)
     st.session_state.setdefault(_ITS_PENDING_FEATURE_SPEC, None)
+    st.session_state.setdefault(_CK_ITS_PENDING_TOPOLOGY, None)
+    st.session_state.setdefault(_CK_ITS_PENDING_FEATURE_SPEC, None)
+    st.session_state.setdefault(_LAST_CK_ITS_RESULT, None)
+    st.session_state.setdefault(_CK_ITS_FEEDBACK, None)
+    st.session_state.setdefault("ck_its_n_clusters", 200)
+    st.session_state.setdefault("ck_its_tica_dim", 10)
+    st.session_state.setdefault("ck_its_tica_lag", 10)
+    st.session_state.setdefault("ck_its_ck_threshold", 0.15)
+    st.session_state.setdefault("ck_its_coverage_threshold", 0.98)
+    st.session_state.setdefault("ck_its_min_median_count", 100)
 
 def _sync_sidebar_tica_dim() -> None:
     """Keep sidebar TICA dimension in sync with form inputs."""

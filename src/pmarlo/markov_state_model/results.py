@@ -172,3 +172,22 @@ class ITSResult(BaseResult):
     rates: np.ndarray
     rates_ci: np.ndarray
     recommended_lag_window: Optional[tuple[float, float]] = None
+
+
+@dataclass
+class CKITSSelectionResult(BaseResult):
+    """Result from automatic lag selection using CK+ITS analysis.
+
+    This result combines Chapman-Kolmogorov validation with Implied Timescales
+    analysis to select the optimal lag time for MSM construction.
+    """
+
+    selected_lag: int
+    ck_errors: Dict[int, float]
+    its_timescales: np.ndarray
+    its_lag_times: np.ndarray
+    coverage_fractions: Dict[int, float]
+    median_counts: Dict[int, int]
+    macrostate_counts: Dict[int, int]
+    passed_sanity: Dict[int, bool]
+    diagnostics: Dict[str, Any] = field(default_factory=dict)

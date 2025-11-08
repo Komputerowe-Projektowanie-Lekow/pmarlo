@@ -7,10 +7,14 @@ https://deeptime-ml.github.io/latest/notebooks/tpt.html
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Mapping, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+from pmarlo.reporting.plots import plot_free_energy_2d
+from pmarlo.utils.thermodynamics import kT_kJ_per_mol
 
 
 def plot_committors(
@@ -267,6 +271,222 @@ def plot_pcca_states(
 
     fig.tight_layout()
 
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    return output
+
+
+def plot_pcca_states_on_fes(
+    fes: Any,
+    tica_coords: np.ndarray,
+    pcca_memberships: np.ndarray,
+    output_path: str | Path,
+    *,
+    fes_figsize: Tuple[int, int] = (8, 6),
+    fes_cmap: str = "viridis",
+    fes_levels: int = 30,
+    fes_max_energy_kt: float = 8.0,
+    fes_add_contours: bool = True,
+    cmap_small: str = "tab10",
+    cmap_large: str = "tab20",
+    marker_size: int = 70,
+    edge_color: str = "black",
+    edge_width: float = 0.4,
+    scatter_alpha: float = 0.9,
+) -> Path:
+    """Overlay PCCA macrostate assignments on top of a Free Energy Surface.
+
+    Args:
+        fes: FESResult-like object exposing ``F``, ``xedges`` and ``yedges``.
+        tica_coords: 2D array of microstate coordinates (TICA space).
+        pcca_memberships: Macrostate membership matrix (n_states x n_macrostates).
+        output_path: Target path for the rendered figure.
+        fes_figsize: Matplotlib figure size for the overlay.
+        fes_cmap: Colormap used for the FES contour.
+        fes_levels: Number of contour levels for the FES.
+        fes_max_energy_kt: Maximum FES energy (kT) to display.
+        fes_add_contours: Whether to overlay contour lines.
+        cmap_small: Colormap when <=10 macrostates are present.
+        cmap_large: Colormap when >10 macrostates are present.
+        marker_size: Scatter marker size for microstates.
+        edge_color: Marker edge color.
+        edge_width: Marker edge width.
+        scatter_alpha: Alpha value applied to the scatter markers.
+
+    Returns:
+        Path to the written figure.
+    """
+
+    def _as_array(value: Any, name: str) -> np.ndarray:
+        arr = np.asarray(value, dtype=float)
+        if arr.ndim == 0:
+            raise ValueError(f"{name} must be an array, received scalar.")
+        return arr
+
+    def _coerce_surface(
+        surface: Any, target: Tuple[int, int], allow_transpose: bool = True
+    ) -> Optional[np.ndarray]:
+        array = np.asarray(surface)
+        if array.ndim == 0:
+            return None
+        squeezed = np.squeeze(array)
+        if squeezed.shape == target:
+            return np.asarray(squeezed, dtype=float)
+        if allow_transpose and squeezed.shape == target[::-1]:
+            return np.asarray(squeezed.T, dtype=float)
+        total = int(np.prod(target))
+        if squeezed.size == total:
+            try:
+                reshaped = squeezed.reshape(target)
+                return np.asarray(reshaped, dtype=float)
+            except ValueError:
+                return None
+        return None
+
+    if hasattr(fes, "F") and hasattr(fes, "xedges") and hasattr(fes, "yedges"):
+        raw_F = fes.F
+        xedges = _as_array(fes.xedges, "fes.xedges")
+        yedges = _as_array(fes.yedges, "fes.yedges")
+        cv1_name = getattr(fes, "cv1_name", None)
+        cv2_name = getattr(fes, "cv2_name", None)
+        temperature = getattr(fes, "temperature", None)
+        metadata = getattr(fes, "metadata", {})
+        counts_source = getattr(fes, "counts", None)
+    elif isinstance(fes, Mapping):
+        raw_F = fes["F"]
+        xedges = _as_array(fes["xedges"], "fes['xedges']")
+        yedges = _as_array(fes["yedges"], "fes['yedges']")
+        cv1_name = fes.get("cv1_name")
+        cv2_name = fes.get("cv2_name")
+        temperature = fes.get("temperature")
+        metadata = fes
+        counts_source = fes.get("counts")
+    else:
+        raise TypeError("fes must expose F, xedges, and yedges arrays.")
+
+    metadata_mapping = metadata if isinstance(metadata, Mapping) else {}
+
+    if xedges.ndim != 1 or yedges.ndim != 1:
+        raise ValueError("FES edge arrays must be one-dimensional.")
+
+    target_shape = (xedges.size - 1, yedges.size - 1)
+    F = _coerce_surface(raw_F, target_shape)
+
+    if F is None:
+        counts_candidate = counts_source
+        if counts_candidate is None:
+            counts_candidate = metadata_mapping.get("counts")
+
+        if counts_candidate is not None:
+            counts = _coerce_surface(counts_candidate, target_shape)
+            if counts is not None:
+                temp = (
+                    float(temperature)
+                    if temperature is not None
+                    else float(metadata_mapping.get("temperature", 300.0))
+                )
+                kT = kT_kJ_per_mol(temp)
+                probs = np.asarray(counts, dtype=float)
+                total_counts = float(np.sum(probs))
+                if total_counts <= 0:
+                    raise ValueError(
+                        "FES counts contain no mass; cannot reconstruct surface."
+                    )
+                probs = probs / total_counts
+                with np.errstate(divide="ignore"):
+                    F = -kT * np.log(np.maximum(probs, np.finfo(float).tiny))
+                finite = np.isfinite(F)
+                if finite.any():
+                    F = F - float(np.nanmin(F[finite]))
+                else:
+                    raise ValueError(
+                        "Reconstructed FES surface contains no finite values."
+                    )
+
+    if F is None:
+        raise ValueError(
+            "FES array shape must match the provided edge lengths "
+            f"(expected {target_shape}, found {np.asarray(raw_F).shape})."
+        )
+
+    coords = np.asarray(tica_coords, dtype=float)
+    if coords.ndim != 2:
+        raise ValueError("tica_coords must be a 2D array.")
+    if coords.shape[1] < 2:
+        raise ValueError("tica_coords must include at least two dimensions.")
+
+    memberships = np.asarray(pcca_memberships, dtype=float)
+    if memberships.ndim != 2:
+        raise ValueError("pcca_memberships must be a 2D array.")
+    if memberships.shape[0] != coords.shape[0]:
+        raise ValueError(
+            "pcca_memberships rows must match the number of TICA coordinates."
+        )
+
+    state_labels = np.argmax(memberships, axis=1)
+    unique_labels = np.unique(state_labels)
+    cmap = cmap_small if unique_labels.size <= 10 else cmap_large
+
+    xcenters = 0.5 * (xedges[:-1] + xedges[1:])
+    ycenters = 0.5 * (yedges[:-1] + yedges[1:])
+    grid = np.meshgrid(xcenters, ycenters)
+    xx = grid[0]
+    if F.shape != xx.shape:
+        if F.T.shape == xx.shape:
+            F = F.T
+        else:
+            raise ValueError(
+                "FES array shape is incompatible with the computed grid; "
+                f"expected {xx.shape}, received {F.shape}."
+            )
+
+    fig, ax = plt.subplots(figsize=fes_figsize)
+    existing_axes = set(fig.axes)
+    fig = plot_free_energy_2d(
+        grid,
+        F,
+        ax=ax,
+        cmap=fes_cmap,
+        levels=fes_levels,
+        max_energy_kt=fes_max_energy_kt,
+        add_contour_lines=fes_add_contours,
+    )
+
+    if cv1_name:
+        ax.set_xlabel(str(cv1_name))
+    if cv2_name:
+        ax.set_ylabel(str(cv2_name))
+
+    scatter = ax.scatter(
+        coords[:, 0],
+        coords[:, 1],
+        c=state_labels,
+        cmap=cmap,
+        s=marker_size,
+        edgecolor=edge_color,
+        linewidth=edge_width,
+        alpha=scatter_alpha,
+    )
+    ax.set_title("PCCA States on Free Energy Surface")
+
+    new_axes = [axis for axis in fig.axes if axis not in existing_axes and axis is not ax]
+    if new_axes:
+        fes_colorbar_ax = new_axes[0]
+        # Leave the automatically created FES colorbar untouched but ensure it stays close.
+        bbox = fes_colorbar_ax.get_position()
+        fes_colorbar_ax.set_position(
+            [bbox.x0, bbox.y0, bbox.width * 0.9, bbox.height]
+        )
+
+    divider = make_axes_locatable(ax)
+    scatter_cax = divider.append_axes("right", size="3%", pad=0.25)
+    scatter_cbar = fig.colorbar(scatter, cax=scatter_cax)
+    scatter_cbar.set_label("Metastable State ID")
+
+    fig.tight_layout()
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=300, bbox_inches="tight")

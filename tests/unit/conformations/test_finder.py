@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 import numpy as np
 
 from pmarlo.conformations import find_conformations
+from pmarlo.conformations.finder import _extract_structures
+from pmarlo.conformations.results import Conformation
 
 
 def _stationary_distribution(T: np.ndarray) -> np.ndarray:
@@ -50,6 +55,10 @@ def test_find_conformations_uses_pcca_macrostates() -> None:
 
     assert results.macrostate_labels is not None
     assert set(np.unique(results.macrostate_labels)) == {0, 1}
+    memberships = np.asarray(results.metadata["macrostate_memberships"])
+    assert memberships.shape == (T.shape[0], 2)
+    np.testing.assert_allclose(memberships.sum(axis=1), 1.0, atol=1e-8)
+    assert results.metadata["n_metastable_states"] == 2
 
     metastable = results.get_metastable_states()
     assert len(metastable) == 2
@@ -59,7 +68,9 @@ def test_find_conformations_uses_pcca_macrostates() -> None:
 
     for conf in metastable:
         assert conf.macrostate_id in (0, 1)
-        assert conf.metadata["macrostate_members"]
+        members = np.asarray(conf.metadata["macrostate_members"])
+        assert members.shape == (2,)
+        np.testing.assert_allclose(np.sum(members), 1.0, atol=1e-8)
 
 
 def test_find_conformations_identifies_tse_states() -> None:
@@ -108,3 +119,56 @@ def test_find_conformations_identifies_tse_states() -> None:
     ]
     for conf in other_transitions:
         assert conf.conformation_type == "transition"
+
+
+def test_extract_structures_forwards_locator_and_topology(monkeypatch: Any, tmp_path: Path) -> None:
+    """Structure extraction uses locator/topology arguments."""
+
+    topology_path = tmp_path / "topology.pdb"
+    topology_path.write_text("HEADER")
+    trajectory_locator = object()
+    called: dict[str, Any] = {}
+
+    def fake_extract(
+        self,  # type: ignore[unused-arg]
+        representatives,
+        trajectories,
+        output_dir,
+        prefix,
+        *,
+        topology_path=None,
+        trajectory_locator=None,
+    ):
+        called["representatives"] = representatives
+        called["trajectories"] = trajectories
+        called["output_dir"] = output_dir
+        called["prefix"] = prefix
+        called["topology_path"] = topology_path
+        called["trajectory_locator"] = trajectory_locator
+        return []
+
+    monkeypatch.setattr(
+        "pmarlo.conformations.finder.RepresentativePicker.extract_structures",
+        fake_extract,
+    )
+
+    conf = Conformation(
+        conformation_type="metastable",
+        state_id=0,
+        frame_index=0,
+        population=0.5,
+        free_energy=0.0,
+        trajectory_index=0,
+        local_frame_index=0,
+    )
+
+    _extract_structures(
+        [conf],
+        trajectories=None,
+        output_dir=str(tmp_path / "structures"),
+        topology_path=str(topology_path),
+        trajectory_locator=trajectory_locator,
+    )
+
+    assert called["topology_path"] == str(topology_path)
+    assert called["trajectory_locator"] is trajectory_locator
