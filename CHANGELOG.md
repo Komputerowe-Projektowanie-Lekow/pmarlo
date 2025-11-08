@@ -1,3 +1,62 @@
+<a id='changelog-1.0.58'></a>
+# 1.0.58 — 2025-11-08
+
+## Added
+
+- CK+ITS automatic lag selection tool in `pmarlo.markov_state_model.ck_its_selector` module that combines Chapman-Kolmogorov validation with Implied Timescales analysis to select the optimal lag time for MSM construction
+- `select_optimal_lag_ck_its()` function that evaluates candidate lag times and selects the smallest lag passing CK tests (≤10-15% error), coverage (≥98%), and median count (≥100-200) criteria
+- Auto-determination of macrostate count via eigenvalue gap detection for PCCA+ decomposition
+- API function `select_lag_with_ck_validation()` in `pmarlo.api.msm` that provides end-to-end lag selection from shard data
+- `CKITSSelectionResult` dataclass in `pmarlo.markov_state_model.results` for structured result handling
+- Interactive "ITS with CK Analysis" tab in pmarlo_webapp under "Implied Timescales" for automatic lag selection with visualization of CK errors, ITS curves, and sanity checks
+- Plot helpers `plot_ck_errors_with_threshold()` and `plot_its_with_selection()` for visualization of CK+ITS results
+- Conformations analysis now computes deterministic PCCA+ macrostate memberships and injects them into the result metadata so downstream tools (including the app) can visualize metastable decompositions without extra plumbing.
+fixed:
+- Metastable conformations once again expose their macrostate identifiers/membership vectors, preventing the conformations workflow from failing with “PCCA memberships required for visualization”.
+- Structure extraction now honors `topology_path`/`trajectory_locator` inputs, so the conformations workflow writes PDB files even when raw trajectories must be resolved through the locator.
+- Frame counts now show up in every shard selector option throughout `pmarlo_webapp`, making it easy to compare run siz
+- Enabled `run_single_temperature_md` to export restart snapshots so single-temperature runs in the app can save checkpointable final structures just like REMD jobs.
+- Added regression tests covering the single-temperature snapshot flow and the helper that resolves the effective run temperature.
+- Added `_run_single_temp_production` method to `ReplicaExchange` class to properly handle production phase when `n_replicas == 1` or `exchange_frequency` is very large.
+- Added comprehensive unit tests for single-temperature MD production phase execution.
+fixed:
+- Streamlit workflow backend now routes single-temperature runs through dedicated logic, preserving the config flag on resume, recording accurate ladder metadata, and preventing spurious "temperature ladder must have two values" failures.
+- Fixed production phase not running any MD steps when using single-temperature MD (when `n_replicas == 1` or `exchange_frequency` is larger than production steps). Production duration was 0 ms because `exchange_steps` was 0.
+- Fixed `_log_final_stats` to skip inappropriate REMD-specific warnings (exchange acceptance and replica diffusion) when running single-temperature MD.
+- Single-temperature MD simulations now properly execute production steps and report completion without spurious warnings.
+- Introduced regression tests that cover shard summary aggregation and guard against metadata inconsistencies.
+- Added `plot_pcca_states_on_fes`, allowing conformations analyses to overlay PCCA+ macrostates on the computed Free Energy Surface with consistent styling taken from the existing FES utilities.
+changed:
+- The conformations workflow now computes a TICA-based FES, feeds it into `find_conformations`, and emits a new `pcca_states_on_fes.png` artifact alongside the standalone PCCA plot so macrostate assignments can be inspected directly on the energy landscape.
+- `plot_pcca_states_on_fes` now tolerates legacy/sparse FES payloads by reconstructing the surface from histogram counts when necessary, preventing shape-mismatch crashes during the new overlay step.
+
+
+
+
+## Changed
+
+- Restructured pmarlo_webapp "Implied Timescales" tab to include two subtabs: "ITS" (existing) and "ITS with CK Analysis" (new)
+- Backend `AnalysisMixin` now includes `run_ck_its_selection()` method for integration with webapp
+- Replaced emoji icons across logs, documentation, scripts, and UI helpers with ASCII text markers (M/U, OK/FAIL/WARNING) to keep the codebase emoji-free.
+- Shard summaries now recompute total frame counts from the underlying JSON metadata to keep selector labels accurate if shard files move or get cleaned up.
+- Added a reusable shard selection table helper that surfaces bias, shard counts, frames, and temperatures consistently across the training, MSM/FES, ITS, CK+ITS, validation, and conformations tabs.
+
+- Refreshed the shard selector UI with search, sort, quick select buttons, and readable run cards so the Streamlit workflow is easier to operate when many simulations are available.
+
+
+
+## Fixed
+
+- CK+ITS Streamlit tab no longer crashes when the backend returns a dictionary result; status messaging tolerates both dicts and dataclass responses.
+- CK+ITS selector now uses microstate-level CK test as fallback when PCCA+ decomposition fails, preventing all evaluations from failing with infinite error. This makes the tool robust to datasets where macrostate coarse-graining is difficult.
+- Corrected test expectation in `test_compute_median_count` to match actual behavior (counting both incoming and outgoing transitions).
+- CK-ITS evaluation logging now formats coverage percentages correctly (`%.2f%%`), preventing runtime `ValueError` and ensuring coverage stats appear in Streamlit and log outputs.
+- Reworked every shard/simulation selector in the Streamlit UI to keep the picker open while toggling runs, eliminating the dropdown reset that prevented multi-selection without constant reopening.
+- Replaced the slow editable table with lightweight inline checkboxes so selecting several shard groups in rapid succession no longer reverts or lags while the widget rerenders.
+- Grouped shard batch summaries by run so Streamlit selectors never generate duplicate element keys and conformation analysis can run without UI crashes.
+
+
+
 <a id='changelog-1.0.56'></a>
 # 1.0.56 — 2025-11-08
 

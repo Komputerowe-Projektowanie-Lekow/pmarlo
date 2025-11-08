@@ -16,6 +16,7 @@ from tabs.run_discovery import render_run_discovery_tab
 from tabs.model_preview import render_model_preview
 from tabs.assets import render_assets_tab
 from tabs.its import render_its_tab
+from tabs.ck_its_auto import render_ck_its_tab
 
 
 def main() -> None:
@@ -34,7 +35,7 @@ def main() -> None:
     render_sidebar(ctx)
 
     # Create top-level tabs
-    tab_conformation, tab_its = st.tabs([
+    tab_conformation, tab_its_container = st.tabs([
         "Conformation Analysis",
         "Implied Timescales",
     ])
@@ -85,11 +86,18 @@ def main() -> None:
         with tab_assets:
             render_assets_tab(ctx)
 
-    # Implied Timescales tab (separate from conformation analysis)
-    with tab_its:
-        render_its_tab(ctx)
+    # Implied Timescales tab with nested ITS and CK+ITS subtabs
+    with tab_its_container:
+        tab_its_simple, tab_its_ck = st.tabs([
+            "ITS",
+            "ITS with CK Analysis",
+        ])
 
-    # TODO : Create another tab that has the CK validation test to see other interesting parameters
+        with tab_its_simple:
+            render_its_tab(ctx)
+
+        with tab_its_ck:
+            render_ck_its_tab(ctx)
 
     st.caption("Run with: poetry run streamlit run pmarlo_webapp/app/app.py")
 

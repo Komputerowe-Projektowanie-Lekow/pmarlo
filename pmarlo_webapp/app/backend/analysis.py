@@ -2,7 +2,7 @@ import json
 import logging
 import shutil
 from collections.abc import Mapping
-from dataclasses import asdict
+from dataclasses import asdict, asdict as dataclass_asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -18,6 +18,7 @@ from pmarlo.analysis.debug_export import (
     _compute_occupancy_tail,
 )
 from pmarlo.api.shards import build_from_shards
+from pmarlo.api.msm import select_lag_with_ck_validation
 from pmarlo.data.aggregate import load_shards_as_dataset
 
 from .types import BuildArtifact, BuildConfig, _AnalysisMSMStats
@@ -1063,3 +1064,89 @@ class AnalysisMixin:
             traceback.print_exc()
             print("--- END DEBUG ERROR ---")
             raise
+
+    def run_ck_its_selection(
+        self,
+        shard_paths: Sequence[Path | str],
+        topology_path: Path | str,
+        feature_spec_path: Path | str,
+        n_clusters: int,
+        tica_dim: int,
+        tica_lag: int,
+        tau_candidates: List[int],
+        horizons: List[int],
+        ck_threshold: float,
+        coverage_threshold: float,
+        min_median_count: int,
+    ) -> Dict[str, Any]:
+        """Run CK+ITS lag selection and return results for display.
+
+        Parameters
+        ----------
+        shard_paths : Sequence[Path | str]
+            List of shard JSON file paths.
+        topology_path : Path | str
+            Path to topology PDB file.
+        feature_spec_path : Path | str
+            Path to feature specification YAML file.
+        n_clusters : int
+            Number of microstates for clustering.
+        tica_dim : int
+            Number of TICA components to retain.
+        tica_lag : int
+            Lag time for TICA dimensionality reduction.
+        tau_candidates : List[int]
+            Candidate lag times to evaluate.
+        horizons : List[int]
+            CK test horizons k.
+        ck_threshold : float
+            Maximum acceptable CK error.
+        coverage_threshold : float
+            Minimum coverage fraction.
+        min_median_count : int
+            Minimum median microstate count.
+
+        Returns
+        -------
+        Dict[str, Any]
+            Result dictionary containing selected lag, errors, and diagnostics.
+        """
+        logger.info(
+            "[CK-ITS Backend] Starting lag selection: %d shards, %d clusters",
+            len(shard_paths),
+            n_clusters,
+        )
+
+        result_obj = select_lag_with_ck_validation(
+            shard_paths=list(shard_paths),
+            topology_path=Path(topology_path),
+            feature_spec_path=Path(feature_spec_path),
+            n_clusters=n_clusters,
+            tica_dim=tica_dim,
+            tica_lag=tica_lag,
+            tau_candidates=tau_candidates,
+            horizons=horizons,
+            ck_threshold=ck_threshold,
+            coverage_threshold=coverage_threshold,
+            min_median_count=min_median_count,
+        )
+
+        # Convert result object to dictionary for frontend
+        result_dict = {
+            "selected_lag": result_obj.selected_lag,
+            "ck_errors": dict(result_obj.ck_errors),
+            "its_timescales": result_obj.its_timescales,
+            "its_lag_times": result_obj.its_lag_times,
+            "coverage_fractions": dict(result_obj.coverage_fractions),
+            "median_counts": dict(result_obj.median_counts),
+            "macrostate_counts": dict(result_obj.macrostate_counts),
+            "passed_sanity": dict(result_obj.passed_sanity),
+            "diagnostics": dict(result_obj.diagnostics),
+        }
+
+        logger.info(
+            "[CK-ITS Backend] Selection complete: selected_lag=%d",
+            result_dict["selected_lag"],
+        )
+
+        return result_dict

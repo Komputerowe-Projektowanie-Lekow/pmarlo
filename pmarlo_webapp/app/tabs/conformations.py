@@ -13,7 +13,7 @@ from core.view_helpers import (
     SHARD_SELECTOR_HELP,
     _summarize_selected_shards,
     _render_conformations_result,
-    build_shard_selector_options,
+    render_shard_selection_table,
 )
 from backend.types import ConformationsConfig, ConformationsResult
 from pmarlo.api import select_shard_paths
@@ -93,19 +93,16 @@ def render_conformations_tab(ctx: AppContext) -> None:
     if not shard_groups:
         st.info("Emit shards to run conformations analysis.")
     else:
-        # Build display labels with indicators
-        run_display_options, run_id_map = build_shard_selector_options(shard_groups)
-
-        selected_display = st.multiselect(
+        selected_runs = render_shard_selection_table(
             "Shard groups for conformations",
-            options=run_display_options,
-            default=run_display_options,
-            key="conf_selected_runs",
-            help=SHARD_SELECTOR_HELP
+            shard_groups,
+            state_key="conf_selected_runs",
+            default_behavior="all",
+            help_text=SHARD_SELECTOR_HELP,
         )
-
-        # Map back to actual run_ids
-        selected_runs = [run_id_map[display] for display in selected_display]
+        if not selected_runs:
+            st.info("Select at least one shard group before configuring TPT analysis.")
+            st.stop()
         try:
             selected_paths = select_shard_paths(shard_groups, selected_runs)
         except ValueError as exc:

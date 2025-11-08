@@ -16,7 +16,7 @@ from core.view_helpers import (
     _infer_default_topology,
     _default_feature_spec_path,
     _summarize_selected_shards,
-    build_shard_selector_options,
+    render_shard_selection_table,
 )
 from core.tables import _timescales_dataframe
 from backend.its import calculate_its, plot_its
@@ -45,9 +45,6 @@ def render_its_tab(ctx: AppContext) -> None:
     if not shard_groups:
         st.info("Emit shard batches to compute implied timescales.")
     else:
-        # Build display labels with CV-informed indicators
-        run_display_options, run_id_map = build_shard_selector_options(shard_groups)
-
         run_ids = [str(entry.get("run_id")) for entry in shard_groups]
         stored_selection = [
             run_id
@@ -83,24 +80,13 @@ def render_its_tab(ctx: AppContext) -> None:
             st.session_state["its_feature_spec_path"] = str(pending_spec)
             st.session_state[_ITS_PENDING_FEATURE_SPEC] = None
 
-        # Map stored selection to display labels for default
-        stored_display = [
-            next((display for display, rid in run_id_map.items() if rid == run_id), None)
-            for run_id in stored_selection
-        ]
-        stored_display = [d for d in stored_display if d is not None]
-
-        selected_display = st.multiselect(
+        selected_runs = render_shard_selection_table(
             "Shard groups",
-            options=run_display_options,
-            default=stored_display,
-            key="its_selected_runs_display",
-            help=SHARD_SELECTOR_HELP,
+            shard_groups,
+            state_key="its_selected_runs",
+            default_behavior="latest",
+            help_text=SHARD_SELECTOR_HELP,
         )
-
-        # Convert display selection to run IDs and show summary
-        selected_runs = [run_id_map[display] for display in selected_display]
-        st.session_state["its_selected_runs"] = selected_runs
 
         if selected_runs:
             try:

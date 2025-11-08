@@ -11,7 +11,10 @@ from core.session import (
     _apply_analysis_config_to_state,
 )
 from backend.types import BuildConfig, BuildArtifact, TrainingConfig
-from core.view_helpers import SHARD_SELECTOR_HELP, build_shard_selector_options
+from core.view_helpers import (
+    SHARD_SELECTOR_HELP,
+    render_shard_selection_table,
+)
 from pmarlo.api import select_shard_paths, parse_hidden_layers
 from plots.diagnostics import (
     plot_canonical_correlations,
@@ -71,16 +74,16 @@ def render_msm_fes_tab(ctx: AppContext) -> None:
     if not shard_groups:
         st.info("Emit shards to build an MSM/FES bundle.")
     else:
-        # Build display labels with CV-informed indicators
-        run_display_options, run_id_map = build_shard_selector_options(shard_groups)
-
-        selected_display = st.multiselect(
+        selected_runs = render_shard_selection_table(
             "Shard groups for analysis",
-            options=run_display_options,
-            default=run_display_options,
-            help=SHARD_SELECTOR_HELP
+            shard_groups,
+            state_key="analysis_selected_runs",
+            default_behavior="all",
+            help_text=SHARD_SELECTOR_HELP,
         )
-        selected_runs = [run_id_map[display] for display in selected_display]
+        if not selected_runs:
+            st.info("Select at least one shard group to build the MSM/FES bundle.")
+            st.stop()
         try:
             selected_paths = select_shard_paths(shard_groups, selected_runs)
         except ValueError as exc:

@@ -10,13 +10,68 @@ import numpy as np
 from scipy import constants
 
 from .kinetic_importance import KineticImportanceScore
-from .representative_picker import RepresentativePicker, build_frame_index_lookup
+from .representative_picker import (
+    RepresentativePicker,
+    TrajectoryFrameLocator,
+    build_frame_index_lookup,
+)
 from .results import Conformation, ConformationSet, KISResult, TPTResult, UncertaintyResult
 from .state_detection import StateDetector
 from .tpt_analysis import TPTAnalysis
 from .uncertainty import UncertaintyQuantifier
 
 logger = logging.getLogger("pmarlo.conformations")
+
+
+def _resolve_n_metastable(requested: Optional[int], n_states: int) -> int:
+    """Resolve the requested number of macrostates with sanity checks."""
+    resolved = 2 if requested is None else int(requested)
+    if resolved < 2:
+        raise ValueError("n_metastable must be at least 2")
+    if resolved > n_states:
+        raise ValueError(
+            f"n_metastable ({resolved}) cannot exceed the number of MSM states ({n_states})"
+        )
+    return resolved
+
+
+def _compute_macrostate_memberships(
+    T: np.ndarray,
+    pi: np.ndarray,
+    n_metastable: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Compute PCCA+ memberships and canonical macrostate labels."""
+    if T.ndim != 2 or T.shape[0] != T.shape[1]:
+        raise ValueError("Transition matrix must be square to compute macrostates")
+    if n_metastable > T.shape[0]:
+        raise ValueError(
+            f"Requested {n_metastable} macrostates but only {T.shape[0]} microstates available"
+        )
+
+    try:
+        from deeptime.markov import pcca
+    except ImportError as exc:  # pragma: no cover - optional dependency guard
+        raise ImportError("PCCA+ membership computation requires the 'deeptime' package") from exc
+
+    model = pcca(np.asarray(T, dtype=float), n_metastable)
+    memberships = np.asarray(model.memberships, dtype=float)
+    if memberships.ndim != 2 or memberships.shape[0] != T.shape[0]:
+        raise ValueError("PCCA+ returned memberships with unexpected shape")
+
+    # Canonicalize macrostate order by stationary population to ensure consistent labeling.
+    pi_vec = np.asarray(pi, dtype=float).reshape(-1)
+    if pi_vec.shape[0] != T.shape[0]:
+        raise ValueError("Stationary distribution size must match the transition matrix")
+
+    macro_weights = np.dot(pi_vec, memberships)
+    order = np.argsort(-macro_weights)
+    memberships = memberships[:, order]
+    remap = {int(old_idx): int(new_idx) for new_idx, old_idx in enumerate(order)}
+
+    raw_labels = np.argmax(np.asarray(model.memberships, dtype=float), axis=1)
+    macrostate_labels = np.asarray([remap[int(lbl)] for lbl in raw_labels], dtype=int)
+
+    return memberships, macrostate_labels
 
 
 def find_conformations(
@@ -86,8 +141,11 @@ def find_conformations(
     features = msm_data.get("features")
     fes = msm_data.get("fes")
     its = msm_data.get("its")
+    topology_path = kwargs.get("topology_path")
+    trajectory_locator = kwargs.get("trajectory_locator")
 
     n_states = T.shape[0]
+    n_metastable = _resolve_n_metastable(kwargs.get("n_metastable"), n_states)
     temperature_K = kwargs.get("temperature", 300.0)
 
     # Initialize result containers
@@ -96,6 +154,16 @@ def find_conformations(
     kis_result: Optional[KISResult] = None
     uncertainty_results: List[UncertaintyResult] = []
     macrostate_labels: Optional[np.ndarray] = None
+    macrostate_memberships: Optional[np.ndarray] = None
+
+    try:
+        macrostate_memberships, macrostate_labels = _compute_macrostate_memberships(
+            T, pi, n_metastable
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "Failed to compute PCCA+ macrostates required for conformations analysis"
+        ) from exc
 
     # Step 1: Detect or validate source/sink states
     if auto_detect or source_states is None or sink_states is None:
@@ -106,7 +174,7 @@ def find_conformations(
             pi=pi,
             fes=fes,
             its=its,
-            n_states=kwargs.get("n_metastable", 2),
+            n_states=n_metastable,
             method=auto_detect_method,
         )
         logger.info(
@@ -158,6 +226,8 @@ def find_conformations(
                 temperature_K,
                 kis_result,
                 flux_by_state,
+                macrostate_labels,
+                macrostate_memberships,
             )
             conformations.extend(metastable_conformations)
 
@@ -169,6 +239,7 @@ def find_conformations(
                 temperature_K,
                 kis_result,
                 flux_by_state,
+                macrostate_labels,
             )
             conformations.extend(transition_conformations)
 
@@ -194,9 +265,15 @@ def find_conformations(
         _update_with_representatives(conformations, representatives)
 
     # Step 6: Extract and save structures
-    if save_structures and trajectories is not None and output_dir is not None:
+    if save_structures and output_dir is not None:
         logger.info("Extracting representative structures")
-        _extract_structures(conformations, trajectories, output_dir)
+        _extract_structures(
+            conformations,
+            trajectories,
+            output_dir,
+            topology_path=topology_path,
+            trajectory_locator=trajectory_locator,
+        )
 
     # Step 7: Uncertainty quantification
     if uncertainty_analysis and dtrajs is not None:
@@ -226,7 +303,10 @@ def find_conformations(
         "auto_detected": auto_detect,
         "temperature_K": temperature_K,
         "uncertainty_analysis": uncertainty_analysis,
+        "n_metastable_states": n_metastable,
     }
+    if macrostate_memberships is not None:
+        metadata["macrostate_memberships"] = macrostate_memberships.tolist()
 
     result = ConformationSet(
         conformations=conformations,
@@ -253,6 +333,7 @@ def _find_transition_states(
     temperature_K: float,
     kis_result: Optional[KISResult],
     flux_by_state: Optional[np.ndarray] = None,
+    macrostate_labels: Optional[np.ndarray] = None,
 ) -> List[Conformation]:
     """Identify all reactive (non-source/sink) states."""
     kT = constants.k * temperature_K * constants.Avogadro / 1000.0
@@ -277,6 +358,10 @@ def _find_transition_states(
         if kis_result is not None:
             kis_score = float(kis_result.kis_scores[state_id])
 
+        macrostate_id = None
+        if macrostate_labels is not None and state_id < macrostate_labels.shape[0]:
+            macrostate_id = int(macrostate_labels[state_id])
+
         conf = Conformation(
             conformation_type="transition",
             state_id=int(state_id),
@@ -286,6 +371,7 @@ def _find_transition_states(
             committor=committor,
             kis_score=kis_score,
             flux=flux,
+            macrostate_id=macrostate_id,
         )
 
         conformations.append(conf)
@@ -299,6 +385,8 @@ def _find_metastable_states(
     temperature_K: float,
     kis_result: Optional[KISResult],
     flux_by_state: Optional[np.ndarray] = None,
+    macrostate_labels: Optional[np.ndarray] = None,
+    macrostate_memberships: Optional[np.ndarray] = None,
 ) -> Tuple[Optional[np.ndarray], List[Conformation]]:
     """Identify metastable states as source and sink sets from TPT results."""
     kT = constants.k * temperature_K * constants.Avogadro / 1000.0
@@ -327,6 +415,18 @@ def _find_metastable_states(
         else:
             role = "sink"
 
+        macrostate_id = None
+        if macrostate_labels is not None and state_id < macrostate_labels.shape[0]:
+            macrostate_id = int(macrostate_labels[state_id])
+
+        macro_members = None
+        if macrostate_memberships is not None and state_id < macrostate_memberships.shape[0]:
+            macro_members = macrostate_memberships[state_id].tolist()
+
+        conf_metadata = {"role": role}
+        if macro_members is not None:
+            conf_metadata["macrostate_members"] = macro_members
+
         conf = Conformation(
             conformation_type="metastable",
             state_id=int(state_id),
@@ -336,12 +436,13 @@ def _find_metastable_states(
             committor=committor,
             kis_score=kis_score,
             flux=flux,
-            metadata={"role": role},
+            macrostate_id=macrostate_id,
+            metadata=conf_metadata,
         )
 
         conformations.append(conf)
 
-    return None, conformations
+    return macrostate_labels, conformations
 
 
 def _calculate_state_flux(flux_matrix: np.ndarray) -> np.ndarray:
@@ -409,6 +510,9 @@ def _extract_structures(
     conformations: List[Conformation],
     trajectories: Any,
     output_dir: str,
+    *,
+    topology_path: Optional[str] = None,
+    trajectory_locator: Optional[TrajectoryFrameLocator] = None,
 ) -> None:
     """Extract and save representative structures."""
     picker = RepresentativePicker()
@@ -440,7 +544,12 @@ def _extract_structures(
         # Save structures
         type_dir = str(Path(output_dir) / conf_type)
         saved_paths = picker.extract_structures(
-            representatives, trajectories, type_dir, prefix=conf_type
+            representatives,
+            trajectories,
+            type_dir,
+            prefix=conf_type,
+            topology_path=topology_path,
+            trajectory_locator=trajectory_locator,
         )
 
         # Update conformations with paths

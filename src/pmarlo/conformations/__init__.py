@@ -41,6 +41,7 @@ __all__ = [
     "plot_committors",
     "plot_flux_network",
     "plot_pathways",
+    "plot_pcca_states_on_fes",
 ]
 
 _EXPORTS: dict[str, tuple[str, str]] = {
@@ -99,6 +100,10 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "plot_pathways": (
         "pmarlo.conformations.visualizations",
         "plot_pathways",
+    ),
+    "plot_pcca_states_on_fes": (
+        "pmarlo.conformations.visualizations",
+        "plot_pcca_states_on_fes",
     ),
 }
 

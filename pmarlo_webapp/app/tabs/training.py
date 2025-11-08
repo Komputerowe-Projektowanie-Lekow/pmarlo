@@ -17,7 +17,7 @@ from core.view_helpers import (
     _summarize_selected_shards,
     _show_build_outputs,
     _render_deeptica_summary,
-    build_shard_selector_options,
+    render_shard_selection_table,
 )
 from backend.types import TrainingConfig, TrainingResult
 from pmarlo.api import parse_tau_schedule, select_shard_paths, parse_hidden_layers
@@ -43,18 +43,16 @@ def render_training_tab(ctx: AppContext) -> None:
     else:
         # Data Selection
         with st.expander("Data Selection", expanded=True):
-            # Build display labels with CV-informed indicators
-            run_display_options, run_id_map = build_shard_selector_options(
-                shard_groups
-            )
-
-            selected_display = st.multiselect(
+            selected_runs = render_shard_selection_table(
                 "Shard groups",
-                options=run_display_options,
-                default=run_display_options[-1:] if run_display_options else [],
-                help=SHARD_SELECTOR_HELP
+                shard_groups,
+                state_key="train_selected_runs",
+                default_behavior="latest",
+                help_text=SHARD_SELECTOR_HELP,
             )
-            selected_runs = [run_id_map[display] for display in selected_display]
+            if not selected_runs:
+                st.info("Select at least one shard group to configure training.")
+                st.stop()
             try:
                 selected_paths = select_shard_paths(shard_groups, selected_runs)
             except ValueError as exc:
