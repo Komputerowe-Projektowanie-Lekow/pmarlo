@@ -453,7 +453,21 @@ def plot_sampling_validation(
     xlims = ax.get_xlim()
 
     # --- 2. Plot Continuous Trajectory Traces ---
-    num_shards_to_label = min(15, len(projected_data_1d))  # Limit legend entries
+    # Limit legend entries - show fewer individual runs to reduce clutter
+    num_shards_to_label = min(8, len(projected_data_1d))
+
+    # If we have metabiased_flags, try to show a mix of both types in legend
+    if metabiased_flags is not None and len(projected_data_1d) > num_shards_to_label:
+        biased_indices = [i for i, flag in enumerate(metabiased_flags) if flag]
+        standard_indices = [i for i, flag in enumerate(metabiased_flags) if not flag]
+        # Show first few of each type
+        labeled_indices = set(
+            biased_indices[:num_shards_to_label//2] +
+            standard_indices[:num_shards_to_label//2]
+        )
+    else:
+        labeled_indices = set(range(num_shards_to_label))
+
     for i, traj in enumerate(projected_data_1d):
         logger.debug(f"Trajectory {i}: traj length = {len(traj)}")
 
@@ -480,7 +494,8 @@ def plot_sampling_validation(
             y_time = np.linspace(ylims[0], ylims[1] * 0.9, actual_plot_len)
 
             # Use trajectory_labels if provided, otherwise use generic "Shard i" label
-            if i < num_shards_to_label:
+            # Only label trajectories in labeled_indices to reduce clutter
+            if i in labeled_indices:
                 if trajectory_labels and i < len(trajectory_labels):
                     label = trajectory_labels[i]
                 else:
@@ -489,20 +504,38 @@ def plot_sampling_validation(
                 label = None
 
             is_metabiased = bool(metabiased_flags[i]) if metabiased_flags is not None else False
-            line_style = "--" if is_metabiased else "-"
+
+            # Make dashed lines more visible
+            if is_metabiased:
+                line_style = "--"
+                line_width = lw_traj * 2.0  # Significantly thicker for visibility
+                line_alpha = min(1.0, alpha_traj * 1.3)  # More opaque but cap at 1.0
+                z_order = 3  # Draw on top of standard runs
+                dash_pattern = (5, 3)  # 5 points on, 3 points off for clear dashes
+            else:
+                line_style = "-"
+                line_width = lw_traj
+                line_alpha = alpha_traj
+                z_order = 2
+                dash_pattern = None
+
             if is_metabiased and label is not None:
                 label = f"{label} (metabiased)"
 
-            ax.plot(
-                traj_segment,
-                y_time,
-                alpha=alpha_traj,
-                color=colors[i],
-                lw=lw_traj,
-                linestyle=line_style,
-                label=label,
-                zorder=2,  # Put continuous trajectories above histogram
-            )
+            logger.debug(f"Trajectory {i}: is_metabiased={is_metabiased}, linestyle={line_style}, label={label}")
+
+            plot_kwargs = {
+                "alpha": line_alpha,
+                "color": colors[i],
+                "lw": line_width,
+                "linestyle": line_style,
+                "label": label,
+                "zorder": z_order,
+            }
+            if dash_pattern is not None:
+                plot_kwargs["dashes"] = dash_pattern
+
+            ax.plot(traj_segment, y_time, **plot_kwargs)
             logger.debug(
                 f"Trajectory {i}: PLOTTED with y_time range [{y_time[0]:.4f}, {y_time[-1]:.4f}]"
             )
@@ -569,11 +602,12 @@ def plot_sampling_validation(
         if metabiased_flags is not None:
             if any(not flag for flag in metabiased_flags):
                 style_handles.append(
-                    Line2D([0], [0], color="black", linestyle="-", lw=lw_traj, label="Standard Run")
+                    Line2D([0], [0], color="black", linestyle="-", lw=2.5, label="Standard Run")
                 )
             if any(metabiased_flags):
                 style_handles.append(
-                    Line2D([0], [0], color="black", linestyle="--", lw=lw_traj, label="Metabiased Run")
+                    Line2D([0], [0], color="black", linestyle="--", lw=2.5,
+                           dashes=(5, 3), label="Metabiased Run")
                 )
         if discrete_data_1d is not None:
             style_handles.append(
@@ -586,19 +620,29 @@ def plot_sampling_validation(
 
         # Place legend outside plot area
         legend_title = "Simulation Runs" if trajectory_labels else f"Shards (Top {num_shards_to_label})"
+
+        # Add counts of biased vs standard runs to title
+        if metabiased_flags is not None and len(metabiased_flags) > 0:
+            n_biased = sum(metabiased_flags)
+            n_standard = len(metabiased_flags) - n_biased
+            legend_title = f"Runs: {n_standard} standard, {n_biased} biased (top {num_shards_to_label} shown)"
+
         style_notes: list[str] = []
         if metabiased_flags is not None:
-            style_notes.append("solid=standard, dashed=metabiased")
+            style_notes.append("━ standard, ╌ biased")
         if discrete_data_1d is not None:
-            style_notes.append("dotted=discrete overlay")
+            style_notes.append("··· discrete")
         if style_notes:
-            legend_title += " (" + "; ".join(style_notes) + ")"
+            legend_title += "\n" + " | ".join(style_notes)
+
         ax.legend(
             handles,
             labels,
             loc="upper left",
             bbox_to_anchor=(1.02, 1),
             title=legend_title,
+            fontsize=8,  # Smaller font for less clutter
+            title_fontsize=9,
         )
 
     try:
