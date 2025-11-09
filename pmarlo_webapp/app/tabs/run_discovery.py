@@ -44,7 +44,7 @@ def render_run_discovery_tab(ctx: AppContext) -> None:
             {"Status": k, "Count": v}
             for k, v in summary["status_counts"].items()
         ])
-        st.dataframe(status_df, use_container_width=True)
+        st.dataframe(status_df, width="stretch")
 
     if "validations" in st.session_state:
         validations = st.session_state["validations"]
@@ -116,7 +116,7 @@ def render_run_discovery_tab(ctx: AppContext) -> None:
             })
 
         df = pd.DataFrame(data_rows)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width="stretch", hide_index=True)
 
         st.subheader("Detailed Inspection")
 
@@ -210,7 +210,7 @@ def render_run_discovery_tab(ctx: AppContext) -> None:
                                 # Force refresh so updated status is visible
                                 if "validations" in st.session_state:
                                     del st.session_state["validations"]
-                                st.rerun()
+                                # No need to rerun - session state changes will trigger automatic rerun
                             except Exception as exc:
                                 st.error(f"Resume failed: {exc}")
                             finally:
@@ -231,7 +231,7 @@ def render_run_discovery_tab(ctx: AppContext) -> None:
                             success = backend.add_run_to_state(selected_run_id)
                             if success:
                                 st.success(f"Added {selected_run_id} to state")
-                                st.rerun()
+                                # No need to rerun - button click will trigger automatic rerun
                             else:
                                 st.error(f"Failed to add {selected_run_id} to state")
 
@@ -264,7 +264,7 @@ def render_run_discovery_tab(ctx: AppContext) -> None:
                         button_type = "secondary" if selected_validation.status == RunStatus.CORRUPTED else "secondary"
                         if st.button("Delete Run", key=delete_key, type=button_type):
                             st.session_state[confirm_key] = True
-                            st.rerun()
+                            # No need to rerun - button click will trigger automatic rerun
                     else:
                         # Show confirmation
                         st.warning(f"Really delete {selected_run_id}?")
@@ -288,14 +288,14 @@ def render_run_discovery_tab(ctx: AppContext) -> None:
                                     # Clear validations to force rescan
                                     if "validations" in st.session_state:
                                         del st.session_state["validations"]
-                                    st.rerun()
+                                    # No need to rerun - session state changes will trigger automatic rerun
                                 except Exception as e:
                                     st.error(f"Failed to delete run: {e}")
                                     st.session_state[confirm_key] = False
                         with confirm_col2:
                             if st.button("Cancel", key=f"{delete_key}_no"):
                                 st.session_state[confirm_key] = False
-                                st.rerun()
+                                # No need to rerun - button click will trigger automatic rerun
 
                 # Additional info for specific statuses
                 if selected_validation.status == RunStatus.CORRUPTED:
@@ -327,7 +327,7 @@ def render_run_discovery_tab(ctx: AppContext) -> None:
                         st.success(f"Added {added} runs to state")
                     if failed > 0:
                         st.warning(f"Failed to add {failed} runs")
-                    st.rerun()
+                    # No need to rerun - button click will trigger automatic rerun
 
             missing_df = pd.DataFrame([
                 {
@@ -338,4 +338,4 @@ def render_run_discovery_tab(ctx: AppContext) -> None:
                 }
                 for v in missing_state
             ])
-            st.dataframe(missing_df, use_container_width=True, hide_index=True)
+            st.dataframe(missing_df, width="stretch", hide_index=True)

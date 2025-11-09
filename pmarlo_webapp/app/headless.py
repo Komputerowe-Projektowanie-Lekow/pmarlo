@@ -136,6 +136,7 @@ def cmd_run_analysis(args: argparse.Namespace) -> int:
         fes_method=str(args.fes_method),
         fes_bandwidth=args.fes_bandwidth,
         fes_min_count_per_bin=int(args.fes_min_count),
+        fes_grid_strategy=str(args.fes_grid_strategy),
     )
 
     artifact = backend.build_analysis(shard_paths, config)
@@ -311,6 +312,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help="Minimum count per FES bin before smoothing.",
+    )
+    parser_run.add_argument(
+        "--fes-grid-strategy",
+        type=str.lower,
+        choices=("adaptive", "fixed"),
+        default="adaptive",
+        help="Grid strategy for histogram-based FES (adaptive or fixed).",
     )
 
     return parser

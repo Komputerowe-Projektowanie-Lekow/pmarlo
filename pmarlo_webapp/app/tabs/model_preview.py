@@ -112,4 +112,4 @@ def render_model_preview(ctx: AppContext) -> None:
                         "success",
                         f"Loaded model {Path(bundle_path).name} into the training tab.",
                     )
-                    st.rerun()
+                    # No need to rerun - session state changes will trigger automatic rerun

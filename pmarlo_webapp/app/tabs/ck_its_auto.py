@@ -207,6 +207,8 @@ def render_ck_its_tab(ctx: AppContext) -> None:
         "Run CK+ITS Lag Selection", type="primary", disabled=not selected_paths
     )
 
+    feedback = st.session_state.get(_CK_ITS_FEEDBACK)
+
     if compute_btn:
         try:
             tau_candidates = _parse_lag_sequence(
@@ -276,7 +278,7 @@ def render_ck_its_tab(ctx: AppContext) -> None:
                 "success",
                 feedback_message,
             )
-            st.rerun()
+            # No need to rerun - session state changes will trigger automatic rerun
 
     feedback = st.session_state.get(_CK_ITS_FEEDBACK)
     if isinstance(feedback, tuple) and len(feedback) == 2:
@@ -324,7 +326,7 @@ def _display_ck_its_results(result: Mapping) -> None:
             selected_lag,
             threshold=diagnostics.get("ck_threshold", 0.15)
         )
-        st.pyplot(fig, clear_figure=True, use_container_width=True)
+        st.pyplot(fig, clear_figure=True, width="stretch")
     except Exception as e:
         st.warning(f"Could not render CK error plot: {e}")
         # Fallback: display as table
@@ -333,7 +335,7 @@ def _display_ck_its_results(result: Mapping) -> None:
                 {"Lag": lag, "CK Error": error}
                 for lag, error in sorted(ck_errors.items())
             ])
-            st.dataframe(ck_df, use_container_width=True)
+            st.dataframe(ck_df, width="stretch")
 
     # Plot ITS with selected lag highlighted
     if its_timescales.size > 0 and its_lag_times.size > 0:
@@ -342,7 +344,7 @@ def _display_ck_its_results(result: Mapping) -> None:
             from core.view_helpers import plot_its_with_selection
 
             fig = plot_its_with_selection(its_lag_times, its_timescales, selected_lag)
-            st.pyplot(fig, clear_figure=True, use_container_width=True)
+            st.pyplot(fig, clear_figure=True, width="stretch")
         except Exception as e:
             st.warning(f"Could not render ITS plot: {e}")
 
@@ -362,7 +364,7 @@ def _display_ck_its_results(result: Mapping) -> None:
             "Passed": "✓" if passed_sanity.get(lag, False) else "✗",
         })
     sanity_df = pd.DataFrame(sanity_data)
-    st.dataframe(sanity_df, use_container_width=True)
+    st.dataframe(sanity_df, width="stretch")
 
     # Diagnostics
     with st.expander("Detailed Diagnostics"):

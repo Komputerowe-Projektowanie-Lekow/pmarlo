@@ -100,6 +100,7 @@ def test_analysis_total_pairs_matches_summary(
 
     def fake_build_from_shards(**kwargs):
         assert kwargs.get("n_microstates") == expected_microstates
+        assert kwargs.get("fes_grid_strategy") == "adaptive"
         notes = kwargs.get("notes")
         applied_opts = AppliedOpts()
         if isinstance(notes, dict):
@@ -232,6 +233,7 @@ def test_analysis_state_count_guardrail(
 
     def fake_build_from_shards(**kwargs):
         assert kwargs.get("n_microstates") == expected_microstates
+        assert kwargs.get("fes_grid_strategy") == "adaptive"
         notes = kwargs.get("notes")
         applied_opts = AppliedOpts()
         if isinstance(notes, dict):

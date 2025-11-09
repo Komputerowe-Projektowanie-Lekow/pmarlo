@@ -130,6 +130,7 @@ def compute_analysis_debug(
     # FIX: Compute total_frames_declared from actual dtraj lengths, not shard metadata
     dtraj_lengths = [len(dtraj) for dtraj in dtrajs]
     total_frames = sum(dtraj_lengths)
+    valid_segment_lengths = _valid_dtraj_segment_lengths(dtrajs)
 
     frames_declared_all = [int(entry.get("frames_declared", 0)) for entry in shards_raw]
     frames_loaded_all = [
@@ -248,13 +249,13 @@ def compute_analysis_debug(
     ]
     effective_tau_frames = int(lag * max_stride) if lag > 0 else 0
     stride_for_pairs = 1 if count_mode == "sliding" else max(1, lag)
-    # FIX: Compute expected_pairs from actual dtraj lengths, not shard metadata
-    expected_pair_count = expected_pairs(dtraj_lengths, lag, stride_for_pairs)
+    # FIX: Compute expected_pairs from actual dtraj segments instead of shard metadata
+    expected_pair_count = expected_pairs(valid_segment_lengths, lag, stride_for_pairs)
     total_pairs_predicted = expected_pair_count
 
     # Assert that counted_pairs matches expected_pairs within one hop per segment
     # Allow tolerance of one pair per segment to account for edge cases
-    tolerance = len(dtraj_lengths)
+    tolerance = len(valid_segment_lengths)
     if abs(expected_pair_count - total_pairs) > tolerance:
         raise CountingLogicError(
             f"Pair counting mismatch: counted {total_pairs} pairs but expected "
@@ -587,6 +588,25 @@ def _count_state_visits(dtrajs: Sequence[np.ndarray], n_states: int) -> np.ndarr
         bins = np.bincount(selected, minlength=n_states)
         visits[: bins.shape[0]] += bins
     return visits
+
+
+def _valid_dtraj_segment_lengths(dtrajs: Sequence[np.ndarray]) -> List[int]:
+    """Return lengths of contiguous segments consisting of valid (non-negative) states."""
+    segments: List[int] = []
+    for traj in dtrajs:
+        if traj.size == 0:
+            continue
+        current_length = 0
+        for state in traj:
+            if state >= 0:
+                current_length += 1
+                continue
+            if current_length:
+                segments.append(current_length)
+                current_length = 0
+        if current_length:
+            segments.append(current_length)
+    return segments
 
 
 def _compute_dwell_times(

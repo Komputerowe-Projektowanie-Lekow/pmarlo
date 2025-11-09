@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, Optional
 
 import mdtraj as md
 import numpy as np
@@ -517,6 +517,7 @@ def build_from_shards(
     progress_callback=None,
     kmeans_kwargs: dict | None = None,
     n_microstates: int | None = None,
+    fes_grid_strategy: str | None = None,
 ):
     """Aggregate shard JSONs and build a bundle with an app-friendly API.
 
@@ -572,6 +573,7 @@ def build_from_shards(
         lag,
         kmeans_kwargs,
         n_microstates=n_microstates,
+        fes_grid_strategy=fes_grid_strategy,
     )
     logger.debug(
         "[shards] Build options: n_clusters=%d, n_states=%d, lag_candidates=%s",
@@ -701,6 +703,7 @@ def _build_opts(
     kmeans_kwargs: dict | None = None,
     *,
     n_microstates: int | None = None,
+    fes_grid_strategy: str | None = None,
 ) -> _BuildOpts:
     """Create BuildOpts with a simple lag candidate ladder."""
 
@@ -725,6 +728,8 @@ def _build_opts(
         resolved_states if n_microstates is not None else DEFAULT_N_CLUSTERS
     )
 
+    grid_strategy = str(fes_grid_strategy).lower() if fes_grid_strategy is not None else "adaptive"
+
     return _BuildOpts(
         seed=int(seed),
         temperature=float(temperature),
@@ -732,6 +737,7 @@ def _build_opts(
         n_clusters=int(resolved_clusters),
         n_states=int(resolved_states),
         kmeans_kwargs=microstate_kwargs,
+        fes_grid_strategy=grid_strategy,
     )
 
 

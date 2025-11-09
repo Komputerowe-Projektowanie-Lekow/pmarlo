@@ -88,7 +88,7 @@ def render_assets_tab(ctx: AppContext) -> None:
                     else:
                         st.session_state[_LAST_SIM] = loaded_run
                         st.success(f"Loaded run {loaded_run.run_id}.")
-                        st.rerun()
+                        # No need to rerun - session state changes will trigger automatic rerun
 
     with tab_shards:
         shards = list(backend.state.shards)
@@ -168,7 +168,7 @@ def render_assets_tab(ctx: AppContext) -> None:
                             help="Jump to the Model Preview tab for this bundle.",
                     ):
                         st.session_state[_MODEL_PREVIEW_SELECTION] = int(selected_model_idx)
-                        st.rerun()
+                        # No need to rerun - session state changes will trigger automatic rerun
 
     with tab_builds:
         builds = backend.list_builds()
@@ -225,7 +225,7 @@ def render_assets_tab(ctx: AppContext) -> None:
                         st.success(
                             f"Loaded analysis bundle {Path(build_entry.get('bundle', '')).name}."
                         )
-                        st.rerun()
+                        # No need to rerun - session state changes will trigger automatic rerun
 
     with tab_confs:
         conformations = backend.list_conformations()
@@ -276,4 +276,4 @@ def render_assets_tab(ctx: AppContext) -> None:
                             "success",
                             f"Loaded conformations from {loaded.output_dir.name}.",
                         )
-                        st.rerun()
+                        # No need to rerun - session state changes will trigger automatic rerun

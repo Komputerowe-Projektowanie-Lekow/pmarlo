@@ -8,6 +8,7 @@
 - Sampling tab now auto-generates the CV bias bundle when you choose a model: the backend recreates missing `deeptica_cv_model.*` files from the stored bundle metadata, surfaces errors if the shards are incompatible, and persists the bundle path for future runs
 - Fixed cross-platform path conversion so Windows paths captured in `state.json` resolve correctly when the app runs either natively on Windows or inside WSL; this previously caused auto-export to fail with “Model bundle is missing on disk” even when the file existed
 - Improved `check_openmm_torch_available()` to load the TorchForce plugin via OpenMM when the standalone `openmmtorch` Python module is not importable, and to search additional directories (including those provided via `PMARLO_OPENMM_PLUGIN_DIR` / `OPENMM_PLUGIN_DIR`), eliminating spurious “openmm-torch is not installed” errors when the plugin lives in a sibling Conda/Mamba environment
+- Fixed adaptive FES grid sizing so the bin count can shrink below the previous 40-bin floor and loop longer when needed, which keeps the empty-bin fraction below the target even when the data occupy a narrow range.
 
 ## added
 
@@ -22,4 +23,7 @@
 - Updated CV bundle export logic to properly load DeepTICAModel from separate `.pt`, `.scaler.pt`, and `.json` files instead of attempting to unpickle the bundle
 - Modified model loading to handle architecture evolution with `strict=False` parameter and automatic key prefix remapping for backward compatibility
 - Analysis tabs (MSM/FES, conformations, ITS/CK diagnostics, validation) now warn when mixed CV and molecular feature sets are selected, reducing accidental misuse of shards
+- Updated Streamlit renderers across the webapp (validation, MSM/FES, run discovery, CK+ITS tabs and shared helpers) to replace the deprecated `use_container_width` flag with the new `width` parameter so the UI keeps stretching layouts reliably without relying on removed options
+- Reorganized the Sampling and Training tabs so their recorded-run/model loaders sit inside collapsible expanders at the top of each page, matching the existing pattern for other analysis tabs and making load controls easy to find.
+- Added a configurable FES grid strategy option to the MSM/FES build (UI, CLI, and analysis backend) so adaptive histogram grids can be requested and persist in recorded build metadata
 

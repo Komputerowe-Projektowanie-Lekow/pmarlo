@@ -311,7 +311,7 @@ def render_validation_tab(ctx: AppContext) -> None:
                                 st.pyplot(
                                     sampling_fig,
                                     clear_figure=True,
-                                    use_container_width=True,
+                                    width="stretch",
                                 )
                             else:
                                 st.warning("Could not generate sampling validation plot.")
@@ -350,7 +350,7 @@ def render_validation_tab(ctx: AppContext) -> None:
                                     st.pyplot(
                                         fes_fig,
                                         clear_figure=True,
-                                        use_container_width=True,
+                                        width="stretch",
                                     )
                                 else:
                                     st.warning("Could not generate Free Energy Surface plot.")
@@ -411,7 +411,7 @@ def render_validation_tab(ctx: AppContext) -> None:
                             st.pyplot(
                                 discrete_fig,
                                 clear_figure=True,
-                                use_container_width=True,
+                                width="stretch",
                             )
                         else:
                             st.warning("Could not generate discrete overlay plot.")

@@ -250,7 +250,7 @@ def render_its_tab(ctx: AppContext) -> None:
                     "success",
                     f"Computed implied timescales for {len(result.get('lag_times', []))} lag values.",
                 )
-                st.rerun()
+                # No need to rerun - session state changes will trigger automatic rerun
 
         feedback = st.session_state.get(_ITS_FEEDBACK)
         if isinstance(feedback, tuple) and len(feedback) == 2:
