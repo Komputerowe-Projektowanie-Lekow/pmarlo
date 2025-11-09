@@ -14,6 +14,7 @@ from core.view_helpers import (
     _summarize_selected_shards,
     _render_conformations_result,
     render_shard_selection_table,
+    summarize_selected_feature_profiles,
 )
 from backend.types import ConformationsConfig, ConformationsResult
 from pmarlo.api import select_shard_paths
@@ -103,6 +104,17 @@ def render_conformations_tab(ctx: AppContext) -> None:
         if not selected_runs:
             st.info("Select at least one shard group before configuring TPT analysis.")
             st.stop()
+        profile_summary = summarize_selected_feature_profiles(
+            shard_groups, selected_runs
+        )
+        if len(profile_summary["feature_types"]) > 1:
+            st.warning(
+                "Selected shard groups mix different feature types. "
+                "TPT analysis expects a consistent feature basis."
+            )
+        elif profile_summary["feature_types"]:
+            detected_type = next(iter(profile_summary["feature_types"]))
+            st.caption(f"Detected shard feature type: {detected_type}")
         try:
             selected_paths = select_shard_paths(shard_groups, selected_runs)
         except ValueError as exc:

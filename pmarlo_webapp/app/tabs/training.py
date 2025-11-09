@@ -18,9 +18,14 @@ from core.view_helpers import (
     _show_build_outputs,
     _render_deeptica_summary,
     render_shard_selection_table,
+    summarize_selected_feature_profiles,
 )
 from backend.types import TrainingConfig, TrainingResult
 from pmarlo.api import parse_tau_schedule, select_shard_paths, parse_hidden_layers
+from backend.feature_profiles import (
+    get_feature_profile_info,
+    validate_profile_for_cv_biasing,
+)
 
 def render_training_tab(ctx: AppContext) -> None:
     """Render the model training tab."""
@@ -68,6 +73,50 @@ def render_training_tab(ctx: AppContext) -> None:
             st.write(f"Using {len(selected_paths)} shard files for training.")
             if selection_text:
                 st.caption(selection_text)
+
+            profile_summary = summarize_selected_feature_profiles(
+                shard_groups, selected_runs
+            )
+            if len(profile_summary["profiles"]) > 1:
+                st.error(
+                    "Selected shard groups mix different feature profiles. "
+                    "Please train on shard batches extracted with the same profile."
+                )
+                st.stop()
+            selected_profile = (
+                profile_summary["primary_profile"]
+                or next(iter(profile_summary["profiles"]), "cv_analysis")
+            )
+            profile_info = get_feature_profile_info(selected_profile)
+            compatible, compatibility_msg = validate_profile_for_cv_biasing(
+                selected_profile
+            )
+            feature_count = profile_info.get("feature_count", "variable")
+            st.info(
+                f"Feature profile **{selected_profile}** — "
+                f"{profile_info.get('description', 'No description available')}"
+            )
+            st.caption(
+                f"Feature type: {profile_info.get('feature_type', 'cv')}, "
+                f"features: {feature_count}"
+            )
+            if len(profile_summary["feature_types"]) > 1:
+                st.warning(
+                    "Selected shard groups span multiple feature types. "
+                    "Training quality may suffer."
+                )
+            elif profile_summary["feature_types"]:
+                feature_type = next(iter(profile_summary["feature_types"]))
+                st.caption(f"Detected shard feature type: {feature_type}")
+
+            if compatible:
+                st.success(compatibility_msg)
+            else:
+                st.warning(compatibility_msg)
+                st.info(
+                    "You can still train this model for analysis workflows, "
+                    "but CV bias export will fail until you use a molecular profile."
+                )
 
         # Basic Training Parameters
         with st.expander("Basic Training Parameters", expanded=True):

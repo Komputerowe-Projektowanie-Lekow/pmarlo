@@ -1,5 +1,6 @@
 import logging
-from pathlib import Path
+import os
+from pathlib import Path, PureWindowsPath
 from typing import Optional, List, Dict, Any
 
 from .types import *
@@ -29,14 +30,36 @@ class Backend(
     def __init__(self, layout: WorkspaceLayout):
         """Initialize with a WorkspaceLayout object."""
         self.layout = layout
-        self.state = PersistentState(self.layout.state_path)
+        self.state = PersistentState(
+            self.layout.state_path,
+            workspace_layout=self.layout,
+        )
 
     def _path_from_value(self, value: Any) -> Optional[Path]:
         """Convert a value to a Path, handling various input types."""
         if isinstance(value, Path):
             return value
         if isinstance(value, str):
-            return Path(value)
+            raw = value.strip()
+            if not raw:
+                return None
+            try:
+                candidate = Path(raw)
+            except Exception:
+                candidate = None
+            if candidate is not None and candidate.exists():
+                return candidate
+
+            if os.name != "nt" and len(raw) >= 3 and raw[1] == ":" and raw[2] in ("\\", "/"):
+                win = PureWindowsPath(raw)
+                drive = win.drive.rstrip(":").lower()
+                parts = list(win.parts[1:])
+                converted = Path("/mnt", drive, *parts)
+                if converted.exists():
+                    return converted
+                return converted
+
+            return candidate if candidate is not None else Path(raw)
         return None
 
     def sidebar_summary(self) -> Dict[str, int]:

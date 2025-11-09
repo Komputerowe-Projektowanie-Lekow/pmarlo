@@ -8,6 +8,7 @@ from core.view_helpers import (
     SHARD_SELECTOR_HELP,
     _summarize_selected_shards,
     render_shard_selection_table,
+    summarize_selected_feature_profiles,
 )
 from pmarlo.visualization.diagnostics import (
     create_sampling_validation_plot,
@@ -36,6 +37,17 @@ def render_validation_tab(ctx: AppContext) -> None:
         if not selected_runs:
             st.warning("Choose at least one shard group to generate validation plots.")
             return
+        profile_summary = summarize_selected_feature_profiles(
+            shard_groups, selected_runs
+        )
+        if len(profile_summary["feature_types"]) > 1:
+            st.warning(
+                "Selected shard groups mix CV-based and molecular features. "
+                "Validation plots may not be comparable."
+            )
+        elif profile_summary["feature_types"]:
+            detected_type = next(iter(profile_summary["feature_types"]))
+            st.caption(f"Detected shard feature type: {detected_type}")
         try:
             selected_paths = select_shard_paths(shard_groups, selected_runs)
         except ValueError as exc:

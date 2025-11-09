@@ -274,3 +274,115 @@ class ContactsPairFeature:
 
 
 register_feature(ContactsPairFeature())
+
+
+class DistanceFeature:
+    """Generic distance feature that parses atom indices from specification.
+
+    Supports format: distance([i, j]) where i, j are atom indices.
+    """
+    name = "distance"
+
+    def __init__(self) -> None:
+        self._periodic = np.array([False], dtype=bool)
+        self.labels: list[str] | None = None
+
+    def compute(self, traj: md.Trajectory, **kwargs) -> np.ndarray:
+        indices = kwargs.get("indices", None)
+        if indices is None or len(indices) != 2:
+            raise ValueError(
+                f"Distance feature requires 'indices' with exactly 2 atom indices, got {indices}"
+            )
+
+        i, j = int(indices[0]), int(indices[1])
+        n_atoms = traj.n_atoms
+        if not (0 <= i < n_atoms) or not (0 <= j < n_atoms):
+            raise ValueError(f"Atom indices {i}, {j} out of range [0, {n_atoms})")
+
+        pairs = [[i, j]]
+        d = md.compute_distances(traj, pairs)
+        np.nan_to_num(d, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+        self.labels = [f"distance({indices})"]
+        return cast(np.ndarray, d.astype(float, copy=False))
+
+    def is_periodic(self) -> np.ndarray:
+        return self._periodic
+
+
+register_feature(DistanceFeature())
+
+
+class AngleFeature:
+    """Generic angle feature that parses atom indices from specification.
+
+    Supports format: angle([i, j, k]) where i, j, k are atom indices.
+    """
+    name = "angle"
+
+    def __init__(self) -> None:
+        self._periodic = np.array([True], dtype=bool)  # Angles are periodic
+        self.labels: list[str] | None = None
+
+    def compute(self, traj: md.Trajectory, **kwargs) -> np.ndarray:
+        indices = kwargs.get("indices", None)
+        if indices is None or len(indices) != 3:
+            raise ValueError(
+                f"Angle feature requires 'indices' with exactly 3 atom indices, got {indices}"
+            )
+
+        i, j, k = int(indices[0]), int(indices[1]), int(indices[2])
+        n_atoms = traj.n_atoms
+        if not (0 <= i < n_atoms) or not (0 <= j < n_atoms) or not (0 <= k < n_atoms):
+            raise ValueError(f"Atom indices {i}, {j}, {k} out of range [0, {n_atoms})")
+
+        triplets = [[i, j, k]]
+        angles = md.compute_angles(traj, triplets)
+        # Wrap angles to [-pi, pi]
+        angles = _wrap_to_minus_pi_pi(angles)
+        np.nan_to_num(angles, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+        self.labels = [f"angle({indices})"]
+        return cast(np.ndarray, angles.astype(float, copy=False))
+
+    def is_periodic(self) -> np.ndarray:
+        return self._periodic
+
+
+register_feature(AngleFeature())
+
+
+class DihedralFeature:
+    """Generic dihedral feature that parses atom indices from specification.
+
+    Supports format: dihedral([i, j, k, l]) where i, j, k, l are atom indices.
+    """
+    name = "dihedral"
+
+    def __init__(self) -> None:
+        self._periodic = np.array([True], dtype=bool)  # Dihedrals are periodic
+        self.labels: list[str] | None = None
+
+    def compute(self, traj: md.Trajectory, **kwargs) -> np.ndarray:
+        indices = kwargs.get("indices", None)
+        if indices is None or len(indices) != 4:
+            raise ValueError(
+                f"Dihedral feature requires 'indices' with exactly 4 atom indices, got {indices}"
+            )
+
+        i, j, k, l = int(indices[0]), int(indices[1]), int(indices[2]), int(indices[3])
+        n_atoms = traj.n_atoms
+        if not all(0 <= idx < n_atoms for idx in [i, j, k, l]):
+            raise ValueError(f"Atom indices {i}, {j}, {k}, {l} out of range [0, {n_atoms})")
+
+        quartets = [[i, j, k, l]]
+        dihedrals = md.compute_dihedrals(traj, quartets)
+        # Wrap dihedrals to [-pi, pi]
+        dihedrals = _wrap_to_minus_pi_pi(dihedrals)
+        np.nan_to_num(dihedrals, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+        self.labels = [f"dihedral({indices})"]
+        return cast(np.ndarray, dihedrals.astype(float, copy=False))
+
+    def is_periodic(self) -> np.ndarray:
+        return self._periodic
+
+
+register_feature(DihedralFeature())

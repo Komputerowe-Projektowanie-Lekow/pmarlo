@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from pmarlo.utils.path_utils import ensure_directory
 
@@ -154,6 +156,13 @@ class StateManager:
         self._data.models.append(dict(entry))
         self._save()
 
+    def update_model(self, index: int, entry: Dict[str, Any]) -> None:
+        """Replace an existing model entry."""
+        if not (0 <= index < len(self._data.models)):
+            raise IndexError(f"Model index {index} out of range")
+        self._data.models[index] = dict(entry)
+        self._save()
+
     def append_build(self, entry: Dict[str, Any]) -> None:
         self._data.builds.append(dict(entry))
         self._save()
@@ -222,20 +231,38 @@ class StateManager:
             logger.info(f"Reconciled {len(to_remove)} missing shard batches from state")
 
     def _reconcile_models(self) -> None:
-        """Remove model entries where the bundle file no longer exists."""
-        to_remove = []
+        """Keep model entries synchronized with files on disk."""
+        removed: List[int] = []
+        existing_paths: Dict[str, int] = {}
+
         for i, entry in enumerate(self._data.models):
             bundle = entry.get("bundle")
-            if bundle:
-                path = Path(bundle)
-                if not path.exists():
-                    to_remove.append(i)
+            if not bundle:
+                removed.append(i)
+                continue
 
-        if to_remove:
-            for i in reversed(to_remove):
-                self._data.models.pop(i)
+            path = Path(bundle)
+            if path.exists():
+                existing_paths[self._norm_path_key(path)] = i
+            else:
+                removed.append(i)
+
+        if removed:
+            for idx in reversed(removed):
+                self._data.models.pop(idx)
+            logger.info(f"Reconciled {len(removed)} missing models from state")
+
+        added = 0
+        if self.workspace_layout is not None:
+            try:
+                added = self._discover_models_on_disk(existing_paths)
+            except Exception as exc:
+                logger.warning("Failed to discover models on disk: %s", exc)
+
+        if removed or added:
             self._save()
-            logger.info(f"Reconciled {len(to_remove)} missing models from state")
+            if added:
+                logger.info(f"Discovered {added} new model bundle(s)")
 
     def _reconcile_builds(self) -> None:
         """Remove build entries where the bundle file no longer exists."""
@@ -363,6 +390,201 @@ class StateManager:
             json.dumps(self._data.to_dict(), indent=2), encoding="utf-8"
         )
         tmp_path.replace(self.path)
+
+    # ------------------------------------------------------------------
+    # Model discovery helpers
+    # ------------------------------------------------------------------
+    def _discover_models_on_disk(self, existing_paths: Dict[str, int]) -> int:
+        """Scan the workspace for bundle files that are not in state."""
+        layout = self.workspace_layout
+        if layout is None:
+            return 0
+
+        models_dir = layout.models_dir
+        if not models_dir.exists():
+            return 0
+
+        added = 0
+        for bundle_path in sorted(models_dir.glob("deeptica-*.pbz")):
+            key = self._norm_path_key(bundle_path)
+            if key in existing_paths:
+                continue
+
+            entry = self._model_entry_from_bundle(bundle_path)
+            self._data.models.append(entry)
+            existing_paths[key] = len(self._data.models) - 1
+            added += 1
+
+        return added
+
+    @staticmethod
+    def _norm_path_key(path: Path) -> str:
+        """Normalize a path for robust comparisons."""
+        try:
+            resolved = path.expanduser().resolve()
+        except Exception:
+            resolved = path
+        return os.path.normcase(str(resolved))
+
+    @staticmethod
+    def _maybe_int(value: Any) -> Optional[int]:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _maybe_float(value: Any) -> Optional[float]:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _as_mapping(value: Any) -> Dict[str, Any]:
+        if isinstance(value, Mapping):
+            return dict(value)
+        return {}
+
+    def _model_entry_from_bundle(self, bundle_path: Path) -> Dict[str, Any]:
+        """Create a state entry for a bundle discovered on disk."""
+        entry: Dict[str, Any] = {
+            "bundle": str(bundle_path.expanduser().resolve()),
+            "created_at": self._infer_bundle_timestamp(bundle_path),
+        }
+
+        payload = self._read_bundle_json(bundle_path)
+        if not isinstance(payload, Mapping):
+            return entry
+
+        metadata = self._as_mapping(payload.get("metadata"))
+        applied_opts = self._as_mapping(metadata.get("applied_opts"))
+        artifacts = self._as_mapping(payload.get("artifacts"))
+
+        plan_steps = []
+        plan = self._as_mapping(applied_opts.get("actual_plan"))
+        steps = plan.get("steps")
+        if isinstance(steps, list):
+            plan_steps = steps
+        elif isinstance(metadata.get("transform_plan"), list):
+            plan_steps = metadata["transform_plan"]
+
+        learn_params: Dict[str, Any] = {}
+        for step in plan_steps:
+            if isinstance(step, Mapping) and step.get("name") == "LEARN_CV":
+                params = step.get("params")
+                if isinstance(params, Mapping):
+                    learn_params = dict(params)
+                break
+
+        def assign(key: str, value: Any) -> None:
+            if value is not None:
+                entry[key] = value
+
+        assign("dataset_hash", metadata.get("dataset_hash"))
+        assign("lag", self._maybe_int(
+            learn_params.get("lag") or metadata.get("lag") or applied_opts.get("lag")
+        ))
+        assign("bins", self._as_mapping(applied_opts.get("bins")))
+        assign("seed", self._maybe_int(metadata.get("seed")))
+        assign("temperature", self._maybe_float(metadata.get("temperature")))
+        hidden = learn_params.get("hidden")
+        if isinstance(hidden, list):
+            normalized_hidden: List[int] = []
+            for value in hidden:
+                converted = self._maybe_int(value)
+                if converted is not None:
+                    normalized_hidden.append(converted)
+            if normalized_hidden:
+                assign("hidden", normalized_hidden)
+        assign("max_epochs", self._maybe_int(learn_params.get("max_epochs")))
+        assign("early_stopping", self._maybe_int(learn_params.get("early_stopping")))
+        tau_schedule = learn_params.get("tau_schedule")
+        if isinstance(tau_schedule, list):
+            normalized_tau: List[int] = []
+            for value in tau_schedule:
+                converted = self._maybe_int(value)
+                if converted is not None:
+                    normalized_tau.append(converted)
+            if normalized_tau:
+                assign("tau_schedule", normalized_tau)
+        assign("val_tau", self._maybe_int(learn_params.get("val_tau")))
+        assign("epochs_per_tau", self._maybe_int(learn_params.get("epochs_per_tau")))
+        assign("gradient_clip_val", self._maybe_float(learn_params.get("gradient_clip_val")))
+        assign("learning_rate", self._maybe_float(learn_params.get("learning_rate")))
+        assign("weight_decay", self._maybe_float(learn_params.get("weight_decay")))
+        checkpoint_dir = learn_params.get("checkpoint_dir")
+        if isinstance(checkpoint_dir, str) and checkpoint_dir:
+            assign("checkpoint_dir", checkpoint_dir)
+            cv_bundle = self._discover_cv_bundle(Path(checkpoint_dir))
+            if cv_bundle:
+                assign("cv_model_bundle", cv_bundle)
+
+        metrics = artifacts.get("mlcv_deeptica")
+        if isinstance(metrics, Mapping):
+            assign("metrics", dict(metrics))
+
+        return entry
+
+    def _read_bundle_json(self, bundle_path: Path) -> Optional[Dict[str, Any]]:
+        try:
+            text = bundle_path.read_text(encoding="utf-8")
+            payload = json.loads(text)
+            if isinstance(payload, Mapping):
+                return dict(payload)
+        except Exception as exc:
+            logger.warning("Failed to parse model bundle %s: %s", bundle_path, exc)
+        return None
+
+    @staticmethod
+    def _infer_bundle_timestamp(bundle_path: Path) -> str:
+        stem = bundle_path.stem
+        for prefix in ("deeptica-", "model-", "bundle-"):
+            if stem.startswith(prefix):
+                stem = stem[len(prefix):]
+                break
+        try:
+            dt = datetime.strptime(stem, "%Y%m%d-%H%M%S")
+            return dt.strftime("%Y%m%d-%H%M%S")
+        except ValueError:
+            pass
+        try:
+            dt = datetime.fromtimestamp(bundle_path.stat().st_mtime)
+            return dt.strftime("%Y%m%d-%H%M%S")
+        except Exception:
+            return stem
+
+    def _discover_cv_bundle(self, checkpoint_dir: Path) -> Optional[Dict[str, Any]]:
+        """Find exported CV bundle artifacts next to a checkpoint directory."""
+        candidates = {
+            "model_path": checkpoint_dir / "deeptica_cv_model.pt",
+            "scaler_path": checkpoint_dir / "deeptica_cv_model_scaler.npz",
+            "config_path": checkpoint_dir / "deeptica_cv_model_config.json",
+            "metadata_path": checkpoint_dir / "deeptica_cv_model_metadata.json",
+        }
+
+        if not all(path.exists() for path in candidates.values()):
+            return None
+
+        payload = {}
+        metadata_path = candidates["metadata_path"]
+        try:
+            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+
+        cv_dim = payload.get("cv_dim")
+        feature_spec_sha = payload.get("feature_spec_sha256")
+
+        bundle_info: Dict[str, Any] = {
+            key: str(path)
+            for key, path in candidates.items()
+        }
+        if cv_dim is not None:
+            bundle_info["cv_dim"] = cv_dim
+        if feature_spec_sha:
+            bundle_info["feature_spec_sha256"] = feature_spec_sha
+        return bundle_info
 
 
 # Alias for backwards compatibility

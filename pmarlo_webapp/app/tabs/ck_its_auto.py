@@ -17,6 +17,7 @@ from core.view_helpers import (
     _default_feature_spec_path,
     _summarize_selected_shards,
     render_shard_selection_table,
+    summarize_selected_feature_profiles,
 )
 from pmarlo.api import select_shard_paths
 
@@ -93,6 +94,17 @@ def render_ck_its_tab(ctx: AppContext) -> None:
     )
 
     if selected_runs:
+        profile_summary = summarize_selected_feature_profiles(
+            shard_groups, selected_runs
+        )
+        if len(profile_summary["feature_types"]) > 1:
+            st.warning(
+                "Selected shard groups mix different feature types. "
+                "CK/ITS diagnostics expect a consistent feature basis."
+            )
+        elif profile_summary["feature_types"]:
+            detected_type = next(iter(profile_summary["feature_types"]))
+            st.caption(f"Detected shard feature type: {detected_type}")
         try:
             selected_paths = select_shard_paths(shard_groups, selected_runs)
             _, selection_text = _summarize_selected_shards(selected_paths)
