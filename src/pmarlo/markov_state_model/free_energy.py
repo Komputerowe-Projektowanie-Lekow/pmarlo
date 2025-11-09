@@ -565,7 +565,7 @@ def generate_2d_fes(  # noqa: C901
     # Derive bins per axis from Freedman–Diaconis rule or sqrt(N) after percentile trimming
     bx_req, by_req = bins
     n_pts = int(x.shape[0])
-    min_bins = 40
+    min_bins = 8
     max_bins = 512
     eps = float(epsilon)
     # sqrt rule baseline
@@ -597,7 +597,7 @@ def generate_2d_fes(  # noqa: C901
 
         # Iteratively reduce bins to achieve target finite bins fraction
         target_finite_fraction = 0.6
-        max_iterations = 5
+        max_iterations = 10
 
         bx, by = bx_initial, by_initial
         for iteration in range(max_iterations):
@@ -616,8 +616,8 @@ def generate_2d_fes(  # noqa: C901
                 )
                 break
 
-            # Reduce bins by ~15% per axis to increase density
-            reduction_factor = 0.85
+            # Reduce bins by ~25% per axis to aggressively increase density for sparse data
+            reduction_factor = 0.75
             bx = max(min_bins, int(bx * reduction_factor))
             by = max(min_bins, int(by * reduction_factor))
 

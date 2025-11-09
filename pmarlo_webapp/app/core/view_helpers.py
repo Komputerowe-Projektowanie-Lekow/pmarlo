@@ -347,20 +347,20 @@ def render_shard_selection_table(
     if action_cols[0].button(
         "Select all",
         key=f"{state_key}_select_all",
-        use_container_width=True,
+        width="stretch",
     ):
         _set_selection(ordered_run_ids)
     if action_cols[1].button(
         "Clear selection",
         key=f"{state_key}_clear",
-        use_container_width=True,
+        width="stretch",
     ):
         _set_selection([])
     latest_disabled = not ordered_run_ids
     if action_cols[2].button(
         "Latest only",
         key=f"{state_key}_latest",
-        use_container_width=True,
+        width="stretch",
         disabled=latest_disabled,
     ):
         _set_selection(ordered_run_ids[-1:] if ordered_run_ids else [])

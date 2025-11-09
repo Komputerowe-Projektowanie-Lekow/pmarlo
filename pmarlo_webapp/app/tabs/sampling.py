@@ -23,6 +23,58 @@ def render_sampling_tab(ctx: AppContext) -> None:
 
     st.header("Sampling & Shard Production")
 
+    sim = st.session_state.get(_LAST_SIM)
+    if backend.state.runs:
+        with st.expander("Load recorded run", expanded=sim is None):
+            col_load, col_scan = st.columns([3, 1])
+
+            with col_scan:
+                if st.button("Scan for all runs", help="Scan the sims directory for runs not in state"):
+                    with st.spinner("Scanning..."):
+                        missing = backend.get_missing_state_entries()
+                        if missing:
+                            complete = sum(1 for v in missing if v.status.value == "complete")
+                            missing_demux = sum(1 for v in missing if v.status.value == "missing_demux")
+                            missing_analysis = sum(1 for v in missing if v.status.value == "missing_analysis")
+
+                            msg = f"Found {len(missing)} valid runs not in state:"
+                            if complete:
+                                msg += f"\n- {complete} complete"
+                            if missing_demux:
+                                msg += f"\n- {missing_demux} with replica files only (no demux)"
+                            if missing_analysis:
+                                msg += f"\n- {missing_analysis} missing analysis"
+                            st.info(msg)
+                        else:
+                            st.success("All runs are in state!")
+
+            with col_load:
+                run_entries = backend.state.runs
+                run_ids = [str(entry.get("run_id")) for entry in run_entries]
+                if run_ids:
+                    current_idx = 0
+                    if sim is not None and sim.run_id in run_ids:
+                        current_idx = run_ids.index(sim.run_id)
+                    selected_run_id = st.selectbox(
+                        "Select run",
+                        options=run_ids,
+                        index=current_idx,
+                        key="load_run_select",
+                    )
+                    if st.button("Use this run", key="load_run_button"):
+                        loaded = backend.load_run(selected_run_id)
+                        if loaded is not None:
+                            st.session_state[_LAST_SIM] = loaded
+                            st.session_state[_LAST_SHARDS] = None
+                            sim = loaded
+                            st.success(f"Loaded run {loaded.run_id}.")
+                        else:
+                            st.error("Could not load the selected run from disk.")
+                else:
+                    st.info("No recorded runs available yet.")
+
+    sim = st.session_state.get(_LAST_SIM)
+
     st.markdown("---")
 
     inputs = layout.available_inputs()
@@ -234,63 +286,11 @@ def render_sampling_tab(ctx: AppContext) -> None:
                 st.error(f"Simulation failed: {exc}")
             finally:
                 st.session_state[_RUN_PENDING] = False
-                st.rerun()  # Force rerun to update UI
+                st.rerun()
 
         # Show status if simulation is still running (shouldn't happen with sync execution)
         elif run_in_progress:
             st.info("⏳ Simulation in progress... (This shouldn't persist - if it does, refresh the page)")
-
-    sim = st.session_state.get(_LAST_SIM)
-
-    if backend.state.runs:
-        with st.expander("Load recorded run", expanded=sim is None):
-            col_load, col_scan = st.columns([3, 1])
-
-            with col_scan:
-                if st.button("Scan for all runs", help="Scan the sims directory for runs not in state"):
-                    with st.spinner("Scanning..."):
-                        missing = backend.get_missing_state_entries()
-                        if missing:
-                            # Count runs by status
-                            complete = sum(1 for v in missing if v.status.value == "complete")
-                            missing_demux = sum(1 for v in missing if v.status.value == "missing_demux")
-                            missing_analysis = sum(1 for v in missing if v.status.value == "missing_analysis")
-
-                            msg = f"Found {len(missing)} valid runs not in state:"
-                            if complete:
-                                msg += f"\n- {complete} complete"
-                            if missing_demux:
-                                msg += f"\n- {missing_demux} with replica files only (no demux)"
-                            if missing_analysis:
-                                msg += f"\n- {missing_analysis} missing analysis"
-                            st.info(msg)
-                        else:
-                            st.success("All runs are in state!")
-
-            with col_load:
-                run_entries = backend.state.runs
-                run_ids = [str(entry.get("run_id")) for entry in run_entries]
-                if run_ids:
-                    current_idx = 0
-                    if sim is not None and sim.run_id in run_ids:
-                        current_idx = run_ids.index(sim.run_id)
-                    selected_run_id = st.selectbox(
-                        "Select run",
-                        options=run_ids,
-                        index=current_idx,
-                        key="load_run_select",
-                    )
-                    if st.button("Use this run", key="load_run_button"):
-                        loaded = backend.load_run(selected_run_id)
-                        if loaded is not None:
-                            st.session_state[_LAST_SIM] = loaded
-                            st.session_state[_LAST_SHARDS] = None
-                            sim = loaded
-                            st.success(f"Loaded run {loaded.run_id}.")
-                        else:
-                            st.error("Could not load the selected run from disk.")
-                else:
-                    st.info("No recorded runs available yet.")
 
     if sim is not None:
         st.success(

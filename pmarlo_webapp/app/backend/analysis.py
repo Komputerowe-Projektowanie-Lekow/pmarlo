@@ -241,6 +241,7 @@ class AnalysisMixin:
             fes_method=str(entry.get("fes_method", "kde")),
             fes_bandwidth=entry.get("fes_bandwidth", "scott"),
             fes_min_count_per_bin=int(entry.get("fes_min_count_per_bin", 1)),
+            fes_grid_strategy=str(entry.get("fes_grid_strategy", "adaptive")).lower(),
         )
 
     def _extract_debug_data_from_build_result(
@@ -483,6 +484,7 @@ class AnalysisMixin:
                 "fes_method": str(config.fes_method),
                 "fes_bandwidth": config.fes_bandwidth,
                 "fes_min_count_per_bin": int(config.fes_min_count_per_bin),
+                "fes_grid_strategy": str(config.fes_grid_strategy).lower(),
             }
             requested_fingerprint = {
                 "mode": str(config.cluster_mode),
@@ -515,6 +517,7 @@ class AnalysisMixin:
                 notes=analysis_notes,
                 kmeans_kwargs=dict(config.kmeans_kwargs),
                 n_microstates=int(config.n_microstates),
+                fes_grid_strategy=str(config.fes_grid_strategy).lower(),
             )
 
             def _safe_int(value: Any, default: int) -> int:
@@ -925,6 +928,7 @@ class AnalysisMixin:
                 "fes_method": str(config.fes_method),
                 "fes_bandwidth": config.fes_bandwidth,
                 "fes_min_count_per_bin": int(config.fes_min_count_per_bin),
+                "fes_grid_strategy": str(config.fes_grid_strategy).lower(),
                 "apply_whitening": bool(config.apply_cv_whitening),
                 "kmeans_kwargs": dict(config.kmeans_kwargs),
             }
@@ -1010,6 +1014,7 @@ class AnalysisMixin:
                     "fes_min_count_per_bin": int(
                         config.fes_min_count_per_bin
                     ),
+                    "fes_grid_strategy": str(config.fes_grid_strategy).lower(),
                     "debug_dir": str(debug_dir),
                     "debug_summary": _sanitize_artifacts(debug_data.summary),
                     "analysis_msm_n_states": (

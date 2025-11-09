@@ -34,44 +34,46 @@ def render_training_tab(ctx: AppContext) -> None:
 
     st.header("Train collective-variable model")
 
-    # --- Show 'Load recorded model' controls as the first visible element in the tab ---
     models = backend.list_models()
-    if models:
-        st.subheader("Load recorded model")
-        indices = list(range(len(models)))
+    load_expanded = st.session_state.get(_LAST_TRAIN) is None
+    with st.expander("Load recorded model", expanded=load_expanded):
+        if not models:
+            st.info("No recorded CV models available yet.")
+        else:
+            indices = list(range(len(models)))
 
-        def _model_label(idx: int) -> str:
-            entry = models[idx]
-            bundle_raw = entry.get("bundle", "")
-            bundle_name = Path(bundle_raw).name if bundle_raw else f"model-{idx}"
-            created = entry.get("created_at", "unknown")
-            return f"{bundle_name} (created {created})"
+            def _model_label(idx: int) -> str:
+                entry = models[idx]
+                bundle_raw = entry.get("bundle", "")
+                bundle_name = Path(bundle_raw).name if bundle_raw else f"model-{idx}"
+                created = entry.get("created_at", "unknown")
+                return f"{bundle_name} (created {created})"
 
-        selected_idx = st.selectbox(
-            "Stored models",
-            options=indices,
-            format_func=_model_label,
-            key="load_model_select",
-        )
-        if st.button("Show model", key="load_model_button"):
-            loaded = backend.load_model(int(selected_idx))
-            if loaded is not None:
-                st.session_state[_LAST_TRAIN] = loaded
-                cfg_loaded: TrainingConfig | None = None
-                try:
-                    cfg_loaded = backend.training_config_from_entry(models[int(selected_idx)])
-                except Exception:
-                    cfg_loaded = None
-                if cfg_loaded is not None:
-                    st.session_state[_LAST_TRAIN_CONFIG] = cfg_loaded
-                    st.session_state[_TRAIN_CONFIG_PENDING] = cfg_loaded
-                st.session_state[_TRAIN_FEEDBACK] = (
-                    "success",
-                    f"Loaded model {loaded.bundle_path.name}.",
-                )
-                st.rerun()
-            else:
-                st.error("Could not load the selected model from disk.")
+            selected_idx = st.selectbox(
+                "Stored models",
+                options=indices,
+                format_func=_model_label,
+                key="load_model_select",
+            )
+            if st.button("Show model", key="load_model_button"):
+                loaded = backend.load_model(int(selected_idx))
+                if loaded is not None:
+                    st.session_state[_LAST_TRAIN] = loaded
+                    cfg_loaded: TrainingConfig | None = None
+                    try:
+                        cfg_loaded = backend.training_config_from_entry(models[int(selected_idx)])
+                    except Exception:
+                        cfg_loaded = None
+                    if cfg_loaded is not None:
+                        st.session_state[_LAST_TRAIN_CONFIG] = cfg_loaded
+                        st.session_state[_TRAIN_CONFIG_PENDING] = cfg_loaded
+                    st.session_state[_TRAIN_FEEDBACK] = (
+                        "success",
+                        f"Loaded model {loaded.bundle_path.name}.",
+                    )
+                    st.rerun()
+                else:
+                    st.error("Could not load the selected model from disk.")
 
     last_model_path = backend.latest_model_path()
     if last_model_path is not None:

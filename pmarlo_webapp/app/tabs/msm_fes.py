@@ -294,6 +294,20 @@ def render_msm_fes_tab(ctx: AppContext) -> None:
                 key="analysis_min_count_per_bin",
                 help="Minimum number of samples required per bin for FES computation"
             )
+            grid_strategy_default = str(
+                st.session_state.get("analysis_fes_grid_strategy", "adaptive")
+            ).lower()
+            grid_strategy_index = 0 if grid_strategy_default == "adaptive" else 1
+            grid_strategy = st.selectbox(
+                "FES grid strategy",
+                options=["adaptive", "fixed"],
+                index=grid_strategy_index,
+                key="analysis_fes_grid_strategy",
+                help=(
+                    "Choose how the histogram grid is sized: 'adaptive' trims to the "
+                    "central percentile range, while 'fixed' uses the full sample span."
+                ),
+            )
 
         disabled = len(selected_paths) == 0
         if st.button(
@@ -328,11 +342,12 @@ def render_msm_fes_tab(ctx: AppContext) -> None:
                     cluster_mode=str(cluster_mode),
                     n_microstates=int(n_microstates),
                     reweight_mode=reweight_final,
-                    fes_method=str(fes_method),
-                    fes_bandwidth=bandwidth_val,
-                    fes_min_count_per_bin=int(min_count_per_bin),
-                    require_fully_connected_msm=bool(require_connectivity),
-                )
+                fes_method=str(fes_method),
+                fes_bandwidth=bandwidth_val,
+                fes_min_count_per_bin=int(min_count_per_bin),
+                fes_grid_strategy=str(grid_strategy).lower(),
+                require_fully_connected_msm=bool(require_connectivity),
+            )
                 artifact: BuildArtifact | None = None
                 try:
                     artifact = backend.build_analysis(selected_paths, build_cfg)
@@ -425,7 +440,7 @@ def _show_build_outputs(artifact: BuildArtifact) -> None:
                     fig = plot_transition_matrix_heatmap(T)
                     # Make figure smaller for grid
                     fig.set_size_inches(5, 4)
-                    st.pyplot(fig, use_container_width=True)
+                    st.pyplot(fig, width="stretch")
                     logger.info("Successfully rendered MSM transition matrix")
                 except Exception as e:
                     logger.error(f"Failed to plot MSM: {e}", exc_info=True)
@@ -453,7 +468,7 @@ def _show_build_outputs(artifact: BuildArtifact) -> None:
                         logger.info(f"FES shape: {F.shape}, labels: {xlabel} vs {ylabel}")
                         fig = plot_fes_contour(F, xedges, yedges, xlabel, ylabel)
                         fig.set_size_inches(5, 4)
-                        st.pyplot(fig, use_container_width=True)
+                        st.pyplot(fig, width="stretch")
                         logger.info("Successfully rendered FES")
                     else:
                         st.warning("FES structure not recognized")
@@ -479,7 +494,7 @@ def _show_build_outputs(artifact: BuildArtifact) -> None:
                 try:
                     fig_autocorr = plot_autocorrelation_curves(artifact.build_result.diagnostics)
                     fig_autocorr.set_size_inches(5, 4)
-                    st.pyplot(fig_autocorr, use_container_width=True)
+                    st.pyplot(fig_autocorr, width="stretch")
                 except Exception as e:
                     logger.error(f"Failed to plot autocorrelation: {e}", exc_info=True)
                     st.error(f"Error: {e}")
@@ -495,7 +510,7 @@ def _show_build_outputs(artifact: BuildArtifact) -> None:
                 try:
                     fig_canonical = plot_canonical_correlations(artifact.build_result.diagnostics)
                     fig_canonical.set_size_inches(5, 4)
-                    st.pyplot(fig_canonical, use_container_width=True)
+                    st.pyplot(fig_canonical, width="stretch")
                 except Exception as e:
                     logger.error(f"Failed to plot canonical correlation: {e}", exc_info=True)
                     st.error(f"Error: {e}")
@@ -516,7 +531,7 @@ def _show_build_outputs(artifact: BuildArtifact) -> None:
                     ax.set_ylabel("Probability")
                     ax.set_title("Stationary Distribution")
                     fig.tight_layout()
-                    st.pyplot(fig, use_container_width=True)
+                    st.pyplot(fig, width="stretch")
                 except Exception as e:
                     logger.error(f"Failed to plot stationary dist: {e}", exc_info=True)
                     st.error(f"Error: {e}")
@@ -549,7 +564,7 @@ def _show_build_outputs(artifact: BuildArtifact) -> None:
                         ax.set_title("FES Quality Metrics")
                         ax.set_ylim(0, 100)
                         fig.tight_layout()
-                        st.pyplot(fig, use_container_width=True)
+                        st.pyplot(fig, width="stretch")
                     else:
                         st.info("No quality metrics")
                 except Exception as e:
@@ -712,3 +727,4 @@ def _render_deeptica_summary(summary: Dict[str, Any]) -> None:
                 st.json(arch)
             else:
                 st.write(arch)
+

@@ -249,6 +249,7 @@ def _build_config(bundle: ExperimentBundle, shards: Sequence[Any]) -> BuildConfi
         fes_method=str(fes_cfg.get("method", "kde")),
         fes_bandwidth=fes_cfg.get("bandwidth", "scott"),
         fes_min_count_per_bin=int(fes_cfg.get("min_count", 1)),
+        fes_grid_strategy=str(fes_cfg.get("grid_strategy", "adaptive")),
     )
 
 
