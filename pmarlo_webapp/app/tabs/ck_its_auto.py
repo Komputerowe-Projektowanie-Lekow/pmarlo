@@ -30,9 +30,9 @@ def render_ck_its_tab(ctx: AppContext) -> None:
     st.header("ITS with CK Analysis - Automatic Lag Selection")
     st.markdown(
         """
-        This tool combines **Implied Timescales (ITS)** analysis with **Chapman-Kolmogorov (CK)** validation 
+        This tool combines **Implied Timescales (ITS)** analysis with **Chapman-Kolmogorov (CK)** validation
         to automatically select the optimal lag time for MSM construction.
-        
+
         The algorithm selects the **smallest lag τ** that:
         - Passes CK test (max error ≤ threshold, typically 10-15%)
         - Has high coverage (giant connected component ≥ 98%)
@@ -85,38 +85,40 @@ def render_ck_its_tab(ctx: AppContext) -> None:
         st.session_state["ck_its_feature_spec_path"] = str(pending_spec)
         st.session_state[_CK_ITS_PENDING_FEATURE_SPEC] = None
 
-    selected_runs = render_shard_selection_table(
-        "Shard groups",
-        shard_groups,
-        state_key="ck_its_selected_runs",
-        default_behavior="latest",
-        help_text=SHARD_SELECTOR_HELP,
-    )
-
-    if selected_runs:
-        profile_summary = summarize_selected_feature_profiles(
-            shard_groups, selected_runs
+    # Data Selection
+    with st.expander("Data Selection", expanded=True):
+        selected_runs = render_shard_selection_table(
+            "Shard groups",
+            shard_groups,
+            state_key="ck_its_selected_runs",
+            default_behavior="latest",
+            help_text=SHARD_SELECTOR_HELP,
         )
-        if len(profile_summary["feature_types"]) > 1:
-            st.warning(
-                "Selected shard groups mix different feature types. "
-                "CK/ITS diagnostics expect a consistent feature basis."
+
+        if selected_runs:
+            profile_summary = summarize_selected_feature_profiles(
+                shard_groups, selected_runs
             )
-        elif profile_summary["feature_types"]:
-            detected_type = next(iter(profile_summary["feature_types"]))
-            st.caption(f"Detected shard feature type: {detected_type}")
-        try:
-            selected_paths = select_shard_paths(shard_groups, selected_runs)
-            _, selection_text = _summarize_selected_shards(selected_paths)
-            st.caption(f"Using {len(selected_paths)} shard files.")
-            if selection_text:
-                st.caption(selection_text)
-        except (ValueError, Exception) as exc:
-            st.warning(f"Issue with selection: {exc}")
+            if len(profile_summary["feature_types"]) > 1:
+                st.warning(
+                    "Selected shard groups mix different feature types. "
+                    "CK/ITS diagnostics expect a consistent feature basis."
+                )
+            elif profile_summary["feature_types"]:
+                detected_type = next(iter(profile_summary["feature_types"]))
+                st.caption(f"Detected shard feature type: {detected_type}")
+            try:
+                selected_paths = select_shard_paths(shard_groups, selected_runs)
+                _, selection_text = _summarize_selected_shards(selected_paths)
+                st.caption(f"Using {len(selected_paths)} shard files.")
+                if selection_text:
+                    st.caption(selection_text)
+            except (ValueError, Exception) as exc:
+                st.warning(f"Issue with selection: {exc}")
+                selected_paths = []
+        else:
+            st.info("Select at least one shard group to perform CK+ITS lag selection.")
             selected_paths = []
-    else:
-        st.info("Select at least one shard group to perform CK+ITS lag selection.")
-        selected_paths = []
 
     with st.expander("Configuration", expanded=True):
         path_cols = st.columns(2)
@@ -318,8 +320,8 @@ def _display_ck_its_results(result: Mapping) -> None:
         from core.view_helpers import plot_ck_errors_with_threshold
 
         fig = plot_ck_errors_with_threshold(
-            ck_errors, 
-            selected_lag, 
+            ck_errors,
+            selected_lag,
             threshold=diagnostics.get("ck_threshold", 0.15)
         )
         st.pyplot(fig, clear_figure=True, use_container_width=True)
@@ -365,4 +367,3 @@ def _display_ck_its_results(result: Mapping) -> None:
     # Diagnostics
     with st.expander("Detailed Diagnostics"):
         st.json(diagnostics)
-

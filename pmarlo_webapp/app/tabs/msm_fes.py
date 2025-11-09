@@ -27,7 +27,7 @@ def render_msm_fes_tab(ctx: AppContext) -> None:
     """Render the MSM/FES analysis tab."""
     backend = ctx.backend
     layout = ctx.layout
-    
+
     st.header("Build MSM and FES")
     shard_groups = backend.shard_summaries()
 
@@ -75,42 +75,44 @@ def render_msm_fes_tab(ctx: AppContext) -> None:
     if not shard_groups:
         st.info("Emit shards to build an MSM/FES bundle.")
     else:
-        selected_runs = render_shard_selection_table(
-            "Shard groups for analysis",
-            shard_groups,
-            state_key="analysis_selected_runs",
-            default_behavior="all",
-            help_text=SHARD_SELECTOR_HELP,
-        )
-        if not selected_runs:
-            st.info("Select at least one shard group to build the MSM/FES bundle.")
-            st.stop()
-        profile_summary = summarize_selected_feature_profiles(
-            shard_groups, selected_runs
-        )
-        if len(profile_summary["feature_types"]) > 1:
-            st.warning(
-                "Selected shard groups mix CV-based and molecular feature sets. "
-                "Analysis results may be inconsistent."
+        # Data Selection
+        with st.expander("Data Selection", expanded=True):
+            selected_runs = render_shard_selection_table(
+                "Shard groups for analysis",
+                shard_groups,
+                state_key="analysis_selected_runs",
+                default_behavior="all",
+                help_text=SHARD_SELECTOR_HELP,
             )
-        elif profile_summary["feature_types"]:
-            detected_type = next(iter(profile_summary["feature_types"]))
-            st.caption(f"Detected shard feature type: {detected_type}")
-        try:
-            selected_paths = select_shard_paths(shard_groups, selected_runs)
-        except ValueError as exc:
-            st.error(f"Shard selection invalid: {exc}")
-            st.stop()
-        try:
-            _analysis_runs, analysis_text = _summarize_selected_shards(
-                selected_runs, selected_paths
+            if not selected_runs:
+                st.info("Select at least one shard group to build the MSM/FES bundle.")
+                st.stop()
+            profile_summary = summarize_selected_feature_profiles(
+                shard_groups, selected_runs
             )
-        except ValueError as exc:
-            st.error(f"Shard selection invalid: {exc}")
-            st.stop()
-        st.write(f"Using {len(selected_paths)} shard files for analysis.")
-        if analysis_text:
-            st.caption(analysis_text)
+            if len(profile_summary["feature_types"]) > 1:
+                st.warning(
+                    "Selected shard groups mix CV-based and molecular feature sets. "
+                    "Analysis results may be inconsistent."
+                )
+            elif profile_summary["feature_types"]:
+                detected_type = next(iter(profile_summary["feature_types"]))
+                st.caption(f"Detected shard feature type: {detected_type}")
+            try:
+                selected_paths = select_shard_paths(shard_groups, selected_runs)
+            except ValueError as exc:
+                st.error(f"Shard selection invalid: {exc}")
+                st.stop()
+            try:
+                _analysis_runs, analysis_text = _summarize_selected_shards(
+                    selected_runs, selected_paths
+                )
+            except ValueError as exc:
+                st.error(f"Shard selection invalid: {exc}")
+                st.stop()
+            st.write(f"Using {len(selected_paths)} shard files for analysis.")
+            if analysis_text:
+                st.caption(analysis_text)
 
         # General Settings
         with st.expander(" General Settings", expanded=True):

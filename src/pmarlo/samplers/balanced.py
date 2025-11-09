@@ -21,7 +21,7 @@ class BalancedTempSampler:
         shards_by_temperature: Dict[float, List[Shard]],
         pair_builder: PairBuilder,
         *,
-        rare_boost: float = 0.2,
+        rare_boost: float = const.BALANCED_DEFAULT_RARE_BOOST,
         random_seed: Optional[int] = None,
     ) -> None:
         if rare_boost < 0:
@@ -39,12 +39,14 @@ class BalancedTempSampler:
 
         if embeddings.ndim != 2:
             raise ValueError("embeddings must be a 2-D array")
-        self._cv_embeddings[shard_id] = np.asarray(embeddings, dtype=np.float32)
+        self._cv_embeddings[shard_id] = np.asarray(
+            embeddings, dtype=const.BALANCED_EMBEDDING_DTYPE
+        )
 
     def set_frame_weights(self, shard_id: str, weights: np.ndarray) -> None:
         """Register per-frame weights (length = number of frames)."""
 
-        arr = np.asarray(weights, dtype=np.float64)
+        arr = np.asarray(weights, dtype=const.BALANCED_FRAME_WEIGHTS_DTYPE)
         if arr.ndim != 1:
             raise ValueError("weights must be a 1-D array")
         if np.any(arr < 0):
@@ -55,7 +57,9 @@ class BalancedTempSampler:
         total = arr.sum()
         if total <= 0:
             raise ValueError("weights must sum to a positive value")
-        self._frame_weights[shard_id] = (arr / total).astype(np.float64)
+        self._frame_weights[shard_id] = (arr / total).astype(
+            const.BALANCED_FRAME_WEIGHTS_DTYPE
+        )
 
     def clear_state(self) -> None:
         """Drop cached embeddings, weights and occupancy statistics."""
@@ -96,7 +100,9 @@ class BalancedTempSampler:
             if weights is None:
                 idx = self._rng.choice(pairs.shape[0], size=k, replace=False)
             else:
-                idx = self._rng.choice(pairs.shape[0], size=k, replace=False, p=weights)
+                idx = self._rng.choice(
+                    pairs.shape[0], size=k, replace=False, p=weights
+                )
             chosen = pairs[idx]
         self._update_occupancy(shard, temperature, chosen)
         return chosen
@@ -113,9 +119,9 @@ class BalancedTempSampler:
                 f"got {base.shape[0]}"
             )
         base_weights = (
-            base[pairs[:, 0]].astype(np.float64)
+            base[pairs[:, 0]].astype(const.BALANCED_FRAME_WEIGHTS_DTYPE)
             if base is not None
-            else np.ones(n_pairs, dtype=np.float64)
+            else np.ones(n_pairs, dtype=const.BALANCED_FRAME_WEIGHTS_DTYPE)
         )
 
         embeddings = self._cv_embeddings.get(shard.meta.shard_id)
@@ -126,9 +132,11 @@ class BalancedTempSampler:
             and embeddings.shape[0] == shard.meta.n_frames
         ):
             occupancy = self._occupancy.setdefault(temperature, {})
-            rare_component = np.empty(n_pairs, dtype=np.float64)
+            rare_component = np.empty(n_pairs, dtype=const.BALANCED_FRAME_WEIGHTS_DTYPE)
             for idx, (i, _) in enumerate(pairs):
-                key = self._hash_embedding(embeddings[int(i)])
+                key = self._hash_embedding(
+                    embeddings[int(i)], decimals=const.BALANCED_EMBEDDING_HASH_DECIMALS
+                )
                 occ = occupancy.get(key, 0.0)
                 rare_component[idx] = (occ + const.NUMERIC_RARE_EVENT_EPSILON) ** (
                     -self.rare_boost
@@ -158,11 +166,15 @@ class BalancedTempSampler:
             )
         occupancy = self._occupancy.setdefault(temperature, {})
         for i, _ in chosen_pairs:
-            key = self._hash_embedding(embeddings[int(i)])
-            increment = float(base[int(i)]) if base is not None else 1.0
+            key = self._hash_embedding(
+                embeddings[int(i)], decimals=const.BALANCED_EMBEDDING_HASH_DECIMALS
+            )
+            increment = (
+                float(base[int(i)]) if base is not None else const.BALANCED_OCCUPANCY_INCREMENT
+            )
             occupancy[key] = occupancy.get(key, 0.0) + increment
 
     @staticmethod
-    def _hash_embedding(vec: np.ndarray, decimals: int = 1) -> Tuple[float, ...]:
+    def _hash_embedding(vec: np.ndarray, decimals: int = const.BALANCED_EMBEDDING_HASH_DECIMALS) -> Tuple[float, ...]:
         rounded = np.round(vec.astype(np.float64), decimals=decimals)
         return tuple(float(x) for x in rounded)

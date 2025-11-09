@@ -135,45 +135,14 @@ def render_sampling_tab(ctx: AppContext) -> None:
                                 exported_dir = backend.ensure_cv_bundle(selected_cv_idx)
                             except Exception as exc:
                                 exported_dir = None
-                                st.error(
-                                    f"CV bundle export failed: {exc}\n\n"
-                                    "Verify the model was trained on molecular feature shards "
-                                    "and that feature_spec.yaml matches those features."
-                                )
                             else:
                                 cv_model_path = exported_dir
-                                st.success(
-                                    f"CV bias bundle exported to {exported_dir}.\n"
-                                    "You can now launch CV-informed sampling with this model."
-                                )
+                                # Intentionally do not show verbose success text; UI remains minimal
 
-                    if cv_model_path is not None:
-                        st.success(f"Selected CV bundle: {cv_model_path}")
-                        st.info(
-                            "**CV-Informed Sampling ENABLED**\n\n"
-                            "The trained Deep-TICA model will be used to bias the simulation:\n"
-                            "- **Bias type**: Harmonic expansion (E = k * Σ(cv²))\n"
-                            "- **Effect**: Repulsive forces in CV space → explore diverse conformations\n"
-                            "- **Implementation**: OpenMM computes forces via F = -∇E\n\n"
-                            "**Requirements**:\n"
-                            "- `openmm-torch` must be installed (`conda install -c conda-forge openmm-torch`)\n"
-                            "- CUDA-enabled PyTorch recommended (CPU is ~10-20x slower)\n\n"
-                            "**Note**: The model expects **molecular features** (distances, angles) as input. "
-                            "Feature extraction is automatically configured in the OpenMM system."
-                        )
-                    else:
-                        st.error(
-                            "**Missing CV Bias Bundle**\n\n"
-                            "Selected model is missing the exported CV bias bundle (deeptica_cv_model.* files).\n\n"
-                            "**Common causes:**\n"
-                            "1. **Feature mismatch**: Model was trained on collective variables (Rg, RMSD) instead of "
-                            "molecular features (distances, angles, dihedrals). CV biasing requires molecular features.\n"
-                            "2. **Export failed**: Training completed but CV export encountered an error.\n\n"
-                            "**Solution:**\n"
-                            "- For existing models: Check `CV_BIAS_REQUIREMENTS.md` for details on feature requirements\n"
-                            "- For new models: Ensure shards contain molecular features matching `feature_spec.yaml`\n"
-                            "- Run the export utility: `poetry run python export_cv_bundle.py <model_path>`"
-                        )
+                    # Do not display verbose success information when a valid CV bundle exists.
+                    # Show a short error for missing or mismatched bundles.
+                    if cv_model_path is None:
+                        st.error("Model trained on wrong shards.")
             else:
                 st.info(
                     "No trained CV models available. Train a model in the 'Model Training' tab to enable CV-informed sampling.")

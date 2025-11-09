@@ -94,42 +94,44 @@ def render_conformations_tab(ctx: AppContext) -> None:
     if not shard_groups:
         st.info("Emit shards to run conformations analysis.")
     else:
-        selected_runs = render_shard_selection_table(
-            "Shard groups for conformations",
-            shard_groups,
-            state_key="conf_selected_runs",
-            default_behavior="all",
-            help_text=SHARD_SELECTOR_HELP,
-        )
-        if not selected_runs:
-            st.info("Select at least one shard group before configuring TPT analysis.")
-            st.stop()
-        profile_summary = summarize_selected_feature_profiles(
-            shard_groups, selected_runs
-        )
-        if len(profile_summary["feature_types"]) > 1:
-            st.warning(
-                "Selected shard groups mix different feature types. "
-                "TPT analysis expects a consistent feature basis."
+        # Data Selection
+        with st.expander("Data Selection", expanded=True):
+            selected_runs = render_shard_selection_table(
+                "Shard groups for conformations",
+                shard_groups,
+                state_key="conf_selected_runs",
+                default_behavior="all",
+                help_text=SHARD_SELECTOR_HELP,
             )
-        elif profile_summary["feature_types"]:
-            detected_type = next(iter(profile_summary["feature_types"]))
-            st.caption(f"Detected shard feature type: {detected_type}")
-        try:
-            selected_paths = select_shard_paths(shard_groups, selected_runs)
-        except ValueError as exc:
-            st.error(f"Shard selection invalid: {exc}")
-            st.stop()
-        try:
-            _, shard_summary = _summarize_selected_shards(selected_paths)
-        except ValueError as exc:
-            st.error(f"Shard selection invalid: {exc}")
-            st.stop()
-        st.write(
-            f"Using {len(selected_paths)} shard files for conformations analysis."
-        )
-        if shard_summary:
-            st.caption(shard_summary)
+            if not selected_runs:
+                st.info("Select at least one shard group before configuring TPT analysis.")
+                st.stop()
+            profile_summary = summarize_selected_feature_profiles(
+                shard_groups, selected_runs
+            )
+            if len(profile_summary["feature_types"]) > 1:
+                st.warning(
+                    "Selected shard groups mix different feature types. "
+                    "TPT analysis expects a consistent feature basis."
+                )
+            elif profile_summary["feature_types"]:
+                detected_type = next(iter(profile_summary["feature_types"]))
+                st.caption(f"Detected shard feature type: {detected_type}")
+            try:
+                selected_paths = select_shard_paths(shard_groups, selected_runs)
+            except ValueError as exc:
+                st.error(f"Shard selection invalid: {exc}")
+                st.stop()
+            try:
+                _, shard_summary = _summarize_selected_shards(selected_paths)
+            except ValueError as exc:
+                st.error(f"Shard selection invalid: {exc}")
+                st.stop()
+            st.write(
+                f"Using {len(selected_paths)} shard files for conformations analysis."
+            )
+            if shard_summary:
+                st.caption(shard_summary)
 
         with st.expander(
                 "Configure Conformations Analysis", expanded=False

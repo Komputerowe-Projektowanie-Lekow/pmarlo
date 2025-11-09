@@ -81,38 +81,40 @@ def render_its_tab(ctx: AppContext) -> None:
             st.session_state["its_feature_spec_path"] = str(pending_spec)
             st.session_state[_ITS_PENDING_FEATURE_SPEC] = None
 
-        selected_runs = render_shard_selection_table(
-            "Shard groups",
-            shard_groups,
-            state_key="its_selected_runs",
-            default_behavior="latest",
-            help_text=SHARD_SELECTOR_HELP,
-        )
-
-        if selected_runs:
-            profile_summary = summarize_selected_feature_profiles(
-                shard_groups, selected_runs
+        # Data Selection
+        with st.expander("Data Selection", expanded=True):
+            selected_runs = render_shard_selection_table(
+                "Shard groups",
+                shard_groups,
+                state_key="its_selected_runs",
+                default_behavior="latest",
+                help_text=SHARD_SELECTOR_HELP,
             )
-            if len(profile_summary["feature_types"]) > 1:
-                st.warning(
-                    "Selected shard groups mix CV and molecular features. "
-                    "ITS diagnostics assume a consistent feature basis."
+
+            if selected_runs:
+                profile_summary = summarize_selected_feature_profiles(
+                    shard_groups, selected_runs
                 )
-            elif profile_summary["feature_types"]:
-                detected_type = next(iter(profile_summary["feature_types"]))
-                st.caption(f"Detected shard feature type: {detected_type}")
-            try:
-                selected_paths = select_shard_paths(shard_groups, selected_runs)
-                _, selection_text = _summarize_selected_shards(selected_paths)
-                st.caption(f"Using {len(selected_paths)} shard files.")
-                if selection_text:
-                    st.caption(selection_text)
-            except (ValueError, Exception) as exc:
-                st.warning(f"Issue with selection: {exc}")
+                if len(profile_summary["feature_types"]) > 1:
+                    st.warning(
+                        "Selected shard groups mix CV and molecular features. "
+                        "ITS diagnostics assume a consistent feature basis."
+                    )
+                elif profile_summary["feature_types"]:
+                    detected_type = next(iter(profile_summary["feature_types"]))
+                    st.caption(f"Detected shard feature type: {detected_type}")
+                try:
+                    selected_paths = select_shard_paths(shard_groups, selected_runs)
+                    _, selection_text = _summarize_selected_shards(selected_paths)
+                    st.caption(f"Using {len(selected_paths)} shard files.")
+                    if selection_text:
+                        st.caption(selection_text)
+                except (ValueError, Exception) as exc:
+                    st.warning(f"Issue with selection: {exc}")
+                    selected_paths = []
+            else:
+                st.info("Select at least one shard group to compute implied timescales.")
                 selected_paths = []
-        else:
-            st.info("Select at least one shard group to compute implied timescales.")
-            selected_paths = []
 
         frames_button = st.button(
             "Frames per shard",
