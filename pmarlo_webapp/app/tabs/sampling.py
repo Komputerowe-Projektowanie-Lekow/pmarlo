@@ -1,6 +1,6 @@
 import streamlit as st
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Optional
 
 from core.context import AppContext
 from core.session import (
@@ -9,66 +9,11 @@ from core.session import (
     _LAST_SHARDS,
 )
 from backend.types import SimulationConfig, ShardRequest
-from pmarlo.api import parse_temperature_ladder
-
-_REQUIRED_CV_FILES = (
-    "deeptica_cv_model.pt",
-    "deeptica_cv_model_scaler.npz",
+from backend.feature_profiles import (
+    get_feature_profile_info,
+    validate_profile_for_cv_biasing,
 )
-
-
-def _unique_path(path_like: Any) -> Optional[Path]:
-    if not path_like:
-        return None
-    try:
-        candidate = Path(path_like).expanduser()
-    except Exception:
-        return None
-    return candidate
-
-
-def _probable_training_dir(bundle_path: Path) -> Optional[Path]:
-    stem = bundle_path.stem
-    suffix = stem.replace("deeptica-", "", 1) if stem.startswith("deeptica-") else stem
-    candidate = bundle_path.parent / f"training-{suffix}"
-    return candidate
-
-
-def _cv_bundle_dir_from_entry(entry: Mapping[str, Any]) -> Optional[Path]:
-    """Return the directory containing exported CV bias assets for a model entry."""
-
-    candidates: list[Path] = []
-
-    def _register(raw: Any) -> None:
-        candidate = _unique_path(raw)
-        if candidate is None:
-            return
-        if candidate.is_file():
-            candidate = candidate.parent
-        candidate = candidate.resolve()
-        if candidate not in candidates:
-            candidates.append(candidate)
-
-    bundle_info = entry.get("cv_model_bundle")
-    if isinstance(bundle_info, Mapping):
-        for key in ("model_path", "scaler_path", "config_path", "metadata_path"):
-            _register(bundle_info.get(key))
-
-    _register(entry.get("checkpoint_dir"))
-
-    bundle = entry.get("bundle")
-    if bundle:
-        bundle_path = _unique_path(bundle)
-        if bundle_path is not None:
-            inferred = _probable_training_dir(bundle_path)
-            if inferred is not None:
-                _register(inferred)
-
-    for candidate in candidates:
-        if candidate.is_dir() and all((candidate / name).exists() for name in _REQUIRED_CV_FILES):
-            return candidate
-
-    return None
+from pmarlo.api import parse_temperature_ladder
 
 
 def render_sampling_tab(ctx: AppContext) -> None:
@@ -182,7 +127,25 @@ def render_sampling_tab(ctx: AppContext) -> None:
                         key="sim_cv_model_select",
                     )
                     model_entry = models[selected_cv_idx]
-                    cv_model_path = _cv_bundle_dir_from_entry(model_entry)
+                    cv_model_path = backend.resolve_cv_bundle_dir(model_entry)
+
+                    if cv_model_path is None:
+                        with st.spinner("Exporting CV bias bundle for the selected model..."):
+                            try:
+                                exported_dir = backend.ensure_cv_bundle(selected_cv_idx)
+                            except Exception as exc:
+                                exported_dir = None
+                                st.error(
+                                    f"CV bundle export failed: {exc}\n\n"
+                                    "Verify the model was trained on molecular feature shards "
+                                    "and that feature_spec.yaml matches those features."
+                                )
+                            else:
+                                cv_model_path = exported_dir
+                                st.success(
+                                    f"CV bias bundle exported to {exported_dir}.\n"
+                                    "You can now launch CV-informed sampling with this model."
+                                )
 
                     if cv_model_path is not None:
                         st.success(f"Selected CV bundle: {cv_model_path}")
@@ -200,8 +163,16 @@ def render_sampling_tab(ctx: AppContext) -> None:
                         )
                     else:
                         st.error(
-                            "Selected model is missing the exported CV bias bundle (deeptica_cv_model.* files). "
-                            "Re-run the training tab after installing the optional ML/CV dependencies to export the bundle."
+                            "**Missing CV Bias Bundle**\n\n"
+                            "Selected model is missing the exported CV bias bundle (deeptica_cv_model.* files).\n\n"
+                            "**Common causes:**\n"
+                            "1. **Feature mismatch**: Model was trained on collective variables (Rg, RMSD) instead of "
+                            "molecular features (distances, angles, dihedrals). CV biasing requires molecular features.\n"
+                            "2. **Export failed**: Training completed but CV export encountered an error.\n\n"
+                            "**Solution:**\n"
+                            "- For existing models: Check `CV_BIAS_REQUIREMENTS.md` for details on feature requirements\n"
+                            "- For new models: Ensure shards contain molecular features matching `feature_spec.yaml`\n"
+                            "- Run the export utility: `poetry run python export_cv_bundle.py <model_path>`"
                         )
             else:
                 st.info(
@@ -418,6 +389,36 @@ def render_sampling_tab(ctx: AppContext) -> None:
                 value="",
                 key="emit_reference",
             )
+            profile_options = [
+                "cv_analysis",
+                "molecular_cv_biasing",
+                "molecular_custom",
+            ]
+            feature_profile = st.radio(
+                "Feature profile",
+                options=profile_options,
+                index=profile_options.index("cv_analysis"),
+                key="emit_feature_profile",
+                help=(
+                    "Choose which feature set to extract when creating shards:\n"
+                    "- CV analysis uses Rg/RMSD for MSM + clustering\n"
+                    "- Molecular profiles extract distances/angles/dihedrals for CV biasing"
+                ),
+            )
+            profile_info = get_feature_profile_info(feature_profile)
+            feature_count = profile_info.get("feature_count", "variable")
+            st.caption(
+                f"{profile_info.get('description', '').strip()} "
+                f"(type: {profile_info.get('feature_type', 'cv')}, features: {feature_count})"
+            )
+            if feature_profile == "molecular_custom":
+                st.caption("Uses feature definitions from app/feature_spec.yaml.")
+            compatible, compatibility_msg = validate_profile_for_cv_biasing(feature_profile)
+            if compatible:
+                st.success(compatibility_msg)
+            else:
+                st.warning(compatibility_msg)
+
             emit = st.form_submit_button("Emit shard files")
             if emit:
                 try:
@@ -427,6 +428,7 @@ def render_sampling_tab(ctx: AppContext) -> None:
                         seed_start=int(seed_start),
                         frames_per_shard=int(frames_per_shard),
                         hop_frames=int(hop_frames) if hop_frames > 0 else None,
+                        feature_profile=feature_profile,
                         reference=(
                             Path(reference_path).expanduser().resolve()
                             if reference_path.strip()

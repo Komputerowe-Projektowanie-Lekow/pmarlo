@@ -63,22 +63,73 @@ class ShardsMixin:
         if provenance:
             note.update(provenance)
 
-        shard_paths = emit_shards_rg_rmsd_windowed(
-            pdb_file=simulation.pdb_path,
-            traj_files=[str(p) for p in simulation.traj_files],
-            out_dir=str(shard_dir),
-            reference=str(request.reference) if request.reference else None,
-            stride=int(max(1, request.stride)),
-            temperature=float(request.temperature),
-            seed_start=int(max(0, request.seed_start)),
-            frames_per_shard=int(max(1, request.frames_per_shard)),
-            hop_frames=(
-                int(request.hop_frames)
-                if request.hop_frames is not None and request.hop_frames > 0
-                else None
-            ),
-            provenance=note,
-        )
+        # Load feature profile to determine extraction method
+        from .feature_profiles import load_feature_profile, get_feature_profile_info
+        
+        profile_name = request.feature_profile
+        logger.info(f"Using feature profile: {profile_name}")
+        
+        profile_info = get_feature_profile_info(profile_name)
+        note["feature_profile"] = profile_name
+        note["feature_type"] = profile_info.get("feature_type", "unknown")
+        note["cv_biasing_compatible"] = profile_info.get("cv_biasing_compatible", False)
+        
+        # Extract shards based on profile type
+        if profile_info.get("feature_type") == "cv":
+            # Use traditional CV-based extraction
+            logger.info("Extracting CV-based shards (Rg, RMSD)")
+            shard_paths = emit_shards_rg_rmsd_windowed(
+                pdb_file=simulation.pdb_path,
+                traj_files=[str(p) for p in simulation.traj_files],
+                out_dir=str(shard_dir),
+                reference=str(request.reference) if request.reference else None,
+                stride=int(max(1, request.stride)),
+                temperature=float(request.temperature),
+                seed_start=int(max(0, request.seed_start)),
+                frames_per_shard=int(max(1, request.frames_per_shard)),
+                hop_frames=(
+                    int(request.hop_frames)
+                    if request.hop_frames is not None and request.hop_frames > 0
+                    else None
+                ),
+                provenance=note,
+            )
+        elif profile_info.get("feature_type") == "molecular":
+            # Use molecular feature extraction
+            logger.info("Extracting molecular feature-based shards")
+            from .shard_extraction import extract_shards_with_features
+            
+            # Load feature profile with actual features
+            try:
+                profile = load_feature_profile(
+                    profile_name,
+                    spec_path=self.layout.app_root / "app" / "feature_spec.yaml" if profile_name == "molecular_custom" else None
+                )
+                logger.info(f"Loaded profile with {len(profile.features)} features")
+            except Exception as e:
+                logger.error(f"Failed to load feature profile: {e}")
+                raise RuntimeError(
+                    f"Could not load feature profile '{profile_name}': {e}"
+                ) from e
+            
+            shard_paths = extract_shards_with_features(
+                pdb_file=simulation.pdb_path,
+                traj_files=[str(p) for p in simulation.traj_files],
+                out_dir=str(shard_dir),
+                feature_specs=profile.features,
+                stride=int(max(1, request.stride)),
+                temperature=float(request.temperature),
+                seed_start=int(max(0, request.seed_start)),
+                frames_per_shard=int(max(1, request.frames_per_shard)),
+                hop_frames=(
+                    int(request.hop_frames)
+                    if request.hop_frames is not None and request.hop_frames > 0
+                    else None
+                ),
+                provenance=note,
+            )
+        else:
+            raise ValueError(f"Unknown feature type: {profile_info.get('feature_type')}")
 
         shard_paths = _coerce_path_list(shard_paths)
 
@@ -139,6 +190,7 @@ class ShardsMixin:
                 else None
             ),
             created_at=created,
+            feature_profile=request.feature_profile,
         )
 
         self.state.append_shards(
@@ -159,6 +211,9 @@ class ShardsMixin:
                 "created_at": created,
                 "cv_informed": provenance.get("cv_informed", False) if provenance else False,
                 "cv_model_bundle": provenance.get("cv_model_bundle") if provenance else None,
+                "feature_profile": request.feature_profile,
+                "feature_type": profile_info.get("feature_type", "unknown"),
+                "cv_biasing_compatible": profile_info.get("cv_biasing_compatible", False),
             }
         )
 

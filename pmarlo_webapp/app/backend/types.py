@@ -17,6 +17,7 @@ class ShardRequest:
     seed_start: int = 0
     frames_per_shard: int = 5000
     hop_frames: Optional[int] = None
+    feature_profile: str = "cv_analysis"  # "cv_analysis" or "molecular_cv_biasing" or "molecular_custom"
 
 @dataclass
 class ShardResult:
@@ -30,6 +31,7 @@ class ShardResult:
     frames_per_shard: int
     hop_frames: Optional[int]
     created_at: str
+    feature_profile: str = "cv_analysis"  # Feature profile used for extraction
 
 @dataclass
 class SimulationResult:

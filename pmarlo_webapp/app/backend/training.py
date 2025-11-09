@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from pmarlo.api import normalize_training_metrics, coerce_tau_schedule
 from pmarlo.utils.path_utils import ensure_directory
+from pmarlo.features.deeptica.ts_feature_extractor import canonicalize_feature_spec
 
 from .types import TrainingConfig, TrainingResult
 from .utils import (
@@ -14,6 +15,11 @@ from .utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+_CV_BUNDLE_REQUIRED = (
+    "deeptica_cv_model.pt",
+    "deeptica_cv_model_scaler.npz",
+)
 
 
 # Module-level helper functions
@@ -307,13 +313,73 @@ class TrainingMixin:
         """Export CV model for OpenMM integration."""
         try:
             from pmarlo.features.deeptica import export_cv_model
-            import pickle
+            import torch
+            import numpy as np
 
-            with open(bundle_path, "rb") as f:
-                bundle_data = pickle.load(f)
+            # DeepTICA model files are saved in models_dir, not checkpoint_dir
+            # The model is saved when training completes, so its timestamp will be
+            # later than the checkpoint_dir timestamp (which is created at start)
+            models_dir = checkpoint_dir.parent  # Parent of checkpoint_dir is models_dir
 
-            network = bundle_data.get("network")
-            scaler = bundle_data.get("scaler")
+            # Extract timestamp from checkpoint_dir name (e.g., training-20251108-193156)
+            checkpoint_timestamp = checkpoint_dir.name.replace("training-", "")
+
+            # Find all model files and filter to those created during/after this training run
+            # Only match main .pt files, not .scaler.pt files
+            all_model_files = [
+                f for f in sorted(models_dir.glob("deeptica-*.pt"))
+                if not f.name.endswith(".scaler.pt")
+            ]
+
+            if not all_model_files:
+                raise FileNotFoundError(
+                    f"No DeepTICA model files (deeptica-*.pt) found in {models_dir}"
+                )
+
+            # Find model files with timestamps >= checkpoint timestamp
+            # Model timestamp format: deeptica-YYYYMMDD-HHMMSS.pt
+            matching_models = []
+            for mf in all_model_files:
+                model_timestamp = mf.stem.replace("deeptica-", "")
+                if model_timestamp >= checkpoint_timestamp:
+                    matching_models.append(mf)
+
+            if matching_models:
+                # Use the earliest model that matches (closest to training start)
+                model_file = matching_models[0]
+                logger.info(
+                    f"Found model file {model_file.name} for training {checkpoint_dir.name}"
+                )
+            else:
+                # Fallback: use the most recent model overall
+                model_file = all_model_files[-1]
+                logger.warning(
+                    f"No model found with timestamp >= {checkpoint_timestamp}, "
+                    f"using most recent model: {model_file.name}"
+                )
+
+            base_path = model_file.with_suffix("")
+
+            logger.info(f"Loading DeepTICA model from {base_path}")
+            
+            # Load network state dict
+            pt_file = base_path.with_suffix(".pt")
+            scaler_file = base_path.with_suffix(".scaler.pt")
+            config_file = base_path.with_suffix(".json")
+            
+            if not pt_file.exists():
+                raise FileNotFoundError(f"Model file not found: {pt_file}")
+            if not scaler_file.exists():
+                raise FileNotFoundError(f"Scaler file not found: {scaler_file}")
+            if not config_file.exists():
+                raise FileNotFoundError(f"Config file not found: {config_file}")
+            
+            # Load the full DeepTICA model using the standard load method
+            from pmarlo.features.deeptica._full import DeepTICAModel
+            deeptica_model = DeepTICAModel.load(base_path)
+            
+            network = deeptica_model.net
+            scaler = deeptica_model.scaler
             history = br.artifacts.get("mlcv_deeptica", {})
 
             if network is not None and scaler is not None:
@@ -332,6 +398,24 @@ class TrainingMixin:
 
                 with spec_path.open("r", encoding="utf-8") as spec_file:
                     feature_spec = yaml.safe_load(spec_file)
+
+                normalized_spec = canonicalize_feature_spec(feature_spec)
+                expected_features = int(normalized_spec.n_features)
+                scaler_mean = np.asarray(getattr(scaler, "mean_", []))
+                actual_features = int(scaler_mean.shape[0]) if scaler_mean.size else 0
+                if expected_features <= 0:
+                    raise RuntimeError(
+                        "feature_spec.yaml does not define any molecular features. "
+                        "Provide at least one feature to export CV bias bundles."
+                    )
+                if actual_features != expected_features:
+                    raise RuntimeError(
+                        "Feature count mismatch detected while exporting the CV bundle. "
+                        f"feature_spec.yaml defines {expected_features} feature(s) but the "
+                        f"trained model scaler expects {actual_features}. "
+                        "Train on shards created with a molecular feature profile or "
+                        "update feature_spec.yaml to match the training data."
+                    )
 
                 logger.info("Exporting CV model with bias potential for OpenMM integration...")
                 cv_bundle = export_cv_model(
@@ -353,7 +437,119 @@ class TrainingMixin:
                     "cv_dim": cv_bundle.cv_dim,
                     "feature_spec_sha256": cv_bundle.feature_spec_hash,
                 }
+            else:
+                logger.error("Network or scaler is None after loading model, cannot export CV bundle")
+                return None
         except Exception as e:
-            logger.warning(f"Could not export CV model: {e}")
-            return None
+            logger.error(f"Could not export CV model: {e}", exc_info=True)
+            raise RuntimeError(
+                f"Failed to export CV model bundle: {e}. "
+                "The model was trained successfully, but CV bias export failed. "
+                "This usually indicates missing dependencies or configuration issues."
+            ) from e
 
+    # ------------------------------------------------------------------
+    # CV bundle discovery / repair helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _probable_training_dir(bundle_path: Path) -> Optional[Path]:
+        stem = bundle_path.stem
+        if stem.startswith("deeptica-"):
+            suffix = stem[len("deeptica-") :]
+            return bundle_path.parent / f"training-{suffix}"
+        return None
+
+    @staticmethod
+    def _cv_bundle_complete(path: Path) -> bool:
+        return all((path / name).exists() for name in _CV_BUNDLE_REQUIRED)
+
+    def _register_candidate_dir(
+        self, value: Any, candidates: List[Path]
+    ) -> None:
+        candidate = self._path_from_value(value)
+        if candidate is None:
+            return
+        if candidate.is_file():
+            candidate = candidate.parent
+        try:
+            candidate = candidate.resolve()
+        except Exception:
+            candidate = candidate.absolute()
+        if candidate not in candidates:
+            candidates.append(candidate)
+
+    def _resolve_cv_bundle_dir(self, entry: Mapping[str, Any]) -> Optional[Path]:
+        candidates: List[Path] = []
+
+        bundle_info = entry.get("cv_model_bundle")
+        if isinstance(bundle_info, Mapping):
+            for key in ("model_path", "scaler_path", "config_path", "metadata_path"):
+                self._register_candidate_dir(bundle_info.get(key), candidates)
+
+        self._register_candidate_dir(entry.get("checkpoint_dir"), candidates)
+
+        bundle = entry.get("bundle")
+        if bundle:
+            bundle_path = self._path_from_value(bundle)
+            if bundle_path is not None:
+                inferred = self._probable_training_dir(bundle_path)
+                if inferred is not None:
+                    self._register_candidate_dir(inferred, candidates)
+
+        for candidate in candidates:
+            if candidate.is_dir() and self._cv_bundle_complete(candidate):
+                return candidate
+        return None
+
+    def resolve_cv_bundle_dir(self, entry: Mapping[str, Any]) -> Optional[Path]:
+        """Public helper to locate the CV bundle directory for a model entry."""
+        return self._resolve_cv_bundle_dir(entry)
+
+    def ensure_cv_bundle(self, index: int) -> Optional[Path]:
+        """Make sure the selected model has an exported CV bundle on disk."""
+        if index < 0 or index >= len(self.state.models):
+            raise IndexError(f"Model index {index} is out of range")
+
+        entry = dict(self.state.models[index])
+        existing = self._resolve_cv_bundle_dir(entry)
+        if existing is not None:
+            return existing
+
+        bundle_path = self._path_from_value(entry.get("bundle"))
+        if bundle_path is None or not bundle_path.exists():
+            raise FileNotFoundError("Model bundle is missing on disk; cannot export CV files.")
+
+        checkpoint_dir = self._path_from_value(entry.get("checkpoint_dir"))
+        if checkpoint_dir is None:
+            inferred = self._probable_training_dir(bundle_path)
+            if inferred is None:
+                raise RuntimeError(
+                    "Cannot determine checkpoint directory for CV export. "
+                    "Re-run training or specify checkpoint_dir in state."
+                )
+            checkpoint_dir = inferred
+        ensure_directory(checkpoint_dir)
+
+        br = self._load_build_result_from_path(bundle_path)
+        if br is None:
+            raise RuntimeError(
+                "Could not load build result from model bundle; CV export requires metadata."
+            )
+
+        info = self._export_cv_model(bundle_path, checkpoint_dir, br)
+        if not info:
+            raise RuntimeError(
+                "CV model export completed without producing bundle files. "
+                "Check the training logs for errors."
+            )
+
+        entry["checkpoint_dir"] = str(checkpoint_dir.resolve())
+        entry["cv_model_bundle"] = dict(info)
+        self.state.update_model(index, entry)
+
+        resolved = self._resolve_cv_bundle_dir(entry)
+        if resolved is None:
+            raise RuntimeError(
+                "CV model export reported success but the bundle files could not be located."
+            )
+        return resolved

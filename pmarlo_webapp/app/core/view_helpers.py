@@ -99,6 +99,41 @@ def build_shard_selector_options(
     return options, run_id_map
 
 
+def summarize_selected_feature_profiles(
+    shard_groups: Sequence[Mapping[str, Any]],
+    selected_run_ids: Sequence[Any],
+) -> Dict[str, Any]:
+    """Collect feature profile metadata for the selected shard groups."""
+
+    selected_lookup = {str(run_id).strip() for run_id in selected_run_ids if str(run_id).strip()}
+    selected_entries: List[Mapping[str, Any]] = []
+    for entry in shard_groups:
+        run_id = str(entry.get("run_id", "")).strip()
+        if run_id and run_id in selected_lookup:
+            selected_entries.append(entry)
+
+    def _profile_name(entry: Mapping[str, Any]) -> str:
+        raw = str(entry.get("feature_profile") or "").strip()
+        if raw:
+            return raw
+        feature_type = str(entry.get("feature_type") or "").strip().lower()
+        return "molecular_cv_biasing" if feature_type == "molecular" else "cv_analysis"
+
+    profiles = { _profile_name(entry) for entry in selected_entries }
+    feature_types = {
+        (str(entry.get("feature_type") or "cv")).strip() or "cv" for entry in selected_entries
+    }
+    cv_flags = {bool(entry.get("cv_biasing_compatible")) for entry in selected_entries}
+
+    return {
+        "entries": selected_entries,
+        "profiles": profiles,
+        "feature_types": feature_types,
+        "cv_flags": cv_flags,
+        "primary_profile": next(iter(profiles)) if len(profiles) == 1 else None,
+    }
+
+
 def render_shard_selection_table(
     label: str,
     shard_groups: Sequence[Mapping[str, Any]],

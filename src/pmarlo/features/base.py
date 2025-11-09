@@ -92,6 +92,39 @@ def _parse_contacts_feature(rest: str | None) -> Tuple[str, Dict[str, Any]]:
     return "contacts_pair", {}
 
 
+def _parse_molecular_list_format(spec: str) -> Tuple[str, Dict[str, Any]] | None:
+    """Parse molecular features with list format: distance([i, j]), angle([i, j, k]), dihedral([i, j, k, l]).
+
+    Returns (feature_name, kwargs) if successfully parsed, None otherwise.
+    """
+    import re
+
+    # Match patterns like: distance([0, 1]), angle([0, 1, 2]), dihedral([0, 1, 2, 3])
+    match = re.match(r'^(distance|angle|dihedral)\(\[([^]]+)]\)$', spec)
+    if not match:
+        return None
+
+    feature_type = match.group(1)
+    indices_str = match.group(2)
+
+    try:
+        # Parse comma-separated integers
+        indices = [int(x.strip()) for x in indices_str.split(',')]
+
+        # Validate number of indices
+        if feature_type == "distance" and len(indices) == 2:
+            return "distance", {"indices": indices}
+        elif feature_type == "angle" and len(indices) == 3:
+            return "angle", {"indices": indices}
+        elif feature_type == "dihedral" and len(indices) == 4:
+            return "dihedral", {"indices": indices}
+        else:
+            # Wrong number of indices for the feature type
+            return None
+    except (ValueError, AttributeError):
+        return None
+
+
 def parse_feature_spec(spec: str) -> Tuple[str, Dict[str, Any]]:
     """Parse a lightweight feature spec string to (feature_name, kwargs).
 
@@ -100,9 +133,19 @@ def parse_feature_spec(spec: str) -> Tuple[str, Dict[str, Any]]:
     - "Rg"
     - "chi1"
     - "dist:atompair(i,j)" where i,j are integer atom indices (0-based)
+    - "distance([i, j])" - molecular distance feature with list format
+    - "angle([i, j, k])" - molecular angle feature with list format
+    - "dihedral([i, j, k, l])" - molecular dihedral feature with list format
     """
 
     prefix, rest = _normalize_and_split_feature_spec(spec)
+
+    # Check for molecular features with list format: distance([...]), angle([...]), dihedral([...])
+    if rest is None and "(" in prefix and prefix.endswith(")"):
+        # Try to parse as molecular feature with list format
+        parsed = _parse_molecular_list_format(prefix)
+        if parsed is not None:
+            return parsed
 
     # Simple names without namespace
     if rest is None:
