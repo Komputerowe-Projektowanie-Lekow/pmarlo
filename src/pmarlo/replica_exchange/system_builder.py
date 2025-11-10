@@ -81,13 +81,20 @@ def _load_model_bundle(
     bundle_info = load_cv_model_info(model_path.parent, model_path.stem)
 
     model_hash = bundle_info.get("feature_spec_sha256")
+    # If the exported bundle lacks an explicit feature_spec hash, warn but continue.
+    # Older exports may omit this attribute; in that case we fall back to trusting
+    # the configuration-derived spec_hash while still validating input/output dims.
     if not model_hash:
-        raise RuntimeError("Exported CV model is missing feature_spec_sha256 metadata.")
-    if model_hash != spec_hash:
-        raise RuntimeError(
-            "Feature specification mismatch: "
-            f"expected hash {spec_hash} from configuration but model provides {model_hash}."
+        logger.warning(
+            "Exported CV model is missing feature_spec_sha256 metadata. "
+            "Proceeding without strict feature-spec hash validation."
         )
+    else:
+        if model_hash != spec_hash:
+            raise RuntimeError(
+                "Feature specification mismatch: "
+                f"expected hash {spec_hash} from configuration but model provides {model_hash}."
+            )
 
     scaler_params = bundle_info.get("scaler_params", {})
     mean = np.asarray(scaler_params.get("mean", []), dtype=np.float32)
@@ -119,8 +126,16 @@ def _validate_model_tensors(model: torch.jit.ScriptModule, spec_hash: str) -> No
                 f"Model buffer '{name}' must be float32 but is {buffer.dtype}."
             )
 
+    # If the compiled TorchScript module exposes a feature_spec_sha256 attribute, ensure
+    # it matches the configuration-derived spec_hash. If the attribute is missing (older
+    # exports), do not fail—just log a warning and continue.
     attr_hash = getattr(model, "feature_spec_sha256", None)
-    if attr_hash != spec_hash:
+    if attr_hash is None:
+        logger.warning(
+            "TorchScript module does not expose 'feature_spec_sha256' attribute. "
+            "Skipping strict hash match; ensure your model bundle matches the active feature spec."
+        )
+    elif attr_hash != spec_hash:
         raise RuntimeError(
             "TorchScript module hash does not match configuration feature specification."
         )

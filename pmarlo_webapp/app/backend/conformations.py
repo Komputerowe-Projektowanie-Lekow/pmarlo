@@ -904,11 +904,13 @@ class ConformationsMixin:
                     entry.get("summary") or entry.get("summary_path")
                 )
 
-                exists = False
-                if summary_path is not None and summary_path.exists():
-                    exists = True
-                elif output_dir is not None and output_dir.exists():
-                    exists = True
+                # If summary_path is None, try default location
+                if summary_path is None and output_dir is not None:
+                    summary_path = output_dir / "conformations_summary.json"
+
+                # Entry is valid only if the summary file exists
+                # (directory alone is not sufficient, as it might be empty from failed runs)
+                exists = summary_path is not None and summary_path.exists()
 
                 if not exists:
                     to_delete.append(i)
@@ -929,6 +931,7 @@ class ConformationsMixin:
             entry.get("output_dir") or entry.get("directory")
         )
         if output_dir is None:
+            logger.warning(f"Could not resolve output_dir from entry: {entry.get('output_dir') or entry.get('directory')}")
             return None
 
         summary_raw = entry.get("summary") or entry.get("summary_path")
@@ -941,6 +944,12 @@ class ConformationsMixin:
             if alt_summary.exists():
                 summary_path = alt_summary
             else:
+                logger.warning(
+                    f"Conformations summary not found. Tried:\n"
+                    f"  - {summary_path}\n"
+                    f"  - {alt_summary}\n"
+                    f"  output_dir exists: {output_dir.exists() if output_dir else 'N/A'}"
+                )
                 return None
 
         try:

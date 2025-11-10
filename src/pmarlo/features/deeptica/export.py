@@ -300,36 +300,120 @@ def export_cv_model(
 
 
 def load_cv_model_info(
-    bundle_dir: str | Path, model_name: str = "deeptica_cv_model"
+        bundle_dir: str | Path, model_name: str = "deeptica_cv_model"
 ) -> dict[str, Any]:
     """Load configuration and metadata from an exported CV model bundle."""
 
     bundle_path = Path(bundle_dir)
 
     model_path = bundle_path / f"{model_name}.pt"
-    scaler_path = bundle_path / f"{model_name}_scaler.npz"
-    config_path = bundle_path / f"{model_name}_config.json"
-    metadata_path = bundle_path / f"{model_name}_metadata.json"
+
+    # Support both naming conventions for scaler file
+    scaler_path_underscore = bundle_path / f"{model_name}_scaler.npz"
+    scaler_path_dot = bundle_path / f"{model_name}.scaler.pt"
+
+    # Prefer the standard _scaler.npz format, fall back to .scaler.pt
+    if scaler_path_underscore.exists():
+        scaler_path = scaler_path_underscore
+    elif scaler_path_dot.exists():
+        scaler_path = scaler_path_dot
+    else:
+        raise FileNotFoundError(
+            f"Scaler file not found. Expected either:\n"
+            f"  {scaler_path_underscore}\n"
+            f"  {scaler_path_dot}"
+        )
+
+    # Support both naming conventions for config/metadata
+    config_path_underscore = bundle_path / f"{model_name}_config.json"
+    config_path_dot = bundle_path / f"{model_name}.config.json"
+    metadata_path_underscore = bundle_path / f"{model_name}_metadata.json"
+    metadata_path_dot = bundle_path / f"{model_name}.json"
 
     if not model_path.exists():
         raise FileNotFoundError(f"Model file not found: {model_path}")
-    if not scaler_path.exists():
-        raise FileNotFoundError(f"Scaler file not found: {scaler_path}")
 
     config: dict[str, Any] = {}
-    if config_path.exists():
-        config = json.loads(config_path.read_text(encoding="utf-8"))
+    # Try both naming conventions for config
+    if config_path_underscore.exists():
+        config = json.loads(config_path_underscore.read_text(encoding="utf-8"))
+    elif config_path_dot.exists():
+        config = json.loads(config_path_dot.read_text(encoding="utf-8"))
 
     metadata: dict[str, Any] = {}
-    if metadata_path.exists():
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    # Try both naming conventions for metadata
+    if metadata_path_underscore.exists():
+        metadata = json.loads(metadata_path_underscore.read_text(encoding="utf-8"))
+    elif metadata_path_dot.exists():
+        metadata = json.loads(metadata_path_dot.read_text(encoding="utf-8"))
 
-    scaler_data = np.load(scaler_path, allow_pickle=True)
-    scaler_params = {
-        "mean": scaler_data["mean"],
-        "scale": scaler_data["scale"],
-        "feature_names": scaler_data.get("feature_names", []).tolist(),
-    }
+    # Load scaler data - handle both .npz and .pt formats
+    try:
+        if scaler_path.suffix == ".npz":
+            scaler_data = np.load(scaler_path, allow_pickle=True)
+            scaler_params = {
+                "mean": scaler_data["mean"],
+                "scale": scaler_data["scale"],
+                "feature_names": scaler_data.get("feature_names", []).tolist(),
+            }
+        elif scaler_path.suffix == ".pt":
+            # If it's a .pt file, load with torch (allow pickle for numpy arrays)
+            scaler_data = torch.load(scaler_path, map_location="cpu", weights_only=False)
+            # Handle different possible structures
+            if isinstance(scaler_data, dict):
+                mean_data = scaler_data.get("mean", scaler_data.get("mean_", []))
+                scale_data = scaler_data.get("scale", scaler_data.get("scale_", []))
+                feature_names = scaler_data.get("feature_names", [])
+
+                # Convert to numpy if needed
+                scaler_params = {
+                    "mean": np.array(mean_data) if not isinstance(mean_data, np.ndarray) else mean_data,
+                    "scale": np.array(scale_data) if not isinstance(scale_data, np.ndarray) else scale_data,
+                    "feature_names": list(feature_names) if hasattr(feature_names, '__iter__') else [],
+                }
+            else:
+                # If it's a torch object with attributes
+                mean_data = getattr(scaler_data, "mean_", [])
+                scale_data = getattr(scaler_data, "scale_", [])
+                feature_names = getattr(scaler_data, "feature_names", [])
+
+                scaler_params = {
+                    "mean": np.array(mean_data) if not isinstance(mean_data, np.ndarray) else mean_data,
+                    "scale": np.array(scale_data) if not isinstance(scale_data, np.ndarray) else scale_data,
+                    "feature_names": list(feature_names) if hasattr(feature_names, '__iter__') else [],
+                }
+        else:
+            raise ValueError(f"Unsupported scaler file format: {scaler_path.suffix}")
+    except Exception as e:
+        raise RuntimeError(f"Failed to load scaler from {scaler_path}: {e}")
+
+    # Try to extract feature_spec_sha256 from multiple sources
+    feature_spec_sha256 = (
+            metadata.get("feature_spec_sha256")
+            or config.get("feature_spec_sha256")
+            or metadata.get("feature_spec_hash")  # Alternative key
+            or config.get("feature_spec_hash")  # Alternative key
+    )
+
+    # If still not found, try to load from the TorchScript model itself
+    if not feature_spec_sha256:
+        try:
+            model = torch.jit.load(str(model_path), map_location="cpu")
+            if hasattr(model, "feature_spec_sha256"):
+                feature_spec_sha256 = model.feature_spec_sha256
+            elif hasattr(model, "_c"):
+                # Try to get it from the compiled attributes
+                try:
+                    feature_spec_sha256 = model._c.getattr("feature_spec_sha256")
+                except:
+                    pass
+        except Exception as e:
+            logger.warning(f"Could not extract feature_spec_sha256 from model: {e}")
+
+    # If STILL not found, compute it from the feature_spec in metadata
+    if not feature_spec_sha256 and "feature_spec" in metadata:
+        feature_spec_sha256 = _hash_feature_spec(_json_compatible(metadata["feature_spec"]))
+        logger.info(f"Computed feature_spec_sha256 from metadata: {feature_spec_sha256}")
 
     return {
         "model_path": str(model_path),
@@ -337,6 +421,5 @@ def load_cv_model_info(
         "config": config,
         "metadata": metadata,
         "scaler_params": scaler_params,
-        "feature_spec_sha256": metadata.get("feature_spec_sha256")
-        or config.get("feature_spec_sha256"),
+        "feature_spec_sha256": feature_spec_sha256,
     }
