@@ -9,6 +9,7 @@ import pytest
 from pmarlo.transform.build import AppliedOpts, BuildResult, RunMetadata
 from pmarlo_webapp.app.backend import (
     Backend,
+    BuildConfig,
     WorkspaceLayout,
 )
 
@@ -62,7 +63,7 @@ def test_analysis_total_pairs_matches_summary(
         return dataset
 
     monkeypatch.setattr(
-        "pmarlo_webapp.app.backend.load_shards_as_dataset",
+        "pmarlo_webapp.app.backend.analysis.load_shards_as_dataset",
         fake_load_shards_as_dataset,
     )
 
@@ -129,7 +130,7 @@ def test_analysis_total_pairs_matches_summary(
         return build_result, "fake-hash"
 
     monkeypatch.setattr(
-        "pmarlo_webapp.app.backend.build_from_shards",
+        "pmarlo_webapp.app.backend.analysis.build_from_shards",
         fake_build_from_shards,
     )
 
@@ -193,7 +194,7 @@ def test_analysis_state_count_guardrail(
         return dataset
 
     monkeypatch.setattr(
-        "pmarlo_webapp.app.backend.load_shards_as_dataset",
+        "pmarlo_webapp.app.backend.analysis.load_shards_as_dataset",
         fake_load_shards_as_dataset,
     )
 
@@ -264,7 +265,7 @@ def test_analysis_state_count_guardrail(
         return build_result, "fake-hash"
 
     monkeypatch.setattr(
-        "pmarlo_webapp.app.backend.build_from_shards",
+        "pmarlo_webapp.app.backend.analysis.build_from_shards",
         fake_build_from_shards,
     )
 

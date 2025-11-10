@@ -114,6 +114,7 @@ def test_build_demux_plan_truncation_and_fill(caplog) -> None:
     # Warning should be emitted
     assert any("truncated" in r.getMessage() for r in caplog.records)
 
+
 def test_build_demux_plan_missing_frame_counts(caplog) -> None:
     caplog.set_level(logging.WARNING)
 
@@ -158,7 +159,6 @@ def test_build_demux_plan_missing_frame_counts(caplog) -> None:
     assert s1.stop_frame == 10
     assert not s1.needs_fill
     assert any("invalid" in r.getMessage().lower() for r in caplog.records)
-
 
 
 def test_build_demux_plan_missing_target_replica(caplog) -> None:

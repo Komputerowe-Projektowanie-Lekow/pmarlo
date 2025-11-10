@@ -73,7 +73,7 @@ def _fit_msm_deeptime(
     """Fit MSM using deeptime library (required dependency).
 
     Uses TransitionCountEstimator to estimate transition counts and
-    MaximumLikelihoodMSM with reversible=True to compute a reversible
+    MaximumLikelihoodMSM with reversible=False to compute the kinetic
     transition matrix and stationary distribution.
 
     Parameters
@@ -112,7 +112,7 @@ def _fit_msm_deeptime(
         )
     ml = MaximumLikelihoodMSM(
         lagtime=int(max(1, lag)),
-        reversible=True,
+        reversible=False,
     )
     msm_model = ml.fit(res.counts).fetch_model()
     T_active = np.asarray(msm_model.transition_matrix, dtype=float)

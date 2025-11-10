@@ -1,7 +1,8 @@
 """Test model file discovery for CV export."""
 
-import pytest
 from pathlib import Path
+
+import pytest
 
 
 def test_model_timestamp_extraction():

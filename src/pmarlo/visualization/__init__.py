@@ -11,4 +11,3 @@ __all__ = [
     "create_sampling_validation_plot",
     "create_fes_validation_plot",
 ]
-

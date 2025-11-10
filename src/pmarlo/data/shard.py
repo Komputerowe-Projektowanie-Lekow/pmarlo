@@ -207,15 +207,18 @@ def write_shard(
     X = _stack_columns(cvs, dtype=dtype)
     n_frames = X.shape[0]
 
-    source_dict.update(
-        {
-            "seed": int(seed),
-            "temperature_K": t_kelvin,
-            "n_frames": n_frames,
-            "columns": column_order,
-            "periodic": ordered_periodic,
-        }
-    )
+    # Prepare updates, but preserve n_frames if already set (for stride calculation)
+    updates = {
+        "seed": int(seed),
+        "temperature_K": t_kelvin,
+        "columns": column_order,
+        "periodic": ordered_periodic,
+    }
+    # Only set n_frames if not already provided (allows caller to specify original frame count)
+    if "n_frames" not in source_dict:
+        updates["n_frames"] = n_frames
+
+    source_dict.update(updates)
 
     dt_ps_value = source_dict.get("dt_ps", 1.0)
     dt_ps = _coerce_dt_ps(dt_ps_value)

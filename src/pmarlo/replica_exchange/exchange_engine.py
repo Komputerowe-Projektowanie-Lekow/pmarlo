@@ -183,4 +183,3 @@ class ExchangeEngine:
         accepted = np.log(random_values) < deltas
 
         return deltas, accepted
-

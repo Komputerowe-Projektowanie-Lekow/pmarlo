@@ -343,8 +343,7 @@ def _build_temperature_schedule(remd: Any) -> dict[str, dict[str, float]]:
         replica_temps = temp_matrix[:, replica_idx]
         # Build the step_index -> temperature mapping for this replica
         schedule[replica_key] = {
-            str(step_idx): float(temp)
-            for step_idx, temp in enumerate(replica_temps)
+            str(step_idx): float(temp) for step_idx, temp in enumerate(replica_temps)
         }
 
     return schedule

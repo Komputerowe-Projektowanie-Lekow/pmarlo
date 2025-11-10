@@ -517,7 +517,10 @@ def generate_2d_fes(  # noqa: C901
                 y = np.clip(y, yr[0], yr[1]).astype(np.float64, copy=False)
                 logger.info(
                     "Adaptive grid: cropped to x=[%.3f, %.3f], y=[%.3f, %.3f]",
-                    xr[0], xr[1], yr[0], yr[1]
+                    xr[0],
+                    xr[1],
+                    yr[0],
+                    yr[1],
                 )
             except Exception:
                 xr = (float(np.min(x)), float(np.max(x)))
@@ -602,8 +605,12 @@ def generate_2d_fes(  # noqa: C901
         bx, by = bx_initial, by_initial
         for iteration in range(max_iterations):
             # Test current bin counts
-            test_x_edges = np.linspace(xr[0], xr[1], bx + 1).astype(np.float64, copy=False)
-            test_y_edges = np.linspace(yr[0], yr[1], by + 1).astype(np.float64, copy=False)
+            test_x_edges = np.linspace(xr[0], xr[1], bx + 1).astype(
+                np.float64, copy=False
+            )
+            test_y_edges = np.linspace(yr[0], yr[1], by + 1).astype(
+                np.float64, copy=False
+            )
 
             test_H, _, _ = np.histogram2d(x, y, bins=(test_x_edges, test_y_edges))
             test_empty_fraction = float(np.sum(test_H < min_count)) / test_H.size
@@ -612,7 +619,9 @@ def generate_2d_fes(  # noqa: C901
             if test_finite_fraction >= target_finite_fraction:
                 logger.info(
                     "Adaptive grid converged: bins=(%d, %d), finite_fraction=%.3f",
-                    bx, by, test_finite_fraction
+                    bx,
+                    by,
+                    test_finite_fraction,
                 )
                 break
 
@@ -624,7 +633,9 @@ def generate_2d_fes(  # noqa: C901
             if iteration == max_iterations - 1:
                 logger.info(
                     "Adaptive grid: reached max iterations with bins=(%d, %d), finite_fraction=%.3f",
-                    bx, by, test_finite_fraction
+                    bx,
+                    by,
+                    test_finite_fraction,
                 )
     else:
         # Fixed strategy: use standard bin selection
@@ -675,10 +686,17 @@ def generate_2d_fes(  # noqa: C901
     )
 
     finite_mask = np.isfinite(F_masked)
-    if not finite_mask.any():
-        raise ValueError("No finite free-energy values available for smoothing")
-    fill_value = float(np.nanmax(F_masked[finite_mask]))
-    F_numeric = np.where(finite_mask, F_masked, fill_value)
+    if finite_mask.any():
+        fill_value = float(np.nanmax(F_masked[finite_mask]))
+        F_numeric = np.where(finite_mask, F_masked, fill_value)
+    else:
+        F_fallback = free_energy_from_density(
+            density, temperature, mask=None, inpaint=True
+        )
+        finite_fallback = np.isfinite(F_fallback)
+        if not finite_fallback.any():
+            raise ValueError("No finite free-energy values available for smoothing")
+        F_numeric = F_fallback
 
     config_obj: Any | None
     if isinstance(config, Mapping):
@@ -855,7 +873,10 @@ def generate_2d_fes(  # noqa: C901
         )
         logger.warning(
             "Sparse FES detected: %.1f%% empty bins (grid=%dx%d, strategy=%s)",
-            empty_bins_fraction * 100.0, bx, by, grid_strategy
+            empty_bins_fraction * 100.0,
+            bx,
+            by,
+            grid_strategy,
         )
 
     result = FESResult(F=F_result, xedges=xedges, yedges=yedges, metadata=metadata)

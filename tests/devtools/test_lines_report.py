@@ -63,7 +63,7 @@ def test_build_language_rows_appends_total() -> None:
 
 def test_format_table_handles_empty_rows() -> None:
     table = format_table([])
-    assert "â€”" in table
+    assert "—" in table
 
 
 def test_format_folder_summary_round_trip() -> None:

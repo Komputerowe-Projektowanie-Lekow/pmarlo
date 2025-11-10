@@ -19,8 +19,8 @@ import numpy as np
 import openmm
 import openmm.app as app
 import openmm.unit as unit
-from openmm.unit.quantity import Quantity
 from openmm.app.metadynamics import BiasVariable, Metadynamics
+from openmm.unit.quantity import Quantity
 
 if not hasattr(openmm.XmlSerializer, "load"):  # pragma: no cover - compatibility
     openmm.XmlSerializer.load = staticmethod(openmm.XmlSerializer.deserialize)
@@ -56,9 +56,10 @@ class Simulation:
     pressure : float, optional
         Simulation pressure in bar (default: 1.0)
     platform : str, optional
-        OpenMM platform to use ("CUDA" for GPU or "CPU" for CPU). The value must be
-        provided explicitly—no automatic fallback or heuristic selection is
-        performed.
+        OpenMM platform to use ("CPU" for CPU or "CUDA" for GPU). Defaults to CPU
+        for broad compatibility; specify CUDA only when the platform is explicitly
+        available. The value must still be provided explicitly—no automatic
+        fallback or heuristic selection is performed.
     steps : int, optional
         Default number of production steps when :meth:`run_production` is called
         without an explicit value.  Defaults to 100000 for backwards compatibility.
@@ -75,7 +76,7 @@ class Simulation:
         output_dir: str | Path,
         temperature: float = 300.0,
         pressure: float = 1.0,
-        platform: str = "CUDA",
+        platform: str = "CPU",
         *,
         steps: int | None = None,
         use_metadynamics: bool = True,
@@ -210,7 +211,8 @@ class Simulation:
         if pdbfixer is None:
             return
 
-        fixer = pdbfixer.PDBFixer(pdb=self.pdb)
+        with open(self.pdb_file, "r") as pdb_stream:
+            fixer = pdbfixer.PDBFixer(pdbfile=pdb_stream)
 
         # Find and add missing residues
         fixer.findMissingResidues()

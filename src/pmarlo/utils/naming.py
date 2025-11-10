@@ -121,5 +121,3 @@ def slugify(label: Optional[str]) -> Optional[str]:
     slug = _UNSAFE_SLUG_CHARS.sub("_", ascii_label.lower())
     slug = slug.strip("_")
     return slug or None
-
-

@@ -1,10 +1,11 @@
 import logging
-from typing import Any, Optional
 from pathlib import Path
+from typing import Any, Optional
 
 from pmarlo.config import JOINT_USE_REWEIGHT
-from ..workflow.joint import WorkflowConfig as JointWorkflowConfig
+
 from ..workflow.joint import JointWorkflow
+from ..workflow.joint import WorkflowConfig as JointWorkflowConfig
 
 logger = logging.getLogger("pmarlo")
 

@@ -17,9 +17,12 @@ pytestmark = pytest.mark.integration
 _SEGMENT_COUNTER = count()
 
 
-def _canonical_shard_id(temperature_K: float, segment_id: int, replica_id: int) -> str:
+def _canonical_shard_id(
+    temperature_K: float, segment_id: int, replica_id: int, run_id: str | None = None
+) -> str:
     temp = int(round(temperature_K))
-    return f"T{temp}K_seg{segment_id:04d}_rep{replica_id:03d}"
+    run_suffix = str(run_id).replace("run_", "") if run_id else "default"
+    return f"T{temp}K_{run_suffix}_seg{segment_id:04d}_rep{replica_id:03d}"
 
 
 def _source_metadata(segment_id: int, replica_id: int) -> dict[str, object]:
@@ -43,7 +46,8 @@ def _mk_shard(
     periodic_map = {order[0]: periodic[0], order[1]: periodic[1]}
     segment_id = next(_SEGMENT_COUNTER)
     replica_id = 0
-    shard_id = _canonical_shard_id(300.0, segment_id, replica_id)
+    source = _source_metadata(segment_id, replica_id)
+    shard_id = _canonical_shard_id(300.0, segment_id, replica_id, source.get("run_id"))
     return write_shard(
         out_dir=tmp,
         shard_id=shard_id,
@@ -52,7 +56,7 @@ def _mk_shard(
         periodic=periodic_map,
         seed=0,
         temperature=300.0,
-        source=_source_metadata(segment_id, replica_id),
+        source=source,
     )
 
 

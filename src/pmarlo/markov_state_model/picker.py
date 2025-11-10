@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
 
+import logging
 import numpy as np
 from scipy import ndimage
+
+
+logger = logging.getLogger(__name__)
 
 
 def find_local_minima_2d(F: np.ndarray) -> List[Tuple[int, int]]:
@@ -43,7 +47,21 @@ def pick_frames_around_minima(
     deltaF_kJmol: float = 3.0,
 ) -> Dict[str, Any]:
     """Pick frame indices near FES minima within a free energy threshold."""
-    mins = find_local_minima_2d(F)
+    energy_grid = np.asarray(F)
+    if energy_grid.ndim < 2:
+        raise ValueError("F must be at least 2D for minima detection")
+    if energy_grid.ndim > 2:
+        original_shape = energy_grid.shape
+        collapsed = energy_grid.reshape(original_shape[0], original_shape[1], -1)
+        energy_grid = np.nanmean(collapsed, axis=2)
+        logger.warning(
+            "pick_frames_around_minima received F array with shape %s; "
+            "averaging trailing axes to produce a 2D grid (resulting shape=%s)",
+            original_shape,
+            energy_grid.shape,
+        )
+
+    mins = find_local_minima_2d(energy_grid)
     xcenters = 0.5 * (xedges[:-1] + xedges[1:])
     ycenters = 0.5 * (yedges[:-1] + yedges[1:])
 
@@ -53,13 +71,15 @@ def pick_frames_around_minima(
 
     picked: List[Dict[str, Any]] = []
     for i, j in mins:
-        F0 = float(F[i, j]) if np.isfinite(F[i, j]) else np.inf
+        F0 = float(energy_grid[i, j]) if np.isfinite(energy_grid[i, j]) else np.inf
         if not np.isfinite(F0):
             continue
         mask = (ix == i) & (iy == j)
         if not np.any(mask):
             # Allow neighborhood within deltaF
-            mask = np.isfinite(F[ix, iy]) & (F[ix, iy] <= F0 + float(deltaF_kJmol))
+            mask = np.isfinite(energy_grid[ix, iy]) & (
+                energy_grid[ix, iy] <= F0 + float(deltaF_kJmol)
+            )
         frames = np.where(mask)[0].tolist()
         picked.append(
             {

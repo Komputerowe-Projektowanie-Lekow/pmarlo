@@ -6,15 +6,16 @@ including auto-selection logic and feature detection.
 """
 
 import pytest
+
 from pmarlo.replica_exchange.minimization_policy import (
     MinimizationContext,
     MinimizationPolicy,
-    SinglePassPolicy,
     PerReplicaPolicy,
+    SinglePassPolicy,
     auto_select_minimization_policy,
     create_minimization_context,
-    detect_temperature_dependent_forces,
     detect_replica_specific_bias,
+    detect_temperature_dependent_forces,
     validate_policy_safety,
 )
 
@@ -87,6 +88,7 @@ class TestFeatureDetection:
 
     def test_detect_temperature_dependent_forces_amoeba(self):
         """Should detect AMOEBA forces as temperature-dependent."""
+
         # Mock AMOEBA force
         class AmoebaVdwForce:
             pass
@@ -96,6 +98,7 @@ class TestFeatureDetection:
 
     def test_detect_temperature_dependent_forces_standard(self):
         """Standard forces should not be flagged as temperature-dependent."""
+
         # Mock standard OpenMM forces
         class HarmonicBondForce:
             pass
@@ -204,6 +207,7 @@ class TestAutoSelection:
 
     def test_auto_select_with_temp_dependent_forces(self):
         """Temperature-dependent forces should trigger PerReplicaPolicy."""
+
         class AmoebaVdwForce:
             pass
 
@@ -306,7 +310,9 @@ class TestPolicySafety:
             validate_policy_safety(policy, context)
 
         # Check that warning was logged
-        assert any("temperature-dependent" in record.message for record in caplog.records)
+        assert any(
+            "temperature-dependent" in record.message for record in caplog.records
+        )
 
     def test_validate_per_replica_always_safe(self):
         """PerReplicaPolicy should always be safe (no warnings)."""
@@ -372,4 +378,3 @@ class TestPolicyIntegration:
         for i in range(num_replicas):
             context.replica_index = i
             assert policy.should_minimize_replica(i, context) is True
-

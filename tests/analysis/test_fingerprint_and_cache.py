@@ -9,9 +9,9 @@ import numpy as np
 
 from pmarlo.data.shard import write_shard
 from pmarlo_webapp.app.backend import (
+    Backend,
     BuildArtifact,
     BuildConfig,
-    Backend,
     WorkspaceLayout,
 )
 

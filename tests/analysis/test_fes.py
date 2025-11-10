@@ -1,7 +1,7 @@
 import numpy as np
 
-from pmarlo.ml.deeptica.whitening import apply_output_transform
 from pmarlo.analysis.fes import compute_weighted_fes, ensure_fes_inputs_whitened
+from pmarlo.ml.deeptica.whitening import apply_output_transform
 
 
 def _make_dataset(points: np.ndarray) -> dict:
@@ -102,7 +102,9 @@ def test_ensure_fes_inputs_whitened_accepts_prewhitened_metadata():
         },
     }
 
-    assert ensure_fes_inputs_whitened(dataset) is True
+    # When data is already whitened, function returns False (no NEW whitening applied)
+    assert ensure_fes_inputs_whitened(dataset) is False
+    # But coordinates should remain unchanged
     np.testing.assert_allclose(dataset["X"], coords)
 
 
@@ -139,7 +141,9 @@ def test_ensure_fes_inputs_whitened_updates_split_coordinates():
 
     np.testing.assert_allclose(
         dataset["X"],
-        apply_output_transform(coords, metadata["output_mean"], metadata["output_transform"], False),
+        apply_output_transform(
+            coords, metadata["output_mean"], metadata["output_transform"], False
+        ),
     )
     assert not np.allclose(dataset["splits"]["train"]["X"], before_train)
     assert not np.allclose(dataset["splits"]["validation"]["X"], before_valid)

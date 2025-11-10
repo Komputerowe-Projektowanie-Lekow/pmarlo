@@ -146,11 +146,15 @@ def _resolve_torchforce_class():
                     Platform.loadPluginsFromDirectory(str(directory))
                     loaded_any = True
             except Exception as exc:
-                logger.debug("Failed to load OpenMM plugins from %s: %s", directory, exc)
+                logger.debug(
+                    "Failed to load OpenMM plugins from %s: %s", directory, exc
+                )
 
         torch_force = getattr(openmm, "TorchForce", None)
         if torch_force is None:
-            torch_force = getattr(getattr(openmm, "openmm", object()), "TorchForce", None)
+            torch_force = getattr(
+                getattr(openmm, "openmm", object()), "TorchForce", None
+            )
 
         if torch_force is None:
             hint = (

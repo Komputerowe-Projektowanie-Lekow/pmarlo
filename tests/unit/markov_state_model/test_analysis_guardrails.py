@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import importlib.util
 import sys
 import types
 from pathlib import Path
@@ -38,6 +39,9 @@ if "mdtraj" not in sys.modules:
             return self
 
     mdtraj_stub.Trajectory = _StubTrajectory
+    mdtraj_spec = importlib.util.spec_from_loader("mdtraj", loader=None)
+    if mdtraj_spec is not None:
+        mdtraj_stub.__spec__ = mdtraj_spec
     sys.modules["mdtraj"] = mdtraj_stub
 
 if "pandas" not in sys.modules:

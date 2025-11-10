@@ -11,6 +11,59 @@ from openmm import unit
 logger = logging.getLogger("pmarlo")
 
 
+def _open_shareable_dcd_file(path: str) -> BinaryIO:
+    """Open a DCD file with read sharing on Windows, binary mode elsewhere."""
+    if os.name != "nt":
+        return open(path, "wb")
+
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    GENERIC_WRITE = 0x40000000
+    FILE_SHARE_READ = 0x00000001
+    FILE_SHARE_WRITE = 0x00000002
+    FILE_SHARE_DELETE = 0x00000004
+    CREATE_ALWAYS = 2
+    FILE_ATTRIBUTE_NORMAL = 0x80
+    INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
+
+    handle = kernel32.CreateFileW(
+        path,
+        GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        None,
+        CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        None,
+    )
+    if handle == INVALID_HANDLE_VALUE:
+        err_code = ctypes.get_last_error()
+        raise OSError(err_code, f"Failed to open DCD file {path}")
+
+    try:
+        fd = msvcrt.open_osfhandle(handle, os.O_BINARY | os.O_WRONLY)
+    except OSError:
+        kernel32.CloseHandle(handle)
+        raise
+
+    return os.fdopen(fd, "wb")
+
+
 class FastDCDReporter:
     """High-performance DCD reporter that avoids Python Vec3 overhead.
 
@@ -48,7 +101,7 @@ class FastDCDReporter:
         self._last_header_update = 0
 
         try:
-            self._out = open(file, 'wb')
+            self._out = _open_shareable_dcd_file(file)
             logger.info(
                 f"FastDCDReporter: Opened DCD file for writing\n"
                 f"  Path: {file}\n"
@@ -106,17 +159,25 @@ class FastDCDReporter:
             if frames_since_update >= self._update_frequency:
                 self._update_frame_count()
                 self._last_header_update = self._nextModel
-                
-                # Also flush every 100 frames to ensure data is written
+
+                # Flush buffered data after each update to keep the file consistent
+                self._out.flush()
+
+                # Also force OS-level sync every 100 frames for maximum safety
                 if self._nextModel % 100 == 0:
-                    self._out.flush()
-                    logger.info(
-                        f"FastDCDReporter: Progress update\n"
-                        f"  File: {self._file_path}\n"
-                        f"  Frames written: {self._nextModel}\n"
-                        f"  Header updated: yes\n"
-                        f"  Flushed to disk: yes"
-                    )
+                    try:
+                        os.fsync(self._out.fileno())
+                        logger.info(
+                            f"FastDCDReporter: Progress update\n"
+                            f"  File: {self._file_path}\n"
+                            f"  Frames written: {self._nextModel}\n"
+                            f"  Header updated: yes\n"
+                            f"  Flushed to disk: yes"
+                        )
+                    except (AttributeError, OSError) as sync_err:
+                        logger.warning(
+                            f"FastDCDReporter: OS-level sync failed: {sync_err}"
+                        )
                 else:
                     logger.debug(
                         f"FastDCDReporter: Header frame count updated to {self._nextModel} "
@@ -136,12 +197,12 @@ class FastDCDReporter:
 
     def _write_header(self, simulation, pos_nm: np.ndarray):
         """Write DCD file header.
-        
+
         The DCD header contains:
         - Block 1: File metadata (84 bytes) including frame count at byte 8
         - Block 2: Title string
         - Block 3: Number of atoms
-        
+
         The frame count is initially 0 and must be updated as frames are written.
         """
         try:
@@ -171,44 +232,56 @@ class FastDCDReporter:
 
             # DCD header format (CHARMM/NAMD style)
             # Block 1: file header (84 bytes total)
-            self._out.write(struct.pack('<i', 84))  # block size (4 bytes)
-            self._out.write(b'CORD')  # magic string (4 bytes)
-            
+            self._out.write(struct.pack("<i", 84))  # block size (4 bytes)
+            self._out.write(b"CORD")  # magic string (4 bytes)
+
             # Position 8 is where frame count will be stored (critical for recovery)
             self._nframes_pos = self._out.tell()
-            
-            self._out.write(struct.pack('<9i',
-                0,  # number of frames (updated periodically and on close) - at byte 8
-                self._reportInterval,  # starting step (FIXED: was 1, should be reportInterval)
-                self._reportInterval,  # step interval  
-                0,  # total steps (will be updated if known)
-                0, 0, 0, 0, 0  # unused fields
-            ))
-            self._out.write(struct.pack('<f', self._dt_ps))  # FIXED: integration timestep, not frame timestep
-            self._out.write(struct.pack('<10i', 1, 0, 0, 0, 0, 0, 0, 0, 0, 24))
-            self._out.write(struct.pack('<i', 84))  # block size (closing)
+
+            self._out.write(
+                struct.pack(
+                    "<9i",
+                    0,  # number of frames (updated periodically and on close) - at byte 8
+                    self._reportInterval,  # starting step (FIXED: was 1, should be reportInterval)
+                    self._reportInterval,  # step interval
+                    0,  # total steps (will be updated if known)
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,  # unused fields
+                )
+            )
+            self._out.write(
+                struct.pack("<f", self._dt_ps)
+            )  # FIXED: integration timestep, not frame timestep
+            self._out.write(struct.pack("<10i", 1, 0, 0, 0, 0, 0, 0, 0, 0, 24))
+            self._out.write(struct.pack("<i", 84))  # block size (closing)
 
             # Block 2: title (CHARMM format requires 80-character lines)
-            title_line = b'Created by PMARLO FastDCDReporter'
+            title_line = b"Created by PMARLO FastDCDReporter"
             # Pad to 80 characters as required by CHARMM DCD format
-            title_line = title_line.ljust(80, b' ')
+            title_line = title_line.ljust(80, b" ")
             num_title_lines = 2  # CHARMM format typically has 2 title lines
             title_block_size = 4 + (num_title_lines * 80)  # 4 bytes for count + lines
-            
-            self._out.write(struct.pack('<i', title_block_size))
-            self._out.write(struct.pack('<i', num_title_lines))
+
+            self._out.write(struct.pack("<i", title_block_size))
+            self._out.write(struct.pack("<i", num_title_lines))
             self._out.write(title_line)
             # Second title line (timestamp or version info, padded to 80 chars)
             import datetime
-            timestamp = f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}".encode('ascii')
-            title_line2 = timestamp.ljust(80, b' ')
+
+            timestamp = f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}".encode(
+                "ascii"
+            )
+            title_line2 = timestamp.ljust(80, b" ")
             self._out.write(title_line2)
-            self._out.write(struct.pack('<i', title_block_size))
+            self._out.write(struct.pack("<i", title_block_size))
 
             # Block 3: number of atoms
-            self._out.write(struct.pack('<i', 4))
-            self._out.write(struct.pack('<i', self._n_atoms))
-            self._out.write(struct.pack('<i', 4))
+            self._out.write(struct.pack("<i", 4))
+            self._out.write(struct.pack("<i", self._n_atoms))
+            self._out.write(struct.pack("<i", 4))
 
             self._header_written = True
             header_end_pos = self._out.tell()
@@ -240,13 +313,13 @@ class FastDCDReporter:
         This is critical for preventing corruption if the process is killed.
         By periodically updating the frame count, the file remains valid even
         if close() is never called.
-        
+
         This method:
         1. Saves current file position
         2. Seeks to byte 8 (frame count position in header)
         3. Writes the current frame count
         4. Returns to original position
-        
+
         If this fails, the file may become corrupted but we don't raise to
         allow the simulation to continue (the next update may succeed).
         """
@@ -256,7 +329,7 @@ class FastDCDReporter:
                 f"  File: {self._file_path}"
             )
             return
-            
+
         if self._nframes_pos is None:
             logger.error(
                 f"FastDCDReporter: Cannot update frame count - header not initialized\n"
@@ -269,7 +342,7 @@ class FastDCDReporter:
         try:
             # Save current position
             current_pos = self._out.tell()
-            
+
             logger.debug(
                 f"FastDCDReporter: Updating frame count\n"
                 f"  File: {self._file_path}\n"
@@ -280,11 +353,11 @@ class FastDCDReporter:
 
             # Seek to frame count position and update it
             self._out.seek(self._nframes_pos)
-            self._out.write(struct.pack('<i', self._nextModel))
+            self._out.write(struct.pack("<i", self._nextModel))
 
             # Return to original position
             self._out.seek(current_pos)
-            
+
             # Verify we're back at the right position
             verify_pos = self._out.tell()
             if verify_pos != current_pos:
@@ -319,13 +392,13 @@ class FastDCDReporter:
         ----------
         pos_nm : np.ndarray
             Positions in nm, shape (n_atoms, 3), unitless float64
-            
+
         The DCD format stores each frame as:
         - Unit cell (48 bytes): 6 doubles for periodic box (zeros if non-periodic)
         - X coordinates: block_size, data, block_size
         - Y coordinates: block_size, data, block_size
         - Z coordinates: block_size, data, block_size
-        
+
         Each coordinate block is prefixed and suffixed with its size in bytes.
         """
         # Validate input shape
@@ -334,13 +407,13 @@ class FastDCDReporter:
                 f"FastDCDReporter: Invalid positions shape: {pos_nm.shape}. "
                 f"Expected (n_atoms, 3)"
             )
-        
+
         # Convert to Angstroms and float32 for DCD format
         pos_angstrom = (pos_nm * 10.0).astype(np.float32)
 
         # DCD stores coordinates as three separate arrays (x, y, z)
         n_atoms = len(pos_angstrom)
-        
+
         # Verify atom count consistency
         if self._n_atoms is not None and n_atoms != self._n_atoms:
             raise ValueError(
@@ -350,37 +423,39 @@ class FastDCDReporter:
                 f"  Frame: {self._nextModel}\n"
                 f"  This indicates a severe error in the simulation!"
             )
-        
+
         cell_basis = np.zeros(6, dtype=np.float64)  # no periodic box for now
 
         try:
             frame_start_pos = self._out.tell()
-            
+
             # Write unit cell (6 doubles = 48 bytes)
-            self._out.write(struct.pack('<i', 48))
+            self._out.write(struct.pack("<i", 48))
             self._out.write(cell_basis.tobytes())
-            self._out.write(struct.pack('<i', 48))
+            self._out.write(struct.pack("<i", 48))
 
             # Write X coordinates
             block_size = n_atoms * 4
-            self._out.write(struct.pack('<i', block_size))
+            self._out.write(struct.pack("<i", block_size))
             self._out.write(pos_angstrom[:, 0].tobytes())
-            self._out.write(struct.pack('<i', block_size))
+            self._out.write(struct.pack("<i", block_size))
 
             # Write Y coordinates
-            self._out.write(struct.pack('<i', block_size))
+            self._out.write(struct.pack("<i", block_size))
             self._out.write(pos_angstrom[:, 1].tobytes())
-            self._out.write(struct.pack('<i', block_size))
+            self._out.write(struct.pack("<i", block_size))
 
             # Write Z coordinates
-            self._out.write(struct.pack('<i', block_size))
+            self._out.write(struct.pack("<i", block_size))
             self._out.write(pos_angstrom[:, 2].tobytes())
-            self._out.write(struct.pack('<i', block_size))
-            
+            self._out.write(struct.pack("<i", block_size))
+
             frame_end_pos = self._out.tell()
             frame_size = frame_end_pos - frame_start_pos
-            expected_size = 56 + 3 * (8 + block_size)  # cell + 3 * (header + data + footer)
-            
+            expected_size = 56 + 3 * (
+                8 + block_size
+            )  # cell + 3 * (header + data + footer)
+
             if frame_size != expected_size:
                 logger.warning(
                     f"FastDCDReporter: Frame size mismatch\n"
@@ -389,7 +464,7 @@ class FastDCDReporter:
                     f"  Frame: {self._nextModel}\n"
                     f"  This may indicate a write error!"
                 )
-                
+
         except Exception as e:
             logger.error(
                 f"FastDCDReporter: Failed to write frame data\n"
@@ -405,7 +480,7 @@ class FastDCDReporter:
 
         This should be called periodically (e.g., during checkpointing) to ensure
         the DCD file is in a valid state even if the process is killed.
-        
+
         This method:
         1. Updates the frame count in the header
         2. Flushes OS buffers to disk
@@ -420,7 +495,7 @@ class FastDCDReporter:
 
         try:
             frames_since_flush = self._nextModel - self._last_flush_frame
-            
+
             logger.info(
                 f"FastDCDReporter: Flushing file to disk\n"
                 f"  File: {self._file_path}\n"
@@ -428,20 +503,20 @@ class FastDCDReporter:
                 f"  Frames since last flush: {frames_since_flush}\n"
                 f"  Header written: {self._header_written}"
             )
-            
+
             # Update frame count in header
             self._update_frame_count()
 
             # Flush OS buffers
             self._out.flush()
-            
+
             # Force OS-level sync to disk (especially important on Windows)
             try:
                 os.fsync(self._out.fileno())
                 logger.debug(f"FastDCDReporter: OS-level sync completed")
             except (AttributeError, OSError) as e:
                 logger.warning(f"FastDCDReporter: Could not perform OS-level sync: {e}")
-            
+
             self._last_flush_frame = self._nextModel
 
             logger.info(
@@ -462,7 +537,7 @@ class FastDCDReporter:
 
     def close(self) -> None:
         """Close the DCD file and update the frame count in the header.
-        
+
         This method ensures:
         1. Final frame count is written to the header
         2. All buffers are flushed to disk
@@ -471,8 +546,7 @@ class FastDCDReporter:
         """
         if self._out is None:
             logger.debug(
-                f"FastDCDReporter: File already closed\n"
-                f"  File: {self._file_path}"
+                f"FastDCDReporter: File already closed\n" f"  File: {self._file_path}"
             )
             return  # already closed
 
@@ -494,11 +568,11 @@ class FastDCDReporter:
                     f"  Frame count position: {self._nframes_pos} bytes\n"
                     f"  Frame count: {self._nextModel}"
                 )
-                
+
                 self._out.seek(self._nframes_pos)
-                self._out.write(struct.pack('<i', self._nextModel))
+                self._out.write(struct.pack("<i", self._nextModel))
                 self._out.seek(current_pos)
-                
+
                 logger.info(
                     f"FastDCDReporter: Final frame count written: {self._nextModel}"
                 )
@@ -513,14 +587,16 @@ class FastDCDReporter:
 
             # Flush and close with OS-level sync
             self._out.flush()
-            
+
             # Force OS-level sync before closing (critical on Windows)
             try:
                 os.fsync(self._out.fileno())
                 logger.debug("FastDCDReporter: OS-level sync before close completed")
             except (AttributeError, OSError) as e:
-                logger.warning(f"FastDCDReporter: Could not perform OS-level sync before close: {e}")
-            
+                logger.warning(
+                    f"FastDCDReporter: Could not perform OS-level sync before close: {e}"
+                )
+
             file_size = self._out.tell()
             self._out.close()
             self._out = None
@@ -551,14 +627,12 @@ class FastDCDReporter:
                         f"FastDCDReporter: Emergency close succeeded but file may be corrupted"
                     )
             except Exception as close_err:
-                logger.error(
-                    f"FastDCDReporter: Emergency close failed: {close_err}"
-                )
+                logger.error(f"FastDCDReporter: Emergency close failed: {close_err}")
             raise
 
     def __del__(self):
         """Ensure file is closed on deletion.
-        
+
         This is a safety net in case close() was never called explicitly.
         Files should always be closed explicitly; relying on __del__ is risky
         because it may be called late or not at all.

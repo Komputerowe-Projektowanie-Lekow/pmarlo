@@ -76,10 +76,16 @@ def _compute_median_count(C: np.ndarray) -> int:
     if C.size == 0:
         return 0
     state_counts = C.sum(axis=0) + C.sum(axis=1)
-    return int(np.median(state_counts[state_counts > 0])) if np.any(state_counts > 0) else 0
+    return (
+        int(np.median(state_counts[state_counts > 0]))
+        if np.any(state_counts > 0)
+        else 0
+    )
 
 
-def _auto_determine_macrostates(T: np.ndarray, min_macro: int = 3, max_macro: int = 6) -> int:
+def _auto_determine_macrostates(
+    T: np.ndarray, min_macro: int = 3, max_macro: int = 6
+) -> int:
     """Automatically determine number of macrostates based on eigenvalue gap.
 
     Uses PCCA+ approach: find the largest eigenvalue gap in the range [min_macro, max_macro].
@@ -112,7 +118,9 @@ def _auto_determine_macrostates(T: np.ndarray, min_macro: int = 3, max_macro: in
         return best_m
 
     except Exception as e:
-        logger.warning("[CK-ITS] Failed to determine macrostates via eigenvalues: %s", e)
+        logger.warning(
+            "[CK-ITS] Failed to determine macrostates via eigenvalues: %s", e
+        )
         return min_macro
 
 
@@ -175,9 +183,7 @@ def _compute_ck_error(T_pred: np.ndarray, T_obs: np.ndarray) -> float:
     relerr = ||T_pred - T_obs||_1 / ||T_obs||_1
     """
     if T_pred.shape != T_obs.shape:
-        raise ValueError(
-            f"Matrix shape mismatch: {T_pred.shape} vs {T_obs.shape}"
-        )
+        raise ValueError(f"Matrix shape mismatch: {T_pred.shape} vs {T_obs.shape}")
 
     diff = T_pred - T_obs
     l1_diff = float(np.sum(np.abs(diff)))
@@ -296,9 +302,7 @@ def _evaluate_single_lag(
         try:
             macro_labels = pcca_like_macrostates(T_tau, n_macrostates=n_macro_candidate)
         except Exception as pcca_err:
-            logger.warning(
-                "[CK-ITS] PCCA+ exception for lag %d: %s", lag, pcca_err
-            )
+            logger.warning("[CK-ITS] PCCA+ exception for lag %d: %s", lag, pcca_err)
 
         if macro_labels is not None:
             # Macrostate CK test (preferred)
@@ -359,7 +363,9 @@ def _evaluate_single_lag(
             msm_model = estimator.fit(dtrajs).fetch_model()
             timescales = np.asarray(msm_model.timescales(), dtype=float)
         except Exception as e:
-            logger.warning("[CK-ITS] Failed to compute timescales for lag %d: %s", lag, e)
+            logger.warning(
+                "[CK-ITS] Failed to compute timescales for lag %d: %s", lag, e
+            )
             timescales = None
 
         mode_text = "microstate" if use_microstate_ck else "macrostate"
@@ -501,4 +507,3 @@ def select_optimal_lag_ck_its(
             )
 
     return selected_lag, evaluations
-

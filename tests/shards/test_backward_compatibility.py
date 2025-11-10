@@ -1,6 +1,7 @@
 """Test backward compatibility of shard metadata format."""
 
 import json
+
 import pytest
 
 
@@ -68,7 +69,9 @@ def test_old_vs_new_format_compatibility():
             "segment_id": 0,
             "range": [0, 1000],  # Uses standard name (not frame_range)
             "traj": "/path/to/trajectory.dcd",  # Uses standard name
-            "traj_files": ["/path/to/trajectory.dcd"],  # Additional field for multi-file
+            "traj_files": [
+                "/path/to/trajectory.dcd"
+            ],  # Additional field for multi-file
             "n_frames": 1000,
             "seed": 42,
             "temperature_K": 300.0,
@@ -91,7 +94,13 @@ def test_old_vs_new_format_compatibility():
 
 def test_required_fields_present():
     """Test that required fields are present in both formats."""
-    required_by_write_shard = ["created_at", "kind", "run_id", "replica_id", "segment_id"]
+    required_by_write_shard = [
+        "created_at",
+        "kind",
+        "run_id",
+        "replica_id",
+        "segment_id",
+    ]
     required_by_conformations = ["range", "traj"]  # or traj_files, trajectory, path
 
     shard_example = {

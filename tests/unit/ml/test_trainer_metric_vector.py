@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 import types
 
@@ -25,6 +26,9 @@ def _ensure_mdtraj_stub() -> None:
     stub.compute_phi = _unavailable
     stub.compute_psi = _unavailable
     stub.compute_rg = _unavailable
+    mdtraj_spec = importlib.util.spec_from_loader("mdtraj", loader=None)
+    if mdtraj_spec is not None:
+        stub.__spec__ = mdtraj_spec
     sys.modules["mdtraj"] = stub
 
 

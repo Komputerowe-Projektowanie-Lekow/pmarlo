@@ -25,7 +25,7 @@ def test_biased_visualization_basic():
 
     # Another biased trajectory
     traj_biased_2 = np.random.randn(900, 2) * 1.2
-    traj_biased_2[:, 0] += np.sin(np.linspace(0, 4*np.pi, 900)) * 2
+    traj_biased_2[:, 0] += np.sin(np.linspace(0, 4 * np.pi, 900)) * 2
 
     projection_data = [
         traj_standard_1,
@@ -65,19 +65,22 @@ def test_biased_visualization_basic():
     legend_labels = [t.get_text() for t in legend.get_texts()]
 
     # Verify biased runs are marked
-    assert any("biased" in label.lower() for label in legend_labels), \
-        "Expected 'biased' or 'metabiased' in legend labels"
+    assert any(
+        "biased" in label.lower() for label in legend_labels
+    ), "Expected 'biased' or 'metabiased' in legend labels"
 
     # Check for style indicators in legend title
     legend_title = legend.get_title().get_text()
-    assert "dashed" in legend_title.lower() or "metabiased" in legend_title.lower(), \
-        "Expected legend title to indicate dashed lines for metabiased runs"
+    assert (
+        "dashed" in legend_title.lower() or "metabiased" in legend_title.lower()
+    ), "Expected legend title to indicate dashed lines for metabiased runs"
 
     # Check that we have both standard and metabiased style handles
     assert "Standard Run" in legend_labels or "standard" in legend_title.lower()
     assert "Metabiased Run" in legend_labels or "metabiased" in legend_title.lower()
 
     import matplotlib.pyplot as plt
+
     plt.close(fig)
 
 

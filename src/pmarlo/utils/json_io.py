@@ -167,4 +167,3 @@ def sanitize_deeptica_payload(raw: Mapping[str, Any]) -> Dict[str, Any]:
             "output_variance": training_metrics.get("output_variance"),
         }
     return summary
-

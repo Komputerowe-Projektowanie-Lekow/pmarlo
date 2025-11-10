@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 
 from pmarlo_webapp.app.backend.state import StateManager
 
@@ -92,4 +92,6 @@ def test_state_manager_discovers_missing_models(tmp_path):
     updated = dict(entry)
     updated["cv_model_bundle"] = {"model_path": "C:/tmp/deeptica_cv_model.pt"}
     state.update_model(0, updated)
-    assert state.models[0]["cv_model_bundle"]["model_path"].endswith("deeptica_cv_model.pt")
+    assert state.models[0]["cv_model_bundle"]["model_path"].endswith(
+        "deeptica_cv_model.pt"
+    )

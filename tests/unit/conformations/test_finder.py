@@ -121,7 +121,9 @@ def test_find_conformations_identifies_tse_states() -> None:
         assert conf.conformation_type == "transition"
 
 
-def test_extract_structures_forwards_locator_and_topology(monkeypatch: Any, tmp_path: Path) -> None:
+def test_extract_structures_forwards_locator_and_topology(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
     """Structure extraction uses locator/topology arguments."""
 
     topology_path = tmp_path / "topology.pdb"

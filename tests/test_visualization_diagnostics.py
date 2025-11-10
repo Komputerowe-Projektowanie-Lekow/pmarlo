@@ -2,10 +2,10 @@ import matplotlib
 
 matplotlib.use("Agg")
 
-from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
+from matplotlib.figure import Figure
 
 from pmarlo.visualization.diagnostics import (
     create_fes_validation_plot,
@@ -42,7 +42,10 @@ def test_create_sampling_validation_plot_basic():
     assert "run-b (metabiased)" in legend_labels
     assert "Standard Run" in legend_labels
     assert "Metabiased Run" in legend_labels
-    assert legend.get_title().get_text() == "Simulation Runs (solid=standard, dashed=metabiased)"
+    assert (
+        legend.get_title().get_text()
+        == "Simulation Runs (solid=standard, dashed=metabiased)"
+    )
     plt.close(fig)
 
 
@@ -92,7 +95,9 @@ def test_create_sampling_validation_plot_with_discrete_overlay():
 
 
 def test_create_sampling_validation_plot_requires_projection():
-    with pytest.raises(ValueError, match="projection_data must contain at least one trajectory"):
+    with pytest.raises(
+        ValueError, match="projection_data must contain at least one trajectory"
+    ):
         create_sampling_validation_plot([])
 
 
@@ -113,7 +118,9 @@ def test_create_sampling_validation_plot_rejects_metabiased_length_mismatch():
         np.linspace(-1.0, 1.0, 25).reshape(-1, 1),
     ]
 
-    with pytest.raises(ValueError, match="metabiased_runs must have the same length as projection_data"):
+    with pytest.raises(
+        ValueError, match="metabiased_runs must have the same length as projection_data"
+    ):
         create_sampling_validation_plot(
             projection_data=projection,
             metabiased_runs=[True],
@@ -142,6 +149,7 @@ def test_create_fes_validation_plot_rejects_bad_grid():
     yy = np.zeros((5, 5))
     fes = np.zeros((4, 4))
 
-    with pytest.raises(ValueError, match="Coordinate arrays xx and yy must have identical shapes"):
+    with pytest.raises(
+        ValueError, match="Coordinate arrays xx and yy must have identical shapes"
+    ):
         create_fes_validation_plot(fes_grid=(xx, yy), fes_data=fes)
-

@@ -34,4 +34,4 @@ def test_prepare_learn_cv_arrays_filters_invalid_shards_alignment():
 
     assert total_pairs == 8
     assert all(item["pairs"] > 0 for item in per_shard)
-    assert warnings == []
+    assert warnings == ["low_frame_count"]

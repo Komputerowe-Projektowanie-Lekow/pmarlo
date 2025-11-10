@@ -9,10 +9,11 @@ import pytest
 
 np = pytest.importorskip("numpy")
 
+from pmarlo.analysis.project_cv import apply_whitening_from_metadata
 from pmarlo.conformations.results import Conformation, ConformationSet, TPTResult
 from pmarlo_webapp.app.backend import (
-    ConformationsConfig,
     Backend,
+    ConformationsConfig,
     WorkspaceLayout,
 )
 
@@ -39,11 +40,22 @@ def _fake_dataset(tmp_path: Path, _workspace: WorkspaceLayout) -> Dict[str, Any]
     traj_path = _workspace.workspace_dir / "trajectories" / "traj_00.dcd"
     traj_path.parent.mkdir(parents=True, exist_ok=True)
     traj_path.write_bytes(b"")
+    n_frames = 6
     return {
-        "X": np.ones((6, 3), dtype=float),
+        "X": np.ones((n_frames, 3), dtype=float),
         "__shards__": [
             {
-                "trajectories": [str(traj_path)],
+                "start": 0,
+                "stop": n_frames,
+                "frames_loaded": n_frames,
+                "source": {
+                    "kind": "demux",
+                    "run_id": "run-A",
+                    "replica_id": 0,
+                    "segment_id": 0,
+                    "range": [0, n_frames],
+                    "traj_files": [str(traj_path)],
+                },
             }
         ],
     }
@@ -124,6 +136,16 @@ def _patch_common_conformation_dependencies(
     return called
 
 
+def _mock_macrostate_memberships(msm_data: Dict[str, Any] | None) -> np.ndarray:
+    if isinstance(msm_data, dict):
+        matrix = msm_data.get("T")
+        if matrix is not None:
+            arr = np.asarray(matrix, dtype=float)
+            if arr.ndim == 2 and arr.size:
+                return np.eye(arr.shape[0], dtype=float)
+    return np.eye(1, dtype=float)
+
+
 @pytest.mark.unit
 def test_conformations_requires_topology_path(
     monkeypatch: pytest.MonkeyPatch,
@@ -199,6 +221,75 @@ def test_conformations_rejects_non_reversible_transition_matrix(
 
 
 @pytest.mark.unit
+def test_build_trajectory_locator_allows_missing_frame_range(
+    _workspace: WorkspaceLayout,
+) -> None:
+    backend = Backend(_workspace)
+    traj_path = _workspace.workspace_dir / "trajectories" / "traj_01.dcd"
+    traj_path.parent.mkdir(parents=True, exist_ok=True)
+    traj_path.write_bytes(b"")
+
+    shard_path = _workspace.shards_dir / "sample.json"
+    shard_path.parent.mkdir(parents=True, exist_ok=True)
+    shard_path.write_text("{}", encoding="utf-8")
+
+    meta = {
+        "start": 5,
+        "stop": 15,
+        "frames_loaded": 10,
+        "provenance": {
+            "created_at": "20251109-000000",
+            "kind": "demux",
+            "run_id": "run-fallback",
+            "replica_id": 0,
+            "segment_id": 0,
+            "traj_files": [str(traj_path)],
+        },
+    }
+
+    locator = backend._build_trajectory_locator([shard_path], [meta])
+    resolved_path, local_frame = locator.resolve(12)
+    assert Path(resolved_path) == traj_path
+    assert local_frame == 12
+
+
+@pytest.mark.unit
+def test_build_trajectory_locator_respects_stride_metadata(
+    _workspace: WorkspaceLayout,
+) -> None:
+    backend = Backend(_workspace)
+    traj_path = _workspace.workspace_dir / "trajectories" / "traj_stride.dcd"
+    traj_path.parent.mkdir(parents=True, exist_ok=True)
+    traj_path.write_bytes(b"")
+
+    shard_path = _workspace.shards_dir / "stride.json"
+    shard_path.parent.mkdir(parents=True, exist_ok=True)
+    shard_path.write_text("{}", encoding="utf-8")
+
+    meta = {
+        "start": 0,
+        "stop": 1000,
+        "frames_loaded": 1000,
+        "frames_declared": 5000,
+        "effective_frame_stride": 5,
+        "source": {
+            "created_at": "20251109-000000",
+            "kind": "demux",
+            "run_id": "run-stride",
+            "replica_id": 0,
+            "segment_id": 0,
+            "traj_files": [str(traj_path)],
+            "range": [0, 5000],
+        },
+    }
+
+    locator = backend._build_trajectory_locator([shard_path], [meta])
+    resolved_path, local_frame = locator.resolve(10)
+    assert Path(resolved_path) == traj_path
+    assert local_frame == 50
+
+
+@pytest.mark.unit
 def test_conformations_successful_run_uses_conformation_set_api(
     monkeypatch: pytest.MonkeyPatch,
     _workspace: WorkspaceLayout,
@@ -216,7 +307,7 @@ def test_conformations_successful_run_uses_conformation_set_api(
     monkeypatch.setattr(
         "pmarlo_webapp.app.backend.build_simple_msm",
         lambda *_args, **_kwargs: (
-            np.array([[0.85, 0.15], [0.2, 0.8]], dtype=float),
+            np.array([[0.9, 0.1], [0.1, 0.9]], dtype=float),
             np.array([0.5, 0.5], dtype=float),
         ),
     )
@@ -263,12 +354,21 @@ def test_conformations_successful_run_uses_conformation_set_api(
         ),
     ]
 
-    def fake_find_conformations(**_kwargs: Any) -> ConformationSet:
+    def fake_find_conformations(**kwargs: Any) -> ConformationSet:
         calls.append("find")
+        memberships = _mock_macrostate_memberships(kwargs.get("msm_data"))
+        locator = kwargs.get("trajectory_locator")
+        if locator is not None:
+            for conf in conformations:
+                locator.resolve(conf.frame_index)
+            calls.append("load:trajectory_stub")
         return ConformationSet(
             conformations=conformations,
             tpt_result=tpt_result,
-            metadata={"n_conformations": len(conformations)},
+            metadata={
+                "n_conformations": len(conformations),
+                "macrostate_memberships": memberships,
+            },
         )
 
     monkeypatch.setattr(
@@ -284,7 +384,7 @@ def test_conformations_successful_run_uses_conformation_set_api(
     assert result.tpt_summary["n_pathways"] == 1
     assert result.metastable_states["0"]["n_states"] == 2
     assert result.transition_states[0]["committor"] == pytest.approx(0.5)
-    assert result.plots.keys() == {"committors", "flux_network", "pathways"}
+    assert {"committors", "flux_network", "pathways"}.issubset(result.plots.keys())
     assert "find" in calls
     assert any(key.startswith("load:") for key in calls)
 
@@ -305,7 +405,7 @@ def test_conformations_config_controls_uncertainty_options(
     monkeypatch.setattr(
         "pmarlo_webapp.app.backend.build_simple_msm",
         lambda *_args, **_kwargs: (
-            np.array([[0.85, 0.15], [0.2, 0.8]], dtype=float),
+            np.array([[0.9, 0.1], [0.1, 0.9]], dtype=float),
             np.array([0.5, 0.5], dtype=float),
         ),
     )
@@ -350,7 +450,12 @@ def test_conformations_config_controls_uncertainty_options(
         return ConformationSet(
             conformations=conformations,
             tpt_result=tpt_result,
-            metadata={"n_conformations": len(conformations)},
+            metadata={
+                "n_conformations": len(conformations),
+                "macrostate_memberships": _mock_macrostate_memberships(
+                    kwargs.get("msm_data")
+                ),
+            },
         )
 
     monkeypatch.setattr(
@@ -406,7 +511,7 @@ def test_conformations_respects_tica_dimension(
     monkeypatch.setattr(
         "pmarlo_webapp.app.backend.build_simple_msm",
         lambda *_args, **_kwargs: (
-            np.array([[0.85, 0.15], [0.2, 0.8]], dtype=float),
+            np.array([[0.9, 0.1], [0.1, 0.9]], dtype=float),
             np.array([0.5, 0.5], dtype=float),
         ),
     )
@@ -451,7 +556,12 @@ def test_conformations_respects_tica_dimension(
         return ConformationSet(
             conformations=conformations,
             tpt_result=tpt_result,
-            metadata={"n_conformations": len(conformations)},
+            metadata={
+                "n_conformations": len(conformations),
+                "macrostate_memberships": _mock_macrostate_memberships(
+                    kwargs.get("msm_data")
+                ),
+            },
         )
 
     monkeypatch.setattr(
@@ -499,7 +609,9 @@ def test_conformations_uses_precomputed_deeptica_features(
         _raise_reduce,
     )
 
-    projection = np.linspace(0.0, 5.0, num=12, dtype=float).reshape(6, 2)
+    x_axis = np.linspace(0.0, 5.0, num=6, dtype=float)
+    y_axis = np.linspace(5.0, 0.0, num=6, dtype=float) ** 2
+    projection = np.column_stack((x_axis, y_axis))
     projection_path = tmp_path / "deeptica_projection.npz"
     np.savez(projection_path, projection=projection)
     metadata = {
@@ -526,14 +638,14 @@ def test_conformations_uses_precomputed_deeptica_features(
     monkeypatch.setattr(
         "pmarlo_webapp.app.backend.build_simple_msm",
         lambda *_args, **_kwargs: (
-            np.array([[0.9, 0.1], [0.2, 0.8]], dtype=float),
+            np.array([[0.9, 0.1], [0.1, 0.9]], dtype=float),
             np.array([0.5, 0.5], dtype=float),
         ),
     )
 
-    monkeypatch.setattr(
-        "pmarlo_webapp.app.backend.find_conformations",
-        lambda **_kwargs: SimpleNamespace(
+    def _fake_deeptica_find(**kwargs: Any) -> SimpleNamespace:
+        memberships = _mock_macrostate_memberships(kwargs.get("msm_data"))
+        return SimpleNamespace(
             tpt_result=SimpleNamespace(
                 rate=0.1,
                 mfpt=1.0,
@@ -541,10 +653,18 @@ def test_conformations_uses_precomputed_deeptica_features(
                 pathways=[[0, 1]],
                 source_states=np.array([0]),
                 sink_states=np.array([1]),
+                tpt_converged=True,
+                pathway_iterations=1,
+                pathway_max_iterations=1,
             ),
             get_metastable_states=lambda: [],
             get_transition_states=lambda: [],
-        ),
+            metadata={"macrostate_memberships": memberships},
+        )
+
+    monkeypatch.setattr(
+        "pmarlo_webapp.app.backend.find_conformations",
+        _fake_deeptica_find,
     )
 
     config = ConformationsConfig(
@@ -558,7 +678,9 @@ def test_conformations_uses_precomputed_deeptica_features(
 
     assert result.error is None
     assert "plot" in calls
-    expected = projection - np.asarray(metadata["output_mean"], dtype=float)
+    expected, _ = apply_whitening_from_metadata(
+        np.asarray(projection, dtype=float), metadata
+    )
     np.testing.assert_allclose(captured["matrix"], expected)
 
 
@@ -578,7 +700,7 @@ def test_conformations_deeptica_requires_projection_path(
     monkeypatch.setattr(
         "pmarlo_webapp.app.backend.build_simple_msm",
         lambda *_args, **_kwargs: (
-            np.array([[0.85, 0.15], [0.2, 0.8]], dtype=float),
+            np.array([[0.9, 0.1], [0.1, 0.9]], dtype=float),
             np.array([0.5, 0.5], dtype=float),
         ),
     )

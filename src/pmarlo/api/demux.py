@@ -1,18 +1,18 @@
-from typing import Any, Mapping, Tuple, Sequence, Optional, Dict, List, Callable
-from pathlib import Path
-import logging
-import json
 import hashlib
+import json
+import logging
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
-from pmarlo.io.trajectory_writer import MDTrajDCDWriter
+from pmarlo.demultiplexing.exchange_validation import normalize_exchange_mapping
 from pmarlo.io.trajectory_reader import MDTrajReader
+from pmarlo.io.trajectory_writer import MDTrajDCDWriter
 from pmarlo.replica_exchange.demux_compat import (
     parse_exchange_log,
     parse_temperature_ladder,
 )
-from pmarlo.demultiplexing.exchange_validation import normalize_exchange_mapping
 from pmarlo.utils.path_utils import ensure_directory
 
 logger = logging.getLogger("pmarlo")
@@ -51,6 +51,7 @@ def demultiplex_run(
         replica_traj_paths,
     )
     temperatures = _parse_temperature_ladder_safe(ladder_K, parse_temperature_ladder)
+    _validate_temperature_replica_alignment(temperatures, replica_paths)
     logger.info("[demux] Temperature ladder: %s", temperatures)
 
     exchange_records = _load_exchange_records_safe(
@@ -69,7 +70,11 @@ def demultiplex_run(
     reader = MDTrajReader(topology_path=str(topo_path))
     replica_frames = _collect_replica_frames(reader, replica_paths)
     total_frames = sum(len(frames) for frames in replica_frames)
-    logger.info("[demux] Loaded %d total frames across %d replicas", total_frames, len(replica_frames))
+    logger.info(
+        "[demux] Loaded %d total frames across %d replicas",
+        total_frames,
+        len(replica_frames),
+    )
 
     writers, dcd_paths = _open_demux_writers(
         out_dir_path,
@@ -101,7 +106,9 @@ def demultiplex_run(
         dt_ps,
         topology_path=topo_path,
     )
-    logger.info("[demux] Demultiplexing complete: generated %d manifests", len(manifest_paths))
+    logger.info(
+        "[demux] Demultiplexing complete: generated %d manifests", len(manifest_paths)
+    )
 
     return manifest_paths
 
@@ -112,7 +119,9 @@ def _prepare_demux_paths(
     replica_traj_paths: list[str | Path],
 ) -> tuple[Path, Path, list[Path]]:
     """Create output directory and normalise key input paths."""
-    logger.debug("[demux] Preparing paths: output_dir=%s, topology=%s", out_dir, topology_path)
+    logger.debug(
+        "[demux] Preparing paths: output_dir=%s, topology=%s", out_dir, topology_path
+    )
 
     out_dir_path = Path(out_dir)
     ensure_directory(out_dir_path)
@@ -157,10 +166,6 @@ def _validate_demux_inputs(
 ) -> None:
     """Sanity-check parsed inputs before demultiplexing frames."""
 
-    if len(temperatures) != len(replica_paths):
-        raise ValueError(
-            "Temperature ladder length does not match number of replica trajectories"
-        )
     if not exchange_records:
         raise ValueError("Exchange log contained no exchanges")
     n_temps = len(temperatures)
@@ -168,17 +173,33 @@ def _validate_demux_inputs(
         raise ValueError("Exchange log column count does not match temperature ladder")
 
 
+def _validate_temperature_replica_alignment(
+    temperatures: Sequence[float],
+    replica_paths: Sequence[Path],
+) -> None:
+    """Ensure the parsed ladder and replica count agree before loading the log."""
+
+    if len(temperatures) != len(replica_paths):
+        raise ValueError(
+            "Temperature ladder length does not match number of replica trajectories"
+        )
+
+
 def _collect_replica_frames(
     reader: Any,
     replica_paths: Sequence[Path],
 ) -> list[list[np.ndarray]]:
     """Load all frames for each replica using the shared reader."""
-    logger.debug("[demux] Loading frames from %d replica trajectories", len(replica_paths))
+    logger.debug(
+        "[demux] Loading frames from %d replica trajectories", len(replica_paths)
+    )
 
     frames_per_replica: list[list[np.ndarray]] = []
     for idx, path in enumerate(replica_paths):
         count = reader.probe_length(str(path))
-        logger.debug("[demux] Replica %d (%s): loading %d frames", idx, path.name, count)
+        logger.debug(
+            "[demux] Replica %d (%s): loading %d frames", idx, path.name, count
+        )
         frames = list(reader.iter_frames(str(path), start=0, stop=count, stride=1))
         frames_per_replica.append(frames)
 
@@ -193,7 +214,9 @@ def _open_demux_writers(
     fmt: str,
 ) -> tuple[list[MDTrajDCDWriter], list[Path]]:
     """Open one trajectory writer per temperature and return their paths."""
-    logger.debug("[demux] Opening %d trajectory writers for format: %s", len(temperatures), fmt)
+    logger.debug(
+        "[demux] Opening %d trajectory writers for format: %s", len(temperatures), fmt
+    )
 
     writers: list[MDTrajDCDWriter] = []
     paths: list[Path] = []
@@ -292,9 +315,7 @@ def _write_demux_manifests(
             return hashlib.sha256(b"").hexdigest()
 
         digest = hashlib.sha256()
-        for frame in reader.iter_frames(
-            str(traj_path), start=0, stop=total, stride=1
-        ):
+        for frame in reader.iter_frames(str(traj_path), start=0, stop=total, stride=1):
             data = np.ascontiguousarray(np.asarray(frame, dtype=np.float32))
             digest.update(data.tobytes())
         return digest.hexdigest()

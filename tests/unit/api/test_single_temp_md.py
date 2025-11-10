@@ -50,13 +50,17 @@ def test_run_single_temperature_md_propagates_seed(monkeypatch, tmp_path: Path):
 
     assert captured.get("random_seed") == 4242
     assert captured.get("temperatures") == [300.0], "Should have single temperature"
-    assert captured.get("exchange_frequency") == 99999999, "Exchange frequency should be very large"
+    assert (
+        captured.get("exchange_frequency") == 99999999
+    ), "Exchange frequency should be very large"
     assert captured.get("simulation_called") is True, "run_simulation should be called"
     assert isinstance(traj_files, list)
     assert temp == 300.0
 
 
-def test_run_single_temperature_md_exports_restart_snapshot(monkeypatch, tmp_path: Path):
+def test_run_single_temperature_md_exports_restart_snapshot(
+    monkeypatch, tmp_path: Path
+):
     """Ensure single-temp MD can export restart snapshot."""
     from pmarlo.api import single_temp_md as _stmd
 
@@ -157,4 +161,3 @@ def test_single_temp_md_uses_single_replica(monkeypatch, tmp_path: Path):
     assert captured.get("num_temperatures") == 1, "Should create exactly 1 replica"
     assert isinstance(traj_files, list)
     assert temp == 310.5
-

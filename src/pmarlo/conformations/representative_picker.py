@@ -20,13 +20,18 @@ class TrajectorySegment:
     start: int
     stop: int
     local_start: int
+    local_stride: int = 1
+
+    def __post_init__(self) -> None:
+        if self.local_stride <= 0:
+            raise ValueError("TrajectorySegment.local_stride must be positive")
 
     def contains(self, global_frame: int) -> bool:
         return self.start <= global_frame < self.stop
 
     def to_local(self, global_frame: int) -> int:
         offset = global_frame - self.start
-        return self.local_start + offset
+        return self.local_start + offset * self.local_stride
 
 
 @dataclass(frozen=True)

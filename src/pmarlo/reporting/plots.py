@@ -65,9 +65,7 @@ def plot_transition_matrix_heatmap(
             ha="center",
             fontsize=8,
             style="italic",
-            bbox=dict(
-                boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.5
-            ),
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.5),
         )
         fig.tight_layout(rect=(0, 0.03, 1, 1))
     else:
@@ -205,9 +203,7 @@ def plot_fes_contour(
             ha="center",
             fontsize=8,
             style="italic",
-            bbox=dict(
-                boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.5
-            ),
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.5),
         )
         fig.tight_layout(rect=(0, 0.03, 1, 1))
     else:
@@ -233,8 +229,15 @@ def save_fes_contour(
     out_dir = Path(output_dir)
     ensure_directory(out_dir)
     fig = plot_fes_contour(
-        F, xedges, yedges, xlabel, ylabel, mask,
-        run_id=run_id, msm_n_states=msm_n_states, tau=tau
+        F,
+        xedges,
+        yedges,
+        xlabel,
+        ylabel,
+        mask,
+        run_id=run_id,
+        msm_n_states=msm_n_states,
+        tau=tau,
     )
     filepath = out_dir / filename
     fig.savefig(filepath, dpi=const.PLOT_DPI)
@@ -380,7 +383,9 @@ def plot_sampling_validation(
     cmap_name: str = "tab20",  # Changed to tab20 for more distinct colors
     ax: Optional[plt.Axes] = None,
     trajectory_labels: Optional[List[str]] = None,  # Add trajectory labels parameter
-    discrete_data_1d: Optional[List[np.ndarray]] = None,  # Add discrete overlay parameter
+    discrete_data_1d: Optional[
+        List[np.ndarray]
+    ] = None,  # Add discrete overlay parameter
     metabiased_flags: Optional[List[bool]] = None,
 ) -> Figure:
     """
@@ -462,8 +467,8 @@ def plot_sampling_validation(
         standard_indices = [i for i, flag in enumerate(metabiased_flags) if not flag]
         # Show first few of each type
         labeled_indices = set(
-            biased_indices[:num_shards_to_label//2] +
-            standard_indices[:num_shards_to_label//2]
+            biased_indices[: num_shards_to_label // 2]
+            + standard_indices[: num_shards_to_label // 2]
         )
     else:
         labeled_indices = set(range(num_shards_to_label))
@@ -503,7 +508,9 @@ def plot_sampling_validation(
             else:
                 label = None
 
-            is_metabiased = bool(metabiased_flags[i]) if metabiased_flags is not None else False
+            is_metabiased = (
+                bool(metabiased_flags[i]) if metabiased_flags is not None else False
+            )
 
             # Make dashed lines more visible
             if is_metabiased:
@@ -522,7 +529,9 @@ def plot_sampling_validation(
             if is_metabiased and label is not None:
                 label = f"{label} (metabiased)"
 
-            logger.debug(f"Trajectory {i}: is_metabiased={is_metabiased}, linestyle={line_style}, label={label}")
+            logger.debug(
+                f"Trajectory {i}: is_metabiased={is_metabiased}, linestyle={line_style}, label={label}"
+            )
 
             plot_kwargs = {
                 "alpha": line_alpha,
@@ -564,7 +573,9 @@ def plot_sampling_validation(
                     linestyle=":",  # Dotted to distinguish from continuous and metabiased styles
                     zorder=3,  # Put discrete overlay on top
                 )
-                logger.debug(f"Discrete trajectory {i}: PLOTTED with {actual_plot_len} points")
+                logger.debug(
+                    f"Discrete trajectory {i}: PLOTTED with {actual_plot_len} points"
+                )
 
     # --- 4. Add Time Arrow ---
     # Ensure arrow/text are placed reasonably within potentially changed xlims
@@ -602,16 +613,37 @@ def plot_sampling_validation(
         if metabiased_flags is not None:
             if any(not flag for flag in metabiased_flags):
                 style_handles.append(
-                    Line2D([0], [0], color="black", linestyle="-", lw=2.5, label="Standard Run")
+                    Line2D(
+                        [0],
+                        [0],
+                        color="black",
+                        linestyle="-",
+                        lw=2.5,
+                        label="Standard Run",
+                    )
                 )
             if any(metabiased_flags):
                 style_handles.append(
-                    Line2D([0], [0], color="black", linestyle="--", lw=2.5,
-                           dashes=(5, 3), label="Metabiased Run")
+                    Line2D(
+                        [0],
+                        [0],
+                        color="black",
+                        linestyle="--",
+                        lw=2.5,
+                        dashes=(5, 3),
+                        label="Metabiased Run",
+                    )
                 )
         if discrete_data_1d is not None:
             style_handles.append(
-                Line2D([0], [0], color="black", linestyle=":", lw=0.6, label="Discrete Overlay")
+                Line2D(
+                    [0],
+                    [0],
+                    color="black",
+                    linestyle=":",
+                    lw=0.6,
+                    label="Discrete Overlay",
+                )
             )
 
         if style_handles:
@@ -619,7 +651,11 @@ def plot_sampling_validation(
             labels.extend([handle.get_label() for handle in style_handles])
 
         # Place legend outside plot area
-        legend_title = "Simulation Runs" if trajectory_labels else f"Shards (Top {num_shards_to_label})"
+        legend_title = (
+            "Simulation Runs"
+            if trajectory_labels
+            else f"Shards (Top {num_shards_to_label})"
+        )
 
         # Add counts of biased vs standard runs to title
         if metabiased_flags is not None and len(metabiased_flags) > 0:
@@ -629,7 +665,7 @@ def plot_sampling_validation(
 
         style_notes: list[str] = []
         if metabiased_flags is not None:
-            style_notes.append("━ standard, ╌ biased")
+            style_notes.append("━ standard (solid) / ╌ metabiased (dashed)")
         if discrete_data_1d is not None:
             style_notes.append("··· discrete")
         if style_notes:

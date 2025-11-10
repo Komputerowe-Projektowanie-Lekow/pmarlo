@@ -1,5 +1,6 @@
 import logging
 import pickle
+import sys
 from pathlib import Path
 from typing import Any, Iterable, List, Literal, Optional, Protocol, Tuple
 
@@ -15,6 +16,7 @@ logger = logging.getLogger("pmarlo")
 
 class ReplicaExchangeProtocol(Protocol):
     """Protocol for replica exchange simulation objects."""
+
     cv_model_path: str | None
     cv_scaler_mean: Any | None
     cv_scaler_scale: Any | None
@@ -24,7 +26,9 @@ class ReplicaExchangeProtocol(Protocol):
     trajectory_files: list[Path]
 
     def restore_from_checkpoint(self, checkpoint: Any) -> None: ...
-    def plan_reporter_stride(self, total_steps: int, equilibration_steps: int, target_frames: int) -> None: ...
+    def plan_reporter_stride(
+        self, total_steps: int, equilibration_steps: int, target_frames: int
+    ) -> None: ...
     def setup_replicas(self) -> None: ...
     def run_simulation(
         self,
@@ -41,6 +45,15 @@ class ReplicaExchangeProtocol(Protocol):
         equilibration_steps: int,
         progress_callback: Any,
     ) -> str | Path | None: ...
+
+
+def _resolve_replica_exchange_class() -> type[Any]:
+    """Allow the public API to swap the replica exchange implementation."""
+
+    module = sys.modules.get("pmarlo.api")
+    if module is not None:
+        return getattr(module, "ReplicaExchange", ReplicaExchange)
+    return ReplicaExchange
 
 
 def run_replica_exchange(
@@ -110,7 +123,8 @@ def run_replica_exchange(
     )
 
     logger.info("[remd] Creating ReplicaExchange instance from config")
-    remd = ReplicaExchange.from_config(
+    remd_cls = _resolve_replica_exchange_class()
+    remd = remd_cls.from_config(
         RemdConfig(
             pdb_file=str(pdb_file),
             temperatures=temperatures,
@@ -139,10 +153,14 @@ def run_replica_exchange(
     remd.setup_replicas()
 
     if start_from_checkpoint:
-        logger.info("[remd] Attempting to restore from checkpoint: %s", start_from_checkpoint)
+        logger.info(
+            "[remd] Attempting to restore from checkpoint: %s", start_from_checkpoint
+        )
         if _restore_from_checkpoint(remd, start_from_checkpoint):
             equil = 0
-            logger.info("[remd] Checkpoint restored successfully, skipping equilibration")
+            logger.info(
+                "[remd] Checkpoint restored successfully, skipping equilibration"
+            )
 
     cb = coerce_progress_callback(kwargs)
 
@@ -156,7 +174,11 @@ def run_replica_exchange(
         ],
     )
 
-    logger.info("[remd] Starting simulation: total_steps=%d, equilibration=%d", total_steps, equil)
+    logger.info(
+        "[remd] Starting simulation: total_steps=%d, equilibration=%d",
+        total_steps,
+        equil,
+    )
     remd.run_simulation(
         total_steps=int(total_steps),
         equilibration_steps=int(equil),
@@ -178,7 +200,11 @@ def run_replica_exchange(
             if final_pdb_temperature is not None
             else float(temperatures[0])
         )
-        logger.info("[remd] Exporting final structure at T=%.1fK to %s", target_temperature, snapshot_target)
+        logger.info(
+            "[remd] Exporting final structure at T=%.1fK to %s",
+            target_temperature,
+            snapshot_target,
+        )
         final_snapshot_written = remd.export_current_structure(
             snapshot_target, temperature=target_temperature
         )
@@ -217,7 +243,9 @@ def run_replica_exchange(
         pdb_file=pdb_file,
     )
     if accepted and demuxed:
-        logger.info("[remd] Demultiplexing successful: %d frames in trajectory", nframes)
+        logger.info(
+            "[remd] Demultiplexing successful: %d frames in trajectory", nframes
+        )
         _emit_banner(
             "REPLICA EXCHANGE COMPLETE - SUCCESS",
             [
@@ -240,6 +268,7 @@ def run_replica_exchange(
     traj_files = [str(f) for f in remd.trajectory_files]
     logger.info("[remd] Returning %d per-replica trajectories", len(traj_files))
     return traj_files, temperatures
+
 
 def _resolve_simulation_seed(
     random_seed: int | None,
@@ -319,11 +348,15 @@ def _configure_cv_model(
 
     if cv_scaler_mean is not None:
         remd.cv_scaler_mean = np.asarray(cv_scaler_mean, dtype=np.float64)
-        logger.debug("[remd] CV scaler mean configured: shape=%s", remd.cv_scaler_mean.shape)
+        logger.debug(
+            "[remd] CV scaler mean configured: shape=%s", remd.cv_scaler_mean.shape
+        )
 
     if cv_scaler_scale is not None:
         remd.cv_scaler_scale = np.asarray(cv_scaler_scale, dtype=np.float64)
-        logger.debug("[remd] CV scaler scale configured: shape=%s", remd.cv_scaler_scale.shape)
+        logger.debug(
+            "[remd] CV scaler scale configured: shape=%s", remd.cv_scaler_scale.shape
+        )
 
 
 def _restore_from_checkpoint(

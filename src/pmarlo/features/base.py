@@ -100,7 +100,7 @@ def _parse_molecular_list_format(spec: str) -> Tuple[str, Dict[str, Any]] | None
     import re
 
     # Match patterns like: distance([0, 1]), angle([0, 1, 2]), dihedral([0, 1, 2, 3])
-    match = re.match(r'^(distance|angle|dihedral)\(\[([^]]+)]\)$', spec)
+    match = re.match(r"^(distance|angle|dihedral)\(\[([^]]+)]\)$", spec)
     if not match:
         return None
 
@@ -109,15 +109,16 @@ def _parse_molecular_list_format(spec: str) -> Tuple[str, Dict[str, Any]] | None
 
     try:
         # Parse comma-separated integers
-        indices = [int(x.strip()) for x in indices_str.split(',')]
+        indices = [int(x.strip()) for x in indices_str.split(",")]
 
         # Validate number of indices
-        if feature_type == "distance" and len(indices) == 2:
-            return "distance", {"indices": indices}
-        elif feature_type == "angle" and len(indices) == 3:
-            return "angle", {"indices": indices}
-        elif feature_type == "dihedral" and len(indices) == 4:
-            return "dihedral", {"indices": indices}
+        atoms = list(indices)
+        if feature_type == "distance" and len(atoms) == 2:
+            return "distance", {"indices": atoms, "atoms": atoms}
+        elif feature_type == "angle" and len(atoms) == 3:
+            return "angle", {"indices": atoms, "atoms": atoms}
+        elif feature_type == "dihedral" and len(atoms) == 4:
+            return "dihedral", {"indices": atoms, "atoms": atoms}
         else:
             # Wrong number of indices for the feature type
             return None

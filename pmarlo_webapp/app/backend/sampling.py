@@ -10,7 +10,7 @@ import mdtraj as md
 import numpy as np
 
 # pmarlo imports
-from pmarlo.api.replica_exchange import run_replica_exchange, _derive_run_plan
+from pmarlo.api.replica_exchange import _derive_run_plan
 from pmarlo.utils.path_utils import ensure_directory
 
 # Local imports
@@ -776,7 +776,9 @@ class SamplingMixin:
                 if config.exchange_frequency_steps is not None
                 else None
             )
-            traj_files, temps = run_replica_exchange(
+            from . import run_replica_exchange as _backend_run_replica_exchange
+
+            traj_files, temps = _backend_run_replica_exchange(
                 pdb_file=str(config.pdb_path),
                 output_dir=str(run_dir),
                 temperatures=[float(t) for t in config.temperatures],

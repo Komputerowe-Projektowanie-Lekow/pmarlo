@@ -160,11 +160,15 @@ def _normalise_projection_data(
 
 def _normalise_run_labels(
     run_labels: Iterable[str] | None,
+    *,
+    total_trajectories: int,
     kept_indices: Sequence[int],
 ) -> list[str] | None:
     if run_labels is None:
         return None
     labels = [str(label) for label in run_labels]
+    if len(labels) != total_trajectories:
+        raise ValueError("run_labels must have the same length as projection_data")
     filtered: list[str] = []
     for idx in kept_indices:
         if idx >= len(labels):
@@ -187,9 +191,7 @@ def _normalise_metabiased_flags(
 
     raw_flags = list(metabiased_runs)
     if len(raw_flags) != total_trajectories:
-        raise ValueError(
-            "metabiased_runs must have the same length as projection_data"
-        )
+        raise ValueError("metabiased_runs must have the same length as projection_data")
 
     normalised: list[bool] = []
     for idx, flag in enumerate(raw_flags):
@@ -250,7 +252,9 @@ def _prepare_discrete_overlay(
             overlay.append(np.empty(0, dtype=float))
             continue
         if labels.min() < 0:
-            raise ValueError(f"Discrete trajectory {idx} contains negative state indices")
+            raise ValueError(
+                f"Discrete trajectory {idx} contains negative state indices"
+            )
         if labels.max() >= centers.shape[0]:
             raise ValueError(
                 "Discrete trajectory references cluster outside cluster_centers bounds"
@@ -274,7 +278,11 @@ def _collect_sampling_inputs(
     projected, kept_indices = _normalise_projection_data(
         projection_data, component=component
     )
-    labels = _normalise_run_labels(run_labels, kept_indices)
+    labels = _normalise_run_labels(
+        run_labels,
+        total_trajectories=len(projection_data),
+        kept_indices=kept_indices,
+    )
     metabiased = _normalise_metabiased_flags(
         metabiased_runs,
         total_trajectories=len(projection_data),
@@ -380,7 +388,9 @@ def create_sampling_validation_plot(
 
 
 def create_fes_validation_plot(
-    fes_grid: tuple[np.ndarray | Sequence[Sequence[float]], np.ndarray | Sequence[Sequence[float]]],
+    fes_grid: tuple[
+        np.ndarray | Sequence[Sequence[float]], np.ndarray | Sequence[Sequence[float]]
+    ],
     fes_data: np.ndarray | Sequence[Sequence[float]],
     *,
     max_kt: float = 7.0,
@@ -467,4 +477,3 @@ def create_fes_validation_plot(
         ax=ax,
     )
     return fig
-

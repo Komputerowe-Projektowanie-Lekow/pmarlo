@@ -7,7 +7,9 @@ from typing import Any, Dict, Mapping, MutableMapping
 __all__ = ["deep_merge", "resolve_deeptica"]
 
 
-def deep_merge(base: Mapping[str, Any] | None, override: Mapping[str, Any] | None) -> Dict[str, Any]:
+def deep_merge(
+    base: Mapping[str, Any] | None, override: Mapping[str, Any] | None
+) -> Dict[str, Any]:
     """Recursively merge two mapping objects.
 
     This function performs a deep merge where:
@@ -55,7 +57,9 @@ def deep_merge(base: Mapping[str, Any] | None, override: Mapping[str, Any] | Non
     return result
 
 
-def resolve_deeptica(transform_cfg: Mapping[str, Any]) -> tuple[bool, Dict[str, Any] | None]:
+def resolve_deeptica(
+    transform_cfg: Mapping[str, Any],
+) -> tuple[bool, Dict[str, Any] | None]:
     """Parse and validate DeepTICA configuration sections.
 
     Extracts the "deeptica" section from a transform configuration, validates
@@ -115,5 +119,3 @@ def resolve_deeptica(transform_cfg: Mapping[str, Any]) -> tuple[bool, Dict[str, 
             cfg.pop("min_pairs", None)
 
     return enabled, cfg if cfg else None
-
-

@@ -376,4 +376,3 @@ class MetricsLogger:
             f.write("=" * 80 + "\n")
 
         logger.debug(f"Saved build summary to: {summary_file}")
-

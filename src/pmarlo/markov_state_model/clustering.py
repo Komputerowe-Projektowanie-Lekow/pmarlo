@@ -27,6 +27,7 @@ Examples
 
 from __future__ import annotations
 
+import inspect
 import logging
 import numbers
 from dataclasses import dataclass
@@ -302,6 +303,22 @@ def _resolve_fixed_seed(
     return int(random_state)
 
 
+def _class_supports_keyword(estimator_cls: type, keyword: str) -> bool:
+    """Return True if the estimator constructor supports *keyword*."""
+    try:
+        signature = inspect.signature(estimator_cls)
+    except (ValueError, TypeError):
+        return False
+    return keyword in signature.parameters
+
+
+def _apply_fixed_seed_attribute(estimator: Any, fixed_seed: int | bool) -> None:
+    """Ensure the estimator exposes the pod `fixed_seed` attribute."""
+    setattr(estimator, "fixed_seed", fixed_seed)
+    if hasattr(estimator, "random_state"):
+        estimator.random_state = np.random.RandomState(fixed_seed)
+
+
 def _create_clustering_estimator(
     method: Literal["minibatchkmeans", "kmeans"],
     n_states: int,
@@ -329,14 +346,16 @@ def _create_clustering_estimator(
     init_kwargs, attribute_kwargs = _split_kwargs_for_method(method, kwargs)
     fixed_seed = _resolve_fixed_seed(random_state, attribute_kwargs)
 
-    if method == "minibatchkmeans":
-        estimator = MiniBatchKMeans(n_clusters=n_states, **init_kwargs)
-        estimator.fixed_seed = fixed_seed
-        if "progress" in attribute_kwargs:
-            estimator.progress = attribute_kwargs["progress"]
-        return estimator
+    estimator_cls = MiniBatchKMeans if method == "minibatchkmeans" else KMeans
+    estimator_kwargs = dict(init_kwargs)
+    supports_fixed_seed = _class_supports_keyword(estimator_cls, "fixed_seed")
+    if supports_fixed_seed:
+        estimator_kwargs["fixed_seed"] = fixed_seed
 
-    estimator = KMeans(n_clusters=n_states, fixed_seed=fixed_seed, **init_kwargs)
+    estimator = estimator_cls(n_clusters=n_states, **estimator_kwargs)
+    if not supports_fixed_seed:
+        _apply_fixed_seed_attribute(estimator, fixed_seed)
+
     if "progress" in attribute_kwargs:
         estimator.progress = attribute_kwargs["progress"]
     return estimator

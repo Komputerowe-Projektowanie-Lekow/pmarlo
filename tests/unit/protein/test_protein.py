@@ -8,9 +8,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from openmm.app import PDBFile
 
 from pmarlo.protein.protein import HAS_PDBFIXER, Protein
-from openmm.app import PDBFile
 
 
 class TestProtein:
@@ -359,7 +359,15 @@ class TestProteinMetrics:
         metrics = Protein._compute_protein_metrics(protein, sequence)
 
         counts = {aa: sequence.count(aa) for aa in set(sequence)}
-        pka_side = {"C": 8.3, "D": 3.9, "E": 4.1, "H": 6.0, "K": 10.5, "R": 12.5, "Y": 10.1}
+        pka_side = {
+            "C": 8.3,
+            "D": 3.9,
+            "E": 4.1,
+            "H": 6.0,
+            "K": 10.5,
+            "R": 12.5,
+            "Y": 10.1,
+        }
         pka_n = 9.69
         pka_c = 2.34
 

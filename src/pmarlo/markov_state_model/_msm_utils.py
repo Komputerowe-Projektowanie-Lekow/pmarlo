@@ -337,7 +337,9 @@ def select_lag_from_its(
     # Find valid (finite) timescales
     valid_mask = np.isfinite(ts_slow) & (ts_slow > 0)
     if not np.any(valid_mask):
-        logger.warning("select_lag_from_its: No valid timescales, returning default lag=10")
+        logger.warning(
+            "select_lag_from_its: No valid timescales, returning default lag=10"
+        )
         return 10
 
     # Start searching from min_lag_idx
@@ -396,4 +398,3 @@ def select_lag_from_its(
         "select_lag_from_its: No plateau detected, using median lag=%d", selected_lag
     )
     return selected_lag
-
