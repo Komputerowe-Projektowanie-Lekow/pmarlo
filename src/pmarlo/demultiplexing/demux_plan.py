@@ -118,6 +118,7 @@ def _to_indexed_mapping(
                 fallback,
             )
             return fallback
+
     if isinstance(values, Mapping):
         return {int(k): _coerce(int(k), v) for k, v in values.items()}
     return {i: _coerce(i, v) for i, v in enumerate(values)}

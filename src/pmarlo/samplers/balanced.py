@@ -100,9 +100,7 @@ class BalancedTempSampler:
             if weights is None:
                 idx = self._rng.choice(pairs.shape[0], size=k, replace=False)
             else:
-                idx = self._rng.choice(
-                    pairs.shape[0], size=k, replace=False, p=weights
-                )
+                idx = self._rng.choice(pairs.shape[0], size=k, replace=False, p=weights)
             chosen = pairs[idx]
         self._update_occupancy(shard, temperature, chosen)
         return chosen
@@ -170,11 +168,15 @@ class BalancedTempSampler:
                 embeddings[int(i)], decimals=const.BALANCED_EMBEDDING_HASH_DECIMALS
             )
             increment = (
-                float(base[int(i)]) if base is not None else const.BALANCED_OCCUPANCY_INCREMENT
+                float(base[int(i)])
+                if base is not None
+                else const.BALANCED_OCCUPANCY_INCREMENT
             )
             occupancy[key] = occupancy.get(key, 0.0) + increment
 
     @staticmethod
-    def _hash_embedding(vec: np.ndarray, decimals: int = const.BALANCED_EMBEDDING_HASH_DECIMALS) -> Tuple[float, ...]:
+    def _hash_embedding(
+        vec: np.ndarray, decimals: int = const.BALANCED_EMBEDDING_HASH_DECIMALS
+    ) -> Tuple[float, ...]:
         rounded = np.round(vec.astype(np.float64), decimals=decimals)
         return tuple(float(x) for x in rounded)

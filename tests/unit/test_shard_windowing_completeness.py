@@ -1,8 +1,9 @@
 """Test that windowed shard emission captures all frames from trajectories."""
 
+from pathlib import Path
+
 import numpy as np
 import pytest
-from pathlib import Path
 
 from pmarlo.api.shards import _emit_windows
 
@@ -24,14 +25,18 @@ def test_emit_windows_captures_all_frames():
     # Track emitted shards
     emitted_shards = []
 
-    def mock_write_shard(out_dir, shard_id, cvs, dtraj, periodic, seed, temperature, source):
-        emitted_shards.append({
-            "shard_id": shard_id,
-            "n_frames": cvs["Rg"].shape[0],
-            "range": source["range"],
-            "partial": source.get("partial", False),
-            "is_final_partial": source.get("is_final_partial", False),
-        })
+    def mock_write_shard(
+        out_dir, shard_id, cvs, dtraj, periodic, seed, temperature, source
+    ):
+        emitted_shards.append(
+            {
+                "shard_id": shard_id,
+                "n_frames": cvs["Rg"].shape[0],
+                "range": source["range"],
+                "partial": source.get("partial", False),
+                "is_final_partial": source.get("is_final_partial", False),
+            }
+        )
         return Path(f"shard_{len(emitted_shards)}.json")
 
     provenance = {
@@ -67,19 +72,26 @@ def test_emit_windows_captures_all_frames():
     assert emitted_shards[1]["n_frames"] == 950
     assert emitted_shards[1]["range"] == [1000, 1950]
     assert emitted_shards[1]["partial"], "Second shard should be marked as partial"
-    assert emitted_shards[1]["is_final_partial"], "Second shard should be marked as final partial"
+    assert emitted_shards[1][
+        "is_final_partial"
+    ], "Second shard should be marked as final partial"
 
     # Both shards should use canonical ID format (no _partial suffix)
     for shard in emitted_shards:
         shard_id = shard["shard_id"]
-        assert "_partial" not in shard_id, f"Shard ID should not contain '_partial' suffix: {shard_id}"
+        assert (
+            "_partial" not in shard_id
+        ), f"Shard ID should not contain '_partial' suffix: {shard_id}"
         # Verify canonical format: T{temp}K_{run}_seg{segment:04d}_rep{replica:03d}
-        assert shard_id.startswith("T300K_test_run_seg"), f"Unexpected shard ID format: {shard_id}"
+        assert shard_id.startswith(
+            "T300K_test_run_seg"
+        ), f"Unexpected shard ID format: {shard_id}"
 
     # Verify ALL frames are captured
     total_frames_captured = sum(s["n_frames"] for s in emitted_shards)
-    assert total_frames_captured == n_frames, \
-        f"Lost {n_frames - total_frames_captured} frames!"
+    assert (
+        total_frames_captured == n_frames
+    ), f"Lost {n_frames - total_frames_captured} frames!"
 
 
 def test_emit_windows_exact_multiple():
@@ -93,11 +105,15 @@ def test_emit_windows_exact_multiple():
 
     emitted_shards = []
 
-    def mock_write_shard(out_dir, shard_id, cvs, dtraj, periodic, seed, temperature, source):
-        emitted_shards.append({
-            "n_frames": cvs["Rg"].shape[0],
-            "partial": source.get("partial", False),
-        })
+    def mock_write_shard(
+        out_dir, shard_id, cvs, dtraj, periodic, seed, temperature, source
+    ):
+        emitted_shards.append(
+            {
+                "n_frames": cvs["Rg"].shape[0],
+                "partial": source.get("partial", False),
+            }
+        )
         return Path(f"shard_{len(emitted_shards)}.json")
 
     def seed_for(idx):
@@ -141,11 +157,15 @@ def test_emit_windows_overlapping():
 
     emitted_shards = []
 
-    def mock_write_shard(out_dir, shard_id, cvs, dtraj, periodic, seed, temperature, source):
-        emitted_shards.append({
-            "n_frames": cvs["Rg"].shape[0],
-            "range": source["range"],
-        })
+    def mock_write_shard(
+        out_dir, shard_id, cvs, dtraj, periodic, seed, temperature, source
+    ):
+        emitted_shards.append(
+            {
+                "n_frames": cvs["Rg"].shape[0],
+                "range": source["range"],
+            }
+        )
         return Path(f"shard_{len(emitted_shards)}.json")
 
     def seed_for(idx):
@@ -178,5 +198,6 @@ def test_emit_windows_overlapping():
 
     # Last frame index covered
     max_frame_covered = max(s["range"][1] for s in emitted_shards)
-    assert max_frame_covered == n_frames, \
-        f"Not all frames covered! Max: {max_frame_covered}, Total: {n_frames}"
+    assert (
+        max_frame_covered == n_frames
+    ), f"Not all frames covered! Max: {max_frame_covered}, Total: {n_frames}"

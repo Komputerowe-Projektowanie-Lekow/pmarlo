@@ -41,13 +41,14 @@ def _mk_shard(
         "psi": np.linspace(-np.pi, np.pi, n),
     }
     periodic = {"phi": True, "psi": True}
-    shard_id = f"T{int(round(temperature))}K_seg{segment_id:04d}_rep{replica_id:03d}"
     source = _mk_src(
         traj_path,
         run_id=traj_path.parent.name,
         segment_id=segment_id,
         replica_id=replica_id,
     )
+    run_suffix = source["run_id"].replace("run_", "") if source["run_id"] else "default"
+    shard_id = f"T{int(round(temperature))}K_{run_suffix}_seg{segment_id:04d}_rep{replica_id:03d}"
     return write_shard(
         out_dir=tmp,
         shard_id=shard_id,

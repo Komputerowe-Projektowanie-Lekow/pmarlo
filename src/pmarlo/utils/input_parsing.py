@@ -223,4 +223,10 @@ def parse_hidden_layers(raw: Any) -> tuple[int, ...]:
     return (128, 128)
 
 
-__all__ = ["parse_temperature_ladder", "parse_tau_schedule", "coerce_tau_schedule", "parse_bins", "parse_hidden_layers"]
+__all__ = [
+    "parse_temperature_ladder",
+    "parse_tau_schedule",
+    "coerce_tau_schedule",
+    "parse_bins",
+    "parse_hidden_layers",
+]

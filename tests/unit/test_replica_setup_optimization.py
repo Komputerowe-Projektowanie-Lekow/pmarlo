@@ -5,9 +5,10 @@ This module validates the thread-safe, immutable minimized state cache that
 eliminates redundant minimization compute across replicas.
 """
 
+from unittest.mock import MagicMock, Mock
+
 import numpy as np
 import pytest
-from unittest.mock import Mock, MagicMock
 
 from pmarlo.replica_exchange.replica_setup import (
     MinimizedState,
@@ -118,8 +119,8 @@ class TestMinimizedState:
 
         openmm_pos = state.to_openmm_positions()
         # Should have unit attached
-        assert hasattr(openmm_pos, 'unit')
-        assert hasattr(openmm_pos, 'value_in_unit')
+        assert hasattr(openmm_pos, "unit")
+        assert hasattr(openmm_pos, "value_in_unit")
 
 
 class TestMinimizedStateCache:
@@ -150,8 +151,8 @@ class TestMinimizedStateCache:
         compute_fn.assert_called_once_with(some_arg="test")
 
         stats = cache.get_statistics()
-        assert stats['misses'] == 1
-        assert stats['hits'] == 0
+        assert stats["misses"] == 1
+        assert stats["hits"] == 0
 
     def test_cache_hit_reuses(self):
         """Subsequent access should reuse cached state."""
@@ -177,8 +178,8 @@ class TestMinimizedStateCache:
         compute_fn.assert_called_once()  # Only called once
 
         stats = cache.get_statistics()
-        assert stats['misses'] == 1
-        assert stats['hits'] == 1
+        assert stats["misses"] == 1
+        assert stats["hits"] == 1
 
     def test_invalidate_clears_cache(self):
         """Invalidation should clear cached state."""
@@ -210,7 +211,7 @@ class TestMinimizedStateCache:
         cache = MinimizedStateCache()
 
         # Cache should have a lock
-        assert hasattr(cache, '_lock')
+        assert hasattr(cache, "_lock")
         assert cache._lock is not None
 
     def test_invalid_compute_fn_return(self):
@@ -255,15 +256,15 @@ class TestCreateMinimizedStateFromSimulation:
             simulation=mock_simulation,
             replica_index=2,
             minimization_iterations=300,
-            additional_metadata={'test_key': 'test_value'},
+            additional_metadata={"test_key": "test_value"},
         )
 
         assert state.replica_index == 2
         assert state.minimization_iterations == 300
         assert state.potential_energy == -1234.5
         assert state.positions.shape == (2, 3)
-        assert state.metadata['test_key'] == 'test_value'
-        assert state.metadata['platform'] == 'CPU'
+        assert state.metadata["test_key"] == "test_value"
+        assert state.metadata["platform"] == "CPU"
 
 
 class TestIntegrationScenario:
@@ -304,13 +305,12 @@ class TestIntegrationScenario:
 
         # Cache efficiency should be high
         stats = cache.get_statistics()
-        assert stats['misses'] == 1
-        assert stats['hits'] == n_replicas - 1
+        assert stats["misses"] == 1
+        assert stats["hits"] == n_replicas - 1
 
-        efficiency = 100 * stats['hits'] / (stats['hits'] + stats['misses'])
+        efficiency = 100 * stats["hits"] / (stats["hits"] + stats["misses"])
         assert efficiency > 85.0  # 7/8 = 87.5%
 
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-

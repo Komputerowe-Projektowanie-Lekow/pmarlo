@@ -23,6 +23,7 @@ from openmm.app import PDBFile, Simulation
 
 from pmarlo import constants as const
 from pmarlo.features.deeptica.export import load_cv_model_info
+
 try:
     from pmarlo.features.deeptica.openmm_features import (
         extract_cv_values_from_context as _extract_cv_values_from_context,
@@ -52,18 +53,18 @@ from .diagnostics import (
     retune_temperature_ladder,
 )
 from .exchange_engine import ExchangeEngine
+from .minimization_policy import (
+    MinimizationPolicy,
+    PerReplicaPolicy,
+    SinglePassPolicy,
+    auto_select_minimization_policy,
+    create_minimization_context,
+    validate_policy_safety,
+)
 from .platform_selector import select_platform_and_properties
 from .replica_setup import (
     MinimizedStateCache,
     create_minimized_state_from_simulation,
-)
-from .minimization_policy import (
-    auto_select_minimization_policy,
-    create_minimization_context,
-    validate_policy_safety,
-    MinimizationPolicy,
-    SinglePassPolicy,
-    PerReplicaPolicy,
 )
 from .system_builder import (
     create_system,
@@ -214,7 +215,11 @@ class ReplicaExchange:
         # Performance optimization: selective trajectory writing
         # Extract from config if provided, otherwise use parameter
         write_indices = write_replica_indices
-        if config and hasattr(config, 'write_replica_indices') and config.write_replica_indices is not None:
+        if (
+            config
+            and hasattr(config, "write_replica_indices")
+            and config.write_replica_indices is not None
+        ):
             write_indices = config.write_replica_indices
         self.write_replica_indices: Optional[List[int]] = write_indices
         if self.write_replica_indices is not None:
@@ -288,7 +293,7 @@ class ReplicaExchange:
         # Optimization: Compute-once, Broadcast Pattern for minimized states
         # Thread-safe cache eliminates redundant minimization across replicas
         self._minimized_state_cache = MinimizedStateCache()
-        
+
         # Minimization strategy: auto-select or manual override
         self._minimization_policy_override = minimization_policy  # Store for later use
         self._selected_minimization_policy: Optional[MinimizationPolicy] = None
@@ -350,7 +355,9 @@ class ReplicaExchange:
         """Construct instance using immutable RemdConfig as single source of truth."""
         # Normalize pdb_file to str
         if config.pdb_file is None:
-            raise ValueError("RemdConfig.pdb_file must be set for ReplicaExchange.from_config")
+            raise ValueError(
+                "RemdConfig.pdb_file must be set for ReplicaExchange.from_config"
+            )
         pdb_file_str = str(config.pdb_file)
 
         return cls(
@@ -625,17 +632,23 @@ class ReplicaExchange:
                 cv_dim = int(info.get("config", {}).get("cv_dim", 0))
                 if cv_dim <= 0:
                     raise ValueError("cv_dim metadata missing from CV model config.")
-                
+
                 # Check if native feature forces are available (optimized path)
-                self._cv_feature_forces = getattr(system, '_pmarlo_feature_forces', None)
-                self._cv_feature_indices = getattr(system, '_pmarlo_feature_indices', None)
-                
+                self._cv_feature_forces = getattr(
+                    system, "_pmarlo_feature_forces", None
+                )
+                self._cv_feature_indices = getattr(
+                    system, "_pmarlo_feature_indices", None
+                )
+
                 if self._cv_feature_forces:
                     logger.info(
                         "CV monitoring will use OpenMM native forces (%d features, 2x faster)",
                         len(self._cv_feature_forces),
                     )
-                    self._cv_monitor_module = None  # Don't need PyTorch model for monitoring
+                    self._cv_monitor_module = (
+                        None  # Don't need PyTorch model for monitoring
+                    )
                 else:
                     # Fallback to PyTorch model monitoring (legacy, slower)
                     logger.info(
@@ -646,7 +659,7 @@ class ReplicaExchange:
                         str(cv_model_path), map_location="cpu"
                     )
                     self._cv_monitor_module.eval()
-                
+
                 self._bias_energy_stats = RunningStats(dim=1)
                 self._bias_cv_stats = RunningStats(dim=cv_dim)
                 self._bias_steps_completed = 0
@@ -731,7 +744,9 @@ class ReplicaExchange:
             # Strategy Pattern: Use selected policy to determine minimization approach
             min_context.replica_index = i  # Update context for this replica
 
-            if self._selected_minimization_policy.should_minimize_replica(i, min_context):
+            if self._selected_minimization_policy.should_minimize_replica(
+                i, min_context
+            ):
                 # This replica needs independent minimization
                 logger.info(f"  Minimizing energy for replica {i}...")
 
@@ -931,9 +946,7 @@ class ReplicaExchange:
 
     def _get_state_with_positions(self, simulation: Simulation):
         # Only request positions and energy, not velocities (saves overhead)
-        return simulation.context.getState(
-            getPositions=True, getEnergy=True
-        )
+        return simulation.context.getState(getPositions=True, getEnergy=True)
 
     def _validate_energy(self, energy, replica_index: int) -> None:
         # Use ._value to avoid unit conversion overhead (assumes kJ/mol)
@@ -1006,14 +1019,14 @@ class ReplicaExchange:
         to reduce I/O overhead (can save 70-90% of write time for large replica counts).
         """
         traj_file = self.output_dir / f"replica_{replica_index:02d}.dcd"
-        
+
         # Check if we should write this replica's trajectory
         should_write = (
-            self.write_replica_indices is None 
+            self.write_replica_indices is None
             or len(self.write_replica_indices) == 0
             or replica_index in self.write_replica_indices
         )
-        
+
         if should_write:
             stride = int(
                 self.reporter_stride
@@ -1036,7 +1049,7 @@ class ReplicaExchange:
                 f"  DCD reporter skipped for replica {replica_index} "
                 "(not in write_replica_indices)"
             )
-        
+
         return traj_file
 
     @staticmethod
@@ -1108,7 +1121,7 @@ class ReplicaExchange:
             stage2_iterations = 50
             simulation.minimizeEnergy(
                 maxIterations=stage2_iterations,
-                tolerance=1.0 * unit.kilojoules_per_mole / unit.nanometer
+                tolerance=1.0 * unit.kilojoules_per_mole / unit.nanometer,
             )
             total_iterations += stage2_iterations
             logger.info(
@@ -1126,15 +1139,14 @@ class ReplicaExchange:
             replica_index=replica_index,
             minimization_iterations=total_iterations,
             additional_metadata={
-                'temperature': self.temperatures[replica_index],
-                'random_seed': self.random_seed,
-            }
+                "temperature": self.temperatures[replica_index],
+                "random_seed": self.random_seed,
+            },
         )
 
         # Validate state before caching
         self._validate_energy(
-            state.potential_energy * unit.kilojoules_per_mole,
-            replica_index
+            state.potential_energy * unit.kilojoules_per_mole, replica_index
         )
 
         return state
@@ -1144,7 +1156,7 @@ class ReplicaExchange:
         simulation: Simulation,
         cached_state: "MinimizedState",
         replica_index: int,
-        quick_refinement: bool = True
+        quick_refinement: bool = True,
     ) -> None:
         """
         Apply cached minimized state to simulation with optional refinement.
@@ -1676,7 +1688,9 @@ class ReplicaExchange:
         print("=" * 80, flush=True)
         if self.n_replicas > 1:
             print(f"Running {self.n_replicas} replicas in parallel", flush=True)
-            print(f"Exchange attempts every {self.exchange_frequency} steps", flush=True)
+            print(
+                f"Exchange attempts every {self.exchange_frequency} steps", flush=True
+            )
         else:
             print("Running single-temperature MD simulation", flush=True)
         print("=" * 80 + "\n", flush=True)
@@ -1791,7 +1805,9 @@ class ReplicaExchange:
             logger.info(f"Starting REMD simulation: {total_steps} steps")
             logger.info(f"Exchange attempts every {self.exchange_frequency} steps")
         else:
-            logger.info(f"Starting single-temperature MD simulation: {total_steps} steps")
+            logger.info(
+                f"Starting single-temperature MD simulation: {total_steps} steps"
+            )
 
     def _run_equilibration_phase(
         self,
@@ -2255,11 +2271,13 @@ class ReplicaExchange:
         should_cancel: Callable[[], bool] | None,
     ) -> bool:
         production_steps = total_steps - equilibration_steps
-        
+
         # Special handling for single-temperature MD (n_replicas == 1)
         # or when exchange_frequency is very large (effectively no exchanges)
-        is_single_temp = self.n_replicas == 1 or production_steps < self.exchange_frequency
-        
+        is_single_temp = (
+            self.n_replicas == 1 or production_steps < self.exchange_frequency
+        )
+
         if is_single_temp:
             logger.info(
                 f"Production: {production_steps} steps (single-temperature MD, no exchanges)"
@@ -2273,7 +2291,7 @@ class ReplicaExchange:
                 reporter,
                 should_cancel,
             )
-        
+
         # Normal REMD production with exchanges
         exchange_steps = production_steps // self.exchange_frequency
         logger.info(
@@ -2364,7 +2382,7 @@ class ReplicaExchange:
         if prod_progress is not None:
             prod_progress.close()
         return False
-    
+
     def _run_single_temp_production(
         self,
         production_steps: int,
@@ -2376,24 +2394,24 @@ class ReplicaExchange:
         should_cancel: Callable[[], bool] | None,
     ) -> bool:
         """Run production phase for single-temperature MD (no exchanges).
-        
+
         This method is used when n_replicas == 1 or when exchange_frequency
         is larger than production_steps.
         """
         # Use reasonable chunk size for progress tracking
         chunk_size = min(1000, max(100, production_steps // 20))
         num_chunks = (production_steps + chunk_size - 1) // chunk_size
-        
+
         prod_progress = ProgressPrinter(production_steps)
         prod_milestones: set[int] = set()
         steps_completed = 0
-        
+
         for chunk_idx in range(num_chunks):
             if should_cancel is not None and should_cancel():
                 return True
-            
+
             current_chunk = min(chunk_size, production_steps - steps_completed)
-            
+
             # Run MD steps for all replicas (typically just 1 for single-temp)
             for replica_idx, replica in enumerate(self.replicas):
                 try:
@@ -2411,14 +2429,14 @@ class ReplicaExchange:
                         )
                     else:
                         raise
-            
+
             steps_completed += current_chunk
             self._update_bias_monitor()
-            
+
             # Update progress
             prod_progress.draw(steps_completed)
             prod_progress.newline_if_active()
-            
+
             # Log milestones
             progress_fraction = steps_completed / production_steps
             progress_percent = int(round(progress_fraction * 100))
@@ -2431,7 +2449,7 @@ class ReplicaExchange:
                     print(milestone_message, flush=True)
                     logger.info(milestone_message)
                     prod_milestones.add(threshold)
-            
+
             # Report progress
             if reporter is not None:
                 reporter.emit(
@@ -2441,11 +2459,11 @@ class ReplicaExchange:
                         "total_steps": int(production_steps),
                     },
                 )
-            
+
             # Save checkpoint if needed
             if steps_completed % save_state_frequency == 0:
                 self.save_checkpoint(steps_completed // chunk_size)
-        
+
         prod_progress.close()
         return False
 
@@ -2483,15 +2501,15 @@ class ReplicaExchange:
     def _update_bias_monitor(self) -> None:
         if self._bias_energy_stats is None or self._bias_cv_stats is None:
             return
-        
+
         # Use optimized native forces if available
-        if hasattr(self, '_cv_feature_forces') and self._cv_feature_forces:
+        if hasattr(self, "_cv_feature_forces") and self._cv_feature_forces:
             self._update_bias_monitor_native()
         elif self._cv_monitor_module is not None:
             self._update_bias_monitor_pytorch()
         else:
             return  # No monitoring available
-        
+
         self._bias_steps_completed += self.exchange_frequency
         if self._bias_steps_completed >= self._bias_next_log:
             mean_e, std_e = self._bias_energy_stats.summary()
@@ -2505,7 +2523,7 @@ class ReplicaExchange:
                 np.array2string(std_cv, precision=4),
             )
             self._bias_next_log += self._bias_log_interval
-    
+
     def _update_bias_monitor_native(self) -> None:
         """Update CV monitoring using native OpenMM forces (optimized, 2x faster).
 
@@ -2527,7 +2545,7 @@ class ReplicaExchange:
             # Use ._value to avoid unit conversion overhead
             energy = state.getPotentialEnergy()._value
             self._bias_energy_stats.update(np.array([energy]))
-            
+
             # Extract CV values from native OpenMM forces (no PyTorch overhead)
             cv_values = _extract_cv_values_from_context(
                 replica.context,
@@ -2535,7 +2553,7 @@ class ReplicaExchange:
                 force_indices,
             )
             self._bias_cv_stats.update(cv_values)
-    
+
     def _update_bias_monitor_pytorch(self) -> None:
         """Update CV monitoring using PyTorch model (legacy, slower).
 
@@ -2552,11 +2570,9 @@ class ReplicaExchange:
             # Use ._value to avoid unit conversion overhead
             energy = state.getPotentialEnergy()._value
             self._bias_energy_stats.update(np.array([energy]))
-            
+
             # Convert positions once at the boundary
-            positions = np.array(
-                state.getPositions(asNumpy=True)._value
-            )
+            positions = np.array(state.getPositions(asNumpy=True)._value)
             pos_tensor = torch.tensor(positions, dtype=torch.float32)
             try:
                 box_vectors = state.getPeriodicBoxVectors(asNumpy=True)
@@ -2587,7 +2603,9 @@ class ReplicaExchange:
         for idx, ctx in enumerate(self.contexts):
             e_state = ctx.getState(getEnergy=True)
             # Convert to float in kJ/mol once here, not in every exchange calculation
-            energy_value = e_state.getPotentialEnergy()._value  # Direct access to avoid unit conversion
+            energy_value = (
+                e_state.getPotentialEnergy()._value
+            )  # Direct access to avoid unit conversion
             energies.append(energy_value)
         self.energies = energies
         return energies
@@ -2606,14 +2624,21 @@ class ReplicaExchange:
                 )
 
                 # Perform accepted exchanges and update statistics
-                for idx, (i, j, is_accepted) in enumerate(zip(even_i_indices, even_j_indices, accepted)):
+                for idx, (i, j, is_accepted) in enumerate(
+                    zip(even_i_indices, even_j_indices, accepted)
+                ):
                     self.exchange_attempts += 1
 
                     # Update pair statistics - get states BEFORE potential exchange
                     state_i_val = self.replica_states[i]
                     state_j_val = self.replica_states[j]
-                    pair = (min(state_i_val, state_j_val), max(state_i_val, state_j_val))
-                    self.pair_attempt_counts[pair] = self.pair_attempt_counts.get(pair, 0) + 1
+                    pair = (
+                        min(state_i_val, state_j_val),
+                        max(state_i_val, state_j_val),
+                    )
+                    self.pair_attempt_counts[pair] = (
+                        self.pair_attempt_counts.get(pair, 0) + 1
+                    )
 
                     # Update acceptance matrix
                     if self.acceptance_matrix is not None:
@@ -2622,7 +2647,9 @@ class ReplicaExchange:
                     if is_accepted:
                         self._perform_exchange(i, j)
                         self.exchanges_accepted += 1
-                        self.pair_accept_counts[pair] = self.pair_accept_counts.get(pair, 0) + 1
+                        self.pair_accept_counts[pair] = (
+                            self.pair_accept_counts.get(pair, 0) + 1
+                        )
 
                         if self.acceptance_matrix is not None:
                             self.acceptance_matrix[i, 1] += 1  # accepts
@@ -2632,13 +2659,17 @@ class ReplicaExchange:
                         logger.debug(f"Exchange rejected: replica {i} <-> {j}")
 
             except Exception as exc:
-                logger.warning(f"Vectorized exchange attempt failed for even pairs: {exc}")
+                logger.warning(
+                    f"Vectorized exchange attempt failed for even pairs: {exc}"
+                )
                 # Fallback to scalar method
                 for i in even_i_indices:
                     try:
                         self.attempt_exchange(i, i + 1, energies=energies)
                     except Exception as inner_exc:
-                        logger.warning(f"Exchange attempt failed between replicas {i} and {i+1}: {inner_exc}")
+                        logger.warning(
+                            f"Exchange attempt failed between replicas {i} and {i+1}: {inner_exc}"
+                        )
 
         # Process odd pairs (1-2, 3-4, 5-6, ...)
         odd_i_indices = list(range(1, self.n_replicas - 1, 2))
@@ -2650,14 +2681,21 @@ class ReplicaExchange:
                 )
 
                 # Perform accepted exchanges and update statistics
-                for idx, (i, j, is_accepted) in enumerate(zip(odd_i_indices, odd_j_indices, accepted)):
+                for idx, (i, j, is_accepted) in enumerate(
+                    zip(odd_i_indices, odd_j_indices, accepted)
+                ):
                     self.exchange_attempts += 1
 
                     # Update pair statistics - get states BEFORE potential exchange
                     state_i_val = self.replica_states[i]
                     state_j_val = self.replica_states[j]
-                    pair = (min(state_i_val, state_j_val), max(state_i_val, state_j_val))
-                    self.pair_attempt_counts[pair] = self.pair_attempt_counts.get(pair, 0) + 1
+                    pair = (
+                        min(state_i_val, state_j_val),
+                        max(state_i_val, state_j_val),
+                    )
+                    self.pair_attempt_counts[pair] = (
+                        self.pair_attempt_counts.get(pair, 0) + 1
+                    )
 
                     # Update acceptance matrix
                     if self.acceptance_matrix is not None:
@@ -2666,7 +2704,9 @@ class ReplicaExchange:
                     if is_accepted:
                         self._perform_exchange(i, j)
                         self.exchanges_accepted += 1
-                        self.pair_accept_counts[pair] = self.pair_accept_counts.get(pair, 0) + 1
+                        self.pair_accept_counts[pair] = (
+                            self.pair_accept_counts.get(pair, 0) + 1
+                        )
 
                         if self.acceptance_matrix is not None:
                             self.acceptance_matrix[i, 1] += 1  # accepts
@@ -2676,13 +2716,17 @@ class ReplicaExchange:
                         logger.debug(f"Exchange rejected: replica {i} <-> {j}")
 
             except Exception as exc:
-                logger.warning(f"Vectorized exchange attempt failed for odd pairs: {exc}")
+                logger.warning(
+                    f"Vectorized exchange attempt failed for odd pairs: {exc}"
+                )
                 # Fallback to scalar method
                 for i in odd_i_indices:
                     try:
                         self.attempt_exchange(i, i + 1, energies=energies)
                     except Exception as inner_exc:
-                        logger.warning(f"Exchange attempt failed between replicas {i} and {i+1}: {inner_exc}")
+                        logger.warning(
+                            f"Exchange attempt failed between replicas {i} and {i+1}: {inner_exc}"
+                        )
 
     def _log_production_progress(
         self,
@@ -2740,7 +2784,7 @@ class ReplicaExchange:
             logger.info("SINGLE-TEMPERATURE MD SIMULATION COMPLETED")
             logger.info("=" * 60)
             return
-        
+
         final_acceptance = self.exchanges_accepted / max(1, self.exchange_attempts)
         logger.info("=" * 60)
         logger.info("REPLICA EXCHANGE SIMULATION COMPLETED")

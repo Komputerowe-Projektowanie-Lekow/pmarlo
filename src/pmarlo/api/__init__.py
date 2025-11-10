@@ -5,6 +5,21 @@ monolithic ``pmarlo.api`` module.  Existing callers continue to import from
 ``pmarlo.api`` while the implementation now lives across dedicated submodules.
 """
 
+from pmarlo.replica_exchange.replica_exchange import ReplicaExchange as _ReplicaExchange
+from pmarlo.reweight import normalize_reweight_mode
+from pmarlo.utils.config_utils import deep_merge, resolve_deeptica
+from pmarlo.utils.input_parsing import (
+    coerce_tau_schedule,
+    parse_bins,
+    parse_hidden_layers,
+    parse_tau_schedule,
+    parse_temperature_ladder,
+)
+from pmarlo.utils.json_io import sanitize, sanitize_deeptica_payload, write_json
+from pmarlo.utils.naming import slugify, timestamp
+from pmarlo.utils.path_utils import coerce_path_list, relativize
+from pmarlo.utils.seed import choose_sim_seed, extract_seed
+
 from .clustering import cluster_microstates
 from .conformations import (
     find_conformations,
@@ -13,6 +28,8 @@ from .conformations import (
 )
 from .demux import demultiplex_run
 from .features import (
+    _fes_build_phi_psi_maps,
+    _fes_pair_from_phi_psi_maps,
     align_trajectory,
     compute_features,
     compute_universal_embedding,
@@ -20,12 +37,10 @@ from .features import (
     normalize_training_metrics,
     reduce_features,
     trig_expand_periodic,
-    _fes_build_phi_psi_maps,
-    _fes_pair_from_phi_psi_maps,
 )
 from .fes import (
-    generate_free_energy_surface,
     generate_fes_and_pick_minima,
+    generate_free_energy_surface,
     select_fes_pair,
 )
 from .msm import (
@@ -37,26 +52,19 @@ from .msm import (
     macrostate_populations,
 )
 from .replica_exchange import run_replica_exchange
-from .single_temp_md import run_single_temperature_md
 from .shards import (
+    _build_opts,
     build_from_shards,
     emit_shards_rg_rmsd,
     emit_shards_rg_rmsd_windowed,
     select_shard_paths,
-    _build_opts,
 )
+from .single_temp_md import run_single_temperature_md
 from .trajectory_utils import (
     extract_last_frame_to_pdb,
     extract_random_highT_frame_to_pdb,
 )
 from .workflow import build_joint_workflow
-from pmarlo.reweight import normalize_reweight_mode
-from pmarlo.utils.config_utils import deep_merge, resolve_deeptica
-from pmarlo.utils.input_parsing import parse_temperature_ladder, parse_tau_schedule, coerce_tau_schedule, parse_bins, parse_hidden_layers
-from pmarlo.utils.json_io import sanitize, write_json, sanitize_deeptica_payload
-from pmarlo.utils.naming import slugify, timestamp
-from pmarlo.utils.path_utils import coerce_path_list, relativize
-from pmarlo.utils.seed import choose_sim_seed, extract_seed
 
 # Backward compatibility for code importing the underscored helper directly.
 _trig_expand_periodic = trig_expand_periodic
@@ -113,3 +121,6 @@ __all__ = [
     "_fes_build_phi_psi_maps",
     "_fes_pair_from_phi_psi_maps",
 ]
+
+ReplicaExchange = _ReplicaExchange
+__all__.append("ReplicaExchange")

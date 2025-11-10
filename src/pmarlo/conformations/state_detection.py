@@ -43,6 +43,43 @@ class StateDetector:
             raise ValueError("Number of metastable states must be at least 2")
         return resolved
 
+    def _validate_state_indices(
+        self,
+        source_states: np.ndarray,
+        sink_states: np.ndarray,
+        n_msm_states: int,
+    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        """Validate that state indices are within bounds of the MSM.
+
+        Args:
+            source_states: Source state indices
+            sink_states: Sink state indices
+            n_msm_states: Number of states in the MSM transition matrix
+
+        Returns:
+            Validated (source_states, sink_states), filtering out-of-bounds indices.
+            Returns (None, None) if validation fails completely.
+        """
+        # Filter out invalid indices
+        valid_source = source_states[source_states < n_msm_states]
+        valid_sink = sink_states[sink_states < n_msm_states]
+
+        # Check if we lost too many states
+        if len(valid_source) == 0 or len(valid_sink) == 0:
+            logger.warning(
+                f"Detected states are out of bounds for MSM with {n_msm_states} states. "
+                f"Falling back to population-based detection."
+            )
+            return None, None
+
+        if len(valid_source) < len(source_states) or len(valid_sink) < len(sink_states):
+            logger.warning(
+                f"Filtered out-of-bounds states: source {len(source_states)} → {len(valid_source)}, "
+                f"sink {len(sink_states)} → {len(valid_sink)}"
+            )
+
+        return valid_source, valid_sink
+
     def auto_detect(
         self,
         T: np.ndarray,
@@ -68,12 +105,18 @@ class StateDetector:
             Tuple of (source_states, sink_states) as numpy arrays
         """
         target_states = self._resolve_metastable_count(n_states)
+        n_msm_states = T.shape[0]
 
         if method == "auto":
             # Try FES first
             if fes is not None:
                 try:
-                    return self.detect_from_fes(fes, n_basins=target_states)
+                    source, sink = self.detect_from_fes(fes, n_basins=target_states)
+                    # Validate against MSM size
+                    source, sink = self._validate_state_indices(source, sink, n_msm_states)
+                    if source is not None and sink is not None:
+                        return source, sink
+                    logger.debug("FES detection produced out-of-bounds states, trying next method")
                 except Exception as e:
                     logger.debug(f"FES detection failed: {e}")
 
@@ -116,6 +159,10 @@ class StateDetector:
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Detect metastable basins from Free Energy Surface.
 
+        WARNING: FES-based detection can produce state indices that don't match MSM states.
+        The FES is a grid over CV space, while MSM states are cluster indices. Use with caution
+        or prefer 'timescale' or 'population' methods for safer detection.
+
         Args:
             fes: FESResult object with F (free energy) and edges
             n_basins: Number of basins to detect
@@ -129,6 +176,11 @@ class StateDetector:
             F = np.asarray(fes.F)
         else:
             raise ValueError("FES object must have 'F' attribute")
+
+        logger.warning(
+            "FES-based state detection may produce indices incompatible with MSM. "
+            "Consider using 'timescale' or 'population' methods instead."
+        )
 
         target_basins = self._resolve_metastable_count(n_basins)
 

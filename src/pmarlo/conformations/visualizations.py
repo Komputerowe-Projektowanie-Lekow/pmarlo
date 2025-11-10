@@ -223,13 +223,31 @@ def plot_pcca_states(
     pcca_memberships: np.ndarray,
     output_path: str | Path,
     *,
+    xlabel: str = "TICA 1",
+    ylabel: str = "TICA 2",
     cmap_small: str = "tab10",
     cmap_large: str = "tab20",
     marker_size: int = 80,
     edge_color: str = "black",
     edge_width: float = 0.5,
 ) -> Path:
-    """Plot PCCA+ macrostate assignments in the first two TICA dimensions."""
+    """Plot PCCA+ macrostate assignments in the first two TICA dimensions.
+
+    Args:
+        tica_coords: 2D array of cluster coordinates.
+        pcca_memberships: 2D array of macrostate memberships.
+        output_path: Path to save the figure.
+        xlabel: Label for the x-axis (default: "TICA 1").
+        ylabel: Label for the y-axis (default: "TICA 2").
+        cmap_small: Colormap for <= 10 states.
+        cmap_large: Colormap for > 10 states.
+        marker_size: Size of scatter markers.
+        edge_color: Color of marker edges.
+        edge_width: Width of marker edges.
+
+    Returns:
+        Path to the saved figure.
+    """
 
     coords = np.asarray(tica_coords, dtype=float)
     if coords.ndim != 2:
@@ -263,8 +281,8 @@ def plot_pcca_states(
         edgecolor=edge_color,
         linewidth=edge_width,
     )
-    ax.set_xlabel("TICA 1")
-    ax.set_ylabel("TICA 2")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
     ax.set_title("PCCA+ Metastable State Decomposition")
     cbar = fig.colorbar(scatter, ax=ax)
     cbar.set_label("Metastable State ID")
@@ -472,14 +490,14 @@ def plot_pcca_states_on_fes(
     )
     ax.set_title("PCCA States on Free Energy Surface")
 
-    new_axes = [axis for axis in fig.axes if axis not in existing_axes and axis is not ax]
+    new_axes = [
+        axis for axis in fig.axes if axis not in existing_axes and axis is not ax
+    ]
     if new_axes:
         fes_colorbar_ax = new_axes[0]
         # Leave the automatically created FES colorbar untouched but ensure it stays close.
         bbox = fes_colorbar_ax.get_position()
-        fes_colorbar_ax.set_position(
-            [bbox.x0, bbox.y0, bbox.width * 0.9, bbox.height]
-        )
+        fes_colorbar_ax.set_position([bbox.x0, bbox.y0, bbox.width * 0.9, bbox.height])
 
     divider = make_axes_locatable(ax)
     scatter_cax = divider.append_axes("right", size="3%", pad=0.25)

@@ -152,7 +152,14 @@ def _compute_stride_metadata(
     meta: Any,
     frames_loaded: int,
 ) -> tuple[int, int | None, float | None, bool]:
-    frames_declared = int(meta.n_frames)
+    # Try to get original frame count from provenance.n_frames (for strided shards)
+    # Fall back to meta.n_frames if not available
+    provenance = getattr(meta, "provenance", {})
+    if isinstance(provenance, dict) and "n_frames" in provenance:
+        frames_declared = int(provenance["n_frames"])
+    else:
+        frames_declared = int(meta.n_frames)
+
     stride_ratio = None
     if frames_loaded > 0 and frames_declared > 0:
         stride_ratio = float(frames_declared) / float(frames_loaded)
@@ -397,7 +404,9 @@ def aggregate_and_build(
     try:
         # Collect all shard IDs and deduplicate them
         shard_ids = [str(s.get("id", "")) for s in shards_info]
-        unique_shard_ids = sorted(set(shard_ids))  # Deduplicate and sort for consistency
+        unique_shard_ids = sorted(
+            set(shard_ids)
+        )  # Deduplicate and sort for consistency
 
         art = dict(res.artifacts or {})
         art.setdefault("shards_used", unique_shard_ids)
@@ -408,6 +417,7 @@ def aggregate_and_build(
             duplicate_count = len(shard_ids) - len(unique_shard_ids)
             # This is a data integrity issue - log but don't fail the build
             import logging
+
             logger = logging.getLogger("pmarlo")
             logger.warning(
                 f"Found {duplicate_count} duplicate shard IDs in shards_info. "

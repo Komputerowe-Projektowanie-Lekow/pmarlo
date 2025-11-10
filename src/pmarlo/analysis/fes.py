@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Mapping, MutableMapping, Sequence
 
 import numpy as np
@@ -12,6 +13,92 @@ from pmarlo import constants as const
 from .project_cv import apply_whitening_from_metadata
 
 DatasetLike = MutableMapping[str, Any]
+
+logger = logging.getLogger("pmarlo")
+
+
+def select_highest_variance_components(
+    coords: np.ndarray, n_components: int = 2
+) -> tuple[np.ndarray, list[int]]:
+    """Select the n_components with highest variance from coordinate array.
+
+    This function is critical for properly using mlcolvar/DeepTICA outputs,
+    which provide components ordered by their learned importance (variance).
+
+    Parameters
+    ----------
+    coords : np.ndarray
+        The coordinate array of shape (n_frames, n_dims)
+    n_components : int
+        Number of components to select (default: 2 for FES)
+
+    Returns
+    -------
+    selected_coords : np.ndarray
+        Array of shape (n_frames, n_components) with selected columns
+    selected_indices : list[int]
+        The indices of selected columns in descending variance order
+
+    Raises
+    ------
+    ValueError
+        If coords doesn't have enough dimensions or all columns are constant
+    """
+    if coords.ndim != 2:
+        raise ValueError(f"Expected 2D coordinate array, got shape {coords.shape}")
+
+    n_dims = coords.shape[1]
+    if n_dims < 1:
+        raise ValueError("Coordinate array must have at least one dimension")
+
+    if n_components < 1:
+        raise ValueError("Must select at least one component")
+
+    # Compute variance for each column
+    variances = np.var(coords, axis=0)
+
+    # Find non-constant columns
+    non_const_mask = variances > 0
+    non_const_indices = np.where(non_const_mask)[0]
+
+    if non_const_indices.size == 0:
+        logger.warning(
+            "[fes] All %d CV columns are constant; using first %d columns as fallback",
+            n_dims,
+            min(n_components, n_dims),
+        )
+        fallback_indices = list(range(min(n_components, n_dims)))
+        return coords[:, fallback_indices], fallback_indices
+
+    # Sort non-constant columns by variance (descending)
+    sorted_order = non_const_indices[np.argsort(variances[non_const_indices])[::-1]]
+
+    # Select top n_components (or all available if fewer)
+    n_select = min(n_components, sorted_order.size)
+    selected_indices = sorted_order[:n_select].tolist()
+
+    # If we need more components than available, pad with duplicates of the highest-variance component
+    if n_select < n_components:
+        logger.warning(
+            "[fes] Only %d non-constant columns available, need %d; padding with duplicates",
+            n_select,
+            n_components,
+        )
+        padding = [selected_indices[0]] * (n_components - n_select)
+        selected_indices.extend(padding)
+
+    selected_coords = coords[:, selected_indices]
+
+    logger.info(
+        "[fes] Selected components %s based on variance (variances: %s)",
+        selected_indices,
+        [f"{variances[i]:.6f}" for i in selected_indices[:n_select]],
+    )
+
+    return selected_coords, selected_indices
+
+
+_select_highest_variance_components = select_highest_variance_components
 
 
 def _normalise_weights(
@@ -229,38 +316,49 @@ def ensure_fes_inputs_whitened(dataset: DatasetLike | Mapping[str, Any]) -> bool
     ------
     TypeError
         If dataset is not a mutable mapping.
-    KeyError
-        If dataset lacks required 'X' array.
     ValueError
         If X is None or whitening metadata is malformed.
     """
     if not isinstance(dataset, (MutableMapping, dict)):
         raise TypeError("Dataset must be a mutable mapping to apply whitening")
 
-    if "X" not in dataset:
-        raise KeyError("Dataset is missing 'X' array required for whitening")
-
-    X = dataset["X"]  # type: ignore[index]
-    if X is None:
-        raise ValueError("Dataset provides no coordinate array for whitening")
-
     # If no artifacts exist, skip whitening (indicates raw CV workflow)
-    artifacts = dataset.get("__artifacts__")  # type: ignore[assignment]
+    artifacts = dataset.get("__artifacts__")
     if artifacts is None:
         return False
 
     if not isinstance(artifacts, Mapping):
-        raise ValueError(f"Dataset __artifacts__ must be a Mapping, got {type(artifacts)}")
+        raise ValueError(
+            f"Dataset __artifacts__ must be a Mapping, got {type(artifacts)}"
+        )
 
     # If no DeepTICA metadata, skip whitening (raw CVs)
     summary = artifacts.get("mlcv_deeptica")
     if summary is None:
         return False
 
+    # If there's no top-level X array, skip whitening (FES will use split data directly)
+    if "X" not in dataset:
+        return False
+
+    X = dataset["X"]  # type: ignore[index]
+    if X is None:
+        raise ValueError("Dataset provides no coordinate array for whitening")
+
     if not isinstance(summary, (MutableMapping, dict)):
         raise ValueError(f"mlcv_deeptica metadata must be a dict, got {type(summary)}")
 
     coords = np.asarray(X, dtype=np.float64)
+    # If deeptica metadata exists but does not include the learned output
+    # transform (e.g. training failed or was skipped), skip whitening.
+    if not isinstance(summary, Mapping) or (
+        summary.get("output_mean") is None or summary.get("output_transform") is None
+    ):
+        logger.debug(
+            "[fes] mlcv_deeptica metadata missing output transform; skipping whitening"
+        )
+        return False
+
     whitened, applied = apply_whitening_from_metadata(coords, summary)
 
     dataset["X"] = whitened  # type: ignore[index]
@@ -316,8 +414,10 @@ def _coerce_array(obj: Mapping[str, Any], key: str) -> np.ndarray:
     out = np.asarray(arr, dtype=np.float64)
     if out.ndim != 2:
         raise ValueError(f"Expected 2D CV array for '{key}', got shape {out.shape}")
-    if out.shape[0] == 0 or out.shape[1] < 2:
-        raise ValueError("FES computation requires at least two CV dimensions")
+    if out.shape[0] == 0:
+        raise ValueError("FES computation requires at least one frame")
+    if out.shape[1] < 1:
+        raise ValueError("FES computation requires at least one CV dimension")
     return out
 
 
@@ -438,10 +538,25 @@ def _compute_fes_surface(
     bandwidth: str | float,
     min_count_per_bin: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
-    """Evaluate KDE or histogram surfaces for the provided coordinates."""
+    """Evaluate KDE or histogram surfaces for the provided coordinates.
 
-    coord_x = coords[:, 0]
-    coord_y = coords[:, 1]
+    This function now properly selects the two components with highest variance,
+    which is critical for mlcolvar/DeepTICA outputs where components are ordered
+    by importance.
+    """
+
+    # Select the two components with highest variance
+    selected_coords, selected_indices = select_highest_variance_components(
+        coords, n_components=2
+    )
+    coord_x = selected_coords[:, 0]
+    coord_y = selected_coords[:, 1]
+
+    logger.debug(
+        "[fes] Using components %d and %d for FES computation",
+        selected_indices[0],
+        selected_indices[1],
+    )
 
     if method == "kde":
         surface, xedges, yedges, extra_meta = _compute_kde_surface(
@@ -451,6 +566,7 @@ def _compute_fes_surface(
             bins=bins,
             bandwidth=bandwidth,
         )
+        extra_meta["selected_components"] = selected_indices
         return surface, xedges, yedges, extra_meta
 
     hist, xedges, yedges, extra_meta = _compute_histogram_surface(
@@ -460,6 +576,7 @@ def _compute_fes_surface(
         bins=bins,
         min_count_per_bin=int(min_count_per_bin),
     )
+    extra_meta["selected_components"] = selected_indices
     return hist, xedges, yedges, extra_meta
 
 

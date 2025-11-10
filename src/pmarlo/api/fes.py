@@ -1,20 +1,21 @@
 """Free energy surface generation utilities."""
+
 from __future__ import annotations
 
 import logging
-
-from typing import Any, Mapping, Tuple, Sequence, Optional, Dict
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
+from ..markov_state_model.free_energy import (
+    FESResult,
+)
+from ..markov_state_model.free_energy import generate_2d_fes as _generate_2d_fes
+from ..markov_state_model.picker import pick_frames_around_minima
 from .features import _fes_pair_from_phi_psi_maps
 
-from ..markov_state_model.free_energy import FESResult, generate_2d_fes as _generate_2d_fes
-from ..markov_state_model.picker import (
-        pick_frames_around_minima
-)
-
 logger = logging.getLogger("pmarlo")
+
 
 def _fes_highest_variance_pair(X: np.ndarray) -> Tuple[int, int] | None:
     """Return indices of the highest-variance CV columns.
@@ -34,7 +35,9 @@ def _fes_highest_variance_pair(X: np.ndarray) -> Tuple[int, int] | None:
     order = non_const[np.argsort(variances[non_const])[::-1]]
     if order.size == 1:
         idx = int(order[0])
-        logger.debug("[fes] Only one non-constant column (idx=%d); pairing with itself", idx)
+        logger.debug(
+            "[fes] Only one non-constant column (idx=%d); pairing with itself", idx
+        )
         return idx, idx
     i, j = int(order[0]), int(order[1])
     logger.debug("[fes] Highest variance pair: idx=(%d, %d)", i, j)
@@ -47,6 +50,7 @@ def _fes_periodic_pair_flags(
     pi = bool(periodic[i_idx]) if len(periodic) > i_idx else False
     pj = bool(periodic[j_idx]) if len(periodic) > j_idx else False
     return pi, pj
+
 
 def _fes_pair_from_requested(
     cols: Sequence[str], requested: Optional[Tuple[str, str]]
@@ -62,6 +66,7 @@ def _fes_pair_from_requested(
             )
         )
     return cols.index(a), cols.index(b)
+
 
 def select_fes_pair(
     X: np.ndarray,
@@ -109,6 +114,7 @@ def select_fes_pair(
             return 0, 0, pi, pj
 
     raise RuntimeError("No suitable FES pair could be selected.")
+
 
 def generate_free_energy_surface(
     cv1: np.ndarray,
@@ -170,7 +176,11 @@ def generate_free_energy_surface(
 
     logger.info(
         "[fes] Generating 2D FES: n_samples=%d, bins=%s, T=%.1fK, periodic=%s, grid_strategy=%s",
-        len(cv1), bins, temperature, periodic, grid_strategy
+        len(cv1),
+        bins,
+        temperature,
+        periodic,
+        grid_strategy,
     )
 
     # Build processing options description
@@ -220,18 +230,27 @@ def generate_free_energy_surface(
     )
 
     # Log summary statistics about the generated FES
-    if hasattr(out, 'F') and out.F is not None:
+    if hasattr(out, "F") and out.F is not None:
         F_finite = out.F[np.isfinite(out.F)]
         if F_finite.size > 0:
-            empty_frac = out.metadata.get("empty_bins_fraction", 0.0) if hasattr(out, 'metadata') else 0.0
+            empty_frac = (
+                out.metadata.get("empty_bins_fraction", 0.0)
+                if hasattr(out, "metadata")
+                else 0.0
+            )
             logger.info(
                 "[fes] FES complete: F_min=%.2f, F_max=%.2f kJ/mol, %d/%d bins filled (%.1f%% empty)",
-                np.min(F_finite), np.max(F_finite), F_finite.size, out.F.size, empty_frac * 100
+                np.min(F_finite),
+                np.max(F_finite),
+                F_finite.size,
+                out.F.size,
+                empty_frac * 100,
             )
         else:
             logger.warning("[fes] FES generated but no finite energy values found")
 
     return out
+
 
 def generate_fes_and_pick_minima(
     X: np.ndarray,

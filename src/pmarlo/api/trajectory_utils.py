@@ -154,4 +154,3 @@ def extract_random_highT_frame_to_pdb(
 
     logger.info("[trajectory_utils] Random frame saved to: %s", out_p)
     return out_p
-

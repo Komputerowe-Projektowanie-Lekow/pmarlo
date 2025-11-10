@@ -21,7 +21,9 @@ def _make_config(**overrides: object) -> SimulationConfig:
     return SimulationConfig(**payload)  # type: ignore[arg-type]
 
 
-def test_simulation_config_snapshot_roundtrip_preserves_single_temperature_flag() -> None:
+def test_simulation_config_snapshot_roundtrip_preserves_single_temperature_flag() -> (
+    None
+):
     config = _make_config(single_temperature_mode=True)
     snapshot = config.snapshot()
     restored = SimulationConfig.from_snapshot(snapshot)
@@ -36,7 +38,9 @@ def test_simulation_config_snapshot_roundtrip_preserves_single_temperature_flag(
         ([], None, 300.0),
     ],
 )
-def test_resolve_primary_temperature(temperatures: list[float], restart_temperature: float | None, expected: float) -> None:
+def test_resolve_primary_temperature(
+    temperatures: list[float], restart_temperature: float | None, expected: float
+) -> None:
     config = _make_config(
         temperatures=temperatures,
         restart_temperature=restart_temperature,

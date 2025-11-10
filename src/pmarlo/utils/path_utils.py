@@ -7,7 +7,13 @@ from typing import Iterable, List, Sequence
 
 StrPath = str | os.PathLike[str]
 
-__all__ = ["repository_root", "resolve_project_path", "ensure_directory", "coerce_path_list", "relativize"]
+__all__ = [
+    "repository_root",
+    "resolve_project_path",
+    "ensure_directory",
+    "coerce_path_list",
+    "relativize",
+]
 
 
 @lru_cache(maxsize=1)
@@ -183,5 +189,3 @@ def relativize(path: Path | str, base: Path | str) -> str:
         return str(path_obj.relative_to(base_obj))
     except ValueError:
         return str(path_obj)
-
-

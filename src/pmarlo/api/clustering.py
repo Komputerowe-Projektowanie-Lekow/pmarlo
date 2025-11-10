@@ -1,13 +1,14 @@
 import logging
-import numpy as np
-
 from typing import Literal
 
+import numpy as np
+
 from pmarlo.markov_state_model.clustering import (
-        cluster_microstates as _cluster_microstates,
-    )
+    cluster_microstates as _cluster_microstates,
+)
 
 logger = logging.getLogger("pmarlo")
+
 
 def cluster_microstates(
     Y: np.ndarray,

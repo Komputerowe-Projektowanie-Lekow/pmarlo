@@ -16,7 +16,6 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import numpy as np
-
 from openmm import unit
 
 logger = logging.getLogger(__name__)
@@ -56,7 +55,7 @@ class MinimizedState:
             )
 
         # Make positions truly immutable
-        object.__setattr__(self, 'positions', self.positions.copy())
+        object.__setattr__(self, "positions", self.positions.copy())
         self.positions.flags.writeable = False
 
         # Validate energy
@@ -101,11 +100,7 @@ class MinimizedStateCache:
         self._cache_misses = 0
 
     def get_or_compute(
-        self,
-        replica_index: int,
-        compute_fn: callable,
-        *compute_args,
-        **compute_kwargs
+        self, replica_index: int, compute_fn: callable, *compute_args, **compute_kwargs
     ) -> MinimizedState:
         """
         Get cached state or compute if not available.
@@ -166,9 +161,9 @@ class MinimizedStateCache:
         """Return cache performance statistics."""
         with self._lock:
             return {
-                'hits': self._cache_hits,
-                'misses': self._cache_misses,
-                'is_populated': self._cache is not None,
+                "hits": self._cache_hits,
+                "misses": self._cache_misses,
+                "is_populated": self._cache is not None,
             }
 
     @property
@@ -202,8 +197,11 @@ def create_minimized_state_from_simulation(
     # Convert positions to numpy array (immutable)
     positions_quantity = state.getPositions()
     positions_nm = np.array(
-        [[pos.x, pos.y, pos.z] for pos in positions_quantity.value_in_unit(unit.nanometer)],
-        dtype=np.float64
+        [
+            [pos.x, pos.y, pos.z]
+            for pos in positions_quantity.value_in_unit(unit.nanometer)
+        ],
+        dtype=np.float64,
     )
 
     # Extract energy
@@ -212,8 +210,8 @@ def create_minimized_state_from_simulation(
 
     # Build metadata
     metadata = {
-        'timestamp': None,  # Could add time.time() if needed
-        'platform': simulation.context.getPlatform().getName(),
+        "timestamp": None,  # Could add time.time() if needed
+        "platform": simulation.context.getPlatform().getName(),
     }
     if additional_metadata:
         metadata.update(additional_metadata)
@@ -225,4 +223,3 @@ def create_minimized_state_from_simulation(
         minimization_iterations=minimization_iterations,
         metadata=metadata,
     )
-

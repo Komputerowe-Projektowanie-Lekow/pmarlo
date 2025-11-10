@@ -1,30 +1,30 @@
 from __future__ import annotations
 
 import logging
-from typing import Literal, Optional, Sequence, List
 from pathlib import Path
+from typing import List, Literal, Optional, Sequence
 
 import numpy as np
 
-from pmarlo.markov_state_model import MarkovStateModel
-from pmarlo.markov_state_model._msm_utils import (
-    candidate_lag_ladder,
-    build_simple_msm,
-    pcca_like_macrostates,
-    compute_macro_populations,
-    lump_micro_to_macro_T,
-    compute_macro_mfpt,
-    select_lag_from_its,
-)
-from pmarlo.markov_state_model.ck_runner import run_ck
-from pmarlo.markov_state_model.ck_its_selector import select_optimal_lag_ck_its
-from pmarlo.markov_state_model.results import CKITSSelectionResult
-from pmarlo.markov_state_model.free_energy import generate_1d_pmf
 from pmarlo.api.features import compute_universal_embedding
 from pmarlo.api.fes import generate_free_energy_surface
-from pmarlo.reporting.plots import save_pmf_line, save_fes_contour
-from pmarlo.utils.path_utils import ensure_directory
 from pmarlo.data.aggregate import load_shards_as_dataset
+from pmarlo.markov_state_model import MarkovStateModel
+from pmarlo.markov_state_model._msm_utils import (
+    build_simple_msm,
+    candidate_lag_ladder,
+    compute_macro_mfpt,
+    compute_macro_populations,
+    lump_micro_to_macro_T,
+    pcca_like_macrostates,
+    select_lag_from_its,
+)
+from pmarlo.markov_state_model.ck_its_selector import select_optimal_lag_ck_its
+from pmarlo.markov_state_model.ck_runner import run_ck
+from pmarlo.markov_state_model.free_energy import generate_1d_pmf
+from pmarlo.markov_state_model.results import CKITSSelectionResult
+from pmarlo.reporting.plots import save_fes_contour, save_pmf_line
+from pmarlo.utils.path_utils import ensure_directory
 
 logger = logging.getLogger("pmarlo")
 
@@ -100,7 +100,10 @@ def analyze_msm(  # noqa: C901
         output_dir=str(msm_out),
         random_state=random_state,
     )
-    logger.debug("[msm] MarkovStateModel initialized with temperatures: %s", analysis_temperatures or [300.0])
+    logger.debug(
+        "[msm] MarkovStateModel initialized with temperatures: %s",
+        analysis_temperatures or [300.0],
+    )
 
     # Configure MSM parameters
     if use_effective_for_uncertainty and hasattr(msm, "count_mode"):
@@ -163,13 +166,19 @@ def analyze_msm(  # noqa: C901
     try:
         if total_frames > 0:
             max_lag = int(min(500, max(150, total_frames // 5)))
-            logger.debug("[msm] Calculated max_lag=%d from %d total frames", max_lag, total_frames)
+            logger.debug(
+                "[msm] Calculated max_lag=%d from %d total frames",
+                max_lag,
+                total_frames,
+            )
     except Exception:
         max_lag = 250
         logger.warning("[msm] Using default max_lag=%d", max_lag)
 
     candidate_lags = candidate_lag_ladder(min_lag=1, max_lag=max_lag)
-    logger.info("[msm] Generated %d candidate lag times (1 to %d)", len(candidate_lags), max_lag)
+    logger.info(
+        "[msm] Generated %d candidate lag times (1 to %d)", len(candidate_lags), max_lag
+    )
 
     logger.info("[msm] Building initial MSM with lag_time=5...")
     if hasattr(msm, "build_msm"):
@@ -179,7 +188,9 @@ def analyze_msm(  # noqa: C901
     logger.info("[msm] Computing implied timescales...")
     if hasattr(msm, "compute_implied_timescales"):
         msm.compute_implied_timescales(lag_times=candidate_lags, n_timescales=3)  # type: ignore[attr-defined]
-        logger.info("[msm] Implied timescales computed for %d lag times", len(candidate_lags))
+        logger.info(
+            "[msm] Implied timescales computed for %d lag times", len(candidate_lags)
+        )
 
     # Select lag time from ITS plateau detection
     logger.debug("[msm] Selecting optimal lag time from implied timescales...")
@@ -191,23 +202,43 @@ def analyze_msm(  # noqa: C901
             if hasattr(its_data, "lag_times") and hasattr(its_data, "timescales"):
                 lags = np.asarray(its_data.lag_times, dtype=int)
                 its = np.asarray(its_data.timescales, dtype=float)
-                logger.debug("[msm] ITS data extracted: lags shape=%s, its shape=%s", lags.shape, its.shape)
+                logger.debug(
+                    "[msm] ITS data extracted: lags shape=%s, its shape=%s",
+                    lags.shape,
+                    its.shape,
+                )
 
                 # Use the new plateau detection method
-                from pmarlo.markov_state_model._msm_utils import select_lag_from_its as detect_plateau
+                from pmarlo.markov_state_model._msm_utils import (
+                    select_lag_from_its as detect_plateau,
+                )
 
-                chosen_lag = detect_plateau(lags, its, min_lag_idx=3, plateau_threshold=0.15)
-                logger.info("[msm] Selected lag_time=%d from ITS plateau detection", chosen_lag)
+                chosen_lag = detect_plateau(
+                    lags, its, min_lag_idx=3, plateau_threshold=0.15
+                )
+                logger.info(
+                    "[msm] Selected lag_time=%d from ITS plateau detection", chosen_lag
+                )
             elif hasattr(its_data, "__getitem__"):
                 # Fallback for dict-like interface
                 lags = np.array(its_data["lag_times"])  # type: ignore[index]
                 its = np.array(its_data["timescales"])  # type: ignore[index]
-                logger.debug("[msm] ITS data extracted (dict interface): lags shape=%s, its shape=%s", lags.shape, its.shape)
+                logger.debug(
+                    "[msm] ITS data extracted (dict interface): lags shape=%s, its shape=%s",
+                    lags.shape,
+                    its.shape,
+                )
 
-                from pmarlo.markov_state_model._msm_utils import select_lag_from_its as detect_plateau
+                from pmarlo.markov_state_model._msm_utils import (
+                    select_lag_from_its as detect_plateau,
+                )
 
-                chosen_lag = detect_plateau(lags, its, min_lag_idx=3, plateau_threshold=0.15)
-                logger.info("[msm] Selected lag_time=%d from ITS plateau detection", chosen_lag)
+                chosen_lag = detect_plateau(
+                    lags, its, min_lag_idx=3, plateau_threshold=0.15
+                )
+                logger.info(
+                    "[msm] Selected lag_time=%d from ITS plateau detection", chosen_lag
+                )
             else:
                 logger.warning("[msm] ITS data exists but has unexpected structure")
                 chosen_lag = 10
@@ -216,7 +247,11 @@ def analyze_msm(  # noqa: C901
             chosen_lag = 10
     except Exception as e:
         chosen_lag = 10
-        logger.warning("[msm] Lag time selection from ITS failed, using default lag_time=%d: %s", chosen_lag, e)
+        logger.warning(
+            "[msm] Lag time selection from ITS failed, using default lag_time=%d: %s",
+            chosen_lag,
+            e,
+        )
 
     # Store selected lag for downstream analysis
     if hasattr(msm, "lag_time"):
@@ -230,7 +265,7 @@ def analyze_msm(  # noqa: C901
     # CK test with macro → micro fallback
     logger.debug("[msm] Running Chapman-Kolmogorov test...")
     ck_result = None
-    ck_max_error = float('inf')
+    ck_max_error = float("inf")
     ck_pass = False
     try:
         dtrajs = getattr(msm, "dtrajs", None)
@@ -243,11 +278,15 @@ def analyze_msm(  # noqa: C901
             ck_threshold = 0.05
             ck_pass = ck_max_error < ck_threshold
 
-            logger.info("[msm] Chapman-Kolmogorov test completed: max_error=%.4f, pass=%s (threshold=%.4f)",
-                       ck_max_error, ck_pass, ck_threshold)
+            logger.info(
+                "[msm] Chapman-Kolmogorov test completed: max_error=%.4f, pass=%s (threshold=%.4f)",
+                ck_max_error,
+                ck_pass,
+                ck_threshold,
+            )
 
             # Store CK metrics in MSM object
-            if hasattr(msm, '__dict__'):
+            if hasattr(msm, "__dict__"):
                 msm.ck_max_error = ck_max_error  # type: ignore[attr-defined]
                 msm.ck_pass = ck_pass  # type: ignore[attr-defined]
                 msm.ck_threshold = ck_threshold  # type: ignore[attr-defined]
@@ -338,13 +377,19 @@ def analyze_msm(  # noqa: C901
                     str(getattr(msm, "output_dir", output_dir)),
                     "fes_universal_ic1_vs_ic2.png",
                 )
-                logger.info("[msm] 2D FES contour plot saved: fes_universal_ic1_vs_ic2.png")
+                logger.info(
+                    "[msm] 2D FES contour plot saved: fes_universal_ic1_vs_ic2.png"
+                )
             else:
-                logger.warning("[msm] No trajectories available for universal embedding")
+                logger.warning(
+                    "[msm] No trajectories available for universal embedding"
+                )
         except Exception as e:
             logger.error("[msm] Failed to generate universal embedding FES: %s", e)
     else:
-        logger.debug("[msm] Skipping phi/psi-specific FES (feature_type=%s)", feature_type)
+        logger.debug(
+            "[msm] Skipping phi/psi-specific FES (feature_type=%s)", feature_type
+        )
 
     # Generate plots and analysis results with attribute checks
     logger.info("[msm] Generating analysis plots and results...")
@@ -387,14 +432,20 @@ def build_msm_from_labels(
     tuple[np.ndarray, np.ndarray]
         Transition matrix and stationary distribution.
     """
-    logger.info("[msm] Building MSM from labels: n_trajectories=%d, lag=%d", len(dtrajs), lag)
+    logger.info(
+        "[msm] Building MSM from labels: n_trajectories=%d, lag=%d", len(dtrajs), lag
+    )
     if n_states is not None:
         logger.debug("[msm] Using provided n_states=%d", n_states)
     else:
         logger.debug("[msm] Inferring n_states from trajectory labels")
 
     T, pi = build_simple_msm(dtrajs, n_states=n_states, lag=lag)
-    logger.info("[msm] MSM built: transition_matrix_shape=%s, stationary_dist_shape=%s", T.shape, pi.shape)
+    logger.info(
+        "[msm] MSM built: transition_matrix_shape=%s, stationary_dist_shape=%s",
+        T.shape,
+        pi.shape,
+    )
     return T, pi
 
 
@@ -413,7 +464,11 @@ def compute_macrostates(T: np.ndarray, n_macrostates: int = 4) -> Optional[np.nd
     Optional[np.ndarray]
         Array mapping microstates to macrostates, or None if computation fails.
     """
-    logger.info("[msm] Computing %d macrostates from transition matrix (shape=%s)", n_macrostates, T.shape)
+    logger.info(
+        "[msm] Computing %d macrostates from transition matrix (shape=%s)",
+        n_macrostates,
+        T.shape,
+    )
     result = pcca_like_macrostates(T, n_macrostates=n_macrostates)
     if result is not None:
         logger.info("[msm] Macrostates computed successfully")
@@ -439,7 +494,9 @@ def macrostate_populations(
     np.ndarray
         Macrostate populations.
     """
-    logger.debug("[msm] Computing macrostate populations: n_microstates=%d", len(pi_micro))
+    logger.debug(
+        "[msm] Computing macrostate populations: n_microstates=%d", len(pi_micro)
+    )
     result = compute_macro_populations(pi_micro, micro_to_macro)
     logger.debug("[msm] Computed populations for %d macrostates", len(result))
     return result
@@ -464,7 +521,10 @@ def macro_transition_matrix(
     np.ndarray
         Macrostate transition matrix.
     """
-    logger.debug("[msm] Lumping micro to macro transition matrix: T_micro_shape=%s", T_micro.shape)
+    logger.debug(
+        "[msm] Lumping micro to macro transition matrix: T_micro_shape=%s",
+        T_micro.shape,
+    )
     result = lump_micro_to_macro_T(T_micro, pi_micro, micro_to_macro)
     logger.debug("[msm] Macro transition matrix shape=%s", result.shape)
     return result
@@ -611,9 +671,7 @@ def select_lag_with_ck_validation(
         raise ValueError("Feature matrix must be 2D with at least one frame")
 
     n_frames, n_features = X.shape
-    logger.info(
-        "[CK-ITS API] Loaded %d frames with %d features", n_frames, n_features
-    )
+    logger.info("[CK-ITS API] Loaded %d frames with %d features", n_frames, n_features)
 
     # Apply TICA reduction
     from pmarlo.markov_state_model.reduction import reduce_features
@@ -722,9 +780,6 @@ def select_lag_with_ck_validation(
         },
     )
 
-    logger.info(
-        "[CK-ITS API] Selection complete: selected_lag=%d", result.selected_lag
-    )
+    logger.info("[CK-ITS API] Selection complete: selected_lag=%d", result.selected_lag)
 
     return result
-

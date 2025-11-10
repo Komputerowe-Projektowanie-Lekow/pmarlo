@@ -192,7 +192,9 @@ def run_single_temperature_md(
         )
     )
 
-    logger.debug("[single-T-MD] Planning reporter stride for target_frames=%d", target_frames)
+    logger.debug(
+        "[single-T-MD] Planning reporter stride for target_frames=%d", target_frames
+    )
     remd.plan_reporter_stride(
         total_steps=int(total_steps),
         equilibration_steps=int(equil),
@@ -203,10 +205,15 @@ def run_single_temperature_md(
     remd.setup_replicas()
 
     if start_from_checkpoint:
-        logger.info("[single-T-MD] Attempting to restore from checkpoint: %s", start_from_checkpoint)
+        logger.info(
+            "[single-T-MD] Attempting to restore from checkpoint: %s",
+            start_from_checkpoint,
+        )
         if _restore_from_checkpoint(remd, start_from_checkpoint):
             equil = 0
-            logger.info("[single-T-MD] Checkpoint restored successfully, skipping equilibration")
+            logger.info(
+                "[single-T-MD] Checkpoint restored successfully, skipping equilibration"
+            )
 
     cb = coerce_progress_callback(kwargs)
 
@@ -285,11 +292,14 @@ def run_single_temperature_md(
     return traj_files, temperature
 
 
-def _restore_from_checkpoint(remd: ReplicaExchange, checkpoint_path: str | Path) -> bool:
+def _restore_from_checkpoint(
+    remd: ReplicaExchange, checkpoint_path: str | Path
+) -> bool:
     """Attempt to restore simulation from checkpoint."""
     try:
         with open(checkpoint_path, "rb") as f:
             import pickle
+
             checkpoint = pickle.load(f)
         remd.restore_from_checkpoint(checkpoint)
         return True
@@ -312,4 +322,3 @@ def _emit_banner(title: str, lines: List[str]) -> None:
     logger.info(f"[single-T-MD] {title}")
     for line in lines:
         logger.info(f"[single-T-MD]   {line}")
-

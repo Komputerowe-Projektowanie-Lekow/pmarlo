@@ -35,6 +35,7 @@ class MinimizationContext:
         system_forces: List of force objects from OpenMM System
         replica_index: Current replica being minimized
     """
+
     num_replicas: int
     temperatures: List[float]
     has_per_replica_bias: bool = False
@@ -58,9 +59,7 @@ class MinimizationPolicy(ABC):
 
     @abstractmethod
     def should_minimize_replica(
-        self,
-        replica_index: int,
-        context: MinimizationContext
+        self, replica_index: int, context: MinimizationContext
     ) -> bool:
         """
         Determine if this replica needs independent minimization.
@@ -109,9 +108,7 @@ class SinglePassPolicy(MinimizationPolicy):
         return "SinglePass (shared state)"
 
     def should_minimize_replica(
-        self,
-        replica_index: int,
-        context: MinimizationContext
+        self, replica_index: int, context: MinimizationContext
     ) -> bool:
         """Only first replica (index 0) performs minimization."""
         return replica_index == 0
@@ -144,9 +141,7 @@ class PerReplicaPolicy(MinimizationPolicy):
         return "PerReplica (independent)"
 
     def should_minimize_replica(
-        self,
-        replica_index: int,
-        context: MinimizationContext
+        self, replica_index: int, context: MinimizationContext
     ) -> bool:
         """Every replica performs independent minimization."""
         return True
@@ -198,8 +193,7 @@ def detect_temperature_dependent_forces(system_forces: List[Any]) -> bool:
 
 
 def detect_replica_specific_bias(
-    bias_variables: Optional[List[Any]],
-    num_replicas: int
+    bias_variables: Optional[List[Any]], num_replicas: int
 ) -> bool:
     """
     Detect if bias configuration varies by replica.
@@ -334,8 +328,7 @@ def create_minimization_context(
 
 
 def validate_policy_safety(
-    policy: MinimizationPolicy,
-    context: MinimizationContext
+    policy: MinimizationPolicy, context: MinimizationContext
 ) -> None:
     """
     Validate that selected policy is safe for the given system.
@@ -361,4 +354,3 @@ def validate_policy_safety(
                 "This may lead to incorrect minimization. Consider using "
                 "PerReplicaPolicy or set force_policy='per_replica'."
             )
-

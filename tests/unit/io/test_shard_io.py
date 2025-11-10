@@ -20,8 +20,14 @@ def _source(*, run: str, segment: int, replica: int, kind: str = "demux") -> dic
     }
 
 
-def _shard_id(temperature: float, segment: int, replica: int) -> str:
-    return f"T{int(round(temperature))}K_seg{segment:04d}_rep{replica:03d}"
+def _shard_id(
+    temperature: float, segment: int, replica: int, run: str | None = None
+) -> str:
+    if run:
+        run_suffix = str(run).replace("run_", "")
+    else:
+        run_suffix = "default"
+    return f"T{int(round(temperature))}K_{run_suffix}_seg{segment:04d}_rep{replica:03d}"
 
 
 def test_shard_roundtrip(tmp_path: Path):
@@ -34,7 +40,8 @@ def test_shard_roundtrip(tmp_path: Path):
     temperature = 300.0
     segment = 0
     replica = 0
-    shard_id = _shard_id(temperature, segment, replica)
+    source = _source(run="unit-test", segment=segment, replica=replica)
+    shard_id = _shard_id(temperature, segment, replica, run=source["run_id"])
     json_path = write_shard(
         out_dir=tmp_path,
         shard_id=shard_id,
@@ -43,7 +50,7 @@ def test_shard_roundtrip(tmp_path: Path):
         periodic=periodic,
         seed=123,
         temperature=temperature,
-        source=_source(run="unit-test", segment=segment, replica=replica),
+        source=source,
     )
 
     details, X, d2 = read_shard(json_path)
@@ -62,7 +69,8 @@ def test_read_shard_dtype_override(tmp_path: Path):
         "psi": np.linspace(-1.0, 0.0, 8, dtype=np.float64),
     }
     periodic = {"phi": False, "psi": False}
-    shard_id = _shard_id(300.0, 0, 1)
+    source = _source(run="dtype", segment=0, replica=1)
+    shard_id = _shard_id(300.0, 0, 1, run=source["run_id"])
     json_path = write_shard(
         out_dir=tmp_path,
         shard_id=shard_id,
@@ -71,7 +79,7 @@ def test_read_shard_dtype_override(tmp_path: Path):
         periodic=periodic,
         seed=0,
         temperature=300.0,
-        source=_source(run="dtype", segment=0, replica=1),
+        source=source,
     )
 
     _, X_default, _ = read_shard(json_path)
@@ -85,7 +93,8 @@ def test_deterministic_json_bytes(tmp_path: Path):
     cvs = {"a": np.arange(10.0), "b": np.arange(10.0) * 2.0}
     periodic = {"a": False, "b": False}
     temperature = 310.0
-    shard_id = _shard_id(temperature, 1, 0)
+    source = _source(run="same", segment=1, replica=0)
+    shard_id = _shard_id(temperature, 1, 0, run=source["run_id"])
     p1 = write_shard(
         out_dir=tmp_path / "w1",
         shard_id=shard_id,
@@ -94,7 +103,7 @@ def test_deterministic_json_bytes(tmp_path: Path):
         periodic=periodic,
         seed=7,
         temperature=temperature,
-        source=_source(run="same", segment=1, replica=0),
+        source=source,
     )
     p2 = write_shard(
         out_dir=tmp_path / "w2",
@@ -104,7 +113,7 @@ def test_deterministic_json_bytes(tmp_path: Path):
         periodic=periodic,
         seed=7,
         temperature=temperature,
-        source=_source(run="same", segment=1, replica=0),
+        source=source,
     )
     assert p1.read_bytes() == p2.read_bytes()
 
@@ -112,7 +121,8 @@ def test_deterministic_json_bytes(tmp_path: Path):
 def test_hash_mismatch_raises(tmp_path: Path):
     cvs = {"x": np.arange(6.0), "y": np.arange(6.0) ** 2}
     periodic = {"x": False, "y": False}
-    shard_id = _shard_id(300.0, 2, 0)
+    source = _source(run="tamper", segment=2, replica=0)
+    shard_id = _shard_id(300.0, 2, 0, run=source["run_id"])
     json_path = write_shard(
         out_dir=tmp_path,
         shard_id=shard_id,
@@ -121,7 +131,7 @@ def test_hash_mismatch_raises(tmp_path: Path):
         periodic=periodic,
         seed=0,
         temperature=300.0,
-        source=_source(run="tamper", segment=2, replica=0),
+        source=source,
     )
     npz_path = json_path.with_suffix(".npz")
     with np.load(npz_path) as f:
@@ -138,7 +148,8 @@ def test_hash_mismatch_raises(tmp_path: Path):
 def test_validate_arrays_hash(tmp_path: Path):
     cvs = {"x": np.arange(4.0), "y": np.arange(4.0) ** 2}
     periodic = {"x": False, "y": False}
-    shard_id = _shard_id(295.0, 3, 0)
+    source = _source(run="hash", segment=3, replica=0)
+    shard_id = _shard_id(295.0, 3, 0, run=source["run_id"])
     json_path = write_shard(
         out_dir=tmp_path,
         shard_id=shard_id,
@@ -147,7 +158,7 @@ def test_validate_arrays_hash(tmp_path: Path):
         periodic=periodic,
         seed=7,
         temperature=295.0,
-        source=_source(run="hash", segment=3, replica=0),
+        source=source,
         compute_arrays_hash=True,
     )
 

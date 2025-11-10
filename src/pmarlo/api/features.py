@@ -1,11 +1,17 @@
-import logging
 import hashlib
 import json
-import numpy as np
-import mdtraj as md
-
-from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence, Tuple
+import logging
 from pathlib import Path
+from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence, Tuple
+
+import mdtraj as md
+import numpy as np
+
+from pmarlo.features import get_feature
+from pmarlo.features.base import parse_feature_spec
+from pmarlo.features.deeptica.metrics import (
+    normalize_training_metrics as _deeptica_normalize_training_metrics,
+)
 
 # Import reduction methods directly
 from pmarlo.markov_state_model.reduction import (
@@ -15,14 +21,8 @@ from pmarlo.markov_state_model.reduction import (
 )
 from pmarlo.utils.path_utils import ensure_directory
 
-from pmarlo.features import get_feature
-from pmarlo.features.base import parse_feature_spec
-from pmarlo.features.deeptica.metrics import (
-    normalize_training_metrics as _deeptica_normalize_training_metrics,
-)
-
-
 logger = logging.getLogger("pmarlo")
+
 
 def _resolve_cache_file(
     traj: md.Trajectory, feature_specs: Sequence[str], cache_path: Optional[str]
@@ -73,6 +73,7 @@ def _resolve_cache_file(
         json.dumps(meta, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
     return p / f"features_{key}.npz"
+
 
 def _try_load_cached_features(
     cache_file: Path,
@@ -178,6 +179,7 @@ def trig_expand_periodic(
     Xe = np.vstack(cols).T if cols else X
     return Xe, np.asarray(mapping, dtype=int)
 
+
 def _init_feature_accumulators() -> (
     tuple[List[str], List[np.ndarray], List[np.ndarray]]
 ):
@@ -224,6 +226,7 @@ def normalize_training_metrics(
         epochs_per_tau=epochs_per_tau,
     )
 
+
 def _parse_spec(spec: str) -> tuple[str, Dict[str, Any]]:
     feat_name, kwargs = parse_feature_spec(spec)
     return feat_name, kwargs
@@ -236,8 +239,10 @@ def _compute_feature_block(
     X = fc.compute(traj, **kwargs)
     return fc, X
 
+
 def _log_feature_progress(feat_name: str, X: np.ndarray) -> None:
     logger.info("[features] %-14s → shape=%s", feat_name, tuple(X.shape))
+
 
 def _append_feature_outputs(
     feats: List[np.ndarray],
@@ -255,6 +260,7 @@ def _append_feature_outputs(
     columns.extend(_feature_labels(fc, feat_name, n_cols, kwargs))
     periodic_flags.append(fc.is_periodic())
 
+
 def _feature_labels(
     fc: Any, feat_name: str, n_cols: int, kwargs: Dict[str, Any]
 ) -> List[str]:
@@ -271,16 +277,19 @@ def _feature_labels(
         label_base = f"dist:atoms:{kwargs['i']}-{kwargs['j']}"
     return [f"{label_base}_{i}" if n_cols > 1 else label_base for i in range(n_cols)]
 
+
 def _frame_mismatch_info(feats: List[np.ndarray]) -> tuple[int, bool, List[int]]:
     lengths = [int(f.shape[0]) for f in feats]
     min_frames = min(lengths) if lengths else 0
     mismatch = any(length != min_frames for length in lengths)
     return min_frames, mismatch, lengths
 
+
 def _truncate_to_min_frames(
     feats: List[np.ndarray], min_frames: int
 ) -> List[np.ndarray]:
     return [f[:min_frames] for f in feats]
+
 
 def _stack_and_build_periodic(
     feats: List[np.ndarray], periodic_flags: List[np.ndarray]
@@ -445,6 +454,7 @@ def compute_universal_embedding(
     }
     return Y, meta
 
+
 def reduce_features(
     X: np.ndarray,
     method: Literal["pca", "tica", "vamp"] = "tica",
@@ -460,6 +470,7 @@ def reduce_features(
         return vamp_reduce(X, lag=lag, n_components=n_components)
     raise ValueError(f"Unknown reduction method: {method}")
 
+
 def _fes_build_phi_psi_maps(
     cols: Sequence[str],
 ) -> tuple[dict[int, int], dict[int, int]]:
@@ -473,6 +484,7 @@ def _fes_build_phi_psi_maps(
             rid = int(c.split("res")[-1])
             psi_map_local[rid] = k
     return phi_map_local, psi_map_local
+
 
 def _fes_pair_from_phi_psi_maps(
     cols: Sequence[str],

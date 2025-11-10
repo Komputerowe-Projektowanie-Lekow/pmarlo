@@ -30,7 +30,7 @@ def test_write_with_bias_and_read_sets_flags(tmp_path: Path):
     psi = np.sin(np.linspace(0, 2 * np.pi, n))
     bias = np.linspace(0.0, 1.0, n)
 
-    shard_id = "T300K_seg0000_rep000"
+    shard_id = "T300K_test-run_seg0000_rep000"
     source = {
         "created_at": "1970-01-01T00:00:00Z",
         "kind": "demux",

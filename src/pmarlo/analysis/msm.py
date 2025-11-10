@@ -30,7 +30,13 @@ def ensure_msm_inputs_whitened(dataset: DatasetLike | Mapping[str, Any]) -> bool
     summary: Any | None = None
     if isinstance(artifacts, Mapping):
         summary = artifacts.get("mlcv_deeptica")
-    if not isinstance(summary, (MutableMapping, dict)):
+    if not isinstance(summary, Mapping):
+        return False
+
+    if summary.get("output_mean") is None or summary.get("output_transform") is None:
+        logger.debug(
+            "[msm] mlcv_deeptica metadata missing output transform; skipping whitening"
+        )
         return False
 
     whitened, applied = apply_whitening_from_metadata(

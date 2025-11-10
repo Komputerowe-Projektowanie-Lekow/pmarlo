@@ -307,7 +307,6 @@ def compute_detailed_balance_mad(
             is_reversible,
             is_transition_matrix,
         )
-        from sklearn.metrics import mean_absolute_error
 
         if transition_matrix is None or stationary_distribution is None:
             return None
@@ -338,7 +337,8 @@ def compute_detailed_balance_mad(
         if denom <= 0:
             return None
 
-        mad = mean_absolute_error(flows.ravel(), flows.T.ravel())
+        delta = flows.ravel() - flows.T.ravel()
+        mad = float(np.mean(np.abs(delta)))
         return float(mad / denom)
     except Exception:
         return None

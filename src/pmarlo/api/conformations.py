@@ -1,34 +1,33 @@
-import mdtraj as md
 import logging
+from pathlib import Path
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+
+import mdtraj as md
 import numpy as np
 
+from pmarlo.io import trajectory as traj_io
+from pmarlo.reporting.export import write_conformations_csv_json
+from pmarlo.reporting.plots import save_fes_contour, save_transition_matrix_heatmap
 from pmarlo.utils.mdtraj import load_mdtraj_topology, resolve_atom_selection
 from pmarlo.utils.path_utils import ensure_directory
-from pmarlo.reporting.plots import save_fes_contour, save_transition_matrix_heatmap
-from pmarlo.reporting.export import write_conformations_csv_json
-from pmarlo.io import trajectory as traj_io
 
+from .clustering import cluster_microstates
+from .features import compute_features, reduce_features
+from .fes import generate_fes_and_pick_minima
 from .msm import (
     build_msm_from_labels,
     compute_macrostates,
-    macrostate_populations,
-    macro_transition_matrix,
     macro_mfpt,
+    macro_transition_matrix,
+    macrostate_populations,
 )
-
-from .fes import generate_fes_and_pick_minima
-from .features import compute_features, reduce_features
-from .clustering import cluster_microstates
-
-
-from typing import Any, Mapping, Tuple, Sequence, Optional, Dict, List
-from pathlib import Path
 
 logger = logging.getLogger("pmarlo")
 
 
 def sanitize_label_for_filename(name: str) -> str:
     return name.replace(":", "-").replace(" ", "_")
+
 
 def find_conformations(  # noqa: C901
     topology_pdb: str | Path,

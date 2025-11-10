@@ -74,3 +74,65 @@ def test_faulty_extractor_raises(tmp_path: Path):
 
     with pytest.raises(ValueError):
         emit_shards_from_trajectories([f], tmp_path, extract_cvs=bad_extractor)
+
+
+def _constant_features() -> Dict[str, np.ndarray]:
+    grid = np.linspace(0.0, 1.0, 8, endpoint=False)
+    return {"phi": grid}
+
+
+def _make_source(
+    *,
+    kind: str,
+    run_id: str,
+    segment_id: int,
+    replica_id: int,
+) -> Dict[str, object]:
+    return {
+        "created_at": "1970-01-01T00:00:00Z",
+        "kind": kind,
+        "run_id": run_id,
+        "segment_id": segment_id,
+        "replica_id": replica_id,
+        "exchange_window_id": 0,
+    }
+
+
+def test_shard_ids_include_run_id_and_kind(tmp_path: Path):
+    demux_traj = tmp_path / "run-foo" / "demux" / "traj_a.dcd"
+    replica_traj = tmp_path / "run-bar" / "replicas" / "traj_b.dcd"
+    demux_traj.parent.mkdir(parents=True, exist_ok=True)
+    replica_traj.parent.mkdir(parents=True, exist_ok=True)
+    demux_traj.write_bytes(b"")
+    replica_traj.write_bytes(b"")
+
+    def _extract(kind: str, run_id: str, segment: int, replica: int):
+        def _impl(_: Path):
+            return (
+                _constant_features(),
+                None,
+                _make_source(
+                    kind=kind,
+                    run_id=run_id,
+                    segment_id=segment,
+                    replica_id=replica,
+                ),
+            )
+
+        return _impl
+
+    demux_json = emit_shards_from_trajectories(
+        [demux_traj],
+        tmp_path / "demux_shards",
+        extract_cvs=_extract("demux", "run-foo", segment=7, replica=2),
+        temperature=300.0,
+    )
+    replica_json = emit_shards_from_trajectories(
+        [replica_traj],
+        tmp_path / "replica_shards",
+        extract_cvs=_extract("replica", "run-bar", segment=3, replica=10),
+        temperature=310.0,
+    )
+
+    assert Path(demux_json[0]).stem == "T300K_run-foo_seg0007_rep002"
+    assert Path(replica_json[0]).stem == "replica_T310K_run-bar_seg0003_rep010"

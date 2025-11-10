@@ -727,4 +727,3 @@ def _render_deeptica_summary(summary: Dict[str, Any]) -> None:
                 st.json(arch)
             else:
                 st.write(arch)
-

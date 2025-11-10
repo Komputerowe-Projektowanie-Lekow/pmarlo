@@ -97,8 +97,10 @@ def smooth_F_with_adaptive_gaussian(
     w = (h - s_lo) / np.maximum(s_hi - s_lo, 1e-12)
 
     bank_stack = np.stack(bank)
-    F_lo = np.take(bank_stack, idx_lo, axis=0)
-    F_hi = np.take(bank_stack, idx_hi, axis=0)
+    idx_lo_expanded = idx_lo[np.newaxis, ...]
+    idx_hi_expanded = idx_hi[np.newaxis, ...]
+    F_lo = np.take_along_axis(bank_stack, idx_lo_expanded, axis=0)[0]
+    F_hi = np.take_along_axis(bank_stack, idx_hi_expanded, axis=0)[0]
 
     F_out = _blend_two(F, F_lo, F_hi, w)
     if apply_mask is not None:

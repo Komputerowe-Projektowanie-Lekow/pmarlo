@@ -31,7 +31,10 @@ from pmarlo.utils.path_utils import ensure_directory
 from pmarlo.utils.temperature import collect_temperature_values
 
 from ..analysis import compute_diagnostics
-from ..analysis.fes import ensure_fes_inputs_whitened
+from ..analysis.fes import (
+    ensure_fes_inputs_whitened,
+    select_highest_variance_components,
+)
 from ..analysis.msm import ensure_msm_inputs_whitened
 from ..markov_state_model._msm_utils import build_simple_msm
 from .plan import TransformPlan, TransformStep
@@ -585,7 +588,9 @@ class BuildResult:
             # Convert state_counts back to numpy array
             if "state_counts" in decoded and decoded["state_counts"] is not None:
                 try:
-                    decoded["state_counts"] = np.asarray(decoded["state_counts"], dtype=float)
+                    decoded["state_counts"] = np.asarray(
+                        decoded["state_counts"], dtype=float
+                    )
                 except Exception:
                     pass
 
@@ -603,16 +608,26 @@ class BuildResult:
                     pass
 
             # Convert transition_matrix if present in MSM payload
-            if "transition_matrix" in decoded and decoded["transition_matrix"] is not None:
+            if (
+                "transition_matrix" in decoded
+                and decoded["transition_matrix"] is not None
+            ):
                 try:
-                    decoded["transition_matrix"] = np.asarray(decoded["transition_matrix"], dtype=float)
+                    decoded["transition_matrix"] = np.asarray(
+                        decoded["transition_matrix"], dtype=float
+                    )
                 except Exception:
                     pass
 
             # Convert stationary_distribution if present in MSM payload
-            if "stationary_distribution" in decoded and decoded["stationary_distribution"] is not None:
+            if (
+                "stationary_distribution" in decoded
+                and decoded["stationary_distribution"] is not None
+            ):
                 try:
-                    decoded["stationary_distribution"] = np.asarray(decoded["stationary_distribution"], dtype=float)
+                    decoded["stationary_distribution"] = np.asarray(
+                        decoded["stationary_distribution"], dtype=float
+                    )
                 except Exception:
                     pass
 
@@ -833,12 +848,16 @@ def _build_fes_payload(
     if isinstance(fes_raw, dict) and "result" in fes_raw:
         result = fes_raw.get("result")
         names = _extract_fes_names(fes_raw)
-        bins_tuple = _derive_fes_bins(applied, names)
-        metadata.fes = {
+        canonical_names = _canonicalize_fes_names(names, working_dataset)
+        bins_tuple = _derive_fes_bins(applied, canonical_names)
+        fes_meta: Dict[str, Any] = {
             "bins": bins_tuple,
-            "names": names,
+            "names": canonical_names,
             "temperature": opts.temperature,
         }
+        if names and canonical_names != names:
+            fes_meta["axis_names"] = names
+        metadata.fes = fes_meta
         return result
     metadata.fes = None
     if isinstance(fes_raw, dict) and fes_raw.get("skipped"):
@@ -849,6 +868,23 @@ def _build_fes_payload(
 def _extract_fes_names(fes_payload: dict[str, Any]) -> Tuple[str, ...]:
     raw = (fes_payload.get("cv1_name"), fes_payload.get("cv2_name"))
     return tuple(name for name in raw if isinstance(name, str) and name)
+
+
+def _canonicalize_fes_names(names: Tuple[str, ...], dataset: Any) -> Tuple[str, ...]:
+    if not names:
+        return names
+    dataset_names = _extract_feature_names(dataset)
+    ordered: List[str] = []
+    seen: set[str] = set()
+    for candidate in dataset_names:
+        if candidate in names and candidate not in seen:
+            ordered.append(candidate)
+            seen.add(candidate)
+    for name in names:
+        if name not in seen:
+            ordered.append(name)
+            seen.add(name)
+    return tuple(ordered[: len(names)])
 
 
 def _derive_fes_bins(
@@ -1131,6 +1167,30 @@ def _extract_feature_names(dataset: Any) -> List[str]:
         return []
 
 
+def _complete_cv_name_list(names: Sequence[str], n_dims: int) -> List[str]:
+    resolved: List[str] = [str(name) for name in names if name is not None]
+    while len(resolved) < n_dims:
+        resolved.append(f"cv{len(resolved)}")
+    return resolved[:n_dims]
+
+
+def _coerce_periodic_flags(dataset: Any, n_dims: int) -> tuple[bool, ...]:
+    candidate: Any
+    if isinstance(dataset, Mapping):
+        candidate = dataset.get("periodic")
+    else:
+        candidate = getattr(dataset, "periodic", None)
+    if candidate is None:
+        return tuple(False for _ in range(n_dims))
+    try:
+        flags = np.asarray(candidate, dtype=bool).reshape(-1)
+    except Exception:
+        return tuple(False for _ in range(n_dims))
+    return tuple(
+        bool(flags[idx]) if idx < flags.size else False for idx in range(n_dims)
+    )
+
+
 def _extract_cvs(
     dataset: Any,
 ) -> Optional[Tuple[np.ndarray, np.ndarray, Tuple[str, str], Tuple[bool, bool]]]:
@@ -1139,28 +1199,29 @@ def _extract_cvs(
             X = dataset.get("X")
             if X is None:
                 return None
-            X = np.asarray(X, dtype=np.float64)
-            if X.ndim != 2 or X.shape[0] == 0 or X.shape[1] < 2:
-                return None
-            names = dataset.get("cv_names") or ()
-            if not isinstance(names, (list, tuple)):
-                names = ()
-            name_pair = (
-                str(names[0]) if len(names) > 0 else "cv1",
-                str(names[1]) if len(names) > 1 else "cv2",
-            )
-            periodic = dataset.get("periodic") or ()
-            if not isinstance(periodic, (list, tuple)):
-                periodic = ()
-            periodic_pair = (
-                bool(periodic[0]) if len(periodic) > 0 else False,
-                bool(periodic[1]) if len(periodic) > 1 else False,
-            )
-            return X[:, 0], X[:, 1], name_pair, periodic_pair
-        if hasattr(dataset, "X"):
-            X = np.asarray(getattr(dataset, "X"), dtype=np.float64)
-            if X.ndim == 2 and X.shape[1] >= 2:
-                return X[:, 0], X[:, 1], ("cv1", "cv2"), (False, False)
+            coords = np.asarray(X, dtype=np.float64)
+        elif hasattr(dataset, "X"):
+            coords = np.asarray(getattr(dataset, "X"), dtype=np.float64)
+        else:
+            return None
+
+        if coords.ndim != 2 or coords.shape[0] == 0 or coords.shape[1] < 2:
+            return None
+
+        selected_coords, selected_indices = select_highest_variance_components(
+            coords, n_components=2
+        )
+
+        dim_names = _complete_cv_name_list(
+            _extract_feature_names(dataset), coords.shape[1]
+        )
+        periodic_flags = _coerce_periodic_flags(dataset, coords.shape[1])
+
+        idx_x, idx_y = selected_indices[:2]
+        name_pair = (dim_names[idx_x], dim_names[idx_y])
+        periodic_pair = (periodic_flags[idx_x], periodic_flags[idx_y])
+
+        return selected_coords[:, 0], selected_coords[:, 1], name_pair, periodic_pair
     except Exception:
         return None
     return None

@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 def export_cv_bundle_from_model(model_base_path: Path, output_dir: Path = None) -> None:
     """
     Export CV bias bundle from a trained DeepTICA model.
-    
+
     Parameters
     ----------
     model_base_path : Path
@@ -45,23 +45,23 @@ def export_cv_bundle_from_model(model_base_path: Path, output_dir: Path = None) 
         from pmarlo.features.deeptica import export_cv_model
         from pmarlo.features.deeptica._full import DeepTICAModel
         import yaml
-        
+
         model_base_path = Path(model_base_path)
-        
+
         # Check if model files exist
         pt_file = model_base_path.with_suffix(".pt")
         scaler_file = model_base_path.with_suffix(".scaler.pt")
         config_file = model_base_path.with_suffix(".json")
-        
+
         if not pt_file.exists():
             raise FileNotFoundError(f"Model file not found: {pt_file}")
         if not scaler_file.exists():
             raise FileNotFoundError(f"Scaler file not found: {scaler_file}")
         if not config_file.exists():
             raise FileNotFoundError(f"Config file not found: {config_file}")
-        
+
         logger.info(f"Loading DeepTICA model from {model_base_path}")
-        
+
         # Load the full DeepTICA model
         try:
             deeptica_model = DeepTICAModel.load(model_base_path)
@@ -71,40 +71,40 @@ def export_cv_bundle_from_model(model_base_path: Path, output_dir: Path = None) 
         except Exception as load_error:
             logger.warning(f"Standard model loading failed: {load_error}")
             logger.info("Attempting alternative loading method...")
-            
+
             # Alternative loading: manually construct the model from saved components
             import json
             import torch
             from sklearn.preprocessing import StandardScaler
-            
+
             # Load config
             config_data = json.loads(config_file.read_text(encoding="utf-8"))
             logger.info(f"Loaded config: {config_data}")
-            
+
             # Load scaler
             scaler_ckpt = torch.load(scaler_file, map_location="cpu", weights_only=False)
             scaler = StandardScaler(with_mean=True, with_std=True)
             scaler.mean_ = scaler_ckpt["mean"]
             scaler.scale_ = scaler_ckpt["std"]
             logger.info(f"Loaded scaler: mean shape={scaler.mean_.shape}, scale shape={scaler.scale_.shape}")
-            
+
             # Load network state dict
             state_dict = torch.load(pt_file, map_location="cpu", weights_only=False)
             logger.info(f"Loaded state dict with keys: {list(state_dict.keys())}")
-            
+
             # Extract the actual network from state_dict
             if "state_dict" in state_dict:
                 actual_state = state_dict["state_dict"]
             else:
                 actual_state = state_dict
-            
+
             # Create a simple wrapper that exposes the network and scaler
             from pmarlo.features.deeptica.core.module import construct_deeptica_core
             from pmarlo.features.deeptica._full import DeepTICAConfig
-            
+
             cfg = DeepTICAConfig(**config_data)
             core_net = construct_deeptica_core(cfg, scaler)
-            
+
             # Try to load the state dict
             try:
                 # Check if keys have 'inner.' prefix
@@ -119,22 +119,22 @@ def export_cv_bundle_from_model(model_base_path: Path, output_dir: Path = None) 
                     core_net.load_state_dict(cleaned_state, strict=False)
                 else:
                     core_net.load_state_dict(actual_state, strict=False)
-                
+
                 core_net.eval()
                 network = core_net
                 logger.info("Successfully loaded network using alternative method")
             except Exception as net_error:
                 logger.error(f"Failed to load network: {net_error}")
                 raise
-            
+
             history = {}
-        
+
         # Determine output directory
         if output_dir is None:
             output_dir = model_base_path.parent
         else:
             output_dir = Path(output_dir)
-        
+
         # Load feature specification
         spec_path = Path(__file__).parent / "app" / "feature_spec.yaml"
         if not spec_path.exists():
@@ -142,7 +142,7 @@ def export_cv_bundle_from_model(model_base_path: Path, output_dir: Path = None) 
                 f"Feature specification not found at {spec_path}. "
                 "Make sure you're running this from the pmarlo_webapp directory."
             )
-        
+
         logger.info(f"Loading feature specification from {spec_path}")
         with spec_path.open("r", encoding="utf-8") as spec_file:
             feature_spec = yaml.safe_load(spec_file)
@@ -163,11 +163,11 @@ def export_cv_bundle_from_model(model_base_path: Path, output_dir: Path = None) 
                 f"trained model scaler expects {actual_features}. "
                 "Ensure the model was trained on shards created with the same feature specification."
             )
-        
+
         logger.info("Exporting CV model with bias potential for OpenMM integration...")
         logger.info(f"  Output directory: {output_dir}")
         logger.info(f"  Bias strength: 10.0 kJ/mol")
-        
+
         cv_bundle = export_cv_model(
             network=network,
             scaler=scaler,
@@ -177,7 +177,7 @@ def export_cv_bundle_from_model(model_base_path: Path, output_dir: Path = None) 
             bias_strength=10.0,
             feature_spec=feature_spec,
         )
-        
+
         logger.info("=" * 60)
         logger.info("CV bias bundle exported successfully!")
         logger.info("=" * 60)
@@ -192,7 +192,7 @@ def export_cv_bundle_from_model(model_base_path: Path, output_dir: Path = None) 
         logger.info("You can now use this model for metabiased simulations in:")
         logger.info("  - pmarlo_webapp (Sampling tab)")
         logger.info("  - Example programs that use CV-informed sampling")
-        
+
     except Exception as e:
         logger.error(f"Failed to export CV bundle: {e}", exc_info=True)
         sys.exit(1)
@@ -206,10 +206,10 @@ def main():
 Examples:
   # Export CV bundle for a specific model (output to same directory)
   python export_cv_bundle.py app_output/models/deeptica-20251108-175716
-  
+
   # Export CV bundle to a specific output directory
   python export_cv_bundle.py app_output/models/deeptica-20251108-175716 -o /path/to/output
-  
+
   # Export CV bundle for the model in training directory
   python export_cv_bundle.py app_output/models/training-20251108-173316/deeptica-20251108-175716
         """
@@ -225,15 +225,14 @@ Examples:
         default=None,
         help="Output directory for the CV bundle (default: same as model directory)"
     )
-    
+
     args = parser.parse_args()
-    
+
     model_path = Path(args.model_path)
     output_dir = Path(args.output) if args.output else None
-    
+
     export_cv_bundle_from_model(model_path, output_dir)
 
 
 if __name__ == "__main__":
     main()
-

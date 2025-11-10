@@ -1,0 +1,65 @@
+{
+  "schema_version": "2.0",
+  "shard_id": "T300K_shard_extraction_seg0000_rep000",
+  "temperature_K": 300.0,
+  "beta": 0.4009078501424201,
+  "replica_id": 0,
+  "segment_id": 0,
+  "exchange_window_id": 0,
+  "n_frames": 5,
+  "dt_ps": 1.0,
+  "feature_spec": {
+    "name": "pmarlo_features",
+    "scaler": "identity",
+    "columns": [
+      "a",
+      "b"
+    ]
+  },
+  "provenance": {
+    "created_at": "2025-11-10T09:56:09.849192",
+    "kind": "demux",
+    "run_id": "shard_extraction",
+    "replica_id": 0,
+    "segment_id": 0,
+    "range": [
+      0,
+      5
+    ],
+    "traj": "traj.dcd",
+    "traj_files": [
+      "traj.dcd"
+    ],
+    "extra": "value",
+    "exchange_window_id": 0,
+    "seed": 0,
+    "temperature_K": 300.0,
+    "n_frames": 5,
+    "columns": [
+      "a",
+      "b"
+    ],
+    "periodic": [
+      false,
+      true
+    ],
+    "has_bias": false,
+    "source": {
+      "created_at": "2025-11-10T09:56:09.849192",
+      "kind": "demux",
+      "run_id": "shard_extraction",
+      "replica_id": 0,
+      "segment_id": 0,
+      "range": [
+        0,
+        5
+      ],
+      "traj": "traj.dcd",
+      "traj_files": [
+        "traj.dcd"
+      ],
+      "extra": "value"
+    }
+  },
+  "data_hash": "8e0bf34f24b398ccb3ad47b55225abb13b8c10823695f179c29bcf4be28bcb87"
+}

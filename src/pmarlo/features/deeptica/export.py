@@ -188,24 +188,26 @@ def export_cv_bias_potential(
     try:
         nn_only_module = extract_nn_only_from_bias_module(bias_module)
         nn_model_path = output_path / f"{model_name}_nn.pt"
-        
+
         # Test the NN-only model with dummy feature input
         with torch.inference_mode():
-            dummy_features = torch.zeros(normalized_spec.n_features, dtype=torch.float32)
+            dummy_features = torch.zeros(
+                normalized_spec.n_features, dtype=torch.float32
+            )
             _ = nn_only_module(dummy_features)
-        
+
         # Script and optimize
         with torch.inference_mode():
             scripted_nn = torch.jit.script(nn_only_module)
         optimised_nn = torch.jit.optimize_for_inference(scripted_nn)
-        
+
         # Add metadata attributes
         optimised_nn._c._register_attribute(
             "feature_spec_sha256",
             torch_c.StringType.get(),
             feature_spec_hash,
         )
-        
+
         optimised_nn.save(str(nn_model_path))
         logger.info(
             "Exported NN-only TorchScript module (for OpenMM forces) to %s",

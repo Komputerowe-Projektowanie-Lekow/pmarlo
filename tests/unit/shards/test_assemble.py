@@ -15,9 +15,12 @@ def _canonical_shard_id(
     kind: str, *, temperature: float, segment_id: int, replica_id: int
 ) -> str:
     t_kelvin = int(round(float(temperature)))
+    run_suffix = "default"
     if kind == "replica":
-        return f"replica_T{t_kelvin}K_seg{segment_id:04d}_rep{replica_id:03d}"
-    return f"T{t_kelvin}K_seg{segment_id:04d}_rep{replica_id:03d}"
+        return (
+            f"replica_T{t_kelvin}K_{run_suffix}_seg{segment_id:04d}_rep{replica_id:03d}"
+        )
+    return f"T{t_kelvin}K_{run_suffix}_seg{segment_id:04d}_rep{replica_id:03d}"
 
 
 def _write_shard(

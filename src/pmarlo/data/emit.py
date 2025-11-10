@@ -100,6 +100,25 @@ def _normalise_source_metadata(path: Path, source: Mapping[str, Any]) -> Dict[st
     return data
 
 
+def _format_shard_id(
+    *,
+    kind: str,
+    run_id: object,
+    temperature_K: float,
+    segment_id: int,
+    replica_id: int,
+) -> str:
+    """Return canonical shard identifier matching ``pmarlo.shards.id`` logic."""
+
+    run_text = str(run_id) if run_id is not None else ""
+    run_suffix = run_text.replace("run_", "") if run_text else "default"
+    t_label = f"T{int(round(float(temperature_K)))}K"
+    shard_suffix = f"{run_suffix}_seg{segment_id:04d}_rep{replica_id:03d}"
+    if kind == "replica":
+        return f"replica_{t_label}_{shard_suffix}"
+    return f"{t_label}_{shard_suffix}"
+
+
 class ProgressReporter:
     """Minimal progress reporter used when the full transform stack is unavailable."""
 
@@ -237,13 +256,14 @@ def emit_shards_from_trajectories(
             bool(periodic_flags.get(name, False)) for name in column_order
         ]
         source["periodic"] = ordered_periodic
-        t_kelvin = int(round(float(temperature)))
-        # Include kind in shard_id to prevent collisions
         kind = str(source.get("kind", "demux")).lower()
-        if kind == "replica":
-            shard_id = f"replica_T{t_kelvin}K_seg{segment_id:04d}_rep{replica_id:03d}"
-        else:
-            shard_id = f"T{t_kelvin}K_seg{segment_id:04d}_rep{replica_id:03d}"
+        shard_id = _format_shard_id(
+            kind=kind,
+            run_id=source.get("run_id"),
+            temperature_K=float(temperature),
+            segment_id=segment_id,
+            replica_id=replica_id,
+        )
         json_path = write_shard(
             out_dir=out_dir,
             shard_id=shard_id,

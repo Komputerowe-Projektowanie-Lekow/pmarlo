@@ -515,4 +515,3 @@ class ValidationMixin:
         self.state.append_run(metadata)
         logger.info(f"Added discovered run {run_id} to state")
         return True
-

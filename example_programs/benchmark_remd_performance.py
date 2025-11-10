@@ -268,14 +268,14 @@ def benchmark_reporter_overhead(pdb_file: Path, output_base: Path = None) -> Dic
 
     temps = [300.0, 310.0, 320.0, 330.0]
     results = {}
-    
+
     if output_base is None:
         output_base = Path(__file__).parent / "programs_outputs" / "remd_benchmark"
 
     # Run WITHOUT reporter (stride = very high)
     output_dir_no_reporter = output_base / "reporter_overhead_no_reporter"
     output_dir_no_reporter.mkdir(parents=True, exist_ok=True)
-    
+
     config = RemdConfig(
         pdb_file=str(pdb_file),
         temperatures=temps,
@@ -299,7 +299,7 @@ def benchmark_reporter_overhead(pdb_file: Path, output_base: Path = None) -> Dic
     # Run WITH reporter (stride = 1)
     output_dir_with_reporter = output_base / "reporter_overhead_with_reporter"
     output_dir_with_reporter.mkdir(parents=True, exist_ok=True)
-    
+
     config = RemdConfig(
         pdb_file=str(pdb_file),
         temperatures=temps,

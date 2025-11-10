@@ -16,7 +16,6 @@ from ..replica_exchange.replica_exchange import (
 )
 from ..utils.path_utils import ensure_directory
 from ..utils.replica_utils import exponential_temperature_ladder
-
 from .benchmark_utils import (
     build_remd_baseline_object,
     compute_threshold_comparison,

@@ -9,7 +9,9 @@ from .base import register_feature
 
 
 def _wrap_to_minus_pi_pi(angles: np.ndarray) -> np.ndarray:
-    return ((angles + np.pi) % (2 * np.pi)) - np.pi
+    wrapped = ((angles + np.pi) % (2 * np.pi)) - np.pi
+    # map any -π results to π so downstream consumers get (-π, π]
+    return np.where(wrapped <= -np.pi, wrapped + 2 * np.pi, wrapped)
 
 
 def _compute_phi(traj_in: md.Trajectory) -> Tuple[np.ndarray, np.ndarray]:
@@ -281,6 +283,7 @@ class DistanceFeature:
 
     Supports format: distance([i, j]) where i, j are atom indices.
     """
+
     name = "distance"
 
     def __init__(self) -> None:
@@ -317,6 +320,7 @@ class AngleFeature:
 
     Supports format: angle([i, j, k]) where i, j, k are atom indices.
     """
+
     name = "angle"
 
     def __init__(self) -> None:
@@ -355,6 +359,7 @@ class DihedralFeature:
 
     Supports format: dihedral([i, j, k, l]) where i, j, k, l are atom indices.
     """
+
     name = "dihedral"
 
     def __init__(self) -> None:
@@ -371,7 +376,9 @@ class DihedralFeature:
         i, j, k, l = int(indices[0]), int(indices[1]), int(indices[2]), int(indices[3])
         n_atoms = traj.n_atoms
         if not all(0 <= idx < n_atoms for idx in [i, j, k, l]):
-            raise ValueError(f"Atom indices {i}, {j}, {k}, {l} out of range [0, {n_atoms})")
+            raise ValueError(
+                f"Atom indices {i}, {j}, {k}, {l} out of range [0, {n_atoms})"
+            )
 
         quartets = [[i, j, k, l]]
         dihedrals = md.compute_dihedrals(traj, quartets)

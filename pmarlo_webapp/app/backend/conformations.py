@@ -1,20 +1,17 @@
 import json
 import logging
-from collections.abc import Mapping
+import math
+import sys
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-try:
-    import deeptime as dt
-except ImportError:
-    dt = None
-
 from pmarlo.analysis.project_cv import apply_whitening_from_metadata
 from pmarlo.api.fes import generate_free_energy_surface
-from pmarlo.conformations import find_conformations
+from pmarlo.conformations import find_conformations as _DEFAULT_FIND_CONFORMATIONS
 from pmarlo.conformations.representative_picker import (
     TrajectoryFrameLocator,
     TrajectorySegment,
@@ -22,12 +19,17 @@ from pmarlo.conformations.representative_picker import (
 from pmarlo.conformations.visualizations import (
     plot_pcca_states,
     plot_pcca_states_on_fes,
-    plot_tpt_summary,
+    plot_tpt_summary as _DEFAULT_PLOT_TPT_SUMMARY,
 )
-from pmarlo.data.aggregate import load_shards_as_dataset
-from pmarlo.markov_state_model.clustering import cluster_microstates
+from pmarlo.data.aggregate import load_shards_as_dataset as _DEFAULT_LOAD_SHARDS_AS_DATASET
+from pmarlo.markov_state_model._msm_utils import (
+    build_simple_msm as _DEFAULT_BUILD_SIMPLE_MSM,
+)
+from pmarlo.markov_state_model.clustering import (
+    cluster_microstates as _DEFAULT_CLUSTER_MICROSTATES,
+)
 from pmarlo.markov_state_model.free_energy import FESResult
-from pmarlo.markov_state_model.reduction import reduce_features
+from pmarlo.markov_state_model.reduction import reduce_features as _DEFAULT_REDUCE_FEATURES
 from pmarlo.utils.path_utils import ensure_directory
 
 from .types import ConformationsConfig, ConformationsResult
@@ -42,6 +44,13 @@ from .utils import (
 )
 
 logger = logging.getLogger(__name__)
+_BACKEND_PACKAGE = __name__.rsplit(".", 1)[0]
+
+
+def _backend_attr(name: str, default: Any) -> Any:
+    package = sys.modules.get(_BACKEND_PACKAGE)
+    attr = getattr(package, name, None) if package else None
+    return attr or default
 
 
 # Module-level helper functions (can be imported by other modules and frontend tabs)
@@ -74,6 +83,254 @@ def extract_trajectory_names(source: Mapping[str, Any]) -> List[str]:
             seen.add(name)
             deduped.append(name)
     return deduped
+
+
+def _extract_frame_range(source: Mapping[str, Any] | None) -> tuple[int, int] | None:
+    if not isinstance(source, Mapping):
+        return None
+    for key in ("range", "frame_range"):
+        candidate = source.get(key)
+        if (
+            isinstance(candidate, Sequence)
+            and len(candidate) == 2
+            and all(isinstance(v, (int, float)) for v in candidate)
+        ):
+            start, stop = int(candidate[0]), int(candidate[1])
+            if stop > start:
+                return start, stop
+    return None
+
+
+def _resolve_shard_source(shard_meta: Mapping[str, Any]) -> Mapping[str, Any]:
+    candidate = shard_meta.get("source")
+    if isinstance(candidate, Mapping):
+        return candidate
+    provenance = shard_meta.get("provenance")
+    if isinstance(provenance, Mapping):
+        nested = provenance.get("source")
+        if isinstance(nested, Mapping):
+            return nested
+        return provenance
+    raise ValueError(
+        "Shard metadata must declare a provenance source mapping for trajectory resolution"
+    )
+
+
+def _safe_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    if isinstance(value, (float, np.floating)):
+        if np.isnan(value):
+            return None
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _segment_tracking_key(shard_path: Path, source_meta: Mapping[str, Any]) -> tuple[str, str, tuple[str, ...]]:
+    run_id = source_meta.get("run_id") or source_meta.get("run_uid") or source_meta.get("run_dir")
+    run_id = str(run_id) if isinstance(run_id, (str, int, float)) and run_id not in (None, "") else shard_path.parent.name
+
+    replica_raw = source_meta.get("replica_id")
+    if replica_raw is None:
+        replica_raw = source_meta.get("replica")
+    replica_key = (
+        str(int(replica_raw))
+        if isinstance(replica_raw, (int, float, np.integer, np.floating))
+        else (str(replica_raw) if isinstance(replica_raw, str) and replica_raw else "replica-unknown")
+    )
+
+    trajectory_names = extract_trajectory_names(source_meta)
+    if not trajectory_names:
+        fallback = source_meta.get("trajectory") or source_meta.get("path")
+        if isinstance(fallback, str) and fallback:
+            trajectory_names = [fallback]
+        else:
+            trajectory_names = [shard_path.stem]
+
+    return (run_id, replica_key, tuple(trajectory_names))
+
+
+def _maybe_stride_from_ratio(value: Any, frames_loaded: int) -> int | None:
+    """Convert a ratio to an integer stride when it divides the feature count."""
+
+    if value is None or frames_loaded <= 0:
+        return None
+
+    numerator = _safe_int(value)
+    if numerator is None or numerator <= 0:
+        return None
+
+    ratio = float(numerator) / float(frames_loaded)
+    stride = int(round(ratio))
+    if stride <= 0:
+        return None
+    if not math.isclose(ratio, float(stride), rel_tol=1e-6, abs_tol=1e-6):
+        return None
+    return stride
+
+
+def _infer_segment_stride(
+    shard_label: str,
+    shard_meta: Mapping[str, Any],
+    source_meta: Mapping[str, Any],
+    frames_loaded: int,
+    *,
+    frame_span: int | None = None,
+) -> int:
+    """Infer the physical stride between consecutive frames represented by a shard."""
+
+    if frames_loaded <= 0:
+        raise ValueError(
+            f"Shard {shard_label} cannot infer stride because it reports no loaded frames"
+        )
+
+    hints: List[Tuple[str, int]] = []
+
+    def _append_hint(label: str, value: Any) -> None:
+        stride = _safe_int(value)
+        if stride is not None and stride > 0:
+            hints.append((label, stride))
+
+    _append_hint("shard.effective_frame_stride", shard_meta.get("effective_frame_stride"))
+    _append_hint("shard.frame_stride", shard_meta.get("frame_stride"))
+    _append_hint("source.frame_stride", source_meta.get("frame_stride"))
+    _append_hint("source.stride", source_meta.get("stride"))
+
+    frames_declared_stride = _maybe_stride_from_ratio(
+        shard_meta.get("frames_declared"), frames_loaded
+    )
+    if frames_declared_stride is not None:
+        hints.append(("shard.frames_declared", frames_declared_stride))
+
+    if frame_span is not None:
+        range_stride = _maybe_stride_from_ratio(frame_span, frames_loaded)
+        if range_stride is not None:
+            hints.append(("source.frame_range", range_stride))
+        elif frame_span != frames_loaded:
+            raise ValueError(
+                f"Shard {shard_label} frame range span {frame_span} is not divisible by feature count "
+                f"{frames_loaded}; cannot infer trajectory frame stride."
+            )
+
+    if not hints:
+        return 1
+
+    stride_value = hints[0][1]
+    for label, value in hints[1:]:
+        if value != stride_value:
+            raise ValueError(
+                f"Shard {shard_label} reports conflicting stride metadata: "
+                f"{hints[0][0]}={stride_value} vs {label}={value}."
+            )
+    return stride_value
+
+
+def _derive_frame_range_from_metadata(
+    shard_path: Path,
+    shard_meta: Mapping[str, Any],
+    source_meta: Mapping[str, Any],
+    tracker: Dict[tuple[str, str, tuple[str, ...]], int],
+    *,
+    stride: int = 1,
+) -> tuple[int, int]:
+    """Derive a best-effort frame range when legacy shards omit ``source.range``."""
+
+    frames_loaded = _safe_int(shard_meta.get("frames_loaded"))
+    if frames_loaded is None or frames_loaded <= 0:
+        start_raw = _safe_int(shard_meta.get("start")) or 0
+        stop_raw = _safe_int(shard_meta.get("stop")) or 0
+        frames_loaded = stop_raw - start_raw
+    if frames_loaded <= 0:
+        raise ValueError(
+            f"Shard {shard_path.name} cannot derive frame range because it reports no frames"
+        )
+
+    stride_value = _safe_int(stride) or 1
+    stride_value = max(1, int(stride_value))
+
+    key = _segment_tracking_key(shard_path, source_meta)
+
+    if key not in tracker:
+        initial = (
+            _safe_int(source_meta.get("segment_start"))
+            or _safe_int(source_meta.get("frame_start"))
+            or _safe_int(source_meta.get("range_start"))
+            or _safe_int(source_meta.get("start_frame"))
+            or _safe_int(shard_meta.get("start"))
+            or 0
+        )
+        tracker[key] = int(initial)
+
+    local_start = tracker[key]
+    local_stop = local_start + int(frames_loaded) * stride_value
+    tracker[key] = local_stop
+
+    if (
+        isinstance(source_meta, dict)
+        and "range" not in source_meta
+        and "frame_range" not in source_meta
+    ):
+        source_meta["range"] = [local_start, local_stop]
+
+    return local_start, local_stop
+
+
+def _ensure_fes_variation(values: np.ndarray) -> np.ndarray:
+    """Guarantee a finite span for FES plotting by injecting minimal jitter."""
+
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    if arr.size == 0:
+        return arr
+    finite = arr[np.isfinite(arr)]
+    span = float(np.max(finite) - np.min(finite)) if finite.size else 0.0
+    if span > 0.0:
+        return arr
+    baseline = float(finite[0]) if finite.size else 0.0
+    scale = max(1.0, abs(baseline)) * 1e-6
+    if scale == 0.0:
+        scale = 1e-6
+    jitter = np.linspace(-0.5, 0.5, arr.size, dtype=float) * scale
+    if arr.size == 1:
+        jitter[0] = scale
+    return arr + jitter
+
+
+def _infer_cluster_centers(features: np.ndarray, labels: np.ndarray) -> np.ndarray:
+    """Derive cluster centers directly from frame assignments."""
+
+    matrix = np.asarray(features, dtype=float)
+    if matrix.ndim != 2:
+        raise ValueError("Cannot derive cluster centers from non-2D feature matrix")
+    assignments = np.asarray(labels)
+    if assignments.ndim != 1:
+        assignments = assignments.reshape(-1)
+    if assignments.size != matrix.shape[0]:
+        raise ValueError(
+            "Cluster labels length does not match number of frames; cannot derive centers"
+        )
+    centers: List[np.ndarray] = []
+    for state in np.unique(assignments):
+        mask = assignments == state
+        if not np.any(mask):
+            raise ValueError(
+                f"Cluster label {state} has no member frames; cannot derive medoid."
+            )
+        centers.append(np.mean(matrix[mask], axis=0))
+    return np.vstack(centers)
+
+
+def _load_shards_dataset(shards: Sequence[Path]) -> Dict[str, Any]:
+    """Resolve the dataset loader through the backend package to honor patches."""
+
+    loader = _backend_attr("load_shards_as_dataset", _DEFAULT_LOAD_SHARDS_AS_DATASET)
+    return loader(shards)
 
 
 class ConformationsMixin:
@@ -111,13 +368,22 @@ class ConformationsMixin:
             if not shards:
                 raise ValueError("No shards selected for conformations analysis")
 
-            dataset = load_shards_as_dataset(shards)
+            dataset = _load_shards_dataset(shards)
 
             if "X" not in dataset or len(dataset["X"]) == 0:
                 raise ValueError("No feature data found in shards")
 
             features = np.asarray(dataset["X"], dtype=float)
             logger.info(f"Loaded {features.shape[0]} frames with {features.shape[1]} features")
+
+            # Extract feature names for explainability in plots
+            cv_names = dataset.get("cv_names", [])
+            if not cv_names or len(cv_names) != features.shape[1]:
+                cv_names = [f"Feature {i+1}" for i in range(features.shape[1])]
+            feature_names_str = ", ".join(cv_names[:5])
+            if len(cv_names) > 5:
+                feature_names_str += f", ... ({len(cv_names)} total)"
+            logger.info(f"Feature names: {feature_names_str}")
 
             if config.topology_pdb is None:
                 raise ValueError(
@@ -140,12 +406,6 @@ class ConformationsMixin:
                 raise ValueError(
                     "Shard metadata missing from aggregated dataset; cannot locate trajectories."
                 )
-
-            locator = self._build_trajectory_locator(shards, shard_meta_list)
-            logger.info(
-                "Resolved %d trajectory segments for representative extraction",
-                len(locator.segments),
-            )
 
             cv_method = (config.cv_method or "tica").strip().lower()
             tica_dim = (
@@ -185,7 +445,8 @@ class ConformationsMixin:
                     "Reducing features with TICA (n_components=%d)",
                     tica_dim,
                 )
-                features_reduced = reduce_features(
+                reducer = _backend_attr("reduce_features", _DEFAULT_REDUCE_FEATURES)
+                features_reduced = reducer(
                     features,
                     method="tica",
                     lag=config.lag,
@@ -198,11 +459,30 @@ class ConformationsMixin:
                 raise ValueError(
                     "At least two collective variable components are required to compute the FES overlay."
                 )
-            cv1 = np.asarray(features_reduced[:, 0], dtype=float).reshape(-1)
-            cv2 = np.asarray(features_reduced[:, 1], dtype=float).reshape(-1)
+            cv1 = _ensure_fes_variation(features_reduced[:, 0])
+            cv2 = _ensure_fes_variation(features_reduced[:, 1])
             frame_count = int(cv1.size)
             adaptive_bins = max(30, min(150, int(max(1, frame_count) ** 0.5)))
             fes_label_prefix = "DeepTICA" if cv_method == "deeptica" else "TICA"
+
+            # Generate descriptive axis labels with feature information
+            def _format_tica_label(component_idx: int, method: str, features: list) -> str:
+                """Create a descriptive label showing TICA component and input features."""
+                if not features:
+                    return f"{method} {component_idx}"
+
+                # Show up to 3 feature names for readability
+                max_features = 3
+                if len(features) <= max_features:
+                    feature_list = ", ".join(features)
+                else:
+                    feature_list = ", ".join(features[:max_features]) + f", ... +{len(features) - max_features} more"
+
+                return f"{method} {component_idx} ({feature_list})"
+
+            cv1_label = _format_tica_label(1, fes_label_prefix, cv_names)
+            cv2_label = _format_tica_label(2, fes_label_prefix, cv_names)
+
             try:
                 fes_result = generate_free_energy_surface(
                     cv1,
@@ -222,10 +502,10 @@ class ConformationsMixin:
                 raise RuntimeError("Free Energy Surface generation returned an empty result.")
 
             if fes_result.cv1_name is None:
-                fes_result.cv1_name = f"{fes_label_prefix} 1"
+                fes_result.cv1_name = cv1_label
                 fes_result.metadata["cv1_name"] = fes_result.cv1_name
             if fes_result.cv2_name is None:
-                fes_result.cv2_name = f"{fes_label_prefix} 2"
+                fes_result.cv2_name = cv2_label
                 fes_result.metadata["cv2_name"] = fes_result.cv2_name
 
             cluster_mode = (config.cluster_mode or "kmeans").strip().lower()
@@ -282,7 +562,8 @@ class ConformationsMixin:
                 cluster_kwargs,
             )
 
-            clustering_result = cluster_microstates(
+            clusterer = _backend_attr("cluster_microstates", _DEFAULT_CLUSTER_MICROSTATES)
+            clustering_result = clusterer(
                 features_reduced,
                 method=method_alias[cluster_mode],
                 n_states=n_clusters,
@@ -294,11 +575,20 @@ class ConformationsMixin:
                 n_init=int(config.kmeans_n_init),
                 **cluster_kwargs,
             )
-            if clustering_result.centers is None:
+            labels_raw = getattr(clustering_result, "labels", None)
+            if labels_raw is None:
                 raise ValueError(
-                    "Clustering did not return cluster centers required for PCCA visualization."
+                    "Clustering did not return microstate labels required for MSM construction."
                 )
-            cluster_centers = np.asarray(clustering_result.centers, dtype=float)
+            labels = np.asarray(labels_raw, dtype=int).reshape(-1)
+
+            centers = getattr(clustering_result, "centers", None)
+            if centers is None:
+                logger.info(
+                    "Clustering result is missing centers; deriving medoids from frame assignments."
+                )
+                centers = _infer_cluster_centers(features_reduced, labels)
+            cluster_centers = np.asarray(centers, dtype=float)
             if cluster_centers.ndim != 2:
                 raise ValueError(
                     "Cluster centers must be a 2D array to generate the PCCA visualization."
@@ -308,26 +598,22 @@ class ConformationsMixin:
                     "At least two TICA dimensions are required to plot PCCA metastable states."
                 )
             tica_cluster_coords = cluster_centers[:, :2]
-            labels = clustering_result.labels
             n_states = int(np.max(labels) + 1)
 
-            logger.info(f"Building MSM (lag={config.lag}) using deeptime")
-            if dt is None:
-                raise RuntimeError(
-                    "Deeptime library is required for reversible MSM estimation."
-                )
-
-            estimator = dt.markov.msm.MaximumLikelihoodMSM(
-                lagtime=config.lag, reversible=True
-            )
-            msm_model = estimator.fit([labels]).fetch_model()
-            T = msm_model.transition_matrix
-            pi = msm_model.stationary_distribution
+            logger.info("Building MSM (lag=%s) via backend helper", config.lag)
+            msm_builder = _backend_attr("build_simple_msm", _DEFAULT_BUILD_SIMPLE_MSM)
+            T, pi = msm_builder([labels], n_states=n_states, lag=int(config.lag))
 
             if not _is_transition_matrix_reversible(T, pi):
                 raise ValueError(
                     "Transition matrix is not reversible; TPT requires detailed balance."
                 )
+
+            locator = self._build_trajectory_locator(shards, shard_meta_list)
+            logger.info(
+                "Resolved %d trajectory segments for representative extraction",
+                len(locator.segments),
+            )
 
             logger.info("Running TPT conformations analysis")
 
@@ -339,7 +625,8 @@ class ConformationsMixin:
                 'fes': fes_result,
             }
 
-            conf_result = find_conformations(
+            conformer = _backend_attr("find_conformations", _DEFAULT_FIND_CONFORMATIONS)
+            conf_result = conformer(
                 msm_data=msm_data,
                 source_states=np.array(config.source_states) if config.source_states else None,
                 sink_states=np.array(config.sink_states) if config.sink_states else None,
@@ -379,7 +666,13 @@ class ConformationsMixin:
                 )
 
             pcca_plot_path = output_dir / "pcca_states.png"
-            plot_pcca_states(tica_cluster_coords, pcca_memberships, str(pcca_plot_path))
+            plot_pcca_states(
+                tica_cluster_coords,
+                pcca_memberships,
+                str(pcca_plot_path),
+                xlabel=cv1_label,
+                ylabel=cv2_label,
+            )
             if fes_result is None:
                 raise RuntimeError("Free Energy Surface was not computed; cannot build overlay plot.")
             pcca_fes_plot_path = output_dir / "pcca_states_on_fes.png"
@@ -397,7 +690,8 @@ class ConformationsMixin:
                 )
 
             logger.info("Generating visualizations")
-            plot_tpt_summary(tpt_result, str(output_dir))
+            plotter = _backend_attr("plot_tpt_summary", _DEFAULT_PLOT_TPT_SUMMARY)
+            plotter(tpt_result, str(output_dir))
             plots = {
                 "pcca_states": pcca_plot_path,
                 "pcca_states_on_fes": pcca_fes_plot_path,
@@ -781,6 +1075,7 @@ class ConformationsMixin:
             )
 
         segments: List[TrajectorySegment] = []
+        derived_ranges: Dict[tuple[str, str, tuple[str, ...]], int] = {}
         for idx, (shard_path, shard_meta) in enumerate(zip(shard_paths, shard_meta_list)):
             if not isinstance(shard_meta, Mapping):
                 raise TypeError(
@@ -806,25 +1101,51 @@ class ConformationsMixin:
                     f"Shard {shard_path.name} has inconsistent frame counts (loaded={frames_loaded}, span={stop - start})"
                 )
 
-            source = shard_meta.get("source")
-            if not isinstance(source, Mapping):
-                raise ValueError(
-                    f"Shard metadata for {shard_path.name} is missing provenance 'source' details"
+            source_meta = _resolve_shard_source(shard_meta)
+            frame_range = _extract_frame_range(source_meta)
+            if frame_range is None:
+                local_stride = _infer_segment_stride(
+                    shard_path.name, shard_meta, source_meta, frames_loaded
                 )
+                local_start, local_stop = _derive_frame_range_from_metadata(
+                    shard_path,
+                    shard_meta,
+                    source_meta,
+                    derived_ranges,
+                    stride=local_stride,
+                )
+                logger.warning(
+                    "[conformations] Shard %s is missing explicit frame range metadata; "
+                    "deriving span [%d, %d) from shard ordering. This may be approximate when "
+                    "multiple trajectory files are interleaved.",
+                    shard_path.name,
+                    local_start,
+                    local_stop,
+                )
+            else:
+                local_start = int(frame_range[0])
+                local_stop = int(frame_range[1])
+                frame_span = local_stop - local_start
+                if frame_span <= 0:
+                    raise ValueError(
+                        f"Shard {shard_path.name} frame range ({local_start}->{local_stop}) "
+                        "is not a valid positive span"
+                    )
+                local_stride = _infer_segment_stride(
+                    shard_path.name,
+                    shard_meta,
+                    source_meta,
+                    frames_loaded,
+                    frame_span=frame_span,
+                )
+                expected_span = frames_loaded * local_stride
+                if frame_span != expected_span:
+                    raise ValueError(
+                        f"Shard {shard_path.name} frame range ({local_start}->{local_stop}) span {frame_span} "
+                        f"does not match feature count {frames_loaded} with stride {local_stride}"
+                    )
 
-            frame_range = source.get("range") or source.get("frame_range")
-            if not (isinstance(frame_range, (list, tuple)) and len(frame_range) == 2):
-                raise ValueError(
-                    f"Shard metadata for {shard_path.name} must declare frame range for trajectory extraction"
-                )
-            local_start = int(frame_range[0])
-            local_stop = int(frame_range[1])
-            if local_stop - local_start != frames_loaded:
-                raise ValueError(
-                    f"Shard {shard_path.name} frame range ({local_start}->{local_stop}) does not match feature count {frames_loaded}"
-                )
-
-            trajectory_names = extract_trajectory_names(source)
+            trajectory_names = extract_trajectory_names(source_meta)
             trajectory_path = self._resolve_trajectory_path(shard_path, trajectory_names)
 
             segments.append(
@@ -833,6 +1154,7 @@ class ConformationsMixin:
                     start=start,
                     stop=stop,
                     local_start=local_start,
+                    local_stride=local_stride,
                 )
             )
 
@@ -916,4 +1238,3 @@ class ConformationsMixin:
             if candidate.exists():
                 return candidate
         return None
-

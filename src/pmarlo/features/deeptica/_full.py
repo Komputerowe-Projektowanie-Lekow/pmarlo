@@ -363,15 +363,15 @@ class DeepTICAModel:
         state = torch.load(
             path.with_suffix(".pt"),
             map_location="cpu",
-            weights_only=False  # Required for model state dict in PyTorch 2.6+
+            weights_only=False,  # Required for model state dict in PyTorch 2.6+
         )
-        
+
         # Load state dict with strict=False to allow for architecture evolution
         # This is safe because we're loading a trained model, not for training
         missing_keys, unexpected_keys = net.load_state_dict(
             state["state_dict"], strict=False
         )  # type: ignore[index]
-        
+
         if unexpected_keys:
             # Try loading just the core network if there are unexpected keys
             # This handles cases where the model was saved with a different wrapper structure
@@ -383,7 +383,7 @@ class DeepTICAModel:
                 else:
                     core_state_dict[key] = value
             net.load_state_dict(core_state_dict, strict=False)
-        
+
         net.eval()
         history = _load_training_history(path)
         return cls(cfg, scaler, net, training_history=history)
@@ -423,7 +423,7 @@ def _load_scaler_checkpoint(path: Path) -> StandardScaler:
     scaler_ckpt = torch.load(
         path.with_suffix(".scaler.pt"),
         map_location="cpu",
-        weights_only=False  # Required for loading numpy arrays in PyTorch 2.6+
+        weights_only=False,  # Required for loading numpy arrays in PyTorch 2.6+
     )
     scaler = StandardScaler(with_mean=True, with_std=True)
     scaler.mean_ = np.asarray(scaler_ckpt["mean"], dtype=np.float64)

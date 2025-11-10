@@ -65,15 +65,15 @@ class ShardsMixin:
 
         # Load feature profile to determine extraction method
         from .feature_profiles import load_feature_profile, get_feature_profile_info
-        
+
         profile_name = request.feature_profile
         logger.info(f"Using feature profile: {profile_name}")
-        
+
         profile_info = get_feature_profile_info(profile_name)
         note["feature_profile"] = profile_name
         note["feature_type"] = profile_info.get("feature_type", "unknown")
         note["cv_biasing_compatible"] = profile_info.get("cv_biasing_compatible", False)
-        
+
         # Extract shards based on profile type
         if profile_info.get("feature_type") == "cv":
             # Use traditional CV-based extraction
@@ -98,7 +98,7 @@ class ShardsMixin:
             # Use molecular feature extraction
             logger.info("Extracting molecular feature-based shards")
             from .shard_extraction import extract_shards_with_features
-            
+
             # Load feature profile with actual features
             try:
                 profile = load_feature_profile(
@@ -111,7 +111,7 @@ class ShardsMixin:
                 raise RuntimeError(
                     f"Could not load feature profile '{profile_name}': {e}"
                 ) from e
-            
+
             shard_paths = extract_shards_with_features(
                 pdb_file=simulation.pdb_path,
                 traj_files=[str(p) for p in simulation.traj_files],

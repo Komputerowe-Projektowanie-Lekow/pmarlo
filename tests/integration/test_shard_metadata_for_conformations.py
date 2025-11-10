@@ -1,17 +1,16 @@
 """Test that shards have proper metadata for conformation analysis."""
 
-import numpy as np
-import mdtraj as md
-import tempfile
 import json
-import pytest
+import tempfile
 from pathlib import Path
+
+import mdtraj as md
+import numpy as np
 
 
 def test_shard_metadata_for_conformation_analysis():
-    """Test that extracted shards contain metadata required for conformation analysis."""
-    from pmarlo_webapp.app.backend.shard_extraction import extract_shards_with_features
     from pmarlo_webapp.app.backend.feature_profiles import load_feature_profile
+    from pmarlo_webapp.app.backend.shard_extraction import extract_shards_with_features
 
     # Load profile
     profile = load_feature_profile("molecular_cv_biasing")
@@ -33,7 +32,7 @@ END
 
         # Write PDB
         pdb_file = temp_dir_path / "test.pdb"
-        with open(pdb_file, 'w') as f:
+        with open(pdb_file, "w") as f:
             f.write(pdb_content)
 
         # Create trajectory
@@ -74,7 +73,7 @@ END
 
         # Validate metadata for conformation analysis
         for shard_path in shard_paths:
-            with open(shard_path, 'r') as f:
+            with open(shard_path, "r") as f:
                 shard_data = json.load(f)
 
             # Check source exists
@@ -84,14 +83,35 @@ END
             # Check frame_range
             frame_range = source.get("frame_range") or source.get("range")
             assert frame_range is not None, "Shard must have frame_range or range"
-            assert isinstance(frame_range, (list, tuple)), "Frame range must be list or tuple"
+            assert isinstance(
+                frame_range, (list, tuple)
+            ), "Frame range must be list or tuple"
             assert len(frame_range) == 2, "Frame range must have start and stop"
 
             # Verify frame count makes sense
-            n_frames_in_shard = source.get("n_frames", 0)
-            expected_frames = (frame_range[1] - frame_range[0]) // stride
-            assert expected_frames == n_frames_in_shard, \
-                f"Frame count mismatch: expected {expected_frames}, got {n_frames_in_shard}"
+            # source.n_frames should be the ORIGINAL frame count (before stride)
+            # This is used to calculate effective_frame_stride in aggregation
+            n_frames_in_source = source.get("n_frames", 0)
+            expected_original_frames = frame_range[1] - frame_range[0]
+            assert (
+                expected_original_frames == n_frames_in_source
+            ), f"Original frame count mismatch: expected {expected_original_frames}, got {n_frames_in_source}"
+
+            # Also verify that the shard's top-level n_frames (loaded frames) matches expectations
+            shard_n_frames = shard_data.get("n_frames", 0)
+            expected_loaded_frames = expected_original_frames // stride
+            assert (
+                expected_loaded_frames == shard_n_frames
+            ), f"Loaded frame count mismatch: expected {expected_loaded_frames}, got {shard_n_frames}"
+
+            # Check stride metadata is properly set (prevents conformations analysis errors)
+            source_stride = source.get("stride") or source.get("frame_stride")
+            assert (
+                source_stride is not None
+            ), "Shard must have stride or frame_stride metadata"
+            assert (
+                source_stride == stride
+            ), f"Stride mismatch: expected {stride}, got {source_stride}"
 
             # Check trajectory files
             traj_files_found = []
@@ -106,6 +126,12 @@ END
             assert len(traj_files_found) > 0, "Shard must reference trajectory files"
 
             # Check other required fields
-            required_fields = ["created_at", "kind", "run_id", "replica_id", "segment_id"]
+            required_fields = [
+                "created_at",
+                "kind",
+                "run_id",
+                "replica_id",
+                "segment_id",
+            ]
             for field in required_fields:
                 assert field in source, f"Missing required field: {field}"

@@ -49,9 +49,7 @@ def _derive_pairs(
     if pairs is not None:
         idx_t = np.asarray(pairs[0], dtype=np.int64).reshape(-1)
         idx_tau = np.asarray(pairs[1], dtype=np.int64).reshape(-1)
-        total_length = sum(
-            int(np.asarray(block).shape[0]) for block in shards
-        )
+        total_length = sum(int(np.asarray(block).shape[0]) for block in shards)
         _validate_pairs(idx_t, idx_tau, total_length)
         return idx_t, idx_tau
 
@@ -155,9 +153,7 @@ def _build_uniform_pairs(
     return idx, tau
 
 
-def _validate_pairs(
-    idx_t: np.ndarray, idx_tau: np.ndarray, total_length: int
-) -> None:
+def _validate_pairs(idx_t: np.ndarray, idx_tau: np.ndarray, total_length: int) -> None:
     if idx_t.shape != idx_tau.shape:
         raise ValueError("Pair index arrays must have the same shape")
     if idx_t.ndim != 1 or idx_tau.ndim != 1:

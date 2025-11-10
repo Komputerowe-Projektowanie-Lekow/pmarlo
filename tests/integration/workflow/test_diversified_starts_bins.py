@@ -17,9 +17,9 @@ def test_diversified_starts_increase_bin_coverage(
 ):
     from pmarlo.data.shard import read_shard
     from pmarlo_webapp.app.backend import (
+        Backend,
         ShardRequest,
         SimulationConfig,
-        Backend,
         WorkspaceLayout,
     )
 

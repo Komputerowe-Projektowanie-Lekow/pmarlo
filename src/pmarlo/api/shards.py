@@ -71,7 +71,10 @@ def emit_shards_rg_rmsd(
     else:
         logger.debug("[shards] Using first frame as reference")
 
-    logger.debug("[shards] Selected %d CA atoms for alignment", len(ca_sel) if ca_sel is not None else 0)
+    logger.debug(
+        "[shards] Selected %d CA atoms for alignment",
+        len(ca_sel) if ca_sel is not None else 0,
+    )
 
     def _extract(traj_path: Path):
         rg_parts = []
@@ -90,11 +93,7 @@ def emit_shards_rg_rmsd(
             )
             n += int(chunk.n_frames)
 
-        rg = (
-            np.concatenate(rg_parts)
-            if rg_parts
-            else np.empty((0,), dtype=np.float64)
-        )
+        rg = np.concatenate(rg_parts) if rg_parts else np.empty((0,), dtype=np.float64)
         rmsd = (
             np.concatenate(rmsd_parts)
             if rmsd_parts
@@ -125,8 +124,11 @@ def emit_shards_rg_rmsd(
         progress_callback=progress_callback,
     )
 
-    logger.info("[shards] Emission complete: generated %d shards in %s", len(result), out_dir)
+    logger.info(
+        "[shards] Emission complete: generated %d shards in %s", len(result), out_dir
+    )
     return result
+
 
 def emit_shards_rg_rmsd_windowed(
     pdb_file: str | Path,
@@ -160,11 +162,16 @@ def emit_shards_rg_rmsd_windowed(
 
     logger.debug("[shards] Loading topology and reference structure from: %s", pdb_file)
     ref, ca_sel = _load_reference_and_selection(md, pdb_file, reference)
-    logger.debug("[shards] Selected %d CA atoms for alignment", len(ca_sel) if ca_sel is not None else 0)
+    logger.debug(
+        "[shards] Selected %d CA atoms for alignment",
+        len(ca_sel) if ca_sel is not None else 0,
+    )
 
     shard_state = initialise_shard_indices(out_dir, seed_start)
     next_idx = shard_state.next_index
-    logger.debug("[shards] Initialized shard indexing: starting from index %d", next_idx)
+    logger.debug(
+        "[shards] Initialized shard indexing: starting from index %d", next_idx
+    )
 
     emit_progress = _make_emit_callback(ProgressReporter(progress_callback))
     shard_paths: list[Path] = []
@@ -183,10 +190,20 @@ def emit_shards_rg_rmsd_windowed(
 
     window = max(1, int(frames_per_shard))
     hop = max(1, int(hop_frames) if hop_frames is not None else window)
-    logger.info("[shards] Processing %d trajectories with window=%d, hop=%d", len(files), window, hop)
+    logger.info(
+        "[shards] Processing %d trajectories with window=%d, hop=%d",
+        len(files),
+        window,
+        hop,
+    )
 
     for index, traj_path in enumerate(files):
-        logger.debug("[shards] Processing trajectory %d/%d: %s", index + 1, len(files), traj_path.name)
+        logger.debug(
+            "[shards] Processing trajectory %d/%d: %s",
+            index + 1,
+            len(files),
+            traj_path.name,
+        )
         emit_progress(
             "emit_one_begin",
             {
@@ -252,8 +269,13 @@ def emit_shards_rg_rmsd_windowed(
         },
     )
 
-    logger.info("[shards] Windowed emission complete: generated %d shards in %s", len(shard_paths), out_dir)
+    logger.info(
+        "[shards] Windowed emission complete: generated %d shards in %s",
+        len(shard_paths),
+        out_dir,
+    )
     return shard_paths
+
 
 def _load_reference_and_selection(
     md_module: Any,
@@ -371,6 +393,7 @@ def _collect_rg_rmsd(
     rmsd = concatenate_or_empty(rmsd_parts, dtype=np.float64, copy=False)
     return rg, rmsd, total_frames
 
+
 def _emit_windows(
     rg: np.ndarray,
     rmsd: np.ndarray,
@@ -457,7 +480,7 @@ def _emit_windows(
         logger.info(
             "[shards] Emitting final partial shard with %d remaining frames (trajectory has %d total)",
             remaining_frames,
-            n_frames
+            n_frames,
         )
         start = last_covered
         stop = n_frames
@@ -498,8 +521,6 @@ def _emit_windows(
         next_idx += 1
 
     return shard_paths, next_idx
-
-
 
 
 def build_from_shards(
@@ -665,6 +686,7 @@ def _compute_cv_edges(
         ),
     }
 
+
 def _extract_model_dir(notes: dict | None) -> str | None:
     """Return the model directory hint from notes if present."""
 
@@ -728,7 +750,9 @@ def _build_opts(
         resolved_states if n_microstates is not None else DEFAULT_N_CLUSTERS
     )
 
-    grid_strategy = str(fes_grid_strategy).lower() if fes_grid_strategy is not None else "adaptive"
+    grid_strategy = (
+        str(fes_grid_strategy).lower() if fes_grid_strategy is not None else "adaptive"
+    )
 
     return _BuildOpts(
         seed=int(seed),

@@ -1,6 +1,7 @@
+from pathlib import Path
+
 import numpy as np
 from openmm.app import PDBFile
-from pathlib import Path
 
 from pmarlo.replica_exchange.running_stats import RunningStats
 

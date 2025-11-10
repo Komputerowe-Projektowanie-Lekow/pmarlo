@@ -116,8 +116,16 @@ class Protein:
     # --- Initialization helpers to reduce complexity ---
 
     def _resolve_pdb_path(self, pdb_file: str) -> Path:
-        expanded = os.path.expandvars(os.path.expanduser(pdb_file))
-        return Path(expanded).resolve(strict=False)
+        expanded = os.path.expandvars(pdb_file)
+
+        if expanded.startswith("~"):
+            home_override = os.environ.get("HOME")
+            if home_override:
+                remainder = expanded[1:]
+                remainder = remainder.lstrip("/\\")
+                return (Path(home_override) / remainder).resolve(strict=False)
+
+        return Path(os.path.expanduser(expanded)).resolve(strict=False)
 
     def _validate_file_exists(self, pdb_path: Path) -> None:
         if not pdb_path.exists():

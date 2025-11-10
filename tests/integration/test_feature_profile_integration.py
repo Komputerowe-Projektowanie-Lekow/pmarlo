@@ -1,15 +1,19 @@
 """Test the molecular_cv_biasing profile with actual shard extraction."""
 
-import numpy as np
-import mdtraj as md
 import tempfile
-import pytest
 from pathlib import Path
+
+import mdtraj as md
+import numpy as np
+import pytest
 
 
 def test_feature_profile_loading():
     """Test loading feature profiles."""
-    from pmarlo_webapp.app.backend.feature_profiles import load_feature_profile, FEATURE_PROFILES
+    from pmarlo_webapp.app.backend.feature_profiles import (
+        FEATURE_PROFILES,
+        load_feature_profile,
+    )
 
     # Check that profiles are available
     assert len(FEATURE_PROFILES) > 0
@@ -25,8 +29,8 @@ def test_feature_profile_loading():
 
 def test_feature_parsing_from_profile():
     """Test parsing each feature from the profile."""
+    from pmarlo.features.base import get_feature, parse_feature_spec
     from pmarlo_webapp.app.backend.feature_profiles import load_feature_profile
-    from pmarlo.features.base import parse_feature_spec, get_feature
 
     profile = load_feature_profile("molecular_cv_biasing")
 
@@ -38,8 +42,8 @@ def test_feature_parsing_from_profile():
 
 def test_profile_with_compute_features():
     """Test using profile features with compute_features API."""
-    from pmarlo_webapp.app.backend.feature_profiles import load_feature_profile
     from pmarlo.api.features import compute_features
+    from pmarlo_webapp.app.backend.feature_profiles import load_feature_profile
 
     profile = load_feature_profile("molecular_cv_biasing")
 
@@ -55,7 +59,7 @@ ATOM      8  C   GLY A   2       4.900   3.400   1.200  1.00  0.00           C
 END
 """
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.pdb', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".pdb", delete=False) as f:
         f.write(pdb_content)
         temp_pdb = f.name
 
@@ -82,23 +86,27 @@ END
 
     finally:
         import os
+
         if os.path.exists(temp_pdb):
             os.unlink(temp_pdb)
+
+
 """Comprehensive integration test for molecular features with shard extraction."""
 
 import sys
-import numpy as np
-import mdtraj as md
 import tempfile
-import pytest
 from pathlib import Path
+
+import mdtraj as md
+import numpy as np
+import pytest
 
 
 def test_feature_registration():
     """Test that molecular features are registered."""
     from pmarlo.features import get_feature
 
-    for name in ['distance', 'angle', 'dihedral']:
+    for name in ["distance", "angle", "dihedral"]:
         fc = get_feature(name)
         assert fc is not None, f"Feature '{name}' should be registered"
 
@@ -112,13 +120,13 @@ def test_feature_parsing():
         "distance([1, 2])",
         "angle([0, 1, 2])",
         "dihedral([0, 1, 2, 3])",
-        "dihedral([1, 2, 4, 7])"
+        "dihedral([1, 2, 4, 7])",
     ]
 
     for spec in test_specs:
         name, kwargs = parse_feature_spec(spec)
-        assert name in ['distance', 'angle', 'dihedral']
-        assert 'atoms' in kwargs
+        assert name in ["distance", "angle", "dihedral"]
+        assert "atoms" in kwargs
 
 
 def test_profile_loading():
@@ -150,7 +158,7 @@ ATOM      8  C   GLY A   2       4.900   3.400   1.200  1.00  0.00           C
 END
 """
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.pdb', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".pdb", delete=False) as f:
         f.write(pdb_content)
         temp_pdb = f.name
 
@@ -159,7 +167,10 @@ END
 
         # Add frames
         n_frames = 10
-        xyz_stack = [traj.xyz[0] + np.random.randn(*traj.xyz[0].shape) * 0.01 for _ in range(n_frames)]
+        xyz_stack = [
+            traj.xyz[0] + np.random.randn(*traj.xyz[0].shape) * 0.01
+            for _ in range(n_frames)
+        ]
         traj.xyz = np.array(xyz_stack)
         traj.time = np.arange(n_frames)
 
@@ -173,13 +184,14 @@ END
 
         # Verify periodic flags are correct
         for i, col in enumerate(columns):
-            if 'distance' in col:
+            if "distance" in col:
                 assert not periodic[i], f"Distance {col} should not be periodic"
-            elif 'angle' in col or 'dihedral' in col:
+            elif "angle" in col or "dihedral" in col:
                 assert periodic[i], f"Angle/Dihedral {col} should be periodic"
 
     finally:
         import os
+
         if os.path.exists(temp_pdb):
             os.unlink(temp_pdb)
 

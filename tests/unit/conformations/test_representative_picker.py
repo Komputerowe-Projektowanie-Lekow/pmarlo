@@ -26,6 +26,20 @@ def test_build_frame_index_lookup_maps_global_to_local() -> None:
     assert local_idx == 1
 
 
+def test_trajectory_segment_applies_stride_multiplier() -> None:
+    segment = TrajectorySegment(
+        path=Path("fake.dcd"),
+        start=0,
+        stop=10,
+        local_start=100,
+        local_stride=5,
+    )
+    locator = TrajectoryFrameLocator(segments=(segment,))
+
+    _, local_frame = locator.resolve(3)
+    assert local_frame == 115
+
+
 def test_pick_representatives_returns_local_indices() -> None:
     dtrajs = [np.array([0, 1, 0]), np.array([2, 1])]
     features = np.array([[0.0], [0.0], [1.0], [3.0], [2.0]])

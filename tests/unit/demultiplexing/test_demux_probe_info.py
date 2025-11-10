@@ -86,6 +86,9 @@ mdtraj_stub = types.ModuleType("mdtraj")
 mdtraj_stub.load_topology = (
     lambda path: types.SimpleNamespace()
 )  # pragma: no cover - stub
+mdtraj_spec = importlib.util.spec_from_loader("mdtraj", loader=None)
+if mdtraj_spec is not None:
+    mdtraj_stub.__spec__ = mdtraj_spec
 sys.modules.setdefault("mdtraj", mdtraj_stub)
 
 psutil_stub = types.ModuleType("psutil")

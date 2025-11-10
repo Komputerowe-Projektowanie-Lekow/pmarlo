@@ -1,9 +1,9 @@
 """Tests for the simulation run validation and discovery system."""
 
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Any, Dict
-import tempfile
-import shutil
 
 import pytest
 
@@ -185,7 +185,10 @@ def test_run_validation_issues(backend, temp_workspace):
     v = next((v for v in validations if v.run_id == "run-20251107-000008"), None)
     assert v is not None
     assert len(v.issues) > 0
-    assert any("demux" in issue.message.lower() or "missing" in issue.message.lower() for issue in v.issues)
+    assert any(
+        "demux" in issue.message.lower() or "missing" in issue.message.lower()
+        for issue in v.issues
+    )
 
 
 def test_run_validation_with_provenance(backend, temp_workspace):
@@ -209,4 +212,3 @@ def test_run_validation_with_provenance(backend, temp_workspace):
     assert validation is not None
     assert validation.metadata.get("total_steps") == 50000
     assert validation.metadata.get("temperatures") == [300.0, 320.0, 340.0]
-

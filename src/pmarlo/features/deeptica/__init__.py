@@ -19,13 +19,13 @@ from pmarlo.features.deeptica.export import (
     export_cv_model,
     load_cv_model_info,
 )
+from pmarlo.features.deeptica.metrics import normalize_training_metrics
 from pmarlo.features.deeptica.openmm_integration import (
     CVBiasForce,
     add_cv_bias_to_system,
     check_openmm_torch_available,
     create_cv_torch_force,
 )
-from pmarlo.features.deeptica.metrics import normalize_training_metrics
 
 _STANDALONE_EXPORTS: dict[str, Any] = {
     "CVBiasPotential": CVBiasPotential,

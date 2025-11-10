@@ -267,8 +267,6 @@ def select_shard_paths(
 
     if missing:
         missing_unique = ", ".join(sorted(set(missing)))
-        raise ValueError(
-            f"Unknown shard run IDs requested: {missing_unique}"
-        )
+        raise ValueError(f"Unknown shard run IDs requested: {missing_unique}")
 
     return selected

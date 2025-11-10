@@ -3,16 +3,26 @@ import os
 from pathlib import Path, PureWindowsPath
 from typing import Optional, List, Dict, Any
 
+import mdtraj as md
+from pmarlo.conformations import find_conformations
+
+from pmarlo.data.aggregate import load_shards_as_dataset
+from pmarlo.markov_state_model.reduction import reduce_features
+from pmarlo.markov_state_model.clustering import cluster_microstates
+from pmarlo.conformations.visualizations import plot_tpt_summary
+from pmarlo.markov_state_model._msm_utils import build_simple_msm
+
 from .types import *
 from .layout import WorkspaceLayout
 from .state import PersistentState
-from .sampling import SamplingMixin
+from .sampling import SamplingMixin, run_short_sim
 from .shards import ShardsMixin
 from .training import TrainingMixin
 from .analysis import AnalysisMixin
 from .conformations import ConformationsMixin
 from .validation import ValidationMixin
 from .utils import *
+from .utils import _timestamp as _timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -98,4 +108,12 @@ __all__ = [
     "BuildArtifact",
     "ConformationsConfig",
     "ConformationsResult",
+    "load_shards_as_dataset",
+    "reduce_features",
+    "cluster_microstates",
+    "md",
+    "plot_tpt_summary",
+    "build_simple_msm",
+    "find_conformations",
+    "run_short_sim",
 ]

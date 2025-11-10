@@ -17,7 +17,8 @@ def test_adaptive_grid_reduces_empty_bins():
 
     # Test with fixed strategy
     fes_fixed = generate_2d_fes(
-        cv1, cv2,
+        cv1,
+        cv2,
         bins=(100, 100),
         temperature=300.0,
         grid_strategy="fixed",
@@ -25,7 +26,8 @@ def test_adaptive_grid_reduces_empty_bins():
 
     # Test with adaptive strategy
     fes_adaptive = generate_2d_fes(
-        cv1, cv2,
+        cv1,
+        cv2,
         bins=(100, 100),
         temperature=300.0,
         grid_strategy="adaptive",
@@ -41,9 +43,9 @@ def test_adaptive_grid_reduces_empty_bins():
     )
 
     # Adaptive should target < 0.5 empty bins
-    assert empty_adaptive < 0.5, (
-        f"Adaptive strategy should achieve < 50% empty bins, got {empty_adaptive:.3f}"
-    )
+    assert (
+        empty_adaptive < 0.5
+    ), f"Adaptive strategy should achieve < 50% empty bins, got {empty_adaptive:.3f}"
 
 
 def test_adaptive_grid_persists_metadata():
@@ -53,7 +55,8 @@ def test_adaptive_grid_persists_metadata():
     cv2 = rng.normal(0.0, 1.0, 1000)
 
     fes = generate_2d_fes(
-        cv1, cv2,
+        cv1,
+        cv2,
         bins=(80, 80),
         temperature=300.0,
         grid_strategy="adaptive",
@@ -81,7 +84,8 @@ def test_adaptive_grid_adjusts_bin_counts():
     cv2 = rng.normal(0.0, 0.3, 2000)
 
     fes = generate_2d_fes(
-        cv1, cv2,
+        cv1,
+        cv2,
         bins=(150, 150),  # Request many bins
         temperature=300.0,
         grid_strategy="adaptive",
@@ -91,9 +95,9 @@ def test_adaptive_grid_adjusts_bin_counts():
 
     # Should have reduced bin counts from requested
     # (may not always reduce if data is dense enough, but for this sparse case it should)
-    assert actual_shape[0] <= 150 or actual_shape[1] <= 150, (
-        f"Expected bin reduction for sparse data, got shape={actual_shape}"
-    )
+    assert (
+        actual_shape[0] <= 150 or actual_shape[1] <= 150
+    ), f"Expected bin reduction for sparse data, got shape={actual_shape}"
 
 
 def test_fixed_grid_uses_requested_bins():
@@ -104,7 +108,8 @@ def test_fixed_grid_uses_requested_bins():
 
     requested_bins = (75, 75)
     fes = generate_2d_fes(
-        cv1, cv2,
+        cv1,
+        cv2,
         bins=requested_bins,
         temperature=300.0,
         grid_strategy="fixed",
@@ -114,9 +119,9 @@ def test_fixed_grid_uses_requested_bins():
     actual_shape = fes.metadata.get("grid_shape", requested_bins)
 
     # Allow some flexibility due to Freedman-Diaconis rule
-    assert abs(actual_shape[0] - requested_bins[0]) < 50, (
-        f"Fixed strategy bins deviated too much: requested={requested_bins}, got={actual_shape}"
-    )
+    assert (
+        abs(actual_shape[0] - requested_bins[0]) < 50
+    ), f"Fixed strategy bins deviated too much: requested={requested_bins}, got={actual_shape}"
 
 
 def test_sparse_warning_threshold():
@@ -128,7 +133,8 @@ def test_sparse_warning_threshold():
     cv2 = rng.normal(0.0, 0.2, 500)
 
     fes = generate_2d_fes(
-        cv1, cv2,
+        cv1,
+        cv2,
         bins=(120, 120),
         temperature=300.0,
         grid_strategy="fixed",  # Use fixed to ensure sparse result
@@ -152,7 +158,8 @@ def test_invalid_grid_strategy_raises():
 
     with pytest.raises(ValueError, match="grid_strategy must be"):
         generate_2d_fes(
-            cv1, cv2,
+            cv1,
+            cv2,
             bins=(50, 50),
             temperature=300.0,
             grid_strategy="invalid",
@@ -168,7 +175,8 @@ def test_adaptive_with_periodic_uses_full_range():
     cv2 = rng.uniform(-np.pi, np.pi, 1000)
 
     fes = generate_2d_fes(
-        cv1, cv2,
+        cv1,
+        cv2,
         bins=(60, 60),
         temperature=300.0,
         periodic=(True, True),
@@ -191,11 +199,11 @@ def test_default_grid_strategy_is_adaptive():
 
     # Call without specifying grid_strategy
     fes = generate_2d_fes(
-        cv1, cv2,
+        cv1,
+        cv2,
         bins=(80, 80),
         temperature=300.0,
     )
 
     # Should default to adaptive
     assert fes.metadata.get("grid_strategy") == "adaptive"
-

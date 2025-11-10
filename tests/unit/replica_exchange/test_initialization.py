@@ -93,9 +93,7 @@ class TestReplicaExchangeInitialization:
         assert remd.output_dir == nested_dir
         assert nested_dir.exists()
 
-    def test_random_state_overrides_config_seed(
-        self, test_pdb_file, temp_output_dir
-    ):
+    def test_random_state_overrides_config_seed(self, test_pdb_file, temp_output_dir):
         """Explicit random_state should take precedence over config.random_seed."""
         config = RemdConfig(
             pdb_file=str(test_pdb_file),

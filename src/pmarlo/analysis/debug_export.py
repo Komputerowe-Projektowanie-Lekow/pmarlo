@@ -609,9 +609,7 @@ def _valid_dtraj_segment_lengths(dtrajs: Sequence[np.ndarray]) -> List[int]:
     return segments
 
 
-def _compute_dwell_times(
-    dtrajs: Sequence[np.ndarray], n_states: int
-) -> Dict[str, Any]:
+def _compute_dwell_times(dtrajs: Sequence[np.ndarray], n_states: int) -> Dict[str, Any]:
     """Compute dwell time statistics for each state.
 
     Dwell time is the number of consecutive frames spent in a state before
@@ -1032,4 +1030,3 @@ class _AnalysisJSONEncoder(json.JSONEncoder):
         if isinstance(obj, Mapping):
             return dict(obj)
         return super().default(obj)
-

@@ -1,17 +1,18 @@
 """Test shard extraction with molecular_cv_biasing profile."""
 
-import numpy as np
-import mdtraj as md
-import tempfile
 import json
-import pytest
+import tempfile
 from pathlib import Path
+
+import mdtraj as md
+import numpy as np
+import pytest
 
 
 def test_shard_extraction_with_molecular_features():
     """Test complete shard extraction workflow with molecular features."""
-    from pmarlo_webapp.app.backend.shard_extraction import extract_shards_with_features
     from pmarlo_webapp.app.backend.feature_profiles import load_feature_profile
+    from pmarlo_webapp.app.backend.shard_extraction import extract_shards_with_features
 
     # Load the molecular_cv_biasing profile
     profile = load_feature_profile("molecular_cv_biasing")
@@ -34,7 +35,7 @@ END
 
         # Write PDB
         pdb_file = temp_dir_path / "test.pdb"
-        with open(pdb_file, 'w') as f:
+        with open(pdb_file, "w") as f:
             f.write(pdb_content)
 
         # Create a trajectory with 50 frames
@@ -70,7 +71,7 @@ END
             provenance={
                 "feature_profile": profile.name,
                 "description": profile.description,
-            }
+            },
         )
 
         assert len(shard_paths) > 0, "Should create at least one shard"
@@ -78,7 +79,7 @@ END
         # Inspect the first shard
         first_shard = shard_paths[0]
 
-        with open(first_shard, 'r') as f:
+        with open(first_shard, "r") as f:
             shard_data = json.load(f)
 
         assert "shard_id" in shard_data
@@ -94,14 +95,15 @@ END
         # Check if periodic flags are correct
         periodic_dict = source.get("periodic", {})
         for col, is_periodic in periodic_dict.items():
-            expected_periodic = 'angle' in col or 'dihedral' in col
-            assert is_periodic == expected_periodic, \
-                f"Periodic flag mismatch for {col}: expected {expected_periodic}, got {is_periodic}"
+            expected_periodic = "angle" in col or "dihedral" in col
+            assert (
+                is_periodic == expected_periodic
+            ), f"Periodic flag mismatch for {col}: expected {expected_periodic}, got {is_periodic}"
 
         # Load the NPZ file
         npz_file = first_shard.parent / (first_shard.stem + ".npz")
         assert npz_file.exists(), "NPZ file should exist"
 
-        npz_data = np.load(npz_file)
-        assert "X" in npz_data
-        assert npz_data["X"].shape[1] == len(profile.features)
+        with np.load(npz_file) as npz_data:
+            assert "X" in npz_data
+            assert npz_data["X"].shape[1] == len(profile.features)

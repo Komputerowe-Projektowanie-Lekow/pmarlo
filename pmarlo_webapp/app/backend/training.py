@@ -361,23 +361,23 @@ class TrainingMixin:
             base_path = model_file.with_suffix("")
 
             logger.info(f"Loading DeepTICA model from {base_path}")
-            
+
             # Load network state dict
             pt_file = base_path.with_suffix(".pt")
             scaler_file = base_path.with_suffix(".scaler.pt")
             config_file = base_path.with_suffix(".json")
-            
+
             if not pt_file.exists():
                 raise FileNotFoundError(f"Model file not found: {pt_file}")
             if not scaler_file.exists():
                 raise FileNotFoundError(f"Scaler file not found: {scaler_file}")
             if not config_file.exists():
                 raise FileNotFoundError(f"Config file not found: {config_file}")
-            
+
             # Load the full DeepTICA model using the standard load method
             from pmarlo.features.deeptica._full import DeepTICAModel
             deeptica_model = DeepTICAModel.load(base_path)
-            
+
             network = deeptica_model.net
             scaler = deeptica_model.scaler
             history = br.artifacts.get("mlcv_deeptica", {})
