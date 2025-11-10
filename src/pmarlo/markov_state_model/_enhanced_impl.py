@@ -24,6 +24,7 @@ from ._its import ITSMixin
 from ._loading import LoadingMixin
 from ._plots import PlotsMixin
 from ._states import StatesMixin
+from ._tpt import TPTMixin
 from ._tram import TRAMMixin
 
 if TYPE_CHECKING:  # pragma: no cover - import for type checking only
@@ -38,6 +39,7 @@ class EnhancedMSM(
     ITSMixin,
     CKMixin,
     FESMixin,
+    TPTMixin,
     PlotsMixin,
     StatesMixin,
     TRAMMixin,
