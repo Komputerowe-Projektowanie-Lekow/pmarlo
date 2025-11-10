@@ -1,6 +1,5 @@
 import logging
-import os
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 import mdtraj as md
@@ -54,22 +53,26 @@ class Backend(
             if not raw:
                 return None
             try:
-                candidate = Path(raw)
+                candidate = Path(raw).expanduser()
             except Exception:
-                candidate = None
-            if candidate is not None and candidate.exists():
-                return candidate
+                return None
 
-            if os.name != "nt" and len(raw) >= 3 and raw[1] == ":" and raw[2] in ("\\", "/"):
-                win = PureWindowsPath(raw)
-                drive = win.drive.rstrip(":").lower()
-                parts = list(win.parts[1:])
-                converted = Path("/mnt", drive, *parts)
-                if converted.exists():
-                    return converted
-                return converted
+            # Handle absolute paths - try to rebase from legacy locations
+            if candidate.is_absolute():
+                rebased = self.layout.rebase_legacy_path(candidate)
+                if rebased.exists():
+                    return rebased
+                # Return the rebased path even if it doesn't exist yet
+                # This handles cases where the path is valid but not yet created
+                return rebased
 
-            return candidate if candidate is not None else Path(raw)
+            # Handle relative paths - resolve relative to workspace
+            workspace_path = (self.layout.app_root / candidate).resolve()
+            if workspace_path.exists():
+                return workspace_path
+            # Return the resolved path even if it doesn't exist
+            return workspace_path
+
         return None
 
     def sidebar_summary(self) -> Dict[str, int]:

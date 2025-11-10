@@ -17,6 +17,7 @@ import yaml
 from pmarlo.replica_exchange.system_builder import create_system
 from pmarlo.settings import load_defaults, resolve_feature_spec_path
 
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Benchmark OpenMM with optional CV bias")
     parser.add_argument("--platform", default="CPU", help="OpenMM platform (default: CPU)")
@@ -26,6 +27,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", type=Path, default=None, help="Path to TorchScript CV model")
     parser.add_argument("--report-interval", type=int, default=1000, help="Logging interval (default: 1000 steps)")
     return parser.parse_args()
+
+
+def validate_model_bundle(model_path: Path) -> None:
+    """Validate that all required model bundle files exist."""
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model file not found: {model_path}")
+
+    # Check for associated files
+    stem = model_path.stem
+    parent = model_path.parent
+
+    # Try both naming conventions for scaler file
+    scaler_pt = parent / f"{stem}.scaler.pt"
+    scaler_npz = parent / f"{stem}_scaler.npz"
+
+    if not scaler_pt.exists() and not scaler_npz.exists():
+        raise FileNotFoundError(
+            f"Scaler file not found. Expected either:\n"
+            f"  - {scaler_pt}\n"
+            f"  - {scaler_npz}"
+        )
+
+    json_file = parent / f"{stem}.json"
+    if not json_file.exists():
+        raise FileNotFoundError(f"JSON metadata file not found: {json_file}")
+
+    print(f"Model bundle validated:")
+    print(f"  Model: {model_path}")
+    print(f"  Scaler: {scaler_pt if scaler_pt.exists() else scaler_npz}")
+    print(f"  Metadata: {json_file}")
 
 
 def write_config(spec_path: Path, enable_bias: bool, torch_threads: int | None, tmpdir: Path) -> Path:
@@ -100,7 +131,7 @@ def summarise(bias_samples, cv_samples, steps_per_second, config, bias_enabled: 
     else:
         cv_mean = cv_std = np.array([])
 
-    print("Benchmark summary")
+    print("\nBenchmark summary")
     print("------------------")
     print(f"Platform           : {platform}")
     print(f"Bias enabled       : {bias_enabled}")
@@ -118,8 +149,16 @@ def summarise(bias_samples, cv_samples, steps_per_second, config, bias_enabled: 
 if __name__ == "__main__":
     args = parse_args()
     bias_enabled = args.with_bias == "yes"
+
     if bias_enabled and args.model is None:
         raise SystemExit("--model is required when --with-bias=yes")
+
+    # Validate model bundle files exist
+    if bias_enabled and args.model is not None:
+        try:
+            validate_model_bundle(args.model)
+        except FileNotFoundError as e:
+            raise SystemExit(f"Error: {e}")
 
     base_spec = resolve_feature_spec_path()
     pdb_path = Path(__file__).resolve().parents[1] / "tests" / "_assets" / "3gd8-fixed.pdb"
