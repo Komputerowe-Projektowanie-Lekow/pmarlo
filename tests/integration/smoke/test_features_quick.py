@@ -24,9 +24,13 @@ def test_feature_parsing():
     from pmarlo.features.base import parse_feature_spec
 
     test_specs = [
-        ("distance([0, 1])", "distance", {"indices": [0, 1]}),
-        ("angle([0, 1, 2])", "angle", {"indices": [0, 1, 2]}),
-        ("dihedral([0, 1, 2, 3])", "dihedral", {"indices": [0, 1, 2, 3]}),
+        ("distance([0, 1])", "distance", {"indices": [0, 1], "atoms": [0, 1]}),
+        ("angle([0, 1, 2])", "angle", {"indices": [0, 1, 2], "atoms": [0, 1, 2]}),
+        (
+            "dihedral([0, 1, 2, 3])",
+            "dihedral",
+            {"indices": [0, 1, 2, 3], "atoms": [0, 1, 2, 3]},
+        ),
     ]
 
     for spec, expected_name, expected_kwargs in test_specs:
