@@ -82,6 +82,10 @@ class AggregatedShards:
 def _aggregate_shard_contents(shard_jsons: Sequence[Path]) -> AggregatedShards:
     """Load shards, enforce safety rails, and build the dataset payload."""
 
+    import logging
+
+    logger = logging.getLogger("pmarlo")
+
     paths = _normalise_shard_paths(shard_jsons)
 
     cv_names_ref: tuple[str, ...] | None = None
@@ -92,7 +96,7 @@ def _aggregate_shard_contents(shard_jsons: Sequence[Path]) -> AggregatedShards:
     kinds: list[str] = []
     temps: list[float] = []
 
-    for path in paths:
+    for idx, path in enumerate(paths):
         meta_info = load_shard_meta(path)
         kinds.append(meta_info.kind)
         if isinstance(meta_info, DemuxShard):
@@ -107,6 +111,10 @@ def _aggregate_shard_contents(shard_jsons: Sequence[Path]) -> AggregatedShards:
         )
 
         X_np = np.asarray(X, dtype=np.float64)
+
+        # Log shape immediately after loading the shard data
+        logger.info(f"Loaded shard {idx} ({path.name}): raw shape={X_np.shape}")
+
         X_parts.append(X_np)
         dtrajs.append(None if dtraj is None else np.asarray(dtraj, dtype=np.int32))
 
@@ -118,6 +126,10 @@ def _aggregate_shard_contents(shard_jsons: Sequence[Path]) -> AggregatedShards:
     cv_names = tuple(cv_names_ref or tuple())
     periodic = tuple(periodic_ref or tuple())
     X_all = np.vstack(X_parts).astype(np.float64, copy=False)
+
+    # Log featurized/concatenated shape
+    logger.info(f"Featurized all shards: concatenated shape={X_all.shape}")
+
     _fill_shard_offsets(shards_info)
 
     dataset = {
@@ -140,7 +152,14 @@ def _compute_stride_metadata(
     meta: Any,
     frames_loaded: int,
 ) -> tuple[int, int | None, float | None, bool]:
-    frames_declared = int(meta.n_frames)
+    # Try to get original frame count from provenance.n_frames (for strided shards)
+    # Fall back to meta.n_frames if not available
+    provenance = getattr(meta, "provenance", {})
+    if isinstance(provenance, dict) and "n_frames" in provenance:
+        frames_declared = int(provenance["n_frames"])
+    else:
+        frames_declared = int(meta.n_frames)
+
     stride_ratio = None
     if frames_loaded > 0 and frames_declared > 0:
         stride_ratio = float(frames_declared) / float(frames_loaded)
@@ -313,6 +332,8 @@ def _validate_or_set_refs(
 
 
 def _maybe_read_bias(npz_path: Path) -> np.ndarray | None:
+    if not npz_path.exists():
+        return None
     with np.load(npz_path) as f:
         if "bias_potential" not in getattr(f, "files", []):
             return None
@@ -323,12 +344,18 @@ def _maybe_read_bias(npz_path: Path) -> np.ndarray | None:
 
 
 def _dataset_hash(
-    dtrajs: List[np.ndarray | None], X: np.ndarray, cv_names: Sequence[str]
+    dtrajs: List[np.ndarray | None],
+    X: np.ndarray,
+    cv_names: Sequence[str],
+    periodic: Sequence[bool],
 ) -> str:
     """Compute deterministic dataset hash over CV names, X, and dtrajs list."""
 
     h = sha256()
     h.update(",".join([str(x) for x in cv_names]).encode("utf-8"))
+    # BUGFIX: Include periodic flags so datasets with identical CV names/X but
+    # different boundary conditions do not collide.
+    h.update(",".join("1" if flag else "0" for flag in periodic).encode("utf-8"))
     Xc = np.ascontiguousarray(X)
     h.update(str(Xc.dtype.str).encode("utf-8"))
     h.update(str(Xc.shape).encode("utf-8"))
@@ -375,10 +402,28 @@ def aggregate_and_build(
     )
     # Attach shard usage into artifacts for downstream gating checks
     try:
+        # Collect all shard IDs and deduplicate them
         shard_ids = [str(s.get("id", "")) for s in shards_info]
+        unique_shard_ids = sorted(
+            set(shard_ids)
+        )  # Deduplicate and sort for consistency
+
         art = dict(res.artifacts or {})
-        art.setdefault("shards_used", shard_ids)
-        art.setdefault("shards_count", int(len(shard_ids)))
+        art.setdefault("shards_used", unique_shard_ids)
+        art.setdefault("shards_count", int(len(unique_shard_ids)))
+
+        # Validate: ensure all shards are unique (no duplicates)
+        if len(unique_shard_ids) != len(shard_ids):
+            duplicate_count = len(shard_ids) - len(unique_shard_ids)
+            # This is a data integrity issue - log but don't fail the build
+            import logging
+
+            logger = logging.getLogger("pmarlo")
+            logger.warning(
+                f"Found {duplicate_count} duplicate shard IDs in shards_info. "
+                f"Original count: {len(shard_ids)}, unique count: {len(unique_shard_ids)}"
+            )
+
         res.artifacts = art  # type: ignore[assignment]
     except Exception:
         pass
@@ -392,7 +437,7 @@ def aggregate_and_build(
         except Exception:
             pass
 
-    ds_hash = _dataset_hash(dtrajs, X_all, cv_names)
+    ds_hash = _dataset_hash(dtrajs, X_all, cv_names, dataset["periodic"])
     try:
         new_md = replace(res.metadata, dataset_hash=ds_hash, digest=ds_hash)
         res.metadata = new_md  # type: ignore[assignment]

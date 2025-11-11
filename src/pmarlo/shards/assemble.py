@@ -5,8 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
 
-from pmarlo import constants as const
-
 from .format import read_shard_npz_json
 from .meta import load_shard_meta
 from .schema import Shard
@@ -22,12 +20,10 @@ def select_shards(root: Path, *, temperature_K: Optional[float] = None) -> List[
     if temperature_K is None:
         return jsons
     out: List[Path] = []
+    target_temperature = float(temperature_K)
     for json_path in jsons:
         meta = load_shard_meta(json_path)
-        if (
-            abs(meta.temperature_K - float(temperature_K))
-            < const.NUMERIC_ABSOLUTE_TOLERANCE
-        ):
+        if meta.temperature_K == target_temperature:
             out.append(json_path)
     return out
 
@@ -37,9 +33,18 @@ def load_shards(json_paths: Sequence[Path]) -> List[Shard]:
 
     shards: List[Shard] = []
     seen: Dict[tuple, Path] = {}
+    kind_seen: Optional[str] = None
     for json_path in json_paths:
         npz_path = Path(json_path).with_suffix(".npz")
         shard = read_shard_npz_json(npz_path, json_path)
+        kind = _extract_kind(shard, json_path)
+        if kind_seen is None:
+            kind_seen = kind
+        elif kind != kind_seen:
+            raise ValueError(
+                "Mixed shard kinds detected: "
+                f"{kind_seen!r} vs {kind!r} (path={json_path})"
+            )
         key = (
             int(shard.meta.replica_id),
             int(shard.meta.segment_id),
@@ -60,3 +65,18 @@ def group_by_temperature(shards: Iterable[Shard]) -> Dict[float, List[Shard]]:
     for shard in shards:
         grouped.setdefault(shard.meta.temperature_K, []).append(shard)
     return grouped
+
+
+def _extract_kind(shard: Shard, json_path: Path) -> str:
+    provenance = shard.meta.provenance
+    if "kind" not in provenance:
+        raise ValueError(
+            f"Shard {json_path} is missing provenance.kind; canonical shards must "
+            "declare their kind explicitly."
+        )
+    kind = str(provenance["kind"]).strip().lower()
+    if kind not in {"demux", "replica"}:
+        raise ValueError(
+            f"Shard {json_path} has unsupported kind '{provenance['kind']}'"
+        )
+    return kind

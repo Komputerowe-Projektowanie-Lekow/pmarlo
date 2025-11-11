@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Final
 
+import numpy as np
+
 # ---------------------------------------------------------------------------
 # Physical constants
 # ---------------------------------------------------------------------------
@@ -146,3 +148,89 @@ SHARD_INDEX_VERSION: Final[int] = 2
 
 SHARD_SCHEMA_VERSION: Final[str] = "2.0"
 """Version of the on-disk shard schema definition."""
+
+# ---------------------------------------------------------------------------
+# Plotting and visualization defaults
+# ---------------------------------------------------------------------------
+
+PLOT_DPI: Final[int] = 200
+"""Default resolution (dots per inch) for saved plot images."""
+
+PLOT_FIGURE_SIZE_HEATMAP: Final[tuple[float, float]] = (6.0, 5.0)
+"""Default figure size (width, height) in inches for transition matrix heatmaps."""
+
+PLOT_FIGURE_SIZE_FES_CONTOUR: Final[tuple[float, float]] = (7.0, 6.0)
+"""Default figure size (width, height) in inches for FES contour plots."""
+
+PLOT_FIGURE_SIZE_PMF_LINE: Final[tuple[float, float]] = (7.0, 4.0)
+"""Default figure size (width, height) in inches for 1D PMF line plots."""
+
+PLOT_LINE_WIDTH: Final[float] = 2.0
+"""Default line width for plot lines."""
+
+PLOT_CONTOUR_LEVELS: Final[int] = 20
+"""Default number of contour levels for FES contour plots."""
+
+PLOT_MASK_LEVELS: Final[tuple[float, float]] = (0.5, 1.5)
+"""Contour levels used for hatching masked regions in FES plots."""
+
+PLOT_BIN_EDGE_CENTER_FACTOR: Final[float] = 0.5
+"""Factor for calculating bin centers from edges: center = factor * (edge[i] + edge[i+1])."""
+
+FES_DEFAULT_BINS: Final[int] = 100
+"""Default number of bins per axis for non-adaptive FES calculation."""
+
+FES_ADAPTIVE_MIN_BINS: Final[int] = 40
+"""Minimum number of bins for adaptive FES binning."""
+
+FES_DEGENERATE_BINS: Final[int] = 41
+"""Number of bins used when FES has degenerate/invalid ranges."""
+
+FES_ADAPTIVE_BIN_DIVISOR: Final[float] = 4.0
+"""Divisor for calculating adaptive bin count: bins = sqrt(n_samples) / divisor."""
+
+FES_QUANTILE_LOW: Final[float] = 0.01
+"""Lower quantile (1%) for adaptive FES range determination."""
+
+FES_QUANTILE_HIGH: Final[float] = 0.99
+"""Upper quantile (99%) for adaptive FES range determination."""
+
+FES_SPARSITY_ERROR_THRESHOLD: Final[float] = 0.60
+"""Empty bin fraction above which FES plotting raises an error (60%)."""
+
+FES_SPARSITY_WARNING_THRESHOLD: Final[float] = 0.30
+"""Empty bin fraction above which FES calculation issues a warning (30%)."""
+
+FES_PERCENTAGE_SCALE: Final[float] = 100.0
+"""Scale factor for converting fractions to percentages in FES diagnostics."""
+
+# ---------------------------------------------------------------------------
+# Sampler / balanced defaults
+# ---------------------------------------------------------------------------
+
+# Default rare-boost factor used by balanced samplers when no explicit value is
+# provided. This controls the strength of upweighting for rare regions; kept
+# small by default to avoid extreme sampling skew.
+BALANCED_DEFAULT_RARE_BOOST: Final[float] = 0.2
+"""Default rare_boost value for BalancedTempSampler."""
+
+# Precision used when storing / hashing CV embeddings and when converting
+# embedding vectors to tuples for occupancy tracking.
+BALANCED_EMBEDDING_DTYPE = np.float32
+"""NumPy dtype used for CV embeddings in samplers."""
+
+# Precision used for frame weights and internal weight arithmetic.
+BALANCED_FRAME_WEIGHTS_DTYPE = np.float64
+"""NumPy dtype used for frame weights and internal weight math in samplers."""
+
+# Default increment added to occupancy counts per selected frame when explicit
+# frame weights are not available.
+BALANCED_OCCUPANCY_INCREMENT: Final[float] = 1.0
+"""Default occupancy increment applied per selected frame when no frame
+weights are present."""
+
+# Number of decimals to round embeddings to when creating hash keys for
+# occupancy tracking. Small values reduce key variety and thus increase
+# occupancy sharing across nearby embeddings.
+BALANCED_EMBEDDING_HASH_DECIMALS: Final[int] = 1
+"""Decimals used when hashing CV embeddings for occupancy bookkeeping."""

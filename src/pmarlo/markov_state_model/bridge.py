@@ -9,7 +9,6 @@ import numpy as np
 from pmarlo import constants as const
 
 from ._msm_utils import (
-    _row_normalize,
     _stationary_from_T,
     check_transition_matrix,
     ensure_connected_counts,
@@ -73,8 +72,9 @@ def _fit_msm_deeptime(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Fit MSM using deeptime library (required dependency).
 
-    Uses TransitionCountEstimator to estimate the transition matrix,
-    then normalizes and computes stationary distribution.
+    Uses TransitionCountEstimator to estimate transition counts and
+    MaximumLikelihoodMSM with reversible=False to compute the kinetic
+    transition matrix and stationary distribution.
 
     Parameters
     ----------
@@ -93,6 +93,7 @@ def _fit_msm_deeptime(
         (transition_matrix, stationary_distribution)
     """
     from deeptime.markov import TransitionCountEstimator  # type: ignore
+    from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
 
     tce = TransitionCountEstimator(
         lagtime=int(max(1, lag)),
@@ -109,8 +110,13 @@ def _fit_msm_deeptime(
             np.empty((0, 0), dtype=float),
             np.empty((0,), dtype=float),
         )
-    T_active = _row_normalize(res.counts)
-    pi_active = _stationary_from_T(T_active)
+    ml = MaximumLikelihoodMSM(
+        lagtime=int(max(1, lag)),
+        reversible=False,
+    )
+    msm_model = ml.fit(res.counts).fetch_model()
+    T_active = np.asarray(msm_model.transition_matrix, dtype=float)
+    pi_active = np.asarray(msm_model.stationary_distribution, dtype=float)
     return _expand_results(n_states, res.active, T_active, pi_active)
 
 
@@ -118,8 +124,14 @@ def _expand_results(
     n_states: int, active: np.ndarray, T_active: np.ndarray, pi_active: np.ndarray
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Expand MSM results back to the original state space."""
-    T_full = np.eye(n_states, dtype=float)
-    pi_full = np.zeros((n_states,), dtype=float)
+
+    # BUGFIX: allocate enough space when ``active`` contains indices beyond
+    # ``n_states`` due to user-specified underestimation of the state count.
+    required_states = int(np.max(active)) + 1 if active.size else 0
+    full_size = max(int(n_states), required_states)
+
+    T_full = np.eye(full_size, dtype=float)
+    pi_full = np.zeros((full_size,), dtype=float)
     if active.size:
         T_full[np.ix_(active, active)] = T_active
         pi_full[active] = pi_active

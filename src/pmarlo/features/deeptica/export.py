@@ -75,7 +75,7 @@ def export_cv_bias_potential(
     """Export a Deep-TICA network wrapped with TorchScript feature extraction and bias.
 
     Creates a single TorchScript module: positions+box → features → CVs → bias energy.
-    See example_programs/app_usecase/app/CV_INTEGRATION_GUIDE.md for usage.
+    See pmarlo_webapp/app/CV_INTEGRATION_GUIDE.md for usage.
     """
 
     from pmarlo.features.deeptica.cv_bias_potential import create_cv_bias_potential
@@ -180,6 +180,46 @@ def export_cv_bias_potential(
     optimised.save(str(model_path))
     logger.info("Exported TorchScript bias module to %s", model_path)
 
+    # Export NN-only model for use with OpenMM native feature forces
+    from pmarlo.features.deeptica.ts_feature_extractor import (
+        extract_nn_only_from_bias_module,
+    )
+
+    try:
+        nn_only_module = extract_nn_only_from_bias_module(bias_module)
+        nn_model_path = output_path / f"{model_name}_nn.pt"
+
+        # Test the NN-only model with dummy feature input
+        with torch.inference_mode():
+            dummy_features = torch.zeros(
+                normalized_spec.n_features, dtype=torch.float32
+            )
+            _ = nn_only_module(dummy_features)
+
+        # Script and optimize
+        with torch.inference_mode():
+            scripted_nn = torch.jit.script(nn_only_module)
+        optimised_nn = torch.jit.optimize_for_inference(scripted_nn)
+
+        # Add metadata attributes
+        optimised_nn._c._register_attribute(
+            "feature_spec_sha256",
+            torch_c.StringType.get(),
+            feature_spec_hash,
+        )
+
+        optimised_nn.save(str(nn_model_path))
+        logger.info(
+            "Exported NN-only TorchScript module (for OpenMM forces) to %s",
+            nn_model_path,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to export NN-only model (non-critical): %s. "
+            "System will fall back to full model if needed.",
+            exc,
+        )
+
     scaler_path = output_path / f"{model_name}_scaler.npz"
     np.savez(
         scaler_path,
@@ -213,6 +253,7 @@ def export_cv_bias_potential(
         "history": history,
         "feature_spec_sha256": feature_spec_hash,
         "feature_spec": spec_payload,
+        "nn_only_model_available": (output_path / f"{model_name}_nn.pt").exists(),
     }
     metadata_path.write_text(
         json.dumps(metadata_payload, indent=2, sort_keys=True), encoding="utf-8"
@@ -259,43 +300,129 @@ def export_cv_model(
 
 
 def load_cv_model_info(
-    bundle_dir: str | Path, model_name: str = "deeptica_cv_model"
+        bundle_dir: str | Path, model_name: str = "deeptica_cv_model"
 ) -> dict[str, Any]:
     """Load configuration and metadata from an exported CV model bundle."""
 
     bundle_path = Path(bundle_dir)
 
     model_path = bundle_path / f"{model_name}.pt"
-    scaler_path = bundle_path / f"{model_name}_scaler.npz"
-    config_path = bundle_path / f"{model_name}_config.json"
-    metadata_path = bundle_path / f"{model_name}_metadata.json"
+
+    # Support both naming conventions for scaler file
+    scaler_path_underscore = bundle_path / f"{model_name}_scaler.npz"
+    scaler_path_dot = bundle_path / f"{model_name}.scaler.pt"
+
+    scaler_path = None
+    # Prefer the standard _scaler.npz format, fall back to .scaler.pt
+    if scaler_path_underscore.exists():
+        scaler_path = scaler_path_underscore
+    elif scaler_path_dot.exists():
+        scaler_path = scaler_path_dot
+    else:
+        logger.info(
+            "Scaler bundle missing for %s; TorchScript module must expose scaling buffers.",
+            model_path,
+        )
+
+    # Support both naming conventions for config/metadata
+    config_path_underscore = bundle_path / f"{model_name}_config.json"
+    config_path_dot = bundle_path / f"{model_name}.config.json"
+    metadata_path_underscore = bundle_path / f"{model_name}_metadata.json"
+    metadata_path_dot = bundle_path / f"{model_name}.json"
 
     if not model_path.exists():
         raise FileNotFoundError(f"Model file not found: {model_path}")
-    if not scaler_path.exists():
-        raise FileNotFoundError(f"Scaler file not found: {scaler_path}")
 
     config: dict[str, Any] = {}
-    if config_path.exists():
-        config = json.loads(config_path.read_text(encoding="utf-8"))
+    # Try both naming conventions for config
+    if config_path_underscore.exists():
+        config = json.loads(config_path_underscore.read_text(encoding="utf-8"))
+    elif config_path_dot.exists():
+        config = json.loads(config_path_dot.read_text(encoding="utf-8"))
 
     metadata: dict[str, Any] = {}
-    if metadata_path.exists():
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    # Try both naming conventions for metadata
+    if metadata_path_underscore.exists():
+        metadata = json.loads(metadata_path_underscore.read_text(encoding="utf-8"))
+    elif metadata_path_dot.exists():
+        metadata = json.loads(metadata_path_dot.read_text(encoding="utf-8"))
 
-    scaler_data = np.load(scaler_path, allow_pickle=True)
-    scaler_params = {
-        "mean": scaler_data["mean"],
-        "scale": scaler_data["scale"],
-        "feature_names": scaler_data.get("feature_names", []).tolist(),
-    }
+    # Load scaler data - handle both .npz and .pt formats
+    scaler_params: dict[str, Any] = {}
+    if scaler_path is not None:
+        try:
+            if scaler_path.suffix == ".npz":
+                scaler_data = np.load(scaler_path, allow_pickle=True)
+                scaler_params = {
+                    "mean": scaler_data["mean"],
+                    "scale": scaler_data["scale"],
+                    "feature_names": scaler_data.get("feature_names", []).tolist(),
+                }
+            elif scaler_path.suffix == ".pt":
+                # If it's a .pt file, load with torch (allow pickle for numpy arrays)
+                scaler_data = torch.load(
+                    scaler_path, map_location="cpu", weights_only=False
+                )
+                if isinstance(scaler_data, dict):
+                    mean_data = scaler_data.get("mean", scaler_data.get("mean_", []))
+                    scale_data = scaler_data.get("scale", scaler_data.get("scale_", []))
+                    feature_names = scaler_data.get("feature_names", [])
+                else:
+                    mean_data = getattr(scaler_data, "mean_", [])
+                    scale_data = getattr(scaler_data, "scale_", [])
+                    feature_names = getattr(scaler_data, "feature_names", [])
+
+                scaler_params = {
+                    "mean": np.array(mean_data)
+                    if not isinstance(mean_data, np.ndarray)
+                    else mean_data,
+                    "scale": np.array(scale_data)
+                    if not isinstance(scale_data, np.ndarray)
+                    else scale_data,
+                    "feature_names": list(feature_names)
+                    if hasattr(feature_names, "__iter__")
+                    else [],
+                }
+            else:
+                raise ValueError(f"Unsupported scaler file format: {scaler_path.suffix}")
+        except Exception as exc:  # pragma: no cover - hard to reproduce
+            raise RuntimeError(f"Failed to load scaler from {scaler_path}: {exc}") from exc
+    else:
+        logger.info("No scaler artifact found for %s; deriving from module when required.", model_path)
+
+    # Try to extract feature_spec_sha256 from multiple sources
+    feature_spec_sha256 = (
+            metadata.get("feature_spec_sha256")
+            or config.get("feature_spec_sha256")
+            or metadata.get("feature_spec_hash")  # Alternative key
+            or config.get("feature_spec_hash")  # Alternative key
+    )
+
+    # If still not found, try to load from the TorchScript model itself
+    if not feature_spec_sha256:
+        try:
+            model = torch.jit.load(str(model_path), map_location="cpu")
+            if hasattr(model, "feature_spec_sha256"):
+                feature_spec_sha256 = model.feature_spec_sha256
+            elif hasattr(model, "_c"):
+                # Try to get it from the compiled attributes
+                try:
+                    feature_spec_sha256 = model._c.getattr("feature_spec_sha256")
+                except:
+                    pass
+        except Exception as e:
+            logger.warning(f"Could not extract feature_spec_sha256 from model: {e}")
+
+    # If STILL not found, compute it from the feature_spec in metadata
+    if not feature_spec_sha256 and "feature_spec" in metadata:
+        feature_spec_sha256 = _hash_feature_spec(_json_compatible(metadata["feature_spec"]))
+        logger.info(f"Computed feature_spec_sha256 from metadata: {feature_spec_sha256}")
 
     return {
         "model_path": str(model_path),
-        "scaler_path": str(scaler_path),
+        "scaler_path": str(scaler_path) if scaler_path is not None else None,
         "config": config,
         "metadata": metadata,
         "scaler_params": scaler_params,
-        "feature_spec_sha256": metadata.get("feature_spec_sha256")
-        or config.get("feature_spec_sha256"),
+        "feature_spec_sha256": feature_spec_sha256,
     }

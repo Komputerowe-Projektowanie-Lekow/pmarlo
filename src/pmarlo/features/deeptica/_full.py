@@ -29,18 +29,12 @@ from .core.model import strip_batch_norm as core_strip_batch_norm
 from .core.model import (
     wrap_with_preprocessing_layers as core_wrap_with_preprocessing_layers,
 )
-from .core.trainer_api import train_deeptica_mlcolvar, train_deeptica_pipeline
+from .core.trainer_api import (
+    train_deeptica_deeptime,
+    train_deeptica_mlcolvar,
+    train_deeptica_pipeline,
+)
 from .core.utils import safe_float as core_safe_float
-
-_DEEPTICA_IMPORT_ERROR: Exception | None = None
-try:  # pragma: no cover - optional extra
-    from mlcolvar.cvs import DeepTICA  # type: ignore
-except Exception as exc:  # pragma: no cover - optional extra
-    DeepTICA = None  # type: ignore
-    _DEEPTICA_IMPORT_ERROR = exc
-else:  # pragma: no cover - optional extra
-    _DEEPTICA_IMPORT_ERROR = None
-
 
 logger = logging.getLogger(__name__)
 
@@ -48,21 +42,8 @@ _TRAINING_BACKENDS: dict[str, Any] = {
     "lightning": train_deeptica_pipeline,
     "curriculum": train_deeptica_pipeline,
     "mlcolvar": train_deeptica_mlcolvar,
+    "deeptime": train_deeptica_deeptime,
 }
-
-
-class PmarloApiIncompatibilityError(RuntimeError):
-    """Raised when mlcolvar API layout does not expose expected classes."""
-
-
-if DeepTICA is None:
-    if isinstance(_DEEPTICA_IMPORT_ERROR, ImportError):
-        raise ImportError(
-            "Install optional extra pmarlo[mlcv] to use Deep-TICA"
-        ) from _DEEPTICA_IMPORT_ERROR
-    raise PmarloApiIncompatibilityError(
-        "mlcolvar installed but DeepTICA not found in expected locations"
-    ) from _DEEPTICA_IMPORT_ERROR
 
 
 def set_all_seeds(seed: int = 2024) -> None:
@@ -379,8 +360,30 @@ class DeepTICAModel:
         scaler = _load_scaler_checkpoint(path)
         core = _construct_deeptica_core(cfg, scaler)
         net = _wrap_with_preprocessing_layers(core, cfg, scaler)
-        state = torch.load(path.with_suffix(".pt"), map_location="cpu")
-        net.load_state_dict(state["state_dict"])  # type: ignore[index]
+        state = torch.load(
+            path.with_suffix(".pt"),
+            map_location="cpu",
+            weights_only=False,  # Required for model state dict in PyTorch 2.6+
+        )
+
+        # Load state dict with strict=False to allow for architecture evolution
+        # This is safe because we're loading a trained model, not for training
+        missing_keys, unexpected_keys = net.load_state_dict(
+            state["state_dict"], strict=False
+        )  # type: ignore[index]
+
+        if unexpected_keys:
+            # Try loading just the core network if there are unexpected keys
+            # This handles cases where the model was saved with a different wrapper structure
+            core_state_dict = {}
+            for key, value in state["state_dict"].items():
+                # Remove 'inner.' prefix if present
+                if key.startswith("inner."):
+                    core_state_dict[key[6:]] = value
+                else:
+                    core_state_dict[key] = value
+            net.load_state_dict(core_state_dict, strict=False)
+
         net.eval()
         history = _load_training_history(path)
         return cls(cfg, scaler, net, training_history=history)
@@ -417,7 +420,11 @@ def _load_deeptica_config(path: Path) -> DeepTICAConfig:
 
 
 def _load_scaler_checkpoint(path: Path) -> StandardScaler:
-    scaler_ckpt = torch.load(path.with_suffix(".scaler.pt"), map_location="cpu")
+    scaler_ckpt = torch.load(
+        path.with_suffix(".scaler.pt"),
+        map_location="cpu",
+        weights_only=False,  # Required for loading numpy arrays in PyTorch 2.6+
+    )
     scaler = StandardScaler(with_mean=True, with_std=True)
     scaler.mean_ = np.asarray(scaler_ckpt["mean"], dtype=np.float64)
     scaler.scale_ = np.asarray(scaler_ckpt["std"], dtype=np.float64)
@@ -429,7 +436,11 @@ def _load_scaler_checkpoint(path: Path) -> StandardScaler:
 
 
 def _construct_deeptica_core(cfg: Any, scaler: StandardScaler):
-    return core_construct_deeptica_core(cfg, scaler)
+    core = core_construct_deeptica_core(cfg, scaler)
+    if isinstance(core, tuple):
+        # Upstream returns (core_module, aux_layers); we only need the module here
+        return core[0]
+    return core
 
 
 def _resolve_hidden_layers(cfg: Any) -> tuple[int, ...]:

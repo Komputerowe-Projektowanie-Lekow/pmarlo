@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import csv
 from pathlib import Path
@@ -107,9 +107,9 @@ def test_demux_plan_exactness_and_lengths(tmp_path: Path):
     xs_T0 = _read_x_coords(out_T0, topo)
     xs_T1 = _read_x_coords(out_T1, topo)
     assert len(xs_T0) == N and len(xs_T1) == N
-    # Expected: T0 sees r0,r1,r2,r0,r1,r2 → values [0,1000,2000,1,1001,2001]
+    # Expected: T0 sees r0,r1,r2,r0,r1,r2 â†’ values [0,1000,2000,1,1001,2001]
     assert xs_T0 == [0.0, 1000.0, 2000.0, 1.0, 1001.0, 2001.0]
-    # T1 sees r1,r2,r0,r1,r2,r0 → [1000,2000,0,1001,2001,1]
+    # T1 sees r1,r2,r0,r1,r2,r0 â†’ [1000,2000,0,1001,2001,1]
     assert xs_T1 == [1000.0, 2000.0, 0.0, 1001.0, 2001.0, 1.0]
 
     # JSON contents and lengths

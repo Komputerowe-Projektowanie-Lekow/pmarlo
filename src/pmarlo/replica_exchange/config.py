@@ -36,11 +36,17 @@ class RemdConfig:
         default_factory=lambda: ["amber14-all.xml", "amber14/tip3pfb.xml"]
     )
     temperatures: Optional[List[float]] = None
-    output_dir: Path | str = Path("output/replica_exchange")
+    output_dir: Path | str | None = None
     exchange_frequency: int = 50
     dcd_stride: int = 1
     use_metadynamics: bool = True
     auto_setup: bool = False
+
+    # Performance optimization: selective trajectory writing
+    # Specify which replica indices to write trajectories for (e.g., [0] for only lowest-T)
+    # If None or empty, all replicas write trajectories (default, backward compatible)
+    # Setting this to [0] can reduce I/O overhead by 70-90% for large replica counts
+    write_replica_indices: Optional[List[int]] = None
 
     # Diagnostics/targets
     target_frames_per_replica: int = 5000
@@ -76,3 +82,9 @@ class RemdConfig:
             object.__setattr__(self, "input_pdb", resolved_str)
         else:
             object.__setattr__(self, "input_pdb", resolved_str)
+
+        if self.output_dir is None:
+            raise TypeError(
+                "RemdConfig requires `output_dir` to be provided explicitly."
+            )
+        object.__setattr__(self, "output_dir", Path(self.output_dir))

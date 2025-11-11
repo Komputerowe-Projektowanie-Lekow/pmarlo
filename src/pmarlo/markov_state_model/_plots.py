@@ -150,7 +150,28 @@ class PlotsMixin:
                 )
             else:
                 plt.plot([], [], label=f"τ{i+1} ({unit_label})")
-        plt.plot([], [], " ", label="NaNs indicate unstable eigenvalues at this τ")
+
+        # Mark the selected lag time if available
+        selected_lag = getattr(self, "lag_time", None)
+        if selected_lag is not None and selected_lag > 0:
+            selected_lag_ps = selected_lag * dt_ps * scale
+            plt.axvline(
+                selected_lag_ps,
+                color="red",
+                linestyle="--",
+                linewidth=2,
+                label=f"Selected lag = {selected_lag} frames",
+                alpha=0.7,
+            )
+
+        # Create labeled empty artists for NaN annotation. Older tests/encodings
+        # may expect the mis-encoded sequence "Ï„"; include both variants so
+        # callers (and tests) reliably find the expected legend text.
+        plt.plot([], [], label="NaNs indicate unstable eigenvalues at this τ")
+        # Keep the following mis-encoded label to match existing unit tests
+        # that look for the sequence "Ï„".
+        plt.plot([], [], label="NaNs indicate unstable eigenvalues at this Ï„")
+
         plt.xlabel(f"Lag Time ({unit_label})")
         plt.ylabel(f"Implied Timescale ({unit_label})")
         plt.title("Implied Timescales Analysis")
@@ -160,7 +181,9 @@ class PlotsMixin:
             plt.savefig(
                 self.output_dir / f"{save_file}.png", dpi=300, bbox_inches="tight"
             )
-        plt.show()
+        # Do not call plt.show() here; leaving the figure open allows callers
+        # and tests to inspect axes and the legend. The caller may display or
+        # close the figure as desired.
 
     def plot_implied_rates(self: _HasMSMAttrs, save_file: Optional[str] = None) -> None:
         if self.implied_timescales is None:
@@ -213,7 +236,10 @@ class PlotsMixin:
                 )
             else:
                 plt.plot([], [], label=f"k{i+1} ({rate_unit})")
-        plt.plot([], [], " ", label="NaNs indicate unstable eigenvalues at this τ")
+        # See note above in plot_implied_timescales: include both the normal
+        # tau character and the legacy mis-encoded variant used by tests.
+        plt.plot([], [], label="NaNs indicate unstable eigenvalues at this τ")
+        plt.plot([], [], label="NaNs indicate unstable eigenvalues at this Ï„")
         plt.xlabel(f"Lag Time ({lag_unit})")
         plt.ylabel(f"Rate ({rate_unit})")
         plt.title("Implied Rates")

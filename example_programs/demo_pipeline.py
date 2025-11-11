@@ -10,14 +10,16 @@ This script demonstrates the main PMARLO API usage patterns including:
 For production use, see the other example programs.
 """
 
-from _example_support import assets_path, ensure_src_on_path, project_root
+from pathlib import Path
+
+from _example_support import assets_path, ensure_src_on_path
 
 ensure_src_on_path()
 
 from pmarlo import Pipeline, Protein, run_pmarlo
 
-BASE_DIR = project_root()
 TESTS_DIR = assets_path()
+OUTPUT_ROOT = Path(__file__).resolve().parent / "programs_outputs" / "demo_pipeline"
 
 
 def test_protein():
@@ -28,11 +30,11 @@ def test_protein():
     try:
         print("Testing Protein class...")
         protein = Protein(str(pdb_file), ph=7.0)
-        print("✓ Protein initialized successfully.")
+        print("OK Protein initialized successfully.")
 
         print("Saving prepared protein structure...")
         protein.save(str(pdb_fixed_path))
-        print(f"✓ Prepared protein saved to: {pdb_fixed_path}")
+        print(f"OK Prepared protein saved to: {pdb_fixed_path}")
 
         print("Retrieving protein properties...")
         properties = protein.get_properties()
@@ -40,9 +42,9 @@ def test_protein():
         for key, value in properties.items():
             print(f"  {key}: {value}")
 
-        print("✓ Protein test completed successfully.")
+        print("OK Protein test completed successfully.")
     except Exception as e:
-        print(f"✗ An error occurred during the test: {e}")
+        print(f"FAIL An error occurred during the test: {e}")
 
 
 def run_simple_example():
@@ -58,25 +60,25 @@ def run_simple_example():
             steps=100,  # Very short for demo
             n_states=10,  # Fewer states for demo
             use_replica_exchange=False,  # Simpler for demo
-            output_dir=str(BASE_DIR / "output" / "demo"),
+            output_dir=str(OUTPUT_ROOT / "simple_run"),
             auto_continue=True,
         )
 
-        print("🆕 Starting new run")
+        print("NEW: Starting new run")
 
         # Demo the setup phases
         protein = pipeline.setup_protein()
         print(
-            f"✓ Protein setup complete: {protein.get_properties()['num_atoms']} atoms"
+            f"OK Protein setup complete: {protein.get_properties()['num_atoms']} atoms"
         )
 
         simulation = pipeline.setup_simulation()
-        print(f"✓ Simulation setup complete for {simulation.steps} steps")
+        print(f"OK Simulation setup complete for {simulation.steps} steps")
 
         pipeline.setup_msm_analysis()
-        print(f"✓ MSM setup complete for {pipeline.n_states} states")
+        print(f"OK MSM setup complete for {pipeline.n_states} states")
 
-        print("✓ Demo setup complete! To run full simulation, call pipeline.run()")
+        print("OK Demo setup complete! To run full simulation, call pipeline.run()")
 
     except Exception as e:
         print(f"Demo failed (this is expected if test files are missing): {e}")
@@ -88,7 +90,7 @@ def demo_simple_api():
     print("PMARLO SIMPLE API DEMONSTRATION")
     print("=" * 60)
 
-    print("\n🆕 NEW API Usage Patterns:")
+    print("\nNEW API Usage Patterns:")
     print("=" * 40)
     print(
         """
@@ -98,28 +100,29 @@ results = run_pmarlo(
     "protein.pdb",
     temperatures=[300, 310, 320],
     steps=1000,
+    output_dir="/path/to/pmarlo/run",
     auto_continue=True,
 )
 
 # Programmatic pipeline control
 from pmarlo import Pipeline
-pipeline = Pipeline("protein.pdb", auto_continue=True)
+pipeline = Pipeline("protein.pdb", output_dir="/path/to/pmarlo/run", auto_continue=True)
 results = pipeline.run()
 
 # Manual component setup
 from pmarlo import Protein, ReplicaExchange, MarkovStateModel
 protein = Protein("protein.pdb", ph=7.0)
-pipeline = Pipeline("protein.pdb")
+pipeline = Pipeline("protein.pdb", output_dir="/path/to/pmarlo/run")
 results = pipeline.run()
     """
     )
 
-    print("\n💡 API ADVANTAGES:")
-    print("   ✅ Clean, simple interface")
-    print("   ✅ Automatic checkpoint handling")
-    print("   ✅ Library-friendly (no CLI dependencies)")
-    print("   ✅ Consistent API across all features")
-    print("   ✅ Better error handling and recovery")
+    print("\nTIP API ADVANTAGES:")
+    print("   PASS Clean, simple interface")
+    print("   PASS Automatic checkpoint handling")
+    print("   PASS Library-friendly (no CLI dependencies)")
+    print("   PASS Consistent API across all features")
+    print("   PASS Better error handling and recovery")
 
 
 def main():

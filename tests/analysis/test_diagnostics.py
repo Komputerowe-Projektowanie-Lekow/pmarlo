@@ -1,4 +1,4 @@
-import numpy as np
+﻿import numpy as np
 import pytest
 
 from pmarlo.analysis.diagnostics import (
@@ -29,7 +29,10 @@ def test_compute_diagnostics_handles_missing_inputs():
     result = compute_diagnostics(dataset, diag_mass=0.1)
 
     assert result.get("canonical_correlation", {}) == {}
-    assert "train" in result.get("autocorrelation", {})
+    ac_entry = result.get("autocorrelation", {}).get("train")
+    assert ac_entry is not None
+    assert ac_entry.get("taus", [])[0] == 0
+    assert "tau_int" in ac_entry
 
 
 def test_canonical_correlation_raises_on_insufficient_samples():

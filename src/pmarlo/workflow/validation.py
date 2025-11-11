@@ -1,5 +1,4 @@
-"""
-Workflow validation utilities for PMARLO analysis pipelines.
+"""Workflow validation utilities for PMARLO analysis pipelines.
 
 This module provides comprehensive validation functions for checking data
 consistency, shard usage, and analysis quality across the PMARLO workflow.
@@ -183,10 +182,12 @@ def validate_fes_quality(
 
 
 def _extract_fes_array(fes_data: Dict[str, Any]) -> np.ndarray:
-    fes_values = fes_data.get("fes", fes_data.get("values"))
-    if fes_values is None:
-        raise ValueError("No FES values found in data")
-    return np.asarray(fes_values)
+    """Return the numeric FES array from common artifact formats."""
+
+    for key in ("fes", "values", "F"):
+        if key in fes_data:
+            return np.asarray(fes_data[key])
+    raise ValueError("No FES values found in data")
 
 
 def _evaluate_nan_metrics(
@@ -343,7 +344,7 @@ def format_validation_report(validation_results: Dict[str, Any]) -> str:
     lines = []
 
     # Status
-    status = "✓ VALID" if validation_results["is_valid"] else "✗ INVALID"
+    status = "VALID" if validation_results["is_valid"] else "INVALID"
     lines.append(f"Build Validation: {status}")
     lines.append("")
 
@@ -365,14 +366,14 @@ def format_validation_report(validation_results: Dict[str, Any]) -> str:
     if validation_results["warnings"]:
         lines.append("Warnings:")
         for warning in validation_results["warnings"]:
-            lines.append(f"  ⚠ {warning}")
+            lines.append(f"  ! {warning}")
         lines.append("")
 
     # Errors
     if validation_results["errors"]:
         lines.append("Errors:")
         for error in validation_results["errors"]:
-            lines.append(f"  ✗ {error}")
+            lines.append(f"  X {error}")
         lines.append("")
 
     # Shard table (first 10 entries)

@@ -3,11 +3,17 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Sequence
+from typing import Iterable, List, Sequence
 
 StrPath = str | os.PathLike[str]
 
-__all__ = ["repository_root", "resolve_project_path", "ensure_directory"]
+__all__ = [
+    "repository_root",
+    "resolve_project_path",
+    "ensure_directory",
+    "coerce_path_list",
+    "relativize",
+]
 
 
 @lru_cache(maxsize=1)
@@ -104,3 +110,82 @@ def ensure_directory(
         directory.chmod(mode)
 
     return directory
+
+
+def coerce_path_list(paths: Iterable[str | Path]) -> List[Path]:
+    """Convert an iterable of string/Path objects to resolved Path objects.
+
+    This is a utility function that standardizes path inputs by converting
+    them to resolved :class:`pathlib.Path` objects. Useful for normalizing
+    user inputs that may be a mix of strings and Path objects.
+
+    Parameters
+    ----------
+    paths : Iterable[str | Path]
+        An iterable containing strings or Path objects representing file paths.
+
+    Returns
+    -------
+    List[Path]
+        A list of resolved :class:`pathlib.Path` objects.
+
+    Examples
+    --------
+    >>> paths = coerce_path_list(["file1.txt", Path("file2.txt")])
+    >>> all(isinstance(p, Path) for p in paths)
+    True
+
+    Notes
+    -----
+    This function calls :meth:`Path.resolve()` on each path, which:
+    - Makes paths absolute
+    - Resolves symlinks
+    - Normalizes the path (removes redundant separators and up-level references)
+    """
+    return [Path(p).resolve() for p in paths]
+
+
+def relativize(path: Path | str, base: Path | str) -> str:
+    """Safely compute relative path with fallback to absolute path.
+
+    Attempts to compute the relative path from ``base`` to ``path``. If the
+    paths do not share a common ancestor (e.g., on different drives on Windows),
+    falls back to returning the absolute path as a string.
+
+    Parameters
+    ----------
+    path : Path | str
+        The target path to relativize.
+    base : Path | str
+        The base path to compute the relative path from.
+
+    Returns
+    -------
+    str
+        The relative path from ``base`` to ``path`` if possible, otherwise
+        the absolute path as a string.
+
+    Examples
+    --------
+    >>> from pathlib import Path
+    >>> base = Path("/home/user/project")
+    >>> path = Path("/home/user/project/data/file.txt")
+    >>> relativize(path, base)
+    'data/file.txt'
+
+    >>> # Different drives on Windows - falls back to absolute
+    >>> relativize(Path("C:/file.txt"), Path("D:/base"))  # doctest: +SKIP
+    'C:\\\\file.txt'
+
+    Notes
+    -----
+    This is useful for generating portable path references in configuration files
+    or output artifacts where relative paths are preferred but absolute paths
+    are acceptable as a fallback.
+    """
+    path_obj = Path(path)
+    base_obj = Path(base)
+    try:
+        return str(path_obj.relative_to(base_obj))
+    except ValueError:
+        return str(path_obj)

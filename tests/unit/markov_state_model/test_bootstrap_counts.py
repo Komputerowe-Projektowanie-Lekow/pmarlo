@@ -3,8 +3,10 @@ import numpy as np
 from pmarlo.markov_state_model.enhanced_msm import EnhancedMSM
 
 
-def test_bootstrap_counts_consistency(monkeypatch):
-    msm = EnhancedMSM()
+def test_bootstrap_counts_consistency(monkeypatch, tmp_path):
+    output_dir = tmp_path / "msm_output"
+    output_dir.mkdir()
+    msm = EnhancedMSM(output_dir=output_dir)
     msm.dtrajs = [np.array([0, 1, 0, 2, 1, 0])]
     msm.n_states = 3
     assignments = np.concatenate(msm.dtrajs)

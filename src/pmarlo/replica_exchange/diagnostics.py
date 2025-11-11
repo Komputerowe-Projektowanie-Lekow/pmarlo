@@ -246,7 +246,7 @@ def retune_temperature_ladder(
     pair_attempt_counts: Dict[tuple[int, int], int],
     pair_accept_counts: Dict[tuple[int, int], int],
     target_acceptance: float = 0.30,
-    output_json: str = "output/temperatures_suggested.json",
+    output_json: str | Path | None = None,
     dry_run: bool = False,
 ) -> Dict[str, Any]:
     """Suggest a new temperature ladder based on pairwise acceptance."""
@@ -303,6 +303,11 @@ def retune_temperature_ladder(
         target_acceptance_clamped,
     )
 
+    if output_json is None:
+        raise TypeError(
+            "retune_temperature_ladder requires `output_json` to be provided."
+        )
+
     try:
         out_path = Path(output_json)
         if out_path.parent:
@@ -310,7 +315,7 @@ def retune_temperature_ladder(
     except Exception:
         pass
 
-    with open(str(output_json), "w", encoding="utf-8") as fh:
+    with open(str(out_path), "w", encoding="utf-8") as fh:
         json.dump(suggested_temps, fh)
 
     if dry_run:

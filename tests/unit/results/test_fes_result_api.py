@@ -1,4 +1,4 @@
-import numpy as np
+﻿import numpy as np
 import pytest
 
 from pmarlo.api import generate_fes_and_pick_minima

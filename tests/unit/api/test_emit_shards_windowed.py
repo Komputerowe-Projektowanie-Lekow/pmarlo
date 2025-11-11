@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import ast
 from pathlib import Path
@@ -8,7 +8,8 @@ import numpy as np
 import pytest
 
 _ROOT = Path(__file__).resolve().parents[3]
-_API_PATH = _ROOT / "src" / "pmarlo" / "api.py"
+# new modular API: shards implementation lives in api/shards.py
+_API_PATH = _ROOT / "src" / "pmarlo" / "api" / "shards.py"
 
 with _API_PATH.open("r", encoding="utf-8") as fh:
     _API_SOURCE = fh.read()
@@ -80,9 +81,10 @@ def test_emit_windows_produces_canonical_metadata(tmp_path):
     )
 
     assert next_idx == 2
+    # Implementation includes run_id suffix in shard IDs (to ensure global uniqueness)
     assert [p.name for p in shard_paths] == [
-        "T300K_seg0000_rep002.json",
-        "T300K_seg0001_rep002.json",
+        "T300K_run-001_seg0000_rep002.json",
+        "T300K_run-001_seg0001_rep002.json",
     ]
     assert recorded[0]["seed"] == 42
     assert recorded[1]["seed"] == 43

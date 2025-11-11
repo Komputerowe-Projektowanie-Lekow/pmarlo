@@ -1,4 +1,4 @@
-"""Tests for histogram smoothing in the FES helpers."""
+﻿"""Tests for histogram smoothing in the FES helpers."""
 
 from __future__ import annotations
 

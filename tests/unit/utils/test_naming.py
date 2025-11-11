@@ -1,4 +1,4 @@
-import pmarlo.utils.naming as naming
+﻿import pmarlo.utils.naming as naming
 
 
 def test_base_shape_str_cache():

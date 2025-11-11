@@ -1,4 +1,4 @@
-"""Tests for the Chapman–Kolmogorov diagnostics."""
+﻿"""Tests for the Chapmanâ€“Kolmogorov diagnostics."""
 
 from pathlib import Path
 

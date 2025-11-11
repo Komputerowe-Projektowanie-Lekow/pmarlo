@@ -45,6 +45,13 @@ class MSMConfig:
     stride: int = 1
     atom_selection: str | None = None
     seed: int | None = None
+    fes_smoothing_mode: str = "never"
+    fes_target_sd_kT: float | None = None
+    fes_alpha: float = 1e-6
+    fes_h0: float = 1.2
+    fes_ess_ref: float = 50.0
+    fes_h_min: float = 0.4
+    fes_h_max: float = 3.0
 
 
 def _create_run_directory(output_dir: str) -> Path:
@@ -92,15 +99,55 @@ def _write_input_description(config: MSMConfig, run_dir: Path) -> None:
         json.dump(input_desc, f, indent=2)
 
 
+def _normalize_dtrajs_sequences(dtrajs_attr) -> list:
+    """Return a list-like collection of discrete trajectories.
+
+    The MSM objects produced by different backends expose ``dtrajs`` with
+    slightly different container types (lists of arrays, tuples, or NumPy
+    ndarrays).  The previous implementation relied on truth-value testing to
+    guard against missing trajectories, which breaks when ``dtrajs`` is a
+    NumPy array because ``bool(numpy.ndarray)`` raises ``ValueError``.  This
+    helper performs explicit ``None`` checks and normalizes the returned
+    object into an indexable sequence of trajectories so downstream code can
+    iterate safely.
+    """
+
+    if dtrajs_attr is None:
+        return []
+
+    if isinstance(dtrajs_attr, np.ndarray):
+        if dtrajs_attr.ndim == 1:
+            return [dtrajs_attr]
+        if dtrajs_attr.ndim == 2:
+            return [np.asarray(row) for row in dtrajs_attr]
+        raise ValueError(
+            "msm.dtrajs ndarray must be 1D or 2D to describe discrete trajectories"
+        )
+
+    try:
+        sequences = list(dtrajs_attr)
+    except TypeError as exc:  # pragma: no cover - defensive programming
+        raise TypeError("msm.dtrajs must be iterable") from exc
+
+    if not sequences:
+        return []
+
+    first = sequences[0]
+    if isinstance(first, (int, np.integer)):
+        # ``dtrajs`` was likely provided as a flat sequence describing a single
+        # trajectory. Wrap it so the downstream loop treats it uniformly.
+        return [np.asarray(sequences)]
+
+    return sequences
+
+
 def _extract_dtrajs_and_frame_count(msm) -> tuple[list[int], int]:
     """Flatten discrete trajectories if available and count total frames."""
     dtrajs: list[int] = []
     total_frames = 0
-    dtrajs_attr = getattr(msm, "dtrajs", None)
-    if not dtrajs_attr:
-        return dtrajs, total_frames
+    sequences = _normalize_dtrajs_sequences(getattr(msm, "dtrajs", None))
 
-    for arr in dtrajs_attr:
+    for arr in sequences:
         seq = list(arr)
         dtrajs.extend(int(x) for x in seq)
         total_frames += len(seq)
@@ -161,15 +208,15 @@ def _compute_ck_test_mse(msm) -> float | None:
     transition matrix at 2*lag.
     """
     T = getattr(msm, "transition_matrix", None)
-    dtrajs_local = getattr(msm, "dtrajs", None)
+    dtrajs_sequences = _normalize_dtrajs_sequences(getattr(msm, "dtrajs", None))
     n_states_local = getattr(msm, "n_states", None)
     lag_local = getattr(msm, "lag_time", None)
 
     if (
         T is None
-        or not dtrajs_local
-        or not isinstance(n_states_local, int)
-        or not isinstance(lag_local, int)
+        or not dtrajs_sequences
+        or not isinstance(n_states_local, (int, np.integer))
+        or not isinstance(lag_local, (int, np.integer))
         or n_states_local <= 0
     ):
         return None
@@ -179,7 +226,7 @@ def _compute_ck_test_mse(msm) -> float | None:
 
     lag2 = 2 * int(lag_local)
     counts = np.zeros((n_states_local, n_states_local), dtype=float)
-    for arr in dtrajs_local:
+    for arr in dtrajs_sequences:
         seq = list(arr)
         for i in range(0, max(0, len(seq) - lag2)):
             si = int(seq[i])

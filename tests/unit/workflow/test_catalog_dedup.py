@@ -1,4 +1,4 @@
-"""
+﻿"""
 Tests for catalog deduplication and validation.
 
 This module tests the ShardCatalog class and validation functions

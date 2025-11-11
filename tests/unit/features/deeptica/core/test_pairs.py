@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import numpy as np
 import pytest
@@ -44,3 +44,21 @@ def test_build_pair_info_rejects_invalid_pairs():
     )
     with pytest.raises(ValueError):
         build_pair_info(blocks, [2], pairs=manual_pairs)
+
+
+def test_build_pair_info_handles_multi_tau_without_pairs():
+    blocks = [np.zeros((2, 1), dtype=np.float32)]
+    info = build_pair_info(blocks, [3, 5])
+    assert info.idx_t.size == 0
+    assert info.idx_tau.size == 0
+    assert info.weights.size == 0
+
+
+def test_build_pair_info_rejects_pairs_outside_shards():
+    blocks = [np.zeros((4, 1), dtype=np.float32)]
+    manual_pairs = (
+        np.array([0, 1], dtype=np.int64),
+        np.array([4, 5], dtype=np.int64),
+    )
+    with pytest.raises(ValueError):
+        build_pair_info(blocks, [1], pairs=manual_pairs)

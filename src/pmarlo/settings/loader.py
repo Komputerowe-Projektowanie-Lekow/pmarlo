@@ -27,7 +27,7 @@ def _default_config_path() -> Path:
 
 
 def _resolve_path(base: Path, value: str | Path) -> Path:
-    candidate = Path(value)
+    candidate = Path(value).expanduser()
     if candidate.is_absolute():
         return candidate
     return (base / candidate).resolve()
@@ -47,7 +47,6 @@ def _load_yaml(path: Path) -> Dict[str, Any]:
     return data
 
 
-@lru_cache(maxsize=1)
 def load_defaults() -> Dict[str, Any]:
     """
     Load the default configuration, validating required keys and value domains.
@@ -59,6 +58,15 @@ def load_defaults() -> Dict[str, Any]:
     else:
         config_path = _default_config_path()
 
+    return _load_defaults_from_path(str(config_path))
+
+
+@lru_cache(maxsize=None)
+def _load_defaults_from_path(config_path_str: str) -> Dict[str, Any]:
+    """Load defaults from a specific configuration path."""
+
+    # BUGFIX: Cache entries per resolved path so environment overrides are respected.
+    config_path = Path(config_path_str)
     config_dir = config_path.parent
     payload = _load_yaml(config_path)
 
@@ -69,7 +77,23 @@ def load_defaults() -> Dict[str, Any]:
             + ", ".join(sorted(missing))
         )
 
-    enable_bias = bool(payload["enable_cv_bias"])
+    truthy = {"true", "yes", "1"}
+    falsy = {"false", "no", "0"}
+
+    def _coerce_boolean(value: Any, key: str) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in truthy:
+                return True
+            if normalized in falsy:
+                return False
+        raise ConfigurationError(
+            f"{key} must be a boolean or one of: {', '.join(sorted(truthy | falsy))}."
+        )
+
+    enable_bias = _coerce_boolean(payload["enable_cv_bias"], "enable_cv_bias")
     bias_mode = str(payload["bias_mode"]).strip().lower()
     if bias_mode not in ALLOWED_BIAS_MODES:
         raise ConfigurationError(
@@ -108,6 +132,10 @@ def load_defaults() -> Dict[str, Any]:
         }
     )
     return payload
+
+
+load_defaults.cache_clear = _load_defaults_from_path.cache_clear  # type: ignore[attr-defined]
+load_defaults.cache_info = _load_defaults_from_path.cache_info  # type: ignore[attr-defined]
 
 
 def resolve_feature_spec_path() -> Path:

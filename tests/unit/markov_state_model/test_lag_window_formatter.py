@@ -1,4 +1,4 @@
-import numpy as np
+﻿import numpy as np
 
 from pmarlo.markov_state_model.utils import format_lag_window_ps
 

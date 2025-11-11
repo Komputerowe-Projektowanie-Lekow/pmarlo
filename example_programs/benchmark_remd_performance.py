@@ -89,7 +89,7 @@ def benchmark_system_creation(pdb_file: Path, cv_model: Path | None) -> Dict[str
 
     return results
 
-def benchmark_md_throughput(pdb_file: Path, steps: int = 1000, platform: str = "CPU") -> Dict[str, Any]:
+def benchmark_md_throughput(pdb_file: Path, steps: int = 100, platform: str = "CPU") -> Dict[str, Any]:
     """Benchmark raw MD throughput without exchanges."""
     logger.info("=" * 80)
     logger.info(f"BENCHMARK: MD Throughput ({steps} steps, {platform})")
@@ -136,7 +136,7 @@ def benchmark_md_throughput(pdb_file: Path, steps: int = 1000, platform: str = "
         'total_time': elapsed,
     }
 
-def benchmark_exchange_overhead(pdb_file: Path, n_replicas: int = 4) -> Dict[str, Any]:
+def benchmark_exchange_overhead(pdb_file: Path, n_replicas: int = 4, output_base: Path = None) -> Dict[str, Any]:
     """Benchmark exchange attempt overhead."""
     logger.info("=" * 80)
     logger.info(f"BENCHMARK: Exchange Overhead ({n_replicas} replicas)")
@@ -147,10 +147,16 @@ def benchmark_exchange_overhead(pdb_file: Path, n_replicas: int = 4) -> Dict[str
 
     temps = [300.0 + i * 10.0 for i in range(n_replicas)]
 
+    if output_base is None:
+        output_base = Path(__file__).parent / "programs_outputs" / "remd_benchmark"
+
+    output_dir = output_base / "exchange_overhead"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     config = RemdConfig(
         pdb_file=str(pdb_file),
         temperatures=temps,
-        output_dir="tmp_benchmark",
+        output_dir=str(output_dir),
         exchange_frequency=50,  # Frequent exchanges to measure overhead
         auto_setup=False,
         random_seed=42,
@@ -168,14 +174,14 @@ def benchmark_exchange_overhead(pdb_file: Path, n_replicas: int = 4) -> Dict[str
 
     # Run short simulation with exchanges
     run_start = time.perf_counter()
-    remd.run_simulation(total_steps=500, equilibration_steps=0)
+    remd.run_simulation(total_steps=200, equilibration_steps=0)
     run_time = time.perf_counter() - run_start
 
     stats = remd.get_exchange_statistics()
     n_exchanges = remd.exchange_attempts
 
-    logger.info(f"Run time (500 steps): {run_time:.3f}s")
-    logger.info(f"Throughput: {500 * n_replicas / run_time:.1f} total steps/sec")
+    logger.info(f"Run time (200 steps): {run_time:.3f}s")
+    logger.info(f"Throughput: {200 * n_replicas / run_time:.1f} total steps/sec")
     logger.info(f"Exchange attempts: {n_exchanges}")
     logger.info(f"Exchange acceptance: {stats.get('mean_acceptance', 0.0):.2%}")
 
@@ -183,21 +189,19 @@ def benchmark_exchange_overhead(pdb_file: Path, n_replicas: int = 4) -> Dict[str
         time_per_exchange = run_time / n_exchanges
         logger.info(f"Time per exchange attempt: {time_per_exchange * 1000:.2f}ms")
 
-    # Cleanup
-    import shutil
-    if Path("tmp_benchmark").exists():
-        shutil.rmtree("tmp_benchmark")
+    logger.info(f"Files saved to: {output_dir}")
 
     return {
         'setup_time': setup_time,
         'setup_time_per_replica': setup_time / n_replicas,
         'run_time': run_time,
-        'throughput_total_steps_per_sec': 500 * n_replicas / run_time,
+        'throughput_total_steps_per_sec': 200 * n_replicas / run_time,
         'n_exchanges': n_exchanges,
         'acceptance': stats.get('mean_acceptance', 0.0),
+        'output_dir': str(output_dir),
     }
 
-def benchmark_frequency_comparison(pdb_file: Path) -> Dict[str, Any]:
+def benchmark_frequency_comparison(pdb_file: Path, output_base: Path = None) -> Dict[str, Any]:
     """Compare performance with different exchange frequencies."""
     logger.info("=" * 80)
     logger.info("BENCHMARK: Exchange Frequency Impact")
@@ -205,31 +209,36 @@ def benchmark_frequency_comparison(pdb_file: Path) -> Dict[str, Any]:
 
     from pmarlo.replica_exchange import ReplicaExchange
     from pmarlo.replica_exchange.config import RemdConfig
-    import shutil
 
     temps = [300.0, 310.0, 320.0, 330.0]
-    frequencies = [10, 50, 100, 250, 500]
+    frequencies = [50, 100, 250]  # Reduced from 5 to 3 frequencies for faster benchmarking
     results = {}
 
+    if output_base is None:
+        output_base = Path(__file__).parent / "programs_outputs" / "remd_benchmark"
+
     for freq in frequencies:
+        output_dir = output_base / f"frequency_{freq}"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
         config = RemdConfig(
             pdb_file=str(pdb_file),
             temperatures=temps,
-            output_dir=f"tmp_bench_freq_{freq}",
+            output_dir=str(output_dir),
             exchange_frequency=freq,
             auto_setup=False,
             random_seed=42,
         )
 
         remd = ReplicaExchange.from_config(config)
-        remd.plan_reporter_stride(total_steps=1000, equilibration_steps=0, target_frames=100)
+        remd.plan_reporter_stride(total_steps=500, equilibration_steps=0, target_frames=50)
         remd.setup_replicas()
 
         start = time.perf_counter()
-        remd.run_simulation(total_steps=1000, equilibration_steps=0)
+        remd.run_simulation(total_steps=500, equilibration_steps=0)
         elapsed = time.perf_counter() - start
 
-        throughput = 1000 * len(temps) / elapsed
+        throughput = 500 * len(temps) / elapsed
         n_exchanges = remd.exchange_attempts
 
         logger.info(f"Frequency {freq:4d}: {elapsed:.2f}s, {throughput:.0f} steps/s, {n_exchanges:2d} exchanges")
@@ -238,19 +247,17 @@ def benchmark_frequency_comparison(pdb_file: Path) -> Dict[str, Any]:
             'time': elapsed,
             'throughput': throughput,
             'n_exchanges': n_exchanges,
+            'output_dir': str(output_dir),
         }
-
-        # Cleanup
-        if Path(f"tmp_bench_freq_{freq}").exists():
-            shutil.rmtree(f"tmp_bench_freq_{freq}")
 
     # Find optimal
     best_freq = max(results.items(), key=lambda x: x[1]['throughput'])
     logger.info(f"\nOptimal frequency: {best_freq[0]} steps (throughput: {best_freq[1]['throughput']:.0f} steps/s)")
+    logger.info(f"Files saved to: {output_base}")
 
     return results
 
-def benchmark_reporter_overhead(pdb_file: Path) -> Dict[str, Any]:
+def benchmark_reporter_overhead(pdb_file: Path, output_base: Path = None) -> Dict[str, Any]:
     """Benchmark DCD reporter overhead."""
     logger.info("=" * 80)
     logger.info("BENCHMARK: Reporter Overhead")
@@ -258,16 +265,21 @@ def benchmark_reporter_overhead(pdb_file: Path) -> Dict[str, Any]:
 
     from pmarlo.replica_exchange import ReplicaExchange
     from pmarlo.replica_exchange.config import RemdConfig
-    import shutil
 
     temps = [300.0, 310.0, 320.0, 330.0]
     results = {}
 
+    if output_base is None:
+        output_base = Path(__file__).parent / "programs_outputs" / "remd_benchmark"
+
     # Run WITHOUT reporter (stride = very high)
+    output_dir_no_reporter = output_base / "reporter_overhead_no_reporter"
+    output_dir_no_reporter.mkdir(parents=True, exist_ok=True)
+
     config = RemdConfig(
         pdb_file=str(pdb_file),
         temperatures=temps,
-        output_dir="tmp_no_reporter",
+        output_dir=str(output_dir_no_reporter),
         exchange_frequency=200,
         dcd_stride=1000000,  # Effectively disabled
         auto_setup=False,
@@ -275,23 +287,23 @@ def benchmark_reporter_overhead(pdb_file: Path) -> Dict[str, Any]:
     )
 
     remd = ReplicaExchange.from_config(config)
-    remd.plan_reporter_stride(total_steps=1000, equilibration_steps=0, target_frames=1)  # Minimal
+    remd.plan_reporter_stride(total_steps=500, equilibration_steps=0, target_frames=1)  # Minimal
     remd.setup_replicas()
 
     start = time.perf_counter()
-    remd.run_simulation(total_steps=1000, equilibration_steps=0)
+    remd.run_simulation(total_steps=500, equilibration_steps=0)
     time_no_reporter = time.perf_counter() - start
 
     logger.info(f"Without reporter: {time_no_reporter:.3f}s")
 
-    if Path("tmp_no_reporter").exists():
-        shutil.rmtree("tmp_no_reporter")
-
     # Run WITH reporter (stride = 1)
+    output_dir_with_reporter = output_base / "reporter_overhead_with_reporter"
+    output_dir_with_reporter.mkdir(parents=True, exist_ok=True)
+
     config = RemdConfig(
         pdb_file=str(pdb_file),
         temperatures=temps,
-        output_dir="tmp_with_reporter",
+        output_dir=str(output_dir_with_reporter),
         exchange_frequency=200,
         dcd_stride=1,  # Every step
         auto_setup=False,
@@ -299,23 +311,23 @@ def benchmark_reporter_overhead(pdb_file: Path) -> Dict[str, Any]:
     )
 
     remd = ReplicaExchange.from_config(config)
-    remd.plan_reporter_stride(total_steps=1000, equilibration_steps=0, target_frames=1000)
+    remd.plan_reporter_stride(total_steps=500, equilibration_steps=0, target_frames=500)
     remd.setup_replicas()
 
     start = time.perf_counter()
-    remd.run_simulation(total_steps=1000, equilibration_steps=0)
+    remd.run_simulation(total_steps=500, equilibration_steps=0)
     time_with_reporter = time.perf_counter() - start
 
     logger.info(f"With reporter (stride=1): {time_with_reporter:.3f}s")
     logger.info(f"Overhead: {(time_with_reporter - time_no_reporter) / time_no_reporter * 100:.1f}%")
-
-    if Path("tmp_with_reporter").exists():
-        shutil.rmtree("tmp_with_reporter")
+    logger.info(f"Files saved to: {output_base}")
 
     return {
         'no_reporter_time': time_no_reporter,
         'with_reporter_time': time_with_reporter,
         'overhead_pct': (time_with_reporter - time_no_reporter) / time_no_reporter * 100,
+        'output_dir_no_reporter': str(output_dir_no_reporter),
+        'output_dir_with_reporter': str(output_dir_with_reporter),
     }
 
 def print_summary(results: Dict[str, Any]):
@@ -379,14 +391,15 @@ def print_summary(results: Dict[str, Any]):
         logger.info(f"   Expected: {expected:.0f} steps/s (single replica × {n_replicas})")
         logger.info(f"   Actual:   {remd_throughput:.0f} steps/s")
         if efficiency < 70:
-            logger.info("   ⚠️  LOW EFFICIENCY - investigate exchange/reporter overhead")
+            logger.info("   WARNING: LOW EFFICIENCY - investigate exchange/reporter overhead")
 
 def main():
     parser = argparse.ArgumentParser(description="Benchmark REMD performance")
     parser.add_argument("--pdb", type=Path, help="PDB file (default: auto-detect test file)")
     parser.add_argument("--cv-model", type=Path, help="CV model for bias benchmarking")
     parser.add_argument("--platform", default="CPU", help="OpenMM platform (CPU/CUDA)")
-    parser.add_argument("--steps", type=int, default=1000, help="Steps for MD throughput benchmark")
+    parser.add_argument("--steps", type=int, default=100, help="Steps for MD throughput benchmark")
+    parser.add_argument("--quick", action="store_true", help="Quick mode: run minimal benchmarks with reduced steps")
     parser.add_argument("--skip-system", action="store_true", help="Skip system creation benchmark")
     parser.add_argument("--skip-throughput", action="store_true", help="Skip MD throughput benchmark")
     parser.add_argument("--skip-exchange", action="store_true", help="Skip exchange overhead benchmark")
@@ -399,6 +412,20 @@ def main():
     pdb_file = args.pdb or find_test_pdb()
     logger.info(f"Using PDB: {pdb_file}")
 
+    # Setup output directory
+    output_base = Path(__file__).parent / "programs_outputs" / "remd_benchmark"
+    output_base.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Output directory: {output_base}")
+
+    # Quick mode: skip the slowest benchmarks
+    if args.quick:
+        logger.info("QUICK MODE: Skipping frequency comparison and reporter overhead tests")
+        args.skip_frequency = True
+        args.skip_reporter = True
+        # Reduce steps for quick benchmarking
+        if args.steps == 100:  # Only if using default
+            args.steps = 50
+
     results = {}
 
     # Run benchmarks
@@ -409,20 +436,20 @@ def main():
         results['md_throughput'] = benchmark_md_throughput(pdb_file, args.steps, args.platform)
 
     if not args.skip_exchange:
-        results['exchange_overhead'] = benchmark_exchange_overhead(pdb_file)
+        results['exchange_overhead'] = benchmark_exchange_overhead(pdb_file, output_base=output_base)
 
     if not args.skip_frequency:
-        results['frequency_comparison'] = benchmark_frequency_comparison(pdb_file)
+        results['frequency_comparison'] = benchmark_frequency_comparison(pdb_file, output_base=output_base)
 
     if not args.skip_reporter:
-        results['reporter_overhead'] = benchmark_reporter_overhead(pdb_file)
+        results['reporter_overhead'] = benchmark_reporter_overhead(pdb_file, output_base=output_base)
 
     # Print summary
     print_summary(results)
 
     # Save results
     import json
-    output_file = Path("benchmark_results.json")
+    output_file = output_base / "benchmark_results.json"
     with open(output_file, 'w') as f:
         json.dump(results, f, indent=2, default=str)
     logger.info(f"\nResults saved to: {output_file}")

@@ -1,4 +1,4 @@
-import warnings
+﻿import warnings
 
 import numpy as np
 import pytest
@@ -50,32 +50,42 @@ def test_plotting_with_nans(tmp_path):
         msm.plot_implied_timescales()
     legend_texts = [t.get_text() for t in plt.gca().get_legend().get_texts()]
     assert any(
-        "NaNs indicate unstable eigenvalues at this τ" in t for t in legend_texts
+        "NaNs indicate unstable eigenvalues at this Ï„" in t for t in legend_texts
     )
     plt.close()
 
 
-def test_safe_timescales_delegates_to_deeptime(monkeypatch):
-    captured: dict[str, object] = {}
-
-    def _fake_timescales(evals, tau):
-        captured["evals"] = np.array(evals, copy=True)
-        captured["tau"] = tau
-        return np.ones_like(evals, dtype=float)
-
-    monkeypatch.setattr(
-        "pmarlo.markov_state_model.utils._dt_timescales_from_eigenvalues",
-        _fake_timescales,
-    )
-
+def test_safe_timescales_matches_log_formula():
     eigvals = np.array([[0.2, 0.5], [0.8, 0.95]])
     ts = safe_timescales(25, eigvals)
 
-    assert np.all(ts == 1.0)
-    assert np.isclose(captured["tau"], 25.0)
+    magnitudes = np.abs(eigvals.astype(float))
     clipped = np.clip(
-        eigvals.astype(float),
+        magnitudes,
         const.NUMERIC_MIN_POSITIVE,
         1.0 - const.NUMERIC_MIN_POSITIVE,
     )
-    np.testing.assert_allclose(captured["evals"], clipped.reshape(-1))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        expected = -25.0 / np.log(clipped)
+
+    invalid = (~np.isfinite(magnitudes)) | (magnitudes <= 0) | (magnitudes >= 1)
+    expected = expected.astype(float)
+    expected[invalid] = np.nan
+
+    np.testing.assert_allclose(ts, expected)
+
+
+def test_safe_timescales_handles_complex_eigenvalues():
+    complex_eigs = np.array([0.95 * np.exp(1j * np.pi / 4)], dtype=np.complex128)
+    ts = safe_timescales(5.0, complex_eigs)
+
+    magnitudes = np.abs(complex_eigs)
+    clipped = np.clip(
+        magnitudes,
+        const.NUMERIC_MIN_POSITIVE,
+        1.0 - const.NUMERIC_MIN_POSITIVE,
+    )
+    expected = -5.0 / np.log(clipped)
+
+    assert ts.shape == complex_eigs.shape
+    np.testing.assert_allclose(ts, expected.astype(float))

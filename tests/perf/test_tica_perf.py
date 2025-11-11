@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 """Performance benchmarks for TICA routines and linear algebra kernels.
 
@@ -84,7 +84,12 @@ def _generate_correlated_time_series(
 class _TICAHarness(FeaturesMixin):
     """Minimal harness that exposes the TICA mixin hooks for benchmarks."""
 
-    def __init__(self, trajectories: Iterable[np.ndarray]) -> None:
+    def __init__(
+        self,
+        trajectories: Iterable[np.ndarray],
+        *,
+        output_dir: Path,
+    ) -> None:
         self.trajectories = [
             SimpleNamespace(n_frames=len(traj)) for traj in trajectories
         ]
@@ -97,7 +102,8 @@ class _TICAHarness(FeaturesMixin):
         self.tica_components = None
         self.raw_frames = int(self.features.shape[0])
         self.effective_frames = self.raw_frames
-        self.output_dir = Path("./tmp")
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         self._original = self.features.copy()
 
     def reset(self) -> None:
@@ -118,8 +124,12 @@ def synthetic_trajectories() -> list[np.ndarray]:
 
 
 @pytest.fixture
-def tica_harness(synthetic_trajectories: list[np.ndarray]) -> _TICAHarness:
-    harness = _TICAHarness(synthetic_trajectories)
+def tica_harness(
+    synthetic_trajectories: list[np.ndarray], tmp_path: Path
+) -> _TICAHarness:
+    harness = _TICAHarness(
+        synthetic_trajectories, output_dir=tmp_path / "tica_artifacts"
+    )
     harness.reset()
     return harness
 

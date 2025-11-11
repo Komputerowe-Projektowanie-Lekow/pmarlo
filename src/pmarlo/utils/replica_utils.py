@@ -96,13 +96,8 @@ def geometric_ladder(
         raise ValueError("n must be >= 2")
     if not (tmin > 0.0 and tmax > 0.0 and tmax > tmin):
         raise ValueError("Require 0 < tmin < tmax")
-    k = n - 1
-    r = (tmax / tmin) ** (1.0 / k)
-    idx = _np.arange(n, dtype=float)
-    vals = tmin * (r**idx)
-    if not endpoint:
-        vals = tmin * (r ** (_np.arange(n) * (k / n)))
-    return _np.array(vals, dtype=float)
+    vals = _np.geomspace(tmin, tmax, num=n, endpoint=endpoint)
+    return _np.asarray(vals, dtype=float)
 
 
 def power_of_two_temperature_ladder(
@@ -111,10 +106,11 @@ def power_of_two_temperature_ladder(
     """Generate a temperature ladder with a power-of-two number of replicas.
 
     Behavior:
-    - If ``n_replicas`` is None, choose a power-of-two count that yields ~5 K spacing
-      between ``min_temp`` and ``max_temp`` (inclusive of bounds).
-    - If ``n_replicas`` is provided, it will be rounded UP to the next power of two
-      (minimum of 2) to satisfy REMD parallelism and exchange quality expectations.
+    - ``n_replicas`` must be provided explicitly; automatic inference is not
+      supported because it can hide configuration mistakes.
+    - The provided ``n_replicas`` value is rounded UP to the next power of two
+      (minimum of 2) to satisfy REMD parallelism and exchange quality
+      expectations.
     - Temperatures are linearly spaced and include both endpoints.
 
     Args:
@@ -129,8 +125,19 @@ def power_of_two_temperature_ladder(
     tmin = float(min(min_temp, max_temp))
     tmax = float(max(min_temp, max_temp))
 
+    # Automatic inference is disallowed to avoid silent misconfiguration.
+    if n_replicas is None:
+        raise ValueError(
+            "n_replicas must be provided; automatic power-of-two selection was removed"
+        )
+
     # Degenerate case
     if np.isclose(tmin, tmax):
+        n_rep = int(n_replicas)
+        if n_rep != 1:
+            raise ValueError(
+                "Identical temperature bounds require n_replicas=1 for a valid ladder"
+            )
         return [tmin]
 
     def _next_power_of_two(x: int) -> int:
@@ -138,23 +145,11 @@ def power_of_two_temperature_ladder(
             return 2
         return 1 << (int(np.ceil(np.log2(max(2, x)))))
 
-    if n_replicas is None:
-        target_step = 5.0  # aim for ~5 K spacing as per example
-        delta = tmax - tmin
-        approx_points = int(max(2, round(delta / target_step) + 1))
-        npts = _next_power_of_two(approx_points)
-        logger.debug(
-            "Choosing power-of-two replicas: delta=%s approx=%s npts=%s",
-            delta,
-            approx_points,
-            npts,
-        )
-    else:
-        n_rep = int(n_replicas)
-        if n_rep < 1:
-            raise ValueError("n_replicas must be positive")
-        npts = _next_power_of_two(n_rep)
-        logger.debug("Rounded n_replicas=%s to power-of-two=%s", n_rep, npts)
+    n_rep = int(n_replicas)
+    if n_rep < 1:
+        raise ValueError("n_replicas must be positive")
+    npts = _next_power_of_two(n_rep)
+    logger.debug("Rounded n_replicas=%s to power-of-two=%s", n_rep, npts)
 
     # Guard upper bound to a reasonable maximum (avoid extremely large ladders by mistake)
     npts = int(max(2, min(npts, 1 << 12)))  # cap at 4096 for safety

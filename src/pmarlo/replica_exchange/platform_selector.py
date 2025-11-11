@@ -16,12 +16,11 @@ def select_platform_and_properties(
     The resolution order is:
 
     1. ``OPENMM_PLATFORM`` / ``PMARLO_FORCE_PLATFORM`` environment variables.
-    2. Auto-select fastest available platform (CUDA > CPU > Reference)
-    3. Enable deterministic flags if ``prefer_deterministic`` is ``True``.
+    2. Auto-select fastest available platform (CUDA > CPU).
+    3. Otherwise use the first available platform.
+    4. Enable deterministic flags if ``prefer_deterministic`` is ``True``.
 
-    Note: Reference platform is ONLY used when explicitly forced via environment
-    variable or when no other platform is available. It is 10-100x slower than
-    CPU and should never be used for production simulations.
+    Raises RuntimeError if no OpenMM platforms are available.
     """
 
     forced = os.getenv("OPENMM_PLATFORM") or os.getenv("PMARLO_FORCE_PLATFORM")
@@ -34,7 +33,12 @@ def select_platform_and_properties(
             Platform.getPlatform(i).getName() for i in range(Platform.getNumPlatforms())
         ]
 
-        # Prefer CUDA > CPU > Reference (Reference is VERY slow, avoid if possible)
+        if not available_platforms:
+            raise RuntimeError(
+                "No OpenMM platforms are available. Install at least one backend (e.g. CPU or CUDA)."
+            )
+
+        # Prefer CUDA > CPU (no fallback to Reference - it's too slow)
         if "CUDA" in available_platforms:
             platform_name = "CUDA"
             logger.info(
@@ -47,17 +51,11 @@ def select_platform_and_properties(
                 "Using CPU platform%s",
                 " (deterministic mode)" if prefer_deterministic else "",
             )
-        elif "Reference" in available_platforms:
-            platform_name = "Reference"
-            logger.warning(
-                "Using Reference platform - this is VERY slow (10-100x slower than CPU). "
-                "Install OpenMM with CPU support for better performance."
-            )
         else:
-            # This should never happen but handle gracefully
-            platform_name = "CUDA"
-            logger.warning(
-                "No standard OpenMM platform found, attempting CUDA as fallback"
+            platform_name = available_platforms[0]
+            logger.info(
+                "Using available OpenMM platform %s that is neither CUDA nor CPU",
+                platform_name,
             )
 
     platform = Platform.getPlatformByName(platform_name)
@@ -72,12 +70,13 @@ def select_platform_and_properties(
         }
     elif platform_name == "CPU":
         # CPU can be deterministic AND fast
+        # Note: DeterministicForces flag is NOT needed for determinism on CPU
+        # (integrator random seed is sufficient) and it disables multicore
+        # optimizations. We only set Threads to allow user control.
         threads = os.getenv("PMARLO_CPU_THREADS", "0")  # 0 = auto-detect
         properties = {}
         if threads and threads != "0":
             properties["Threads"] = threads
-        if prefer_deterministic:
-            properties["DeterministicForces"] = "true"
     elif platform_name == "Reference":
         # Reference has no configurable properties
         properties = {}

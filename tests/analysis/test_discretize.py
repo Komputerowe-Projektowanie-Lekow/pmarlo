@@ -1,6 +1,7 @@
-import numpy as np
+﻿import numpy as np
 import pytest
 
+from pmarlo.analysis.counting import expected_pairs
 from pmarlo.analysis.msm import prepare_msm_discretization
 
 
@@ -65,6 +66,36 @@ def test_prepare_msm_discretization_kmeans_assigns_all_splits():
         assert mask.dtype == np.bool_
         assert mask.shape[0] > 0
         assert mask.all()
+
+
+def test_prepare_msm_expected_pairs_use_segment_stride_metadata():
+    train = np.array([[0.0, 0.0], [0.1, -0.1], [0.2, 0.05], [0.3, -0.2]])
+    dataset = _make_dataset(train)
+    dataset["__shards__"] = [
+        {
+            "id": "s0",
+            "split": "train",
+            "length": train.shape[0],
+            "effective_frame_stride": 2,
+        }
+    ]
+    dataset["splits"]["train"]["feature_schema"] = {
+        "names": ["feature_0", "feature_1"],
+        "n_features": 2,
+    }
+
+    result = prepare_msm_discretization(
+        dataset,
+        n_microstates=2,
+        lag_time=1,
+        random_state=0,
+    )
+
+    assert result.segment_lengths["train"] == [train.shape[0]]
+    assert result.segment_strides["train"] == [2]
+    expected = expected_pairs([train.shape[0]], 1, [2])
+    assert result.expected_pairs["train"] == expected
+    assert result.fingerprint["expected_pairs"] == expected
 
 
 def test_weighted_counts_use_starting_frame_weights():

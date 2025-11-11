@@ -30,6 +30,13 @@ __all__ = [
     "Reweighter",
     "MSMBuilder",
     "BuilderMSMResult",
+    "find_conformations",
+    "TPTAnalysis",
+    "ConformationSet",
+    "plot_committor_distribution",
+    "plot_flux_network",
+    "plot_pathways",
+    "plot_tpt_summary",
 ]
 
 _EXPORTS: Dict[str, Tuple[str, str]] = {
@@ -66,6 +73,16 @@ _EXPORTS: Dict[str, Tuple[str, str]] = {
     "Reweighter": ("pmarlo.markov_state_model.reweighter", "Reweighter"),
     "MSMBuilder": ("pmarlo.markov_state_model.msm_builder", "MSMBuilder"),
     "BuilderMSMResult": ("pmarlo.markov_state_model.msm_builder", "MSMResult"),
+    "find_conformations": ("pmarlo.conformations.finder", "find_conformations"),
+    "TPTAnalysis": ("pmarlo.conformations.tpt_analysis", "TPTAnalysis"),
+    "ConformationSet": ("pmarlo.conformations.results", "ConformationSet"),
+    "plot_committor_distribution": (
+        "pmarlo.markov_state_model._tpt_viz",
+        "plot_committor_distribution",
+    ),
+    "plot_flux_network": ("pmarlo.markov_state_model._tpt_viz", "plot_flux_network"),
+    "plot_pathways": ("pmarlo.markov_state_model._tpt_viz", "plot_pathways"),
+    "plot_tpt_summary": ("pmarlo.markov_state_model._tpt_viz", "plot_tpt_summary"),
 }
 
 

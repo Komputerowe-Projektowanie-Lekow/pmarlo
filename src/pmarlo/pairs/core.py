@@ -49,7 +49,8 @@ def _derive_pairs(
     if pairs is not None:
         idx_t = np.asarray(pairs[0], dtype=np.int64).reshape(-1)
         idx_tau = np.asarray(pairs[1], dtype=np.int64).reshape(-1)
-        _validate_pairs(idx_t, idx_tau)
+        total_length = sum(int(np.asarray(block).shape[0]) for block in shards)
+        _validate_pairs(idx_t, idx_tau, total_length)
         return idx_t, idx_tau
 
     if len(schedule) > 1:
@@ -124,8 +125,8 @@ def _concatenate_pairs(
         if i.size and j.size:
             idx_parts.append(i)
             tau_parts.append(j)
-    idx = concatenate_or_empty(idx_parts, dtype=np.int64, copy=False)
-    tau = concatenate_or_empty(tau_parts, dtype=np.int64, copy=False)
+    idx = concatenate_or_empty(idx_parts, dtype=np.int64, shape=(0,), copy=False)
+    tau = concatenate_or_empty(tau_parts, dtype=np.int64, shape=(0,), copy=False)
     return idx, tau
 
 
@@ -152,13 +153,21 @@ def _build_uniform_pairs(
     return idx, tau
 
 
-def _validate_pairs(idx_t: np.ndarray, idx_tau: np.ndarray) -> None:
+def _validate_pairs(idx_t: np.ndarray, idx_tau: np.ndarray, total_length: int) -> None:
     if idx_t.shape != idx_tau.shape:
         raise ValueError("Pair index arrays must have the same shape")
     if idx_t.ndim != 1 or idx_tau.ndim != 1:
         raise ValueError("Pair index arrays must be one-dimensional")
     if idx_t.size == 0:
         return
+    # BUGFIX: Disallow manual pairs that fall outside the available shard bounds.
+    if np.min(idx_t) < 0 or np.min(idx_tau) < 0:
+        raise ValueError("Pair indices must be non-negative")
+    if total_length <= 0:
+        raise ValueError("Pair indices provided but no shards available")
+    max_valid = total_length - 1
+    if np.max(idx_t) > max_valid or np.max(idx_tau) > max_valid:
+        raise ValueError("Pair indices exceed available shard length")
     shift = idx_tau - idx_t
     if np.min(shift) <= 0:
         raise ValueError("Pair indices must represent positive time lags")

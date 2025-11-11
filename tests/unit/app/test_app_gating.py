@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+
+APP_ROOT = Path(__file__).resolve().parents[3] / "pmarlo_webapp" / "app"
+if str(APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(APP_ROOT))
+
+from core.constants import DEEPTICA_SKIP_MESSAGE
 
 
 def test_deeptica_tab_gating_banner_message_exists():
-    # The app shows a banner when Deep‑TICA is skipped; ensure the message template exists.
-    p = Path("example_programs/app_usecase/app/app.py")
-    text = p.read_text(encoding="utf-8")
-    assert (
-        "Deep‑TICA CV learning was skipped" in text
-        or "Deep-TICA CV learning was skipped" in text
-    )
+    # Ensure the skip banner message used by the UI is still defined.
+    assert "Deep-TICA CV learning was skipped" in DEEPTICA_SKIP_MESSAGE
 
 
 def test_deeptica_tab_gating_predicate():

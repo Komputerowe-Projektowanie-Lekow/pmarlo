@@ -14,7 +14,6 @@ from pmarlo.shards.format import read_shard_npz_json, write_shard_npz_json
 from pmarlo.shards.id import canonical_shard_id
 from pmarlo.shards.schema import FeatureSpec, Shard, ShardMeta
 from pmarlo.utils.path_utils import ensure_directory
-from pmarlo.utils.validation import require
 
 __all__ = ["write_shard", "read_shard", "_sha256_bytes"]
 
@@ -42,6 +41,11 @@ class ShardDetails:
     @property
     def temperature_K(self) -> float:
         return float(self.meta.temperature_K)
+
+    @property
+    def n_frames(self) -> int:
+        """Return the number of frames in this shard."""
+        return int(self.meta.n_frames)
 
     @property
     def cv_names(self) -> tuple[str, ...]:
@@ -91,7 +95,8 @@ def _coerce_str(value: object, *, name: str) -> str:
 
 def _normalise_source_metadata(source_dict: Dict[str, object]) -> _SourceCore:
     for key in ("created_at", "kind", "run_id", "replica_id", "segment_id"):
-        require(key in source_dict, f"source missing required key '{key}'")
+        if key not in source_dict:
+            raise ValueError(f"source missing required key '{key}'")
 
     kind_raw = _coerce_str(source_dict["kind"], name="kind").strip().lower()
     if kind_raw not in {"demux", "replica"}:
@@ -202,15 +207,18 @@ def write_shard(
     X = _stack_columns(cvs, dtype=dtype)
     n_frames = X.shape[0]
 
-    source_dict.update(
-        {
-            "seed": int(seed),
-            "temperature_K": t_kelvin,
-            "n_frames": n_frames,
-            "columns": column_order,
-            "periodic": ordered_periodic,
-        }
-    )
+    # Prepare updates, but preserve n_frames if already set (for stride calculation)
+    updates = {
+        "seed": int(seed),
+        "temperature_K": t_kelvin,
+        "columns": column_order,
+        "periodic": ordered_periodic,
+    }
+    # Only set n_frames if not already provided (allows caller to specify original frame count)
+    if "n_frames" not in source_dict:
+        updates["n_frames"] = n_frames
+
+    source_dict.update(updates)
 
     dt_ps_value = source_dict.get("dt_ps", 1.0)
     dt_ps = _coerce_dt_ps(dt_ps_value)

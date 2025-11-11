@@ -6,6 +6,7 @@ to construct a demultiplexed trajectory with minimal memory usage.
 
 from __future__ import annotations
 
+import concurrent.futures as fut
 import logging
 from concurrent.futures import Future
 from dataclasses import dataclass, field
@@ -14,7 +15,7 @@ from typing import List, Literal, Optional
 
 import numpy as np
 
-from ..io.trajectory_reader import TrajectoryIOError, TrajectoryReader
+from ..io.trajectory_reader import MDTrajReader, TrajectoryIOError, TrajectoryReader
 from ..io.trajectory_writer import TrajectoryWriteError, TrajectoryWriter
 from ..transform.progress import ProgressCB, ProgressReporter
 from ..utils.errors import DemuxWriterError
@@ -123,19 +124,16 @@ def _read_segment_frames_worker(
     Returns an array of shape (n_frames, n_atoms, 3). Returns an empty
     array with shape (0, 0, 3) when no frames are available.
     """
-    import numpy as _np
 
-    from pmarlo.io.trajectory_reader import MDTrajReader as _MDTR
-
-    rdr = _MDTR(topology_path=topology_path)
-    acc: list[_np.ndarray] = []
+    rdr = MDTrajReader(topology_path=topology_path)
+    acc: list[np.ndarray] = []
     for xyz in rdr.iter_frames(
         path, start=int(start), stop=int(stop), stride=int(stride)
     ):
-        acc.append(_np.asarray(xyz))
+        acc.append(np.asarray(xyz))
     if acc:
-        return _np.stack(acc, axis=0)
-    return _np.empty((0, 0, 3), dtype=_np.float32)
+        return np.stack(acc, axis=0)
+    return np.empty((0, 0, 3), dtype=np.float32)
 
 
 def _canonical_topology_path(requested: str | None, plan: DemuxPlan) -> str | None:
@@ -281,8 +279,6 @@ class _ParallelDemuxer:
         self.buffered: dict[int, Optional[np.ndarray]] = {}
 
     def run(self) -> None:
-        import concurrent.futures as fut
-
         with fut.ProcessPoolExecutor(max_workers=self.max_workers) as pool:
             while self._has_work():
                 self._schedule(pool)
@@ -326,8 +322,6 @@ class _ParallelDemuxer:
         )
 
     def _collect_completed(self) -> None:
-        import concurrent.futures as fut
-
         if not self.pending:
             return
         pending_futures = list(self.pending.keys())

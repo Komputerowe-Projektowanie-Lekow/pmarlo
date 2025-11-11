@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import pytest
 
@@ -22,6 +22,9 @@ def test_set_global_seed_makes_rngs_reproducible():
     assert torch.allclose(torch_first, torch_second)
 
 
-def test_safe_float_handles_bad_values():
+def test_safe_float_raises_for_bad_values():
     assert safe_float("3.14") == pytest.approx(3.14)
-    assert safe_float({"oops": "value"}, default=1.5) == pytest.approx(1.5)
+    with pytest.raises(ValueError, match="Cannot convert None to float"):
+        safe_float(None)
+    with pytest.raises(ValueError, match="Cannot convert {'oops': 'value'} to float"):
+        safe_float({"oops": "value"})

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
@@ -35,7 +35,8 @@ def _emit_demo_shard(
         "replica_id": 0,
         "exchange_window_id": 0,
     }
-    shard_id = f"T{int(round(temperature))}K_seg{segment_id:04d}_rep000"
+    run_suffix = run_id.replace("run_", "")
+    shard_id = f"T{int(round(temperature))}K_{run_suffix}_seg{segment_id:04d}_rep000"
     return write_shard(
         out_dir=tmp_path,
         shard_id=shard_id,

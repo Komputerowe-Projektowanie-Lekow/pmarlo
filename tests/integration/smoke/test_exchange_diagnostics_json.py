@@ -12,7 +12,7 @@ pytestmark = pytest.mark.integration
     reason="Requires OpenMM",
 )
 def test_diagnostics_json_created(test_fixed_pdb_file: Path, tmp_path: Path) -> None:
-    from example_programs.app_usecase.app.backend import run_short_sim
+    from pmarlo_webapp.app.backend import run_short_sim
 
     ws = tmp_path
     temps = [300.0, 320.0, 340.0]

@@ -1,6 +1,6 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-from example_programs.app_usecase.app.backend import choose_sim_seed
+from pmarlo.api import choose_sim_seed
 
 
 def test_choose_sim_seed_modes():

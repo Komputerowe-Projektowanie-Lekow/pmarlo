@@ -1,4 +1,4 @@
-# Copyright (c) 2025 PMARLO Development Team
+﻿# Copyright (c) 2025 PMARLO Development Team
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 """Pytest configuration and fixtures for PMARLO tests."""
@@ -7,6 +7,7 @@ import shutil
 import sys
 import tempfile
 import types
+from importlib.machinery import ModuleSpec
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Iterable
@@ -22,6 +23,109 @@ if "torch" not in sys.modules:
         _TORCH_STUB.manual_seed = lambda *args, **kwargs: None
         _TORCH_STUB.use_deterministic_algorithms = lambda *args, **kwargs: None
         sys.modules["torch"] = _TORCH_STUB
+
+try:
+    import openmm as _OPENMM_MODULE  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency
+    _OPENMM_MODULE = types.ModuleType("openmm")
+    _OPENMM_MODULE.__pmarlo_stub__ = True  # type: ignore[attr-defined]
+    sys.modules["openmm"] = _OPENMM_MODULE
+else:
+    setattr(_OPENMM_MODULE, "__pmarlo_stub__", False)
+if getattr(_OPENMM_MODULE, "__spec__", None) is None:  # pragma: no cover - stub compat
+    _OPENMM_MODULE.__spec__ = ModuleSpec("openmm", loader=None)
+_OPENMM_MODULE.unit = getattr(
+    _OPENMM_MODULE, "unit", types.SimpleNamespace(picoseconds="picoseconds")
+)
+if not hasattr(_OPENMM_MODULE, "OpenMMException"):
+
+    class _OpenMMException(Exception):  # pragma: no cover - stub
+        pass
+
+    _OPENMM_MODULE.OpenMMException = _OpenMMException
+if not hasattr(_OPENMM_MODULE, "Integrator"):
+    _OPENMM_MODULE.Integrator = type("Integrator", (), {})  # type: ignore[assignment]
+if not hasattr(_OPENMM_MODULE, "System"):
+    _OPENMM_MODULE.System = type("System", (), {})  # type: ignore[assignment]
+if not hasattr(_OPENMM_MODULE, "XmlSerializer"):
+    _OPENMM_MODULE.XmlSerializer = type(
+        "XmlSerializer", (), {"load": staticmethod(lambda *_args, **_kwargs: None)}
+    )  # type: ignore[assignment]
+if not hasattr(_OPENMM_MODULE, "Platform"):
+
+    class _PlatformStub:
+        @staticmethod
+        def getPlatformByName(name: str) -> None:  # pragma: no cover - stub
+            raise _OPENMM_MODULE.OpenMMException(name)
+
+    _OPENMM_MODULE.Platform = _PlatformStub
+
+try:
+    import openmm.app as _OPENMM_APP_MODULE  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency
+    _OPENMM_APP_MODULE = sys.modules.get("openmm.app")
+    if _OPENMM_APP_MODULE is None:
+        _OPENMM_APP_MODULE = types.ModuleType("openmm.app")
+        sys.modules["openmm.app"] = _OPENMM_APP_MODULE
+
+_OPENMM_APP_DEFAULTS = {
+    "PME": object,
+    "HBonds": object,
+    "Modeller": type("Modeller", (), {}),
+    "ForceField": type("ForceField", (), {}),
+    "PDBFile": type("PDBFile", (), {}),
+    "Simulation": type("Simulation", (), {}),
+    "DCDReporter": type("DCDReporter", (), {}),
+}
+for _name, _value in _OPENMM_APP_DEFAULTS.items():
+    if not hasattr(_OPENMM_APP_MODULE, _name):
+        setattr(_OPENMM_APP_MODULE, _name, _value)
+try:
+    import openmm.app.metadynamics as _OPENMM_METAD_MODULE  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency
+    _OPENMM_METAD_MODULE = sys.modules.get("openmm.app.metadynamics")
+    if _OPENMM_METAD_MODULE is None:
+        _OPENMM_METAD_MODULE = types.ModuleType("openmm.app.metadynamics")
+        _OPENMM_METAD_MODULE.BiasVariable = type("BiasVariable", (), {})  # type: ignore[assignment]
+        _OPENMM_METAD_MODULE.Metadynamics = type("Metadynamics", (), {})  # type: ignore[assignment]
+        sys.modules["openmm.app.metadynamics"] = _OPENMM_METAD_MODULE
+
+_OPENMM_UNIT_MODULE = sys.modules.get("openmm.unit")
+if _OPENMM_UNIT_MODULE is None:
+    _OPENMM_UNIT_MODULE = types.ModuleType("openmm.unit")
+    sys.modules["openmm.unit"] = _OPENMM_UNIT_MODULE
+
+_OPENMM_UNIT_DEFAULTS = {
+    "picosecond": 1.0,
+    "picoseconds": 1.0,
+    "nanometer": 1.0,
+    "dalton": 1.0,
+    "kilojoules_per_mole": 1.0,
+    "kilojoule_per_mole": 1.0,
+    "kelvin": 1.0,
+    "bar": 1.0,
+    "amu": 1.0,
+    "femtosecond": 1.0,
+    "femtoseconds": 1.0,
+    "MOLAR_GAS_CONSTANT_R": 8.31446261815324,
+    "dimensionless": 1.0,
+    "Unit": type("Unit", (), {}),
+}
+for _attr, _value in _OPENMM_UNIT_DEFAULTS.items():
+    if not hasattr(_OPENMM_UNIT_MODULE, _attr):
+        setattr(_OPENMM_UNIT_MODULE, _attr, _value)
+_OPENMM_MODULE.unit = _OPENMM_UNIT_MODULE
+_OPENMM_QUANTITY_MODULE = sys.modules.get("openmm.unit.quantity")
+if _OPENMM_QUANTITY_MODULE is None:
+    _OPENMM_QUANTITY_MODULE = types.ModuleType("openmm.unit.quantity")
+    _OPENMM_QUANTITY_MODULE.Quantity = type("Quantity", (), {})  # type: ignore[assignment]
+    sys.modules["openmm.unit.quantity"] = _OPENMM_QUANTITY_MODULE
+if not hasattr(_OPENMM_UNIT_MODULE, "Quantity"):
+    _OPENMM_UNIT_MODULE.Quantity = _OPENMM_QUANTITY_MODULE.Quantity  # type: ignore[assignment]
+if not hasattr(_OPENMM_UNIT_MODULE, "quantity"):
+    _OPENMM_UNIT_MODULE.quantity = types.SimpleNamespace(
+        Quantity=_OPENMM_QUANTITY_MODULE.Quantity
+    )
 
 TESTS_ROOT = Path(__file__).resolve().parent
 SRC_ROOT = TESTS_ROOT.parent / "src"

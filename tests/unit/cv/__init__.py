@@ -1,1 +1,1 @@
-"""Unit tests for collective variable components."""
+﻿"""Unit tests for collective variable components."""

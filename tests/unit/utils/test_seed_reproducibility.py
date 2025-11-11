@@ -1,5 +1,6 @@
-import os
+﻿import os
 import random
+import types
 
 import pytest
 
@@ -12,6 +13,7 @@ pytest.importorskip("torch")
 
 from pmarlo.markov_state_model.clustering import cluster_microstates
 from pmarlo.markov_state_model.enhanced_msm import EnhancedMSM
+from pmarlo.utils import seed
 from pmarlo.utils.seed import set_global_seed
 
 
@@ -52,3 +54,45 @@ def test_set_global_seed_synchronizes_python_random(monkeypatch):
 
     assert first == second
     assert os.environ["PYTHONHASHSEED"] == str(4321 & 0xFFFFFFFF)
+
+
+def test_set_global_seed_handles_legacy_torch(monkeypatch):
+    class _CudaStub:
+        def __init__(self) -> None:
+            self.seed = None
+
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+        def manual_seed_all(self, seed: int) -> None:
+            self.seed = seed
+
+    class _CudnnStub:
+        def __init__(self) -> None:
+            self.deterministic = False
+            self.benchmark = True
+
+    class _TorchStub:
+        def __init__(self) -> None:
+            self.cuda = _CudaStub()
+            self.backends = types.SimpleNamespace(cudnn=_CudnnStub())
+            self.manual_seed_value = None
+            self.set_deterministic_called_with: list[bool] = []
+
+        def manual_seed(self, seed: int) -> None:
+            self.manual_seed_value = seed
+
+        def set_deterministic(self, flag: bool) -> None:
+            self.set_deterministic_called_with.append(flag)
+
+    stub = _TorchStub()
+    monkeypatch.setattr(seed, "torch", stub)
+
+    set_global_seed(7)
+
+    assert stub.manual_seed_value == 7
+    assert stub.cuda.seed == 7
+    assert stub.set_deterministic_called_with == [True]
+    assert stub.backends.cudnn.deterministic is True
+    assert stub.backends.cudnn.benchmark is False

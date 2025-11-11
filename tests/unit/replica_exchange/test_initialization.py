@@ -1,7 +1,9 @@
-from unittest.mock import patch
+﻿from unittest.mock import patch
 
+import numpy as np
 import pytest
 
+from pmarlo.replica_exchange.config import RemdConfig
 from pmarlo.replica_exchange.replica_exchange import ReplicaExchange
 
 
@@ -51,6 +53,21 @@ class TestReplicaExchangeInitialization:
         assert max(remd.temperatures) <= 350.0
         assert remd.temperatures == sorted(remd.temperatures)
 
+    def test_initialization_accepts_numpy_temperatures(
+        self, test_pdb_file, temp_output_dir
+    ):
+        """Numpy arrays should be accepted as explicit temperature ladders."""
+        temps = np.array([300.0, 310.0, 320.0], dtype=float)
+
+        remd = ReplicaExchange(
+            pdb_file=str(test_pdb_file),
+            temperatures=temps,
+            output_dir=temp_output_dir,
+            auto_setup=False,
+        )
+
+        assert remd.temperatures == [300.0, 310.0, 320.0]
+
     def test_invalid_initialization(self, temp_output_dir):
         """Test initialization with invalid parameters."""
         with pytest.raises(Exception):
@@ -75,6 +92,26 @@ class TestReplicaExchangeInitialization:
 
         assert remd.output_dir == nested_dir
         assert nested_dir.exists()
+
+    def test_random_state_overrides_config_seed(self, test_pdb_file, temp_output_dir):
+        """Explicit random_state should take precedence over config.random_seed."""
+        config = RemdConfig(
+            pdb_file=str(test_pdb_file),
+            output_dir=temp_output_dir,
+            temperatures=[300.0, 310.0],
+            random_seed=111,
+        )
+
+        remd = ReplicaExchange(
+            pdb_file=str(test_pdb_file),
+            temperatures=[300.0, 310.0],
+            output_dir=temp_output_dir,
+            auto_setup=False,
+            config=config,
+            random_state=222,
+        )
+
+        assert remd.random_seed == 222
 
 
 class TestReplicaExchangeValidation:

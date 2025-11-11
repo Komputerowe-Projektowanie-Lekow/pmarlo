@@ -9,12 +9,6 @@ from scipy.linalg import eigh, eigvalsh
 from sklearn.covariance import ShrunkCovariance
 
 from pmarlo import constants as const
-
-try:  # pragma: no cover - optional extra
-    from mlcolvar.cvs import DeepTICA  # type: ignore
-except Exception as exc:  # pragma: no cover
-    raise ImportError("Install optional extra pmarlo[mlcv] to use Deep-TICA") from exc
-
 from pmarlo.utils.seed import set_global_seed
 
 from .utils import safe_float
@@ -84,29 +78,33 @@ def override_core_mlp(
     hidden_dropout: Any = None,
     layer_norm_hidden: bool = False,
 ) -> None:
-    if linear_head:
-        return
+    """Replace ``core.nn`` with a freshly constructed MLP."""
+
     import torch.nn as _nn  # type: ignore
 
-    layers = list(map(int, layers))
-    if len(layers) <= 2:
+    layer_sizes = list(map(int, layers))
+    if len(layer_sizes) <= 1:
+        core.nn = _nn.Identity()  # type: ignore[attr-defined]
         return
 
-    dropout_values = normalize_hidden_dropout(hidden_dropout, len(layers) - 2)
+    dropout_values = normalize_hidden_dropout(hidden_dropout, len(layer_sizes) - 2)
     modules: list[_nn.Module] = []
-    for idx in range(len(layers) - 1):
-        in_features = layers[idx]
-        out_features = layers[idx + 1]
+    for idx in range(len(layer_sizes) - 1):
+        in_features = layer_sizes[idx]
+        out_features = layer_sizes[idx + 1]
         modules.append(_nn.Linear(in_features, out_features))
-        if idx < len(layers) - 2:
+        is_last = idx == len(layer_sizes) - 2
+        if not is_last:
             if layer_norm_hidden:
                 modules.append(_nn.LayerNorm(out_features))
             modules.append(resolve_activation_module(activation_name))
             drop_p = dropout_values[idx] if idx < len(dropout_values) else 0.0
             if drop_p > 0:
                 modules.append(_nn.Dropout(p=float(drop_p)))
-    if modules:
-        core.nn = _nn.Sequential(*modules)  # type: ignore[attr-defined]
+        elif not linear_head:
+            modules.append(resolve_activation_module(activation_name))
+
+    core.nn = _nn.Sequential(*modules) if modules else _nn.Identity()  # type: ignore[attr-defined]
 
 
 def _ensure_forward_callable(module: torch.nn.Module) -> torch.nn.Module:
@@ -214,29 +212,30 @@ def apply_output_whitening(
     return wrapped, info
 
 
+class _SimpleDeepTICACore(torch.nn.Module):  # type: ignore[misc]
+    """Plain PyTorch implementation mirroring the legacy DeepTICA interface."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        import torch.nn as _nn  # type: ignore
+
+        self.nn: _nn.Module = _nn.Identity()
+
+    def forward(self, x):  # type: ignore[override]
+        return self.nn(x)
+
+
 def construct_deeptica_core(cfg: Any, scaler) -> tuple[Any, list[int]]:
     in_dim = int(np.asarray(getattr(scaler, "mean_", []), dtype=np.float64).shape[0])
     out_dim = int(getattr(cfg, "n_out", getattr(cfg, "output_dim", 2)))
     layers = [in_dim, *resolve_hidden_layers(cfg), out_dim]
     activation_name = str(getattr(cfg, "activation", "gelu")).lower().strip() or "gelu"
 
-    # Use a safe activation for mlcolvar (it doesn't support all activations like gelu)
-    # We'll override the network immediately after with our custom activation support
-    safe_activation = (
-        "relu"
-        if activation_name not in {"relu", "elu", "tanh", "softplus"}
-        else activation_name
-    )
-
-    core = DeepTICA(
-        layers=layers,
-        n_cvs=out_dim,
-        options={"norm_in": False, "nn": {"activation": safe_activation}},
-    )
+    core = _SimpleDeepTICACore()
     override_core_mlp(
         core,
         layers,
-        activation_name,  # Use the actual desired activation
+        activation_name,
         bool(getattr(cfg, "linear_head", False)),
         hidden_dropout=getattr(cfg, "hidden_dropout", None),
         layer_norm_hidden=bool(getattr(cfg, "layer_norm_hidden", False)),

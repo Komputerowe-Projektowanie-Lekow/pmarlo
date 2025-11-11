@@ -1,4 +1,4 @@
-import numpy as np
+﻿import numpy as np
 
 from pmarlo.transform.build import AppliedOpts, BuildOpts, build_result
 from pmarlo.transform.plan import TransformPlan, TransformStep
@@ -53,7 +53,13 @@ def test_build_result_with_fes_embeds_provenance():
     # FES provenance must be tracked in metadata (structured block)
     assert result.metadata.fes is not None
     assert result.metadata.fes.get("bins") == (16, 16)
-    assert tuple(result.metadata.fes.get("names", ())) == ("phi", "psi")
+    # CV names must be present and match the input (may be reordered by variance selection)
+    fes_names = tuple(result.metadata.fes.get("names", ()))
+    assert set(fes_names) == {
+        "phi",
+        "psi",
+    }, f"Expected CV names {{'phi', 'psi'}}, got {set(fes_names)}"
+    assert len(fes_names) == 2, f"Expected 2 CV names, got {len(fes_names)}"
 
 
 def test_build_result_json_roundtrip_preserves_shapes():

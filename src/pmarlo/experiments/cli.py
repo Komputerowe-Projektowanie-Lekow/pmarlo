@@ -80,6 +80,49 @@ def main():
         default=None,
         help="MDTraj atom selection string to subset atoms",
     )
+    msm.add_argument(
+        "--fes-smoothing-mode",
+        choices=["never", "auto", "always"],
+        default="never",
+        help="FES smoothing policy. Default: never (no smoothing unless explicitly enabled).",
+    )
+    msm.add_argument(
+        "--fes-target-sd-kT",
+        type=float,
+        default=None,
+        help="Target SD[F] in kT units to trigger smoothing. If None, uses 0.5 when mode!=never.",
+        dest="fes_target_sd_kT",
+    )
+    msm.add_argument(
+        "--fes-alpha",
+        type=float,
+        default=1e-6,
+        help="Dirichlet pseudocount per bin for uncertainty calculation.",
+    )
+    msm.add_argument(
+        "--fes-h0",
+        type=float,
+        default=1.2,
+        help="Base bandwidth (in grid-bin units).",
+    )
+    msm.add_argument(
+        "--fes-ess-ref",
+        type=float,
+        default=50.0,
+        help="Reference ESS for h0 scaling.",
+    )
+    msm.add_argument(
+        "--fes-h-min",
+        type=float,
+        default=0.4,
+        help="Minimum local bandwidth.",
+    )
+    msm.add_argument(
+        "--fes-h-max",
+        type=float,
+        default=3.0,
+        help="Maximum local bandwidth.",
+    )
 
     args = parser.parse_args()
 
@@ -134,6 +177,13 @@ def main():
             lag_time=args.lag,
             stride=args.stride,
             atom_selection=args.atom_selection,
+            fes_smoothing_mode=args.fes_smoothing_mode,
+            fes_target_sd_kT=args.fes_target_sd_kT,
+            fes_alpha=args.fes_alpha,
+            fes_h0=args.fes_h0,
+            fes_ess_ref=args.fes_ess_ref,
+            fes_h_min=args.fes_h_min,
+            fes_h_max=args.fes_h_max,
         )
         result = run_msm_experiment(cfg)
 

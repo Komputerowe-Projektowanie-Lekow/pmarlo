@@ -3,12 +3,27 @@
 from __future__ import annotations
 
 import logging
+import os
+import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+_PLUGIN_PATTERNS = (
+    "OpenMMTorch*.dll",
+    "*Torch*.dll",
+    "libOpenMMTorch*.so",
+    "libOpenMMTorch*.dylib",
+)
+
+_PLUGIN_SUBDIRS = (
+    Path("Library") / "plugins",
+    Path("lib") / "plugins",
+    Path("lib64") / "plugins",
+)
 
 __all__ = [
     "CVBiasForce",
@@ -18,6 +33,142 @@ __all__ = [
 ]
 
 
+def _path_from_string(value: str | None) -> Optional[Path]:
+    if not value:
+        return None
+    try:
+        return Path(value).expanduser()
+    except Exception:
+        return None
+
+
+def _split_paths(raw: str | None) -> Iterable[Path]:
+    if not raw:
+        return []
+    return filter(None, (_path_from_string(part) for part in raw.split(os.pathsep)))
+
+
+def _contains_torch_plugin(directory: Path) -> bool:
+    if not directory or not directory.is_dir():
+        return False
+    for pattern in _PLUGIN_PATTERNS:
+        if next(directory.glob(pattern), None):
+            return True
+    return False
+
+
+def _collect_env_plugin_dirs() -> list[Path]:
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+
+    def register(path: Path | None, *, require_plugin: bool = False) -> None:
+        if path is None:
+            return
+        try:
+            resolved = path.expanduser().resolve()
+        except Exception:
+            resolved = path
+        if resolved in seen:
+            return
+        if require_plugin and not _contains_torch_plugin(resolved):
+            return
+        if not resolved.exists():
+            return
+        seen.add(resolved)
+        candidates.append(resolved)
+
+    # Explicit env overrides
+    for var in ("PMARLO_OPENMM_PLUGIN_DIR", "OPENMM_PLUGIN_DIR"):
+        register(_path_from_string(os.environ.get(var)))
+    for var in ("PMARLO_OPENMM_PLUGIN_DIRS", "OPENMM_PLUGIN_DIRS"):
+        for path in _split_paths(os.environ.get(var)):
+            register(path)
+
+    def add_env_prefix(prefix: Path | None) -> None:
+        if prefix is None:
+            return
+        register(prefix / "Library" / "plugins")
+        register(prefix / "lib" / "plugins")
+        register(prefix / "lib64" / "plugins")
+
+        parent = prefix.parent
+        envs_root = parent if parent.name == "envs" else parent / "envs"
+        if envs_root.exists():
+            for env_dir in envs_root.iterdir():
+                if not env_dir.is_dir():
+                    continue
+                for sub in _PLUGIN_SUBDIRS:
+                    register(env_dir / sub, require_plugin=True)
+
+    add_env_prefix(_path_from_string(os.environ.get("CONDA_PREFIX")))
+
+    for var in ("CONDA_ENVS_PATH", "MAMBA_ROOT_PREFIX", "MICROMAMBA_ROOT_PREFIX"):
+        for root in _split_paths(os.environ.get(var)):
+            envs_root = root / "envs" if (root / "envs").exists() else root
+            if envs_root.exists():
+                for env_dir in envs_root.iterdir():
+                    if not env_dir.is_dir():
+                        continue
+                    for sub in _PLUGIN_SUBDIRS:
+                        register(env_dir / sub, require_plugin=True)
+
+    # Current interpreter prefix
+    add_env_prefix(Path(sys.prefix))
+    return candidates
+
+
+def _resolve_torchforce_class():
+    try:
+        from openmmtorch import TorchForce  # type: ignore
+
+        return TorchForce
+    except ImportError as first_exc:
+        try:
+            import openmm
+            from openmm import Platform
+        except Exception as exc:
+            raise ImportError("OpenMM is not available") from exc
+
+        plugin_dirs: list[Path] = []
+        try:
+            default_dir = Platform.getDefaultPluginsDirectory()
+            if default_dir:
+                plugin_dirs.append(Path(default_dir))
+        except Exception:
+            default_dir = None
+
+        plugin_dirs.extend(_collect_env_plugin_dirs())
+
+        loaded_any = False
+        for directory in plugin_dirs:
+            try:
+                if directory and directory.exists():
+                    Platform.loadPluginsFromDirectory(str(directory))
+                    loaded_any = True
+            except Exception as exc:
+                logger.debug(
+                    "Failed to load OpenMM plugins from %s: %s", directory, exc
+                )
+
+        torch_force = getattr(openmm, "TorchForce", None)
+        if torch_force is None:
+            torch_force = getattr(
+                getattr(openmm, "openmm", object()), "TorchForce", None
+            )
+
+        if torch_force is None:
+            hint = (
+                "TorchForce class not found in OpenMM plugins. "
+                "Install openmm-torch in the same environment or set "
+                "PMARLO_OPENMM_PLUGIN_DIR/OPENMM_PLUGIN_DIR to the plugin directory."
+            )
+            if not loaded_any:
+                hint += " (No plugin directories could be loaded automatically.)"
+            raise ImportError(hint) from first_exc
+
+        return torch_force
+
+
 def check_openmm_torch_available() -> bool:
     """
     Check if openmm-torch is available for CV model integration.
@@ -25,13 +176,13 @@ def check_openmm_torch_available() -> bool:
     Returns
     -------
     bool
-        True if openmm-torch can be imported, False otherwise
+        True if the TorchForce class can be resolved, False otherwise.
     """
     try:
-        import openmmtorch  # noqa: F401
-
+        _resolve_torchforce_class()
         return True
-    except ImportError:
+    except Exception as exc:  # pragma: no cover - diagnostic path
+        logger.debug("TorchForce unavailable: %s", exc)
         return False
 
 
@@ -93,7 +244,6 @@ def create_cv_torch_force(
         )
 
     import torch
-    from openmmtorch import TorchForce
 
     model_path = Path(model_path)
     if not model_path.exists():
@@ -110,13 +260,12 @@ def create_cv_torch_force(
         raise RuntimeError(f"Failed to load CV model from {model_path}: {exc}") from exc
 
     # Create TorchForce
+    TorchForce = _resolve_torchforce_class()
     try:
-        # TorchForce takes the model file path, not the loaded model
         torch_force = TorchForce(str(model_path))
         torch_force.setForceGroup(force_group)
         logger.info("Created TorchForce with force group %d", force_group)
         return torch_force
-
     except Exception as exc:
         raise RuntimeError(f"Failed to create TorchForce: {exc}") from exc
 

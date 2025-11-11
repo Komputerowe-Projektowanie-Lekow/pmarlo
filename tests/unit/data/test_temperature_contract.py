@@ -1,12 +1,14 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from pmarlo.data.aggregate import load_shards_as_dataset
 from pmarlo.data.shard import write_shard
+from pmarlo.shards.id import canonical_shard_id
 from pmarlo.utils.errors import TemperatureConsistencyError
 
 
@@ -44,11 +46,6 @@ def _mk_shard(
     }
     periodic = {"phi": True, "psi": True}
     # Include kind in shard_id to prevent collisions
-    t_kelvin = int(round(temperature))
-    if kind == "replica":
-        shard_id = f"replica_T{t_kelvin}K_seg{segment_id:04d}_rep{replica_id:03d}"
-    else:
-        shard_id = f"T{t_kelvin}K_seg{segment_id:04d}_rep{replica_id:03d}"
     source = _mk_src(
         traj_path,
         run_id=traj_path.parent.name,
@@ -56,6 +53,13 @@ def _mk_shard(
         replica_id=replica_id,
         kind=kind,
     )
+    canonical_stub = SimpleNamespace(
+        temperature_K=float(temperature),
+        replica_id=replica_id,
+        segment_id=segment_id,
+        provenance=source,
+    )
+    shard_id = canonical_shard_id(canonical_stub)
     return write_shard(
         out_dir=tmp,
         shard_id=shard_id,

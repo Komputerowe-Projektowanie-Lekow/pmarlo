@@ -1,12 +1,16 @@
-import math
+﻿import math
+from pathlib import Path
 
 import torch
+from openmm.app import PDBFile
 
 from pmarlo.features.deeptica.cv_bias_potential import CVBiasPotential
 from pmarlo.features.deeptica.ts_feature_extractor import (
     build_feature_extractor_module,
     canonicalize_feature_spec,
 )
+
+ASSET_PDB = Path("tests/_assets/3gd8-fixed.pdb")
 
 
 def _sample_spec():
@@ -18,6 +22,23 @@ def _sample_spec():
             {"name": "torsion0123", "type": "dihedral", "atoms": [0, 1, 2, 3]},
         ],
     }
+
+
+def _real_positions_and_box(dtype: torch.dtype):
+    pdb = PDBFile(str(ASSET_PDB))
+    pos = torch.tensor(
+        pdb.getPositions(asNumpy=True)._value[:4],
+        dtype=dtype,
+    )
+    box_vectors = pdb.topology.getPeriodicBoxVectors()
+    if box_vectors is None:
+        box = torch.eye(3, dtype=dtype)
+    else:
+        box = torch.tensor(
+            [[vec.x, vec.y, vec.z] for vec in box_vectors],
+            dtype=dtype,
+        )
+    return pos, box
 
 
 def test_feature_extractor_forward_and_gradients():
@@ -51,6 +72,19 @@ def test_feature_extractor_forward_and_gradients():
     scripted = torch.jit.script(extractor)
     scripted_features = scripted(positions.detach(), box)
     assert torch.allclose(scripted_features, features.detach())
+
+
+def test_feature_extractor_enforces_feature_dtype_with_real_positions():
+    spec = canonicalize_feature_spec(_sample_spec())
+    extractor = build_feature_extractor_module(spec)
+    extractor.eval()
+
+    positions64, box64 = _real_positions_and_box(torch.float64)
+    features = extractor(positions64, box64)
+
+    assert features.dtype == extractor.feature_weights.dtype
+    assert features.device == extractor.feature_weights.device
+    assert torch.all(torch.isfinite(features))
 
 
 def test_cvbiaspotential_composes_feature_extractor():

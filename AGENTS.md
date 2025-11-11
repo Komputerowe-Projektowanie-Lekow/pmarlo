@@ -18,3 +18,14 @@
 16. When you run the poetry run pytest or any pytest command, NEVER USE it with -noProfile.
 17. Whenever a test case is required, always use real data—never stubs or synthetically generated examples. For instance, consistently use the 3gd8-fixed PDB file rather than any other fabricated version.
 18. Whenever you can't run the poetry run pytest, try it with the 'POETRY_VIRTUALENVS_CREATE=true'.
+19. All commands related to Python, packages, or the project (including `python`, `pip`, `pytest`, `tox`, `mypy`, `ruff`, etc.) MUST be executed using `poetry run`. This ensures the command runs inside the project's virtual environment.
+    * **WRONG:** `pip install psutil`
+    * **WRONG:** `python -c "import openmm"`
+    * **RIGHT:** `poetry run pip install psutil`
+    * **RIGHT:** `poetry run python -c "import openmm"`
+20. If `poetry run pytest` or `poetry run tox` fails with a `ModuleNotFoundError` (indicating a missing dependency):
+    * **DO NOT** modify the test code to skip the test (e.g., using `pytest.importorskip`). This violates Rule #13 (No Fallbacks).
+    * **DO** run the maintenance script: `./codex_maintenance_script.sh` to attempt to repair the environment and install missing dependencies.
+    * After the maintenance script runs, **DO** re-run the original `poetry run pytest ...` or `poetry run tox ...` command to verify the fix.
+21. Write clean and elegant code, without overcomplications, do not use emojis in the codebase.
+22. When you write in the changelog, only do the sections that are from those categories, do not come up with others. Those are the categories: "added", "fixed", "changed", "removed".

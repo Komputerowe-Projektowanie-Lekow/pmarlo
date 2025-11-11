@@ -104,7 +104,8 @@ def tica_reduce(
 
     X_prep = _preprocess(X, scale=scale)
     tica = TICA(lagtime=lag, dim=n_components)
-    model = tica.fit(X_prep)
+    # deeptime's TICA.fit() expects a list of trajectories
+    model = tica.fit([X_prep]).fetch_model()
     transformed = model.transform(X_prep)
     return np.asarray(transformed, dtype=float)
 

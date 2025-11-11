@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any, Dict, Mapping, MutableMapping, Sequence
 
 import numpy as np
@@ -8,7 +9,11 @@ from sklearn.cross_decomposition import CCA
 
 from pmarlo import constants as const
 
-from .discretize import _coerce_array, _normalise_splits
+from .discretize import (
+    _coerce_array,
+    _normalise_splits,
+    _resolve_shard_segments_for_split,
+)
 from .project_cv import apply_whitening_from_metadata
 
 logger = logging.getLogger(__name__)
@@ -21,6 +26,109 @@ _TAU_SEQUENCE: tuple[int, ...] = (
     20,
     40,
 )  # historical base candidate lags retained for compatibility
+
+_MAX_TAU_FRACTION = 1.0 / 3.0
+_MIN_CK_MULTIPLIER = 2.0
+_MAX_CK_MULTIPLIER = 5.0
+
+
+@dataclass(frozen=True)
+class _SegmentDescriptor:
+    length: int
+    stride: int
+
+
+def _segment_descriptors_for_split(
+    dataset: DatasetLike,
+    split_name: str,
+    split: Any,
+    total_frames: int,
+) -> list[_SegmentDescriptor]:
+    lengths, strides = _resolve_shard_segments_for_split(
+        dataset,
+        split_name,
+        split,
+        total_frames,
+    )
+    descriptors: list[_SegmentDescriptor] = []
+    for length, stride in zip(lengths, strides):
+        descriptors.append(
+            _SegmentDescriptor(length=int(length), stride=max(1, int(stride)))
+        )
+    consumed = sum(descriptor.length for descriptor in descriptors)
+    if consumed != int(total_frames):
+        raise ValueError(
+            f"Segment metadata for split '{split_name}' spans {consumed} frames "
+            f"but split contains {total_frames} frames"
+        )
+    if not descriptors:
+        raise ValueError(f"No shard descriptors available for split '{split_name}'")
+    return descriptors
+
+
+def _prepare_tau_grid(taus: Sequence[int]) -> list[int]:
+    unique: list[int] = []
+    seen: set[int] = set()
+    for value in sorted(int(t) for t in taus):
+        if value < 1 or value in seen:
+            continue
+        seen.add(value)
+        unique.append(value)
+    return [0] + unique
+
+
+def _integrated_autocorrelation_time(
+    taus: Sequence[int],
+    values: Sequence[float],
+) -> float:
+    if len(taus) != len(values) or not taus:
+        return float("nan")
+    tau_arr = np.asarray(taus, dtype=np.float64)
+    rho_arr = np.asarray(values, dtype=np.float64)
+    tau_int = 1.0
+    last_tau = 0.0
+    last_val = 1.0
+    for tau, rho in zip(tau_arr[1:], rho_arr[1:]):
+        if not np.isfinite(rho) or rho <= 0.0:
+            break
+        delta = tau - last_tau
+        if delta <= 0.0:
+            continue
+        avg = 0.5 * (last_val + rho)
+        tau_int += 2.0 * avg * delta
+        last_tau = tau
+        last_val = rho
+    return float(max(1.0, tau_int))
+
+
+def _recommend_ck_lags(
+    tau_int: float,
+    tau_limit: int,
+) -> tuple[list[int], tuple[int, int] | None]:
+    if not np.isfinite(tau_int) or tau_int <= 0.0:
+        return [], None
+    lower = max(1, int(np.ceil(_MIN_CK_MULTIPLIER * tau_int)))
+    upper_bound = int(np.ceil(min(_MAX_CK_MULTIPLIER * tau_int, tau_limit)))
+    if upper_bound < lower:
+        upper_bound = lower
+    if lower <= 0:
+        lower = 1
+    if upper_bound == lower:
+        return [lower], (lower, upper_bound)
+    span = upper_bound - lower
+    num_points = min(5, span + 1)
+    raw = np.geomspace(lower, upper_bound, num=num_points)
+    candidates = sorted(
+        {
+            max(lower, min(upper_bound, int(round(val))))
+            for val in raw
+        }
+    )
+    if candidates[0] > lower:
+        candidates.insert(0, lower)
+    if candidates[-1] < upper_bound:
+        candidates.append(upper_bound)
+    return candidates, (lower, upper_bound)
 
 
 class CanonicalCorrelationError(ValueError):
@@ -141,114 +249,123 @@ def _validate_autocorr_input(X: np.ndarray) -> np.ndarray | None:
     Returns centered array or None if insufficient samples.
     Logs any issues instead of silent failure.
     """
-    if X.ndim != 2:
-        logger.warning("Autocorrelation: expected 2D array, got ndim=%d", X.ndim)
+    arr = np.asarray(X, dtype=np.float64)
+    if arr.ndim != 2:
+        logger.warning("Autocorrelation: expected 2D array, got ndim=%d", arr.ndim)
         return None
-    if X.shape[0] < 2:
-        logger.error("Autocorrelation: insufficient samples (n=%d < 2)", X.shape[0])
+    if arr.shape[0] < 2:
+        logger.error("Autocorrelation: insufficient samples (n=%d < 2)", arr.shape[0])
         return None
-    if not np.isfinite(X).all():
+    if not np.isfinite(arr).all():
         logger.warning(
             "Autocorrelation: non-finite values detected; filtering may produce NaNs"
         )
-    return X - np.mean(X, axis=0, keepdims=True)
+    return arr
 
 
-def _autocorrelation_1d(series: np.ndarray, max_lag: int) -> np.ndarray:
-    """Compute unbiased autocorrelation for lags up to ``max_lag``."""
+def _autocorrelation_curve(
+    X: np.ndarray,
+    taus: Sequence[int],
+    segments: Sequence[_SegmentDescriptor],
+) -> Dict[str, Any]:
+    """Compute shard-wise autocorrelation and summary statistics."""
 
-    if max_lag < 0:
-        raise ValueError("max_lag must be non-negative")
-    x = np.asarray(series, dtype=np.float64).reshape(-1)
-    n = int(x.size)
-    if n <= 1:
-        raise ValueError("need at least two samples to compute autocorrelation")
-    if max_lag >= n:
-        max_lag = n - 1
-    centered = x - np.mean(x, dtype=np.float64)
-    variance = float(np.dot(centered, centered) / n)
-    if variance <= 0.0:
-        return np.ones(max_lag + 1, dtype=np.float64)
-
-    result = np.empty(max_lag + 1, dtype=np.float64)
-    for lag in range(max_lag + 1):
-        length = n - lag
-        cov = np.dot(centered[:length], centered[lag:]) / length
-        result[lag] = cov / variance
-    return result
-
-
-def _autocorrelation_curve(X: np.ndarray, taus: Sequence[int]) -> list[float]:
-    """Compute autocorrelation curve across provided lags.
-
-    Applies input validation then estimates lag correlations for each feature,
-    averaging the resulting autocorrelation estimates across dimensions.
-    """
     Xc = _validate_autocorr_input(X)
-    if Xc is None:
+    tau_grid = _prepare_tau_grid(taus)
+    if Xc is None or not tau_grid:
         logger.warning(
-            "Autocorrelation: input invalid or insufficient; returning NaNs for all %d taus",
-            len(taus),
+            "Autocorrelation: invalid input; returning NaNs for %d taus", len(tau_grid)
         )
-        return [float("nan") for _ in taus]
-    if not taus:
-        return []
+        nan_curve = [float("nan") for _ in tau_grid]
+        return {
+            "taus": [int(t) for t in tau_grid],
+            "values": nan_curve,
+            "tau_int": float("nan"),
+            "lag_window": None,
+            "recommended_ck_lags": [],
+        }
 
-    max_tau = max(taus)
-    n_features = Xc.shape[1]
-    if n_features == 0:
-        return [float("nan") for _ in taus]
-
-    feature_curves: list[np.ndarray] = []
-    effective_max = min(max_tau, Xc.shape[0] - 1)
-    if effective_max < max_tau:
-        logger.warning(
-            "Autocorrelation: clipping max tau from %d to %d due to sample length %d",
-            max_tau,
-            effective_max,
-            Xc.shape[0],
-        )
-    for col in range(n_features):
-        series = np.asarray(Xc[:, col], dtype=np.float64)
-        if not np.isfinite(series).all():
-            logger.debug(
-                "Autocorrelation: non-finite values detected in column %d; filling NaNs",
-                col,
-            )
-            feature_curves.append(np.full(len(taus), np.nan, dtype=np.float64))
+    tau_array = np.asarray(tau_grid, dtype=np.int32)
+    numerator = np.zeros_like(tau_array, dtype=np.float64)
+    denominator = np.zeros_like(tau_array, dtype=np.float64)
+    usable_lengths = [descriptor.length for descriptor in segments if descriptor.length > 1]
+    if usable_lengths:
+        min_segment_length = min(usable_lengths)
+    else:
+        min_segment_length = min(descriptor.length for descriptor in segments)
+    cursor = 0
+    for descriptor in segments:
+        seg_len = descriptor.length
+        if seg_len <= 1:
+            cursor += seg_len
             continue
-        try:
-            acf_values = _autocorrelation_1d(series, effective_max)
-        except ValueError as exc:  # pragma: no cover - defensive safeguard
-            logger.warning(
-                "Autocorrelation: failed for column %d (max_tau=%d): %s",
-                col,
-                effective_max,
-                exc,
+        end = cursor + seg_len
+        if end > Xc.shape[0]:
+            raise ValueError(
+                f"Segment descriptors exceed split length ({end} > {Xc.shape[0]})"
             )
-            feature_curves.append(np.full(len(taus), np.nan, dtype=np.float64))
+        block = Xc[cursor:end]
+        cursor = end
+        centered = block - np.mean(block, axis=0, keepdims=True)
+        variance = np.mean(centered * centered, axis=0)
+        valid_mask = variance > const.NUMERIC_RELATIVE_TOLERANCE
+        if not np.any(valid_mask):
             continue
-        column_curve = np.array(
-            [acf_values[tau] if tau <= effective_max else float("nan") for tau in taus],
-            dtype=np.float64,
+        normalised = centered[:, valid_mask] / np.sqrt(variance[valid_mask])
+        for idx, tau in enumerate(tau_array):
+            if tau == 0:
+                shard_value = 1.0
+            elif tau >= seg_len:
+                continue
+            else:
+                head = normalised[: seg_len - tau]
+                tail = normalised[tau:]
+                shard_value = float(np.mean(np.mean(head * tail, axis=0)))
+            if not np.isfinite(shard_value):
+                continue
+            weight = seg_len - tau
+            if weight <= 0:
+                continue
+            numerator[idx] += weight * shard_value
+            denominator[idx] += weight
+    if cursor != Xc.shape[0]:
+        raise ValueError(
+            f"Segment metadata consumed {cursor} frames but split contains {Xc.shape[0]}"
         )
-        feature_curves.append(column_curve)
 
-    stacked = np.vstack(feature_curves)
-    with np.errstate(invalid="ignore"):
-        averaged = np.nanmean(stacked, axis=0)
-    curve = [float(value) if np.isfinite(value) else float("nan") for value in averaged]
+    averaged = np.full_like(tau_array, fill_value=np.nan, dtype=np.float64)
+    mask = denominator > 0.0
+    averaged[mask] = numerator[mask] / denominator[mask]
+    averaged = np.clip(averaged, -1.0, 1.0, out=averaged)
+    if averaged.size > 0:
+        averaged[0] = 1.0
 
-    # Log if any NaNs present (surface potential silent degradation)
-    nan_indices = [i for i, v in enumerate(curve) if not np.isfinite(v)]
+    tau_list = [int(tau) for tau in tau_array]
+    values_list = [float(val) if np.isfinite(val) else float("nan") for val in averaged]
+
+    nan_indices = [i for i, val in enumerate(values_list) if not np.isfinite(val)]
     if nan_indices:
         logger.warning(
             "Autocorrelation: %d/%d NaN values in curve (first indices: %s)",
             len(nan_indices),
-            len(curve),
+            len(values_list),
             nan_indices[:10],
         )
-    return curve
+
+    tau_limit = max(
+        1,
+        int(np.floor(min_segment_length * _MAX_TAU_FRACTION)),
+    )
+    tau_int = _integrated_autocorrelation_time(tau_list, values_list)
+    recommended, window = _recommend_ck_lags(tau_int, tau_limit)
+
+    return {
+        "taus": tau_list,
+        "values": values_list,
+        "tau_int": float(tau_int),
+        "lag_window": window,
+        "recommended_ck_lags": recommended,
+    }
 
 
 # --- Tau derivation / validation (core logic) -------------------------------------
@@ -298,9 +415,9 @@ def _validate_user_taus(user_taus: Sequence[int], min_length: int) -> list[int]:
 def derive_taus(
     dataset: DatasetLike | Sequence[int],
     *,
-    max_lags: int = 8,
-    min_lag: int = 2,
-    fraction_max: float = 0.5,
+    max_lags: int = 10,
+    min_lag: int = 1,
+    fraction_max: float = _MAX_TAU_FRACTION,
     geometric: bool = True,
     base: Sequence[int] | None = None,
 ) -> list[int]:
@@ -312,13 +429,15 @@ def derive_taus(
         fraction_max=fraction_max,
     )
 
-    lengths = _collect_tau_lengths(dataset)
+    lengths, strides = _collect_tau_lengths(dataset)
     min_length = _ensure_minimum_length(lengths, min_lag=min_lag)
+    stride_hint = min(strides) if strides else 1
+    min_lag_effective = max(min_lag, stride_hint)
 
     if geometric:
         taus = _derive_geometric_taus(
             min_length=min_length,
-            min_lag=min_lag,
+            min_lag=min_lag_effective,
             fraction_max=fraction_max,
             max_lags=max_lags,
             base=base,
@@ -328,7 +447,7 @@ def derive_taus(
         taus = _derive_base_taus(
             base=base,
             min_length=min_length,
-            min_lag=min_lag,
+            min_lag=min_lag_effective,
         )
         strategy = "base-filter"
 
@@ -353,27 +472,38 @@ def _validate_tau_parameters(
         raise ValueError(f"fraction_max must be in (0,1], got {fraction_max}")
 
 
-def _collect_tau_lengths(dataset: DatasetLike | Sequence[int]) -> list[int]:
+def _collect_tau_lengths(
+    dataset: DatasetLike | Sequence[int],
+) -> tuple[list[int], list[int]]:
     if isinstance(dataset, (Mapping, MutableMapping)) and not isinstance(
         dataset, (list, tuple)
     ):
         splits = _normalise_splits(dataset)
         lengths: list[int] = []
-        for value in splits.values():
+        strides: list[int] = []
+        for name, value in splits.items():
             try:
                 arr = _coerce_array(value)
             except Exception as exc:  # pragma: no cover - defensive
                 logger.debug("Skipping split during tau derivation: %s", exc)
                 continue
-            lengths.append(int(arr.shape[0]))
+            split_lengths, split_strides = _resolve_shard_segments_for_split(
+                dataset,
+                str(name),
+                value,
+                arr.shape[0],
+            )
+            lengths.extend(int(length) for length in split_lengths)
+            strides.extend(max(1, int(stride)) for stride in split_strides)
     else:
         lengths = [int(length) for length in dataset]  # type: ignore[arg-type]
+        strides = [1 for _ in lengths]
 
     if not lengths:
         raise ValueError("No split lengths available for tau derivation")
     if any(length <= 0 for length in lengths):
         raise ValueError(f"Non-positive split length encountered: {lengths}")
-    return lengths
+    return lengths, strides
 
 
 def _ensure_minimum_length(lengths: Sequence[int], *, min_lag: int) -> int:
@@ -511,7 +641,7 @@ def compute_diagnostics(
     warnings: list[str] = []
 
     for name, split in splits.items():
-        processed = _compute_split_diagnostics(name, split, taus_used)
+        processed = _compute_split_diagnostics(name, split, taus_used, dataset)
         if processed is None:
             continue
         split_canonical, split_autocorr, split_warnings = processed
@@ -538,9 +668,12 @@ def _compute_split_diagnostics(
     name: str,
     split: Any,
     taus: Sequence[int],
+    dataset: DatasetLike,
 ) -> tuple[list[float] | None, Dict[str, Any], list[str]] | None:
-    """Gather canonical correlations and autocorrelation curve for one split."""
+    """Gather canonical correlations and autocorrelation curve for one split.
 
+    Raises errors if data is malformed. Returns None only if split cannot be coerced.
+    """
     try:
         X = _coerce_array(split)
     except Exception as exc:  # pragma: no cover - defensive
@@ -548,28 +681,32 @@ def _compute_split_diagnostics(
         return None
 
     metadata = split.get("meta") if isinstance(split, Mapping) else None
-    whitened, _ = apply_whitening_from_metadata(X, metadata)
+    if metadata is not None:
+        whitened_full, _ = apply_whitening_from_metadata(X, metadata)
+    else:
+        whitened_full = X
 
     canonical: list[float] | None = None
     warnings: list[str] = []
     inputs = _extract_optional_inputs(split) if isinstance(split, Mapping) else None
+    canonical_inputs = inputs
+    canonical_values = whitened_full
     if inputs is not None:
-        if inputs.shape[0] != whitened.shape[0]:
-            length = min(inputs.shape[0], whitened.shape[0])
+        if inputs.shape[0] != whitened_full.shape[0]:
+            length = min(inputs.shape[0], whitened_full.shape[0])
             logger.debug(
                 "Truncating inputs/whitened for canonical correlation: %s length -> %d",
                 name,
                 length,
             )
-            inputs = inputs[:length]
-            whitened = whitened[:length]
+            canonical_inputs = inputs[:length]
+            canonical_values = whitened_full[:length]
         try:
-            correlations = _canonical_correlations(inputs, whitened)
+            correlations = _canonical_correlations(canonical_inputs, canonical_values)
         except InsufficientSamplesError:
             logger.error(
                 "%s: insufficient samples for canonical correlation (need >=2)", name
             )
-            # Propagate as per requirement to raise error on insufficient samples
             raise
         except CanonicalCorrelationError as exc:
             msg = f"{name}: canonical correlation failed ({exc})"
@@ -584,11 +721,17 @@ def _compute_split_diagnostics(
                     warnings.append(msg)
                     logger.warning(msg)
 
-    curve = _autocorrelation_curve(whitened, taus)
-    autocorr = {"taus": list(taus), "values": curve}
-    if len(curve) >= 4 and np.isfinite(curve[0]) and np.isfinite(curve[3]):
-        if abs(curve[0] - curve[3]) < 0.05:
-            msg = f"{name}: CV autocorrelation flat across lags"
+    descriptors = _segment_descriptors_for_split(
+        dataset,
+        name,
+        split,
+        whitened_full.shape[0],
+    )
+    autocorr = _autocorrelation_curve(whitened_full, taus, descriptors)
+    values = autocorr.get("values", [])
+    if len(values) >= 4 and np.isfinite(values[1]) and np.isfinite(values[3]):
+        if abs(values[1] - values[3]) < 0.05:
+            msg = f"{name}: CV autocorrelation flat across early lags"
             warnings.append(msg)
             logger.warning(msg)
 

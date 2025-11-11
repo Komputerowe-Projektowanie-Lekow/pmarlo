@@ -1,4 +1,4 @@
-# Copyright (c) 2025 PMARLO Development Team
+﻿# Copyright (c) 2025 PMARLO Development Team
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 """
@@ -11,7 +11,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-pytest.importorskip("openmm")
+openmm = pytest.importorskip("openmm")
+if getattr(openmm, "__pmarlo_stub__", False):
+    pytest.skip("Requires OpenMM", allow_module_level=True)
 pytest.importorskip("mdtraj")
 
 from pmarlo.replica_exchange.simulation import (
@@ -26,13 +28,14 @@ pytestmark = pytest.mark.integration
 class TestSimulation:
     """Test cases for Simulation class."""
 
-    def test_simulation_initialization(self, test_fixed_pdb_file):
+    def test_simulation_initialization(self, test_fixed_pdb_file, temp_output_dir):
         """Test simulation initialization."""
         sim = Simulation(
             pdb_file=str(test_fixed_pdb_file),
             temperature=300.0,
             steps=100,
             use_metadynamics=False,
+            output_dir=str(temp_output_dir / "init"),
         )
 
         assert sim.pdb_file == str(test_fixed_pdb_file)
@@ -91,13 +94,14 @@ class TestSimulationFunctions:
                 "Cannot inspect function signature without required dependencies"
             )
 
-    def test_simulation_configuration_validation(self):
+    def test_simulation_configuration_validation(self, tmp_path):
         """Test simulation configuration validation."""
         # Test that simulation accepts basic parameters (validation happens during execution)
         sim = Simulation(
             pdb_file="nonexistent.pdb",
             temperature=300,
             steps=100,  # Valid temperature
+            output_dir=str(tmp_path / "validation"),
         )
         # Configuration is accepted during initialization
         # Errors typically occur during execution when files are accessed

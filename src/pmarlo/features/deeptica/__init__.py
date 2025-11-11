@@ -19,6 +19,7 @@ from pmarlo.features.deeptica.export import (
     export_cv_model,
     load_cv_model_info,
 )
+from pmarlo.features.deeptica.metrics import normalize_training_metrics
 from pmarlo.features.deeptica.openmm_integration import (
     CVBiasForce,
     add_cv_bias_to_system,
@@ -38,6 +39,7 @@ _STANDALONE_EXPORTS: dict[str, Any] = {
     "add_cv_bias_to_system": add_cv_bias_to_system,
     "check_openmm_torch_available": check_openmm_torch_available,
     "create_cv_torch_force": create_cv_torch_force,
+    "normalize_training_metrics": normalize_training_metrics,
 }
 
 __all__ = sorted(_STANDALONE_EXPORTS)

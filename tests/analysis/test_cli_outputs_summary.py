@@ -73,7 +73,7 @@ def test_cli_outputs_summary(tmp_path):
     cmd = [
         sys.executable,
         "-m",
-        "example_programs.app_usecase.app.headless",
+        "pmarlo_webapp.app.headless",
         "--workspace",
         str(workspace_dir),
         "run-analysis",
