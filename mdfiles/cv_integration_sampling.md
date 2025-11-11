@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `pmarlo` package supports **CV-informed sampling** using trained Deep-TICA models to apply harmonic restraints in collective variable (CV) space during molecular dynamics simulations. This implements a **restraint potential** that encourages the system to sample regions with non-zero CV values.
+The `pmarlo` package supports **CV-informed sampling** using trained Deep-TICA models to apply harmonic restraints in collective variable (CV) space during molecular dynamics simulations. This implements a **restraint potential** that current potential penalizes non-zero CV; it encourages CV ≈ 0.
 
 ## How It Works
 
@@ -136,10 +136,10 @@ Run the benchmark harness to measure performance on your hardware:
 
 ```bash
 # Unbiased baseline
-poetry run python scripts/bench_openmm.py --platform CPU --with-bias no --steps 5000
+poetry run python example_programs/bench_openmm.py --platform CPU --with-bias no --steps 5000
 
 # With CV bias
-poetry run python scripts/bench_openmm.py --platform CPU --with-bias yes \
+poetry run python example_programs/bench_openmm.py --platform CPU --with-bias yes \
     --model path/to/deeptica_cv_bias.pt --steps 5000 --torch-threads 4
 ```
 
@@ -180,7 +180,7 @@ EOF
 
 # Run a short simulation (5000 steps × 2 fs = 10 ps)
 export PMARLO_CONFIG_FILE=test_config.yaml
-poetry run python scripts/bench_openmm.py --platform CPU --with-bias yes \
+poetry run python example_programs/bench_openmm.py --platform CPU --with-bias yes \
     --model path/to/deeptica_cv_bias.pt --steps 5000 --torch-threads 4
 ```
 

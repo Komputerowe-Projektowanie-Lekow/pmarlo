@@ -124,6 +124,21 @@ def summarize_selected_feature_profiles(
         (str(entry.get("feature_type") or "cv")).strip() or "cv" for entry in selected_entries
     }
     cv_flags = {bool(entry.get("cv_biasing_compatible")) for entry in selected_entries}
+    feature_variables = set()
+    feature_variable_labels = set()
+
+    def _iter_strings(value: Any) -> List[str]:
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            return [
+                str(item).strip()
+                for item in value
+                if isinstance(item, (str, int, float)) and str(item).strip()
+            ]
+        return []
+
+    for entry in selected_entries:
+        feature_variables.update(_iter_strings(entry.get("feature_variables")))
+        feature_variable_labels.update(_iter_strings(entry.get("feature_variable_labels")))
 
     return {
         "entries": selected_entries,
@@ -131,7 +146,32 @@ def summarize_selected_feature_profiles(
         "feature_types": feature_types,
         "cv_flags": cv_flags,
         "primary_profile": next(iter(profiles)) if len(profiles) == 1 else None,
+        "feature_variables": feature_variables,
+        "feature_variable_labels": feature_variable_labels,
     }
+
+
+def format_feature_variable_caption(summary: Mapping[str, Any]) -> Optional[str]:
+    """Return a comma-separated string of feature variables for display."""
+
+    candidates = summary.get("feature_variable_labels") or summary.get("feature_variables")
+    if not candidates:
+        return None
+
+    try:
+        ordered = sorted(
+            {
+                str(item).strip()
+                for item in candidates
+                if isinstance(item, (str, int, float)) and str(item).strip()
+            }
+        )
+    except TypeError:
+        return None
+
+    if not ordered:
+        return None
+    return ", ".join(ordered)
 
 
 def render_shard_selection_table(

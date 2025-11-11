@@ -17,6 +17,17 @@ logger = logging.getLogger(__name__)
 __all__ = ["extract_shards_with_features"]
 
 
+def _is_distance_column(name: str) -> bool:
+    lowered = name.lower()
+    return lowered.startswith("distance(") or lowered.startswith("dist:atoms:")
+
+
+def _validate_distance_periodicity(periodic: Dict[str, bool]) -> None:
+    for column_name, is_periodic in periodic.items():
+        if is_periodic and _is_distance_column(column_name):
+            raise ValueError(f"Distance column '{column_name}' cannot be marked as periodic")
+
+
 def extract_shards_with_features(
     pdb_file: str | Path,
     traj_files: List[str | Path],
@@ -217,6 +228,7 @@ def _write_shard(
         col: bool(periodic_flags[idx]) if idx < len(periodic_flags) else False
         for idx, col in enumerate(columns)
     }
+    _validate_distance_periodicity(periodic)
 
     # Prepare source metadata with required fields
     from datetime import datetime

@@ -4,7 +4,7 @@ import shutil
 from collections.abc import Mapping
 from dataclasses import asdict, asdict as dataclass_asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -228,6 +228,13 @@ class AnalysisMixin:
 
     def build_config_from_entry(self, entry: Dict[str, Any]) -> BuildConfig:
         """Reconstruct a BuildConfig from a state entry."""
+        fes_bins_raw = entry.get("fes_bins")
+        fes_bins: Tuple[int, int] | None = None
+        if isinstance(fes_bins_raw, (list, tuple)) and len(fes_bins_raw) >= 2:
+            try:
+                fes_bins = (int(fes_bins_raw[0]), int(fes_bins_raw[1]))
+            except (TypeError, ValueError):
+                fes_bins = None
         return BuildConfig(
             lag=int(entry.get("lag", 10)),
             bins=dict(entry.get("bins", {})),
@@ -242,6 +249,7 @@ class AnalysisMixin:
             fes_bandwidth=entry.get("fes_bandwidth", "scott"),
             fes_min_count_per_bin=int(entry.get("fes_min_count_per_bin", 1)),
             fes_grid_strategy=str(entry.get("fes_grid_strategy", "adaptive")).lower(),
+            fes_bins=fes_bins,
         )
 
     def _extract_debug_data_from_build_result(
@@ -485,6 +493,9 @@ class AnalysisMixin:
                 "fes_bandwidth": config.fes_bandwidth,
                 "fes_min_count_per_bin": int(config.fes_min_count_per_bin),
                 "fes_grid_strategy": str(config.fes_grid_strategy).lower(),
+                "fes_bins": tuple(config.fes_bins)
+                if isinstance(config.fes_bins, (list, tuple))
+                else config.fes_bins,
             }
             requested_fingerprint = {
                 "mode": str(config.cluster_mode),
@@ -518,6 +529,8 @@ class AnalysisMixin:
                 kmeans_kwargs=dict(config.kmeans_kwargs),
                 n_microstates=int(config.n_microstates),
                 fes_grid_strategy=str(config.fes_grid_strategy).lower(),
+                fes_bins=tuple(config.fes_bins) if config.fes_bins is not None else None,
+                fes_min_count=int(config.fes_min_count_per_bin),
             )
 
             def _safe_int(value: Any, default: int) -> int:
@@ -1083,6 +1096,7 @@ class AnalysisMixin:
         ck_threshold: float,
         coverage_threshold: float,
         min_median_count: int,
+        diag_mass_threshold: float,
     ) -> Dict[str, Any]:
         """Run CK+ITS lag selection and return results for display.
 
@@ -1110,6 +1124,8 @@ class AnalysisMixin:
             Minimum coverage fraction.
         min_median_count : int
             Minimum median microstate count.
+        diag_mass_threshold : float
+            Minimum acceptable diagonal mass during lag evaluation.
 
         Returns
         -------
@@ -1134,6 +1150,7 @@ class AnalysisMixin:
             ck_threshold=ck_threshold,
             coverage_threshold=coverage_threshold,
             min_median_count=min_median_count,
+            diag_mass_threshold=diag_mass_threshold,
         )
 
         # Convert result object to dictionary for frontend
@@ -1146,6 +1163,10 @@ class AnalysisMixin:
             "median_counts": dict(result_obj.median_counts),
             "macrostate_counts": dict(result_obj.macrostate_counts),
             "passed_sanity": dict(result_obj.passed_sanity),
+            "diag_masses": {
+                entry["lag"]: entry.get("diag_mass")
+                for entry in result_obj.diagnostics.get("evaluations", [])
+            },
             "diagnostics": dict(result_obj.diagnostics),
         }
 

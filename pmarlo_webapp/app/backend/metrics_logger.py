@@ -3,7 +3,7 @@
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 from datetime import datetime
 
 import numpy as np
@@ -226,13 +226,23 @@ class MetricsLogger:
                         f.write(f"  - {warning}\n")
                     f.write("\n")
 
-                if "canonical_correlations" in diagnostics:
-                    f.write("Canonical Correlations:\n")
-                    corrs = diagnostics["canonical_correlations"]
-                    if isinstance(corrs, (list, np.ndarray)):
-                        for i, corr in enumerate(corrs):
-                            f.write(f"  Component {i}: {corr:.6f}\n")
-                    f.write("\n")
+                if "canonical_correlation" in diagnostics:
+                    canonical = diagnostics["canonical_correlation"]
+                    if canonical:
+                        f.write("Canonical Correlations:\n")
+                        if isinstance(canonical, Mapping):
+                            for split, values in sorted(canonical.items()):
+                                if not values:
+                                    continue
+                                f.write(f"  {split}:\n")
+                                for idx, corr in enumerate(values, start=1):
+                                    f.write(f"    Component {idx}: {corr:.6f}\n")
+                        elif isinstance(canonical, (list, np.ndarray)):
+                            for idx, corr in enumerate(canonical, start=1):
+                                f.write(f"  Component {idx}: {corr:.6f}\n")
+                        else:
+                            f.write(f"  {canonical}\n")
+                        f.write("\n")
 
                 if "autocorrelation" in diagnostics:
                     f.write("Autocorrelation Data Available: Yes\n\n")

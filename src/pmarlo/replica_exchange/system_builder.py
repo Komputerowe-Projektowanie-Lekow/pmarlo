@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import numpy as np
 import openmm
@@ -25,6 +26,102 @@ def load_pdb_and_forcefield(
     pdb = PDBFile(pdb_file)
     forcefield = ForceField(*forcefield_files)
     return pdb, forcefield
+
+
+def _normalise_path_string(value: str | Path | None) -> str:
+    """Normalise filesystem paths so metadata comparisons work across OSes."""
+    if value is None:
+        return ""
+    text = str(value).strip().strip('"')
+    if not text:
+        return ""
+    candidate = text.replace("\\", "/")
+    if candidate.startswith("/mnt/") and len(candidate) > 6:
+        drive_letter = candidate[5]
+        remainder = candidate[7:]
+        if candidate[6] == "/" and drive_letter.isalpha():
+            candidate = f"{drive_letter.upper()}:/{remainder}"
+    try:
+        path = Path(candidate)
+    except Exception:
+        return text
+    path = path.expanduser()
+    try:
+        resolved = path.resolve(strict=False)
+    except Exception:
+        resolved = path
+    return str(resolved)
+
+
+def _collect_recorded_model_paths(payload: Mapping[str, Any] | None) -> list[str]:
+    """Pull every recorded model path in metadata/history for bundle discovery."""
+    if not isinstance(payload, Mapping):
+        return []
+    values: list[str] = []
+    for key in ("model_prefix", "model_path"):
+        raw = payload.get(key)
+        if isinstance(raw, str):
+            values.append(raw)
+    files = payload.get("model_files")
+    if isinstance(files, list):
+        for item in files:
+            if isinstance(item, str):
+                values.append(item)
+    return values
+
+
+def _find_existing_cv_bundle_dir(checkpoint_path: Path) -> Path | None:
+    """Locate the exported CV bundle directory associated with a checkpoint."""
+    base_prefix = checkpoint_path.with_suffix("")
+    try:
+        base_prefix = base_prefix.expanduser().resolve(strict=False)
+    except Exception:
+        base_prefix = base_prefix.expanduser()
+
+    base_norm = _normalise_path_string(base_prefix)
+    base_name = base_prefix.name
+
+    parent = base_prefix.parent
+    search_dirs: list[Path] = []
+    if parent.is_dir():
+        search_dirs.append(parent)
+    for candidate in sorted(parent.glob("training-*")):
+        if candidate.is_dir():
+            search_dirs.append(candidate)
+
+    for directory in search_dirs:
+        ts_path = directory / "deeptica_cv_model.pt"
+        if not ts_path.exists():
+            continue
+        meta_path = directory / "deeptica_cv_model_metadata.json"
+        recorded_match = False
+        recorded_names: set[str] = set()
+
+        if meta_path.exists():
+            try:
+                metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                metadata = {}
+            history = metadata.get("history")
+            recorded_values = _collect_recorded_model_paths(metadata) + _collect_recorded_model_paths(
+                history
+            )
+            for raw in recorded_values:
+                normalised = _normalise_path_string(raw)
+                if normalised and base_norm and normalised == base_norm:
+                    recorded_match = True
+                    break
+                try:
+                    recorded_names.add(Path(raw).with_suffix("").name)
+                except Exception:
+                    continue
+            if not recorded_match and base_name in recorded_names:
+                recorded_match = True
+
+        if recorded_match:
+            return directory
+
+    return None
 
 
 @dataclass(frozen=True)
@@ -72,46 +169,190 @@ def _ensure_bias_disabled(cv_model_path: str | None) -> None:
         )
 
 
+def _get_jit_attribute(module: torch.jit.ScriptModule, name: str):
+    """Safely read an attribute that may be stored on either the Python or compiled module."""
+    try:
+        return getattr(module, name)
+    except AttributeError:
+        pass
+    try:
+        return module._c.getattr(name)
+    except Exception:
+        return None
+
+
+def _tensor_to_numpy(value):
+    if torch.is_tensor(value):
+        return value.detach().cpu().numpy()
+    return np.asarray(value, dtype=np.float32)
+
+
+def _extract_scaler_from_script_module(module: torch.jit.ScriptModule) -> dict[str, Any]:
+    """Pull scaler statistics and feature names directly from a TorchScript bias module."""
+    mean_tensor = _get_jit_attribute(module, "scaler_mean")
+    scale_tensor = _get_jit_attribute(module, "scaler_scale")
+    if mean_tensor is None or scale_tensor is None:
+        raise RuntimeError("TorchScript module is missing scaler buffers.")
+
+    feature_names = _get_jit_attribute(module, "feature_names") or []
+    if isinstance(feature_names, torch.Tensor):
+        feature_names = feature_names.tolist()
+
+    return {
+        "mean": _tensor_to_numpy(mean_tensor),
+        "scale": _tensor_to_numpy(scale_tensor),
+        "feature_names": list(feature_names)
+        if hasattr(feature_names, "__iter__")
+        else [],
+    }
+
+
+def _infer_model_dimensions_from_module(
+    module: torch.jit.ScriptModule, scaler_params: dict[str, Any]
+) -> dict[str, int]:
+    """Use the scripted module to infer input, CV, and atom counts."""
+    mean_data = scaler_params.get("mean")
+    if mean_data is None:
+        raise RuntimeError("Scaler parameters are required to infer model dimensions.")
+    input_dim = int(np.asarray(mean_data).size)
+    atom_count = _get_jit_attribute(module, "atom_count")
+    atom_count = int(atom_count or input_dim)
+
+    dummy_pos = torch.zeros(atom_count, 3, dtype=torch.float32)
+    dummy_box = torch.eye(3, dtype=torch.float32)
+    with torch.inference_mode():
+        cvs = module.compute_cvs(dummy_pos, dummy_box)
+    if cvs.ndim == 0:
+        cv_dim = 1
+    elif cvs.ndim == 1:
+        cv_dim = int(cvs.shape[0])
+    else:
+        cv_dim = int(cvs.shape[-1])
+    return {"input_dim": input_dim, "cv_dim": cv_dim, "atom_count": atom_count}
+
+
+def _extract_feature_spec_hash_from_module(
+    module: torch.jit.ScriptModule,
+) -> str | None:
+    hash_value = _get_jit_attribute(module, "feature_spec_sha256")
+    if hash_value is None:
+        return None
+    if isinstance(hash_value, bytes):
+        return hash_value.decode("utf-8", errors="ignore")
+    return str(hash_value)
+
+
 def _load_model_bundle(
-    model_path: Path, spec_hash: str
-) -> tuple[Dict[str, Any], torch.jit.ScriptModule, int, int]:
+    model_path: Path, spec_hash: str, feature_spec: Mapping[str, Any]
+) -> tuple[Dict[str, Any], torch.jit.ScriptModule, int, int, Path]:
     if not model_path.exists():
         raise FileNotFoundError(f"CV model file not found: {model_path}")
 
-    bundle_info = load_cv_model_info(model_path.parent, model_path.stem)
+    def _load_script_module(path: Path):
+        info = load_cv_model_info(path.parent, path.stem)
+        module = torch.jit.load(str(path), map_location="cpu")
+        module.eval()
+        return info, module
+
+    torchscript_path = model_path
+    bundle_info: Dict[str, Any]
+    try:
+        bundle_info, model = _load_script_module(torchscript_path)
+    except RuntimeError as exc:
+        if "constants.pkl" in str(exc):
+            raise RuntimeError(
+                "The provided CV model path appears to be a training checkpoint "
+                "rather than an exported TorchScript bundle. Export the CV bias files "
+                "with `python pmarlo_webapp/export_cv_bundle.py <model_base_path>` "
+                "or pass the directory containing `deeptica_cv_model.pt`."
+            ) from exc
+        raise
 
     model_hash = bundle_info.get("feature_spec_sha256")
-    # If the exported bundle lacks an explicit feature_spec hash, warn but continue.
-    # Older exports may omit this attribute; in that case we fall back to trusting
-    # the configuration-derived spec_hash while still validating input/output dims.
     if not model_hash:
-        logger.warning(
-            "Exported CV model is missing feature_spec_sha256 metadata. "
-            "Proceeding without strict feature-spec hash validation."
-        )
-    else:
+        model_hash = _extract_feature_spec_hash_from_module(model)
+        if model_hash is not None:
+            bundle_info["feature_spec_sha256"] = model_hash
+    if model_hash:
         if model_hash != spec_hash:
             raise RuntimeError(
                 "Feature specification mismatch: "
                 f"expected hash {spec_hash} from configuration but model provides {model_hash}."
             )
+    else:
+        logger.warning(
+            "Exported CV model is missing feature_spec_sha256 metadata. "
+            "Proceeding without strict feature-spec hash validation."
+        )
 
     scaler_params = bundle_info.get("scaler_params", {})
+    if not scaler_params:
+        scaler_params = _extract_scaler_from_script_module(model)
+        bundle_info["scaler_params"] = scaler_params
+
     mean = np.asarray(scaler_params.get("mean", []), dtype=np.float32)
     scale = np.asarray(scaler_params.get("scale", []), dtype=np.float32)
     ensure_scaler_finite(mean, scale)
 
-    config_payload = bundle_info.get("config", {})
+    config_payload = dict(bundle_info.get("config", {}))
     expected_input_dim = int(config_payload.get("input_dim", 0))
     expected_cv_dim = int(config_payload.get("cv_dim", 0))
     expected_atom_count = int(config_payload.get("atom_count", 0))
+
+    if expected_input_dim <= 0 or expected_cv_dim <= 0 or expected_atom_count <= 0:
+        dimension_info = _infer_model_dimensions_from_module(model, scaler_params)
+        expected_input_dim = expected_input_dim or dimension_info["input_dim"]
+        expected_cv_dim = expected_cv_dim or dimension_info["cv_dim"]
+        expected_atom_count = expected_atom_count or dimension_info["atom_count"]
+        config_payload.setdefault("input_dim", expected_input_dim)
+        config_payload.setdefault("cv_dim", expected_cv_dim)
+        config_payload.setdefault("atom_count", expected_atom_count)
+
     if expected_input_dim <= 0 or expected_cv_dim <= 0 or expected_atom_count <= 0:
         raise RuntimeError("CV model configuration metadata is incomplete.")
 
-    model = torch.jit.load(str(model_path), map_location="cpu")
-    model.eval()
+    bundle_info["config"] = config_payload
 
-    return bundle_info, model, expected_cv_dim, expected_atom_count
+    return bundle_info, model, expected_cv_dim, expected_atom_count, torchscript_path
+
+
+def resolve_cv_model_torchscript_path(cv_model_path: str | Path) -> Path:
+    """Resolve user-provided paths into a validated TorchScript CV bundle."""
+    feature_spec, spec_hash = load_feature_spec()
+
+    path = Path(cv_model_path).expanduser()
+    try:
+        path = path.resolve(strict=False)
+    except Exception:
+        path = path.absolute()
+
+    candidate: Optional[Path] = None
+
+    if path.is_dir():
+        bundle = path / "deeptica_cv_model.pt"
+        if bundle.exists():
+            candidate = bundle
+    elif path.suffix.lower() == ".pt" and path.name.endswith("_cv_model.pt"):
+        candidate = path
+    elif path.suffix.lower() == ".pt":
+        bundle_dir = _find_existing_cv_bundle_dir(path)
+        if bundle_dir is None:
+            base = path.with_suffix("")
+            raise FileNotFoundError(
+                "No exported CV bundle could be located for checkpoint "
+                f"{path}. Run `python pmarlo_webapp/export_cv_bundle.py {base}` "
+                "or provide the directory that contains `deeptica_cv_model.pt`."
+            )
+        candidate = bundle_dir / "deeptica_cv_model.pt"
+
+    if candidate is None or not candidate.exists():
+        raise FileNotFoundError(
+            f"Unable to locate a TorchScript CV model near {cv_model_path}. "
+            "Provide a `deeptica_cv_model.pt` file or its containing directory."
+        )
+
+    _load_model_bundle(candidate, spec_hash, feature_spec)
+    return candidate
 
 
 def _validate_model_tensors(model: torch.jit.ScriptModule, spec_hash: str) -> None:
@@ -185,10 +426,13 @@ def _initialise_torch_force_legacy(
     cv_force.setUsesPeriodicBoundaryConditions(uses_pbc)
     try:
         cv_force.setProperty("precision", precision)
-    except AttributeError as exc:
-        raise RuntimeError(
-            f"TorchForce does not support precision='{precision}' on this platform."
-        ) from exc
+    except Exception as exc:  # pragma: no cover - exercised indirectly
+        logger.warning(
+            "TorchForce precision='%s' not accepted (OpenMM build may not expose the property); "
+            "continuing with default precision. Error: %s",
+            precision,
+            exc,
+        )
     return cv_force
 
 
@@ -306,10 +550,14 @@ def create_system(
         )
 
     model_path = Path(cv_model_path).expanduser().resolve()
-    _, spec_hash = load_feature_spec()
-    bundle_info, model, expected_cv_dim, expected_atom_count = _load_model_bundle(
-        model_path, spec_hash
-    )
+    feature_spec, spec_hash = load_feature_spec()
+    (
+        bundle_info,
+        model,
+        expected_cv_dim,
+        expected_atom_count,
+        torchscript_path,
+    ) = _load_model_bundle(model_path, spec_hash, feature_spec)
     _validate_model_tensors(model, spec_hash)
     _, uses_pbc = _infer_cv_dimension(model, expected_cv_dim, expected_atom_count)
 
@@ -324,7 +572,7 @@ def create_system(
         try:
             feature_forces, feature_indices, nn_torch_force = (
                 _initialise_optimized_cv_forces(
-                    model_path, feature_spec, system, uses_pbc, config.precision
+                    torchscript_path, feature_spec, system, uses_pbc, config.precision
                 )
             )
             # Note: nn_torch_force is currently None due to API limitations
@@ -338,7 +586,9 @@ def create_system(
             feature_indices = []
 
     # Always add the legacy TorchForce for bias computation (required until openmmtorch supports feature input)
-    cv_force = _initialise_torch_force_legacy(model_path, uses_pbc, config.precision)
+    cv_force = _initialise_torch_force_legacy(
+        torchscript_path, uses_pbc, config.precision
+    )
     system.addForce(cv_force)
 
     # Store feature force information for monitoring (if available)

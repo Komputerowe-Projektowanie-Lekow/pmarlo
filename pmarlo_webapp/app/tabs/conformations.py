@@ -15,6 +15,7 @@ from core.view_helpers import (
     _render_conformations_result,
     render_shard_selection_table,
     summarize_selected_feature_profiles,
+    format_feature_variable_caption,
 )
 from backend.types import ConformationsConfig, ConformationsResult
 from pmarlo.api import select_shard_paths
@@ -117,6 +118,12 @@ def render_conformations_tab(ctx: AppContext) -> None:
             elif profile_summary["feature_types"]:
                 detected_type = next(iter(profile_summary["feature_types"]))
                 st.caption(f"Detected shard feature type: {detected_type}")
+            feature_variable_caption = format_feature_variable_caption(profile_summary)
+            if feature_variable_caption:
+                st.caption(
+                    "Variables detected in selected shards: "
+                    + feature_variable_caption
+                )
             try:
                 selected_paths = select_shard_paths(shard_groups, selected_runs)
             except ValueError as exc:

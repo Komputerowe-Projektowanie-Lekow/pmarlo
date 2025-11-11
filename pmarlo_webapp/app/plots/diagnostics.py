@@ -68,7 +68,30 @@ def plot_autocorrelation_curves(diagnostics: Dict[str, Any]) -> plt.Figure:
         values = np.asarray(payload.get("values", []), dtype=float)
         if taus.size == 0 or values.size == 0:
             continue
-        ax.plot(taus, values, marker="o", label=str(split))
+        tau_int = payload.get("tau_int")
+        label = str(split)
+        if tau_int is not None and np.isfinite(tau_int):
+            label = f"{label} (τ_int≈{tau_int:.0f})"
+        (line,) = ax.plot(taus, values, marker="o", label=label)
+        color = line.get_color()
+        if tau_int is not None and np.isfinite(tau_int):
+            ax.axvline(
+                tau_int,
+                color=color,
+                linestyle="--",
+                alpha=0.4,
+                linewidth=1.0,
+            )
+        window = payload.get("lag_window")
+        if isinstance(window, (list, tuple)) and len(window) == 2:
+            start, stop = window
+            if np.isfinite(start) and np.isfinite(stop) and stop > start:
+                ax.axvspan(
+                    start,
+                    stop,
+                    color=color,
+                    alpha=0.05,
+                )
     ax.set_xlabel("Lag τ")
     ax.set_ylabel("ρ(τ)")
     ax.set_ylim(-0.05, 1.05)

@@ -15,6 +15,7 @@ from core.view_helpers import (
     SHARD_SELECTOR_HELP,
     render_shard_selection_table,
     summarize_selected_feature_profiles,
+    format_feature_variable_caption,
 )
 from pmarlo.api import select_shard_paths, parse_hidden_layers
 from plots.diagnostics import (
@@ -98,6 +99,12 @@ def render_msm_fes_tab(ctx: AppContext) -> None:
             elif profile_summary["feature_types"]:
                 detected_type = next(iter(profile_summary["feature_types"]))
                 st.caption(f"Detected shard feature type: {detected_type}")
+            feature_variable_caption = format_feature_variable_caption(profile_summary)
+            if feature_variable_caption:
+                st.caption(
+                    "Variables detected in selected shards: "
+                    + feature_variable_caption
+                )
             try:
                 selected_paths = select_shard_paths(shard_groups, selected_runs)
             except ValueError as exc:
@@ -308,6 +315,27 @@ def render_msm_fes_tab(ctx: AppContext) -> None:
                     "central percentile range, while 'fixed' uses the full sample span."
                 ),
             )
+            col_bins_x, col_bins_y = st.columns(2)
+            bins_x_default = int(st.session_state.get("analysis_fes_bins_x", 64))
+            bins_y_default = int(st.session_state.get("analysis_fes_bins_y", 64))
+            col_bins_x.number_input(
+                "FES bins (X axis)",
+                min_value=4,
+                max_value=1024,
+                value=bins_x_default,
+                step=1,
+                key="analysis_fes_bins_x",
+                help="Number of histogram bins along the X axis.",
+            )
+            col_bins_y.number_input(
+                "FES bins (Y axis)",
+                min_value=4,
+                max_value=1024,
+                value=bins_y_default,
+                step=1,
+                key="analysis_fes_bins_y",
+                help="Number of histogram bins along the Y axis.",
+            )
 
         disabled = len(selected_paths) == 0
         if st.button(
@@ -342,12 +370,16 @@ def render_msm_fes_tab(ctx: AppContext) -> None:
                     cluster_mode=str(cluster_mode),
                     n_microstates=int(n_microstates),
                     reweight_mode=reweight_final,
-                fes_method=str(fes_method),
-                fes_bandwidth=bandwidth_val,
-                fes_min_count_per_bin=int(min_count_per_bin),
-                fes_grid_strategy=str(grid_strategy).lower(),
-                require_fully_connected_msm=bool(require_connectivity),
-            )
+                    fes_method=str(fes_method),
+                    fes_bandwidth=bandwidth_val,
+                    fes_min_count_per_bin=int(min_count_per_bin),
+                    fes_grid_strategy=str(grid_strategy).lower(),
+                    fes_bins=(
+                        int(st.session_state.get("analysis_fes_bins_x", 64)),
+                        int(st.session_state.get("analysis_fes_bins_y", 64)),
+                    ),
+                    require_fully_connected_msm=bool(require_connectivity),
+                )
                 artifact: BuildArtifact | None = None
                 try:
                     artifact = backend.build_analysis(selected_paths, build_cfg)
@@ -495,6 +527,22 @@ def _show_build_outputs(artifact: BuildArtifact) -> None:
                     fig_autocorr = plot_autocorrelation_curves(artifact.build_result.diagnostics)
                     fig_autocorr.set_size_inches(5, 4)
                     st.pyplot(fig_autocorr, width="stretch")
+                    diag_payload = getattr(artifact.build_result, "diagnostics", {}) or {}
+                    ac_entries = diag_payload.get("autocorrelation", {})
+                    summary: list[str] = []
+                    for split, payload in sorted(ac_entries.items()):
+                        tau_int = payload.get("tau_int")
+                        recommended = payload.get("recommended_ck_lags") or []
+                        if tau_int is None or not np.isfinite(tau_int):
+                            continue
+                        if recommended:
+                            summary.append(
+                                f"{split}: τ_int≈{tau_int:.0f}, test τ in {recommended}"
+                            )
+                        else:
+                            summary.append(f"{split}: τ_int≈{tau_int:.0f}")
+                    if summary:
+                        st.caption("Lag guidance · " + " | ".join(summary))
                 except Exception as e:
                     logger.error(f"Failed to plot autocorrelation: {e}", exc_info=True)
                     st.error(f"Error: {e}")
@@ -588,18 +636,21 @@ def _show_build_outputs(artifact: BuildArtifact) -> None:
         with tab_msm:
             if artifact.build_result and artifact.build_result.transition_matrix is not None:
                 T = artifact.build_result.transition_matrix
+                pi = artifact.build_result.stationary_distribution
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     st.metric("States", T.shape[0])
                     st.metric("Diagonal Mass", f"{np.trace(T) / T.shape[0]:.4f}")
                 with col2:
-                    st.metric("Min Prob", f"{np.min(T):.6f}")
-                    st.metric("Max Prob", f"{np.max(T):.6f}")
+                    st.metric("Min Transition Prob", f"{np.min(T):.6f}")
+                    st.metric("Max Transition Prob", f"{np.max(T):.6f}")
                 with col3:
-                    if artifact.build_result.stationary_distribution is not None:
-                        pi = artifact.build_result.stationary_distribution
-                        st.metric("Most Populated State", f"{np.argmax(pi)}")
-                        st.metric("Max Population", f"{np.max(pi):.4f}")
+                    if pi is not None:
+                        st.metric("Most Populated MSM State", f"{np.argmax(pi)}")
+                        st.metric("Max Stationary Prob", f"{np.max(pi):.4f}")
+                        st.metric("Min Stationary Prob", f"{np.min(pi):.4f}")
+                    else:
+                        st.info("Stationary distribution not available.")
 
                 # Debug summary
                 if artifact.debug_summary:

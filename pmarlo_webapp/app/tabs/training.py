@@ -19,6 +19,7 @@ from core.view_helpers import (
     _render_deeptica_summary,
     render_shard_selection_table,
     summarize_selected_feature_profiles,
+    format_feature_variable_caption,
 )
 from backend.types import TrainingConfig, TrainingResult
 from pmarlo.api import parse_tau_schedule, select_shard_paths, parse_hidden_layers
@@ -31,6 +32,7 @@ def render_training_tab(ctx: AppContext) -> None:
     """Render the model training tab."""
     backend = ctx.backend
     layout = ctx.layout
+    feature_spec_path = layout.app_root / "app" / "feature_spec.yaml"
 
     st.header("Train collective-variable model")
 
@@ -133,19 +135,34 @@ def render_training_tab(ctx: AppContext) -> None:
                 profile_summary["primary_profile"]
                 or next(iter(profile_summary["profiles"]), "cv_analysis")
             )
-            profile_info = get_feature_profile_info(selected_profile)
+            profile_info = get_feature_profile_info(
+                selected_profile,
+                spec_path=feature_spec_path if selected_profile == "molecular_custom" else None,
+            )
             compatible, compatibility_msg = validate_profile_for_cv_biasing(
                 selected_profile
             )
             feature_count = profile_info.get("feature_count", "variable")
             st.info(
-                f"Feature profile **{selected_profile}** — "
+                f"Feature profile **{selected_profile}** - "
                 f"{profile_info.get('description', 'No description available')}"
             )
             st.caption(
                 f"Feature type: {profile_info.get('feature_type', 'cv')}, "
                 f"features: {feature_count}"
             )
+            feature_variable_caption = format_feature_variable_caption(profile_summary)
+            display_features = profile_info.get("display_features") or profile_info.get("features") or []
+            if feature_variable_caption:
+                st.caption(
+                    "Variables detected in selected shards: "
+                    + feature_variable_caption
+                )
+            elif display_features:
+                st.caption(
+                    "Variables defined by this profile: "
+                    + ", ".join(display_features)
+                )
             if len(profile_summary["feature_types"]) > 1:
                 st.warning(
                     "Selected shard groups span multiple feature types. "

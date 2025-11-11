@@ -7,6 +7,7 @@ import tempfile
 
 import mdtraj as md
 import numpy as np
+import pytest
 
 
 def test_feature_spec_parsing():
@@ -101,3 +102,20 @@ def test_periodic_flags():
 
     dihedral_fc = get_feature("dihedral")
     assert dihedral_fc.is_periodic()[0], "Dihedral should be periodic"
+
+
+def test_distance_feature_disallows_periodic_flags():
+    """Ensure distance features cannot be marked as periodic."""
+    from pmarlo.api.features import compute_features
+    from pmarlo.features import get_feature
+
+    fc = get_feature("distance")
+    original = fc.is_periodic().copy()
+    fc._periodic = np.array([True], dtype=bool)
+
+    try:
+        traj = md.load("tests/_assets/traj.dcd", top="tests/data/3gd8-fixed.pdb")
+        with pytest.raises(ValueError, match="Distance features must not be flagged as periodic"):
+            compute_features(traj, ["distance([0, 1])"])
+    finally:
+        fc._periodic = original

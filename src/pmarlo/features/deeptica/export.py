@@ -312,16 +312,16 @@ def load_cv_model_info(
     scaler_path_underscore = bundle_path / f"{model_name}_scaler.npz"
     scaler_path_dot = bundle_path / f"{model_name}.scaler.pt"
 
+    scaler_path = None
     # Prefer the standard _scaler.npz format, fall back to .scaler.pt
     if scaler_path_underscore.exists():
         scaler_path = scaler_path_underscore
     elif scaler_path_dot.exists():
         scaler_path = scaler_path_dot
     else:
-        raise FileNotFoundError(
-            f"Scaler file not found. Expected either:\n"
-            f"  {scaler_path_underscore}\n"
-            f"  {scaler_path_dot}"
+        logger.info(
+            "Scaler bundle missing for %s; TorchScript module must expose scaling buffers.",
+            model_path,
         )
 
     # Support both naming conventions for config/metadata
@@ -348,44 +348,47 @@ def load_cv_model_info(
         metadata = json.loads(metadata_path_dot.read_text(encoding="utf-8"))
 
     # Load scaler data - handle both .npz and .pt formats
-    try:
-        if scaler_path.suffix == ".npz":
-            scaler_data = np.load(scaler_path, allow_pickle=True)
-            scaler_params = {
-                "mean": scaler_data["mean"],
-                "scale": scaler_data["scale"],
-                "feature_names": scaler_data.get("feature_names", []).tolist(),
-            }
-        elif scaler_path.suffix == ".pt":
-            # If it's a .pt file, load with torch (allow pickle for numpy arrays)
-            scaler_data = torch.load(scaler_path, map_location="cpu", weights_only=False)
-            # Handle different possible structures
-            if isinstance(scaler_data, dict):
-                mean_data = scaler_data.get("mean", scaler_data.get("mean_", []))
-                scale_data = scaler_data.get("scale", scaler_data.get("scale_", []))
-                feature_names = scaler_data.get("feature_names", [])
-
-                # Convert to numpy if needed
+    scaler_params: dict[str, Any] = {}
+    if scaler_path is not None:
+        try:
+            if scaler_path.suffix == ".npz":
+                scaler_data = np.load(scaler_path, allow_pickle=True)
                 scaler_params = {
-                    "mean": np.array(mean_data) if not isinstance(mean_data, np.ndarray) else mean_data,
-                    "scale": np.array(scale_data) if not isinstance(scale_data, np.ndarray) else scale_data,
-                    "feature_names": list(feature_names) if hasattr(feature_names, '__iter__') else [],
+                    "mean": scaler_data["mean"],
+                    "scale": scaler_data["scale"],
+                    "feature_names": scaler_data.get("feature_names", []).tolist(),
+                }
+            elif scaler_path.suffix == ".pt":
+                # If it's a .pt file, load with torch (allow pickle for numpy arrays)
+                scaler_data = torch.load(
+                    scaler_path, map_location="cpu", weights_only=False
+                )
+                if isinstance(scaler_data, dict):
+                    mean_data = scaler_data.get("mean", scaler_data.get("mean_", []))
+                    scale_data = scaler_data.get("scale", scaler_data.get("scale_", []))
+                    feature_names = scaler_data.get("feature_names", [])
+                else:
+                    mean_data = getattr(scaler_data, "mean_", [])
+                    scale_data = getattr(scaler_data, "scale_", [])
+                    feature_names = getattr(scaler_data, "feature_names", [])
+
+                scaler_params = {
+                    "mean": np.array(mean_data)
+                    if not isinstance(mean_data, np.ndarray)
+                    else mean_data,
+                    "scale": np.array(scale_data)
+                    if not isinstance(scale_data, np.ndarray)
+                    else scale_data,
+                    "feature_names": list(feature_names)
+                    if hasattr(feature_names, "__iter__")
+                    else [],
                 }
             else:
-                # If it's a torch object with attributes
-                mean_data = getattr(scaler_data, "mean_", [])
-                scale_data = getattr(scaler_data, "scale_", [])
-                feature_names = getattr(scaler_data, "feature_names", [])
-
-                scaler_params = {
-                    "mean": np.array(mean_data) if not isinstance(mean_data, np.ndarray) else mean_data,
-                    "scale": np.array(scale_data) if not isinstance(scale_data, np.ndarray) else scale_data,
-                    "feature_names": list(feature_names) if hasattr(feature_names, '__iter__') else [],
-                }
-        else:
-            raise ValueError(f"Unsupported scaler file format: {scaler_path.suffix}")
-    except Exception as e:
-        raise RuntimeError(f"Failed to load scaler from {scaler_path}: {e}")
+                raise ValueError(f"Unsupported scaler file format: {scaler_path.suffix}")
+        except Exception as exc:  # pragma: no cover - hard to reproduce
+            raise RuntimeError(f"Failed to load scaler from {scaler_path}: {exc}") from exc
+    else:
+        logger.info("No scaler artifact found for %s; deriving from module when required.", model_path)
 
     # Try to extract feature_spec_sha256 from multiple sources
     feature_spec_sha256 = (
@@ -417,7 +420,7 @@ def load_cv_model_info(
 
     return {
         "model_path": str(model_path),
-        "scaler_path": str(scaler_path),
+        "scaler_path": str(scaler_path) if scaler_path is not None else None,
         "config": config,
         "metadata": metadata,
         "scaler_params": scaler_params,

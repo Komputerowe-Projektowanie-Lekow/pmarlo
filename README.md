@@ -9,15 +9,20 @@
 
 
 
-A Python package for protein simulation and Markov state model chain generation, providing an OpenMM-like interface for molecular dynamics simulations.
+A Python package for Conformation finding, protein simulation and Markov state model chain generation, providing an OpenMM-like interface for molecular dynamics simulations.
 
 ## Features
 
 - **Protein Preparation**: Automated PDB cleanup and preparation
 - **Replica Exchange**: Enhanced sampling with temperature replica exchange
 - **Simulation**: Single-temperature MD simulations
+- **Different shards**: Cosutomizable shard modes for specific purposes.
 - **Markov State Models**: MSM analysis
+- **DeepTICA model training**: Creates model to metabias the simulations with specific force on the CVs.
+- **ITS analysis**: Helps to find the slow modes of the protein to get the most of the data from the smalles computation time.
+- **Conformations finding**: Enables to get the conformations from currently discovered potential FES. 
 - **Pipeline Orchestration**: Complete workflow coordination
+
 
 ## Free Energy Surface/Transition Matrix
 
@@ -30,11 +35,38 @@ Those were generated in this fashion:
 - 4 shards + model creation
 - 4 shards + 1 meta_shard guided by the metadynamcis of the model
 
-FES
+FES(PMARLO Webapp) 
 ![Free Energy Surface animation](figs/fes.gif)
 
-TM
+TM(PMARLO Webapp) 
 ![Transition Matrix animation](figs/transition.gif)
+
+Idea of sampling the protein(PMARLO Webapp) 
+![Idea of sampling the protein](https://i.imgur.com/4zQpIU6.png)
+
+FES with different shard(PMARLO Webapp) 
+![FES with different shard](https://i.imgur.com/zpSrVgP.png)
+
+Stationary distirbution of the protein(PMARLO Webapp)
+![Stationary distirbution of the protein](https://i.imgur.com/qzAxfQY.png)
+
+PCCA with conformations on top of FES(PMARLO Webapp)
+![PCCA with conformations on top of FES](https://i.imgur.com/vkrPB9k.png)
+
+Frames per shard(PMARLO Webapp)
+![Frames per shard](https://i.imgur.com/iSGxPgy.png)
+
+Free Energy Validation(PMARLO Webapp)
+![Free Energy Validation](https://i.imgur.com/77H0jUu.png)
+
+DeepTICA model preview(PMARLO Webapp)
+![DeepTICA model preview](https://i.imgur.com/oFtHYn7.png)
+
+OpenMM-Torch Bias Benchmark(Example programs)
+![OpenMM-Torch Bias Benchmark](https://i.imgur.com/ATvwglC.png)
+
+ITS(PMARLO Webapp)
+![ITS](https://i.imgur.com/q9Q21wn.png)
 
 ## Installation
 
@@ -56,7 +88,7 @@ pip install -e .
 ## Testing
 
 Testing
-The test layout mirrors `src/pmarlo`, so unit tests live under `tests/unit/<domain>` and integration flows under `tests/integration/**`. Pytest discovers unit tests by default and the `pytest-testmon` plugin keeps reruns focused on files touched in the current branch.
+The test layout mirrors `src/pmarlo`, so unit tests live under `tests/unit/<domain>` and integration flows under `tests/integration/**`. Pytest discovers unit tests by default and the `pytest-testmon` plugin keeps reruns focused on files touched in the current branch. There is a great experiment suite implemented in the package itself and the example programs to for example benchmark openmm-torch script simulation bias.
 
 Default quick check: `poetry run pytest --testmon -n auto`.
 
@@ -73,7 +105,7 @@ Combine `--focus` with `--testmon` whenever you want to zero in on a subset of p
 
 ### Performance Benchmarking
 
-For performance testing and regression detection, see **[README_BENCHMARKS.md](README_BENCHMARKS.md)**. Quick start:
+Quick start:
 
 ```bash
 export PMARLO_RUN_PERF=1  # Enable performance tests
@@ -86,111 +118,160 @@ poetry run pytest -m benchmark --benchmark-compare=baseline
 
 PMARLO now enforces a single canonical implementation for every feature. All runtime fallbacks and legacy code paths have been removed, and missing dependencies raise clear ImportError exceptions during import or first use. Install the relevant extras (for example, `pip install 'pmarlo[analysis]'`) to enable advanced analyses.
 
+The most suitable usage is to create the micromamba environment with openmm-torch script and the PDBFixer. Rest of the dependencies are suitable for the pip and could be downloaded there. At the moment the current usage is with micromamba environment with , poetry pip .e intalled
+
+I would encourage to download is as a repo, install the dependencies and create your own data in the pmarlo_webapp. After you got an example of 5 run(5 times - simulation of 50K steps of a protein - step by step, not from the same PDB each time.) You could do the model training and the analysis.
+For the conformations I tested it with 35 shards and approximately 13K frames.
+
+![](https://i.imgur.com/iSGxPgy.png)
+
+My examples:
+1. Pmarlo_webapp
+```commandline
+micromamba activate ommtorch
+streamlit run .\pmarlo_webapp\app\app.py 
+```
+2. Bias benchmark(the model and protein should be provided by user)
+```commandline
+micromamba activate ommtorch
+cd .\example_programs\
+python .\bench_openmm.py --with-bias=yes --model=C:\Users\konrad_guest\Documents\GitHub\pmarlo\pmarlo_webapp\app_output\models\deeptica-20251108-195911.pt --steps 5000 --platform CPU --pdb C:\Users\konrad_guest\Documents\GitHub\pmarlo\pmarlo_webapp\app_input\3gd8-fixed.pdb
+```
 
 ## Quickstart
 
-```python
-from pmarlo.transform.pipeline import run_pmarlo
+The repository ships with runnable programs under `example_programs` that use the
+same APIs you would call in your own projects. After installation (see
+**Installation** above), run the following from the project root:
 
-results = run_pmarlo(
-    pdb_file="protein.pdb",
-    temperatures=[300, 310, 320],
-    steps=1000,
-    n_states=50,
-)
+1. **Verify your environment and assets**
+   ```bash
+   poetry run python -m example_programs.verify_pmarlo
+   ```
+   This script loads the bundled `tests/_assets/3gd8-fixed.pdb`, instantiates the
+   core objects (`Protein`, `ReplicaExchange`, `Simulation`, `MarkovStateModel`)
+   and runs a short pipeline. Outputs land in
+   `example_programs/programs_outputs/verify_pmarlo`, giving you ready-made run
+   artifacts to inspect.
+
+2. **Inspect the high-level pipeline API**
+   ```bash
+   poetry run python -m example_programs.demo_pipeline --mode demo
+   ```
+   Use `--mode simple` to print the API walkthrough and `--mode test` to step
+   through protein preparation. The demo keeps runs intentionally short so you
+   can experiment quickly with temperature ladders, state counts, and output
+   locations.
+
+3. **Check replica-exchange performance**
+   ```bash
+   poetry run python -m example_programs.quick_remd_demo
+   ```
+   The demo prompts before starting, runs a 4-replica × 1000-step REMD job, and
+   reports throughput so you can confirm platform selection and OpenMM
+   performance on your hardware.
+
+Each program accepts `--help` (where applicable) and writes results under
+`example_programs/programs_outputs`, making it easy to diff successive runs or
+feed their trajectories into downstream tools.
+
+### Python API straight from the examples
+
+The verification script exercises the production API without shortcuts, so you
+can copy/paste real code instead of contrived snippets:
+
+```72:95:example_programs/verify_pmarlo.py
+    try:
+        pipeline = Pipeline(
+            protein_path,
+            temperatures=[300, 310, 320],
+            steps=1000,
+            auto_continue=False,
+            output_dir=str(OUTPUT_ROOT / "pipeline"),
+        )
+
+        print("Starting pipeline execution...")
+        results = pipeline.run()
+
+        print("\nPipeline Results:")
+        print("-----------------")
+        for key, value in results.items():
+            if isinstance(value, dict) and "status" in value:
+                print(f"• {key}: {value.get('status', 'unknown')}")
 ```
 
-### Clean API example
+Need the components separately? The same script shows how to bring them up in a
+way that mirrors production runs and keeps the outputs together:
 
-```python
-from pmarlo import Protein, ReplicaExchange, RemdConfig, Simulation, Pipeline
+```28:63:example_programs/verify_pmarlo.py
+        protein = Protein(
+            protein_path, ph=7.0, auto_prepare=False
+        )  # Using pre-fixed PDB
+        print(" Protein component initialized")
 
-# Prepare protein
-protein = Protein("protein.pdb", ph=7.0)
-
-# Replica Exchange (auto-setup plans reporter stride automatically)
-remd = ReplicaExchange.from_config(
-    RemdConfig(
-        pdb_file="protein.pdb",
-        temperatures=[300.0, 310.0, 320.0],
-        auto_setup=True,
-        dcd_stride=10,
-    )
-)
-
-# Single-temperature simulation (optional)
-simulation = Simulation("protein.pdb", temperature=300.0, steps=1000)
-
-# Full pipeline
-pipeline = Pipeline(
-    pdb_file="protein.pdb",
-    temperatures=[300.0, 310.0, 320.0],
-    steps=1000,
-    auto_continue=True,
-)
-results = pipeline.run()
+        replica_exchange = ReplicaExchange.from_config(
+            RemdConfig(
+                pdb_file=protein_path,
+                temperatures=[300, 310, 320],
+                auto_setup=False,
+                output_dir=OUTPUT_ROOT / "replica_exchange",
+            )
+        )
+        # Plan stride minimally for short verification
+        replica_exchange.plan_reporter_stride(
+            total_steps=500, equilibration_steps=50, target_frames=100
+        )
+        replica_exchange.setup_replicas()
+        print(" Replica Exchange component initialized")
 ```
+
+For single-temperature runs or MSM-only workflows, point the examples at your
+own PDB and tweak the command-line flags—no hidden mocks or synthetic data.
 
 ## Visualization Diagnostics
 
-PMARLO exposes reusable plotting helpers that mirror the Streamlit validation
-tab while remaining UI-agnostic. The functions live in
-`pmarlo.visualization.diagnostics` and return ready-to-use Matplotlib figures.
+To analyse collective variables (Rg, RMSD) generated by the verification run or
+your own trajectories, call the diagnostics helper:
 
-```python
-import numpy as np
-from pmarlo.visualization.diagnostics import (
-    create_sampling_validation_plot,
-    create_fes_validation_plot,
-)
-
-# Sampling connectivity plot from per-run projections (TICA component 0)
-projection_data = [traj[:, :2] for traj in trajectory_list]  # list of arrays (frames × features)
-sampling_fig = create_sampling_validation_plot(
-    projection_data=projection_data,
-    run_labels=["run-001", "run-002"],
-    max_length=1500,
-    hist_bins=120,
-    stride=5,
-)
-sampling_fig.savefig("sampling.png", dpi=200)
-
-# 2D FES plot – provide the mesh grid and FES matrix (in kBT)
-x_centers = 0.5 * (fes_result.xedges[:-1] + fes_result.xedges[1:])
-y_centers = 0.5 * (fes_result.yedges[:-1] + fes_result.yedges[1:])
-xx, yy = np.meshgrid(x_centers, y_centers)
-fes_fig = create_fes_validation_plot(
-    fes_grid=(xx, yy),
-    fes_data=fes_result.F,
-    max_kt=6.0,
-    levels=20,
-    cmap="plasma",
-)
-fes_fig.savefig("fes.png", dpi=200)
+```bash
+poetry run python -m example_programs.diagnose_cvs ^
+  --pdb tests/_assets/3gd8-fixed.pdb ^
+  --traj example_programs/programs_outputs/verify_pmarlo/pipeline/demux/*.dcd ^
+  --output-dir example_programs/programs_outputs/cv_diagnostics
 ```
 
-Input expectations:
-- `projection_data`: sequence of 1D or 2D NumPy arrays (one per trajectory);
-  empty trajectories are ignored automatically.
-- Optional `dtraj_data` and `cluster_centers` overlay discrete microstate traces.
-- `fes_grid`: tuple `(xx, yy)` of 2D grids matching the shape of `fes_data`.
-- All helpers raise `ValueError` on inconsistent or empty inputs, making them
-  suitable for CLI or notebook workflows where failures should surface early.
+Internally the script relies on `pmarlo.io.trajectory.iterload`, performs
+alignment, and renders scatter plots plus JSON summaries:
+
+```142:169:example_programs/diagnose_cvs.py
+    df = compute_cvs(
+        Path(args.pdb),
+        [Path(p) for p in args.traj],
+        reference=args.reference,
+        stride=int(max(1, args.stride)),
+    )
+    stats = analyse_dataframe(df, Path(args.output_dir))
+
+    print("=== CV Diagnostics ===", file=sys.stdout)
+    print(f"Rows loaded: {stats['row_count']}", file=sys.stdout)
+```
+
+Use the generated plots to sanity-check sampling quality before launching longer
+campaigns or training DeepTICA models.
 
 ## Verification and CLI
 
+- `poetry run pmarlo --help` lists every CLI entry point.
+- `poetry run pmarlo --mode simple` runs the minimal built-in demo.
+- `poetry run python -m example_programs.run_shards_then_build --help` documents
+  the shard orchestration workflow used in end-to-end benchmarks.
+- `poetry run python -m example_programs.check_extras_parity` confirms which
+  optional extras are installed on your machine.
+
+Smoke test inside the virtual environment:
+
 ```bash
-# Show CLI options
-pmarlo --help
-
-# Run a minimal example
-pmarlo --mode simple
-```
-
-Smoke test in Python:
-
-```bash
-python - <<'PY'
+poetry run python - <<'PY'
 import pmarlo
 print("PMARLO", pmarlo.__version__)
 PY

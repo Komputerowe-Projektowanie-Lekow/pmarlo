@@ -5,7 +5,7 @@ when creating shards from simulation trajectories.
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from pathlib import Path
 import yaml
 
@@ -26,12 +26,15 @@ class FeatureProfile:
         List of feature specifications
     cv_biasing_compatible : bool
         Whether this profile can be used for CV-biased simulations
+    display_features : Optional[List[str]]
+        Human-readable feature labels corresponding to ``features``.
     """
     name: str
     description: str
     feature_type: str
     features: List[str]
     cv_biasing_compatible: bool
+    display_features: Optional[List[str]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -41,6 +44,7 @@ class FeatureProfile:
             "feature_type": self.feature_type,
             "features": self.features,
             "cv_biasing_compatible": self.cv_biasing_compatible,
+            "display_features": self.display_features or self.features,
         }
 
 
@@ -52,6 +56,10 @@ FEATURE_PROFILES = {
         feature_type="cv",
         features=["Rg", "RMSD_ref"],
         cv_biasing_compatible=False,
+        display_features=[
+            "Rg - radius of gyration after CA alignment",
+            "RMSD_ref - CA-aligned RMSD relative to the reference structure",
+        ],
     ),
 
     "molecular_cv_biasing": FeatureProfile(
@@ -66,6 +74,13 @@ FEATURE_PROFILES = {
             "dihedral([1, 2, 4, 7])", # CA-C-CB-HB1 dihedral
         ],
         cv_biasing_compatible=True,
+        display_features=[
+            "distance([0, 1]) - N-CA distance",
+            "distance([1, 2]) - CA-C distance",
+            "angle([0, 1, 2]) - N-CA-C bond angle",
+            "dihedral([0, 1, 2, 3]) - N-CA-C-O dihedral",
+            "dihedral([1, 2, 4, 7]) - CA-C-CB-HB1 dihedral",
+        ],
     ),
 
     "molecular_custom": FeatureProfile(
@@ -74,6 +89,7 @@ FEATURE_PROFILES = {
         feature_type="molecular",
         features=[],  # Will be loaded from feature_spec.yaml
         cv_biasing_compatible=True,
+        display_features=[],
     ),
 }
 
@@ -119,17 +135,29 @@ def load_feature_profile(profile_name: str, spec_path: Path = None) -> FeaturePr
         with spec_path.open("r", encoding="utf-8") as f:
             spec = yaml.safe_load(f)
 
-        features = []
+        features: List[str] = []
+        display_features: List[str] = []
         for feat in spec.get("features", []):
             feat_type = feat.get("type")
             atom_indices = feat.get("atom_indices", [])
+            label = str(feat.get("name") or "").strip()
 
+            spec_text: str | None = None
             if feat_type == "distance" and len(atom_indices) == 2:
-                features.append(f"distance({atom_indices})")
+                spec_text = f"distance({atom_indices})"
             elif feat_type == "angle" and len(atom_indices) == 3:
-                features.append(f"angle({atom_indices})")
+                spec_text = f"angle({atom_indices})"
             elif feat_type == "dihedral" and len(atom_indices) == 4:
-                features.append(f"dihedral({atom_indices})")
+                spec_text = f"dihedral({atom_indices})"
+
+            if spec_text is None:
+                continue
+
+            features.append(spec_text)
+            if label:
+                display_features.append(f"{label} ({spec_text})")
+            else:
+                display_features.append(spec_text)
 
         # Create a modified profile with loaded features
         profile = FeatureProfile(
@@ -138,18 +166,24 @@ def load_feature_profile(profile_name: str, spec_path: Path = None) -> FeaturePr
             feature_type=profile.feature_type,
             features=features,
             cv_biasing_compatible=profile.cv_biasing_compatible,
+            display_features=display_features or None,
         )
 
     return profile
 
 
-def get_feature_profile_info(profile_name: str) -> Dict[str, Any]:
+def get_feature_profile_info(
+    profile_name: str,
+    spec_path: Path | None = None,
+) -> Dict[str, Any]:
     """Get information about a feature profile without loading features.
 
     Parameters
     ----------
     profile_name : str
         Name of the profile
+    spec_path : Path, optional
+        Optional path to feature_spec.yaml for custom profiles
 
     Returns
     -------
@@ -163,14 +197,43 @@ def get_feature_profile_info(profile_name: str) -> Dict[str, Any]:
         }
 
     profile = FEATURE_PROFILES[profile_name]
-    return {
+    features = list(profile.features)
+    display_features = list(profile.display_features or profile.features)
+    feature_count: int | str = len(features) if features else "variable"
+    info: Dict[str, Any] = {
         "exists": True,
         "name": profile.name,
         "description": profile.description,
         "feature_type": profile.feature_type,
         "cv_biasing_compatible": profile.cv_biasing_compatible,
-        "feature_count": len(profile.features) if profile.features else "variable",
+        "feature_count": feature_count,
+        "features": features,
+        "display_features": display_features,
     }
+
+    if profile_name == "molecular_custom":
+        info["spec_path"] = str(spec_path) if spec_path is not None else None
+        info["spec_status"] = "unresolved"
+        if spec_path is None:
+            info["spec_status"] = "spec_path_not_provided"
+        else:
+            try:
+                custom_profile = load_feature_profile(profile_name, spec_path=spec_path)
+            except FileNotFoundError:
+                info["spec_status"] = f"missing:{spec_path}"
+            except Exception as exc:
+                info["spec_status"] = f"error:{exc}"
+            else:
+                info["features"] = list(custom_profile.features)
+                resolved_display = custom_profile.display_features or custom_profile.features
+                info["display_features"] = list(resolved_display)
+                info["feature_count"] = len(custom_profile.features)
+                info["spec_status"] = "loaded"
+
+        if not info["features"]:
+            info["feature_count"] = "variable"
+
+    return info
 
 
 def validate_profile_for_cv_biasing(profile_name: str) -> tuple[bool, str]:

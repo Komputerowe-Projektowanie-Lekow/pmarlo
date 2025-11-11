@@ -18,6 +18,7 @@ from core.view_helpers import (
     _summarize_selected_shards,
     render_shard_selection_table,
     summarize_selected_feature_profiles,
+    format_feature_variable_caption,
 )
 from core.tables import _timescales_dataframe
 from backend.its import calculate_its, plot_its
@@ -103,6 +104,12 @@ def render_its_tab(ctx: AppContext) -> None:
                 elif profile_summary["feature_types"]:
                     detected_type = next(iter(profile_summary["feature_types"]))
                     st.caption(f"Detected shard feature type: {detected_type}")
+                feature_variable_caption = format_feature_variable_caption(profile_summary)
+                if feature_variable_caption:
+                    st.caption(
+                        "Variables detected in selected shards: "
+                        + feature_variable_caption
+                    )
                 try:
                     selected_paths = select_shard_paths(shard_groups, selected_runs)
                     _, selection_text = _summarize_selected_shards(selected_paths)

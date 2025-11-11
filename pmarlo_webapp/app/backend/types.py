@@ -208,6 +208,7 @@ class BuildConfig:
     seed: int
     temperature: float
     fes_grid_strategy: str = "adaptive"
+    fes_bins: tuple[int, int] | None = None
     learn_cv: bool = False
     deeptica_params: Optional[Dict[str, Any]] = None
     notes: Dict[str, Any] = field(default_factory=dict)

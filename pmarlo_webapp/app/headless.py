@@ -52,6 +52,21 @@ def _load_optional_json(path: str | Path | None) -> Dict[str, object] | None:
     return data
 
 
+def _parse_fes_bins(value: str | None) -> tuple[int, int] | None:
+    if value is None or value.strip() == "":
+        return None
+    parts = [segment.strip() for segment in value.split(",")]
+    if len(parts) != 2:
+        raise ValueError("Expected exactly two comma-separated integers for --fes-bins")
+    try:
+        x, y = int(parts[0]), int(parts[1])
+    except ValueError as exc:
+        raise ValueError("FES bins must be integers") from exc
+    if x <= 0 or y <= 0:
+        raise ValueError("FES bin counts must be positive")
+    return (x, y)
+
+
 def _load_analysis_summary(
     artifact: BuildArtifact,
 ) -> Tuple[Dict[str, Any], Optional[Path]]:
@@ -97,7 +112,7 @@ def _resolve_shards(
         paths = entry.get("paths", [])
         if not paths:
             raise ValueError(f"No shard paths recorded for group {shard_group}.")
-        return [Path(p).resolve() for p in paths]
+    return [Path(p).resolve() for p in paths]
     raise ValueError("Provide explicit --shard paths or --shard-group index.")
 
 
@@ -120,6 +135,7 @@ def cmd_run_analysis(args: argparse.Namespace) -> int:
     bins = parse_bins(args.bin or [])
     deeptica_params = _load_optional_json(args.deeptica_params)
     notes = _load_optional_json(args.notes)
+    fes_bins = _parse_fes_bins(args.fes_bins)
 
     config = BuildConfig(
         lag=int(args.lag),
@@ -137,6 +153,7 @@ def cmd_run_analysis(args: argparse.Namespace) -> int:
         fes_bandwidth=args.fes_bandwidth,
         fes_min_count_per_bin=int(args.fes_min_count),
         fes_grid_strategy=str(args.fes_grid_strategy),
+        fes_bins=fes_bins,
     )
 
     artifact = backend.build_analysis(shard_paths, config)
@@ -319,6 +336,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("adaptive", "fixed"),
         default="adaptive",
         help="Grid strategy for histogram-based FES (adaptive or fixed).",
+    )
+    parser_run.add_argument(
+        "--fes-bins",
+        type=str,
+        default=None,
+        help="Override the FES histogram bins in the format 'x,y'.",
     )
 
     return parser

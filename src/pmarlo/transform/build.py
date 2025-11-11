@@ -302,6 +302,7 @@ class BuildOpts:
     fes_temperature: float = 300.0
     fes_bins: Optional[Tuple[int, int]] = None
     fes_grid_strategy: str = "adaptive"
+    fes_min_count: int = 1
     fes_smoothing_mode: str = "never"
     fes_target_sd_kT: Optional[float] = None
     fes_alpha: float = 1e-6
@@ -342,6 +343,11 @@ class BuildOpts:
         if grid_strategy not in {"fixed", "adaptive"}:
             raise ValueError("fes_grid_strategy must be 'fixed' or 'adaptive'")
         object.__setattr__(self, "fes_grid_strategy", grid_strategy)
+
+        min_count = int(self.fes_min_count)
+        if min_count < 0:
+            raise ValueError("fes_min_count must be non-negative")
+        object.__setattr__(self, "fes_min_count", min_count)
 
         mode = str(self.fes_smoothing_mode).lower()
         if mode not in {"never", "auto", "always"}:
@@ -1806,22 +1812,39 @@ def _coerce_cv_arrays(
     return a, b, None
 
 
+def _resolve_requested_fes_bins(
+    opts: BuildOpts, applied: AppliedOpts, names: Tuple[str, str]
+) -> tuple[int, int] | None:
+    if opts.fes_bins is not None:
+        return opts.fes_bins
+    derived = _derive_fes_bins(applied, names)
+    if derived is None or len(derived) < 2:
+        return None
+    return (int(derived[0]), int(derived[1]))
+
+
 def _generate_fes(
     a: np.ndarray,
     b: np.ndarray,
     names: Tuple[str, str],
     periodic: Tuple[bool, bool],
     opts: BuildOpts,
+    applied: AppliedOpts,
 ) -> Dict[str, Any]:
     from pmarlo.markov_state_model.free_energy import generate_2d_fes
 
-    fes = generate_2d_fes(
-        a,
-        b,
-        temperature=opts.temperature,
-        periodic=periodic,
-        config=opts,
-    )
+    kwargs: dict[str, Any] = {
+        "temperature": opts.temperature,
+        "periodic": periodic,
+        "config": opts,
+        "grid_strategy": opts.fes_grid_strategy,
+        "min_count": opts.fes_min_count,
+    }
+    bins_override = _resolve_requested_fes_bins(opts, applied, names)
+    if bins_override is not None:
+        kwargs["bins"] = bins_override
+
+    fes = generate_2d_fes(a, b, **kwargs)
     return {"result": fes, "cv1_name": names[0], "cv2_name": names[1]}
 
 
@@ -1845,7 +1868,7 @@ def default_fes_builder(
     assert a is not None and b is not None
     if np.ptp(a) == 0.0 or np.ptp(b) == 0.0:
         return {"skipped": True, "reason": "constant_cvs"}
-    return _generate_fes(a, b, names, periodic, opts)
+    return _generate_fes(a, b, names, periodic, opts, applied)
 
 
 def default_tram_builder(

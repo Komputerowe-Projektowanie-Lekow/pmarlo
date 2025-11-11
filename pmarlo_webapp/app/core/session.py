@@ -93,6 +93,8 @@ def _ensure_session_defaults() -> None:
     st.session_state.setdefault("analysis_fes_bandwidth", "scott")
     st.session_state.setdefault("analysis_min_count_per_bin", 1)
     st.session_state.setdefault("analysis_fes_grid_strategy", "adaptive")
+    st.session_state.setdefault("analysis_fes_bins_x", 64)
+    st.session_state.setdefault("analysis_fes_bins_y", 64)
     st.session_state.setdefault("conf_n_clusters", 100)
     st.session_state.setdefault("its_n_clusters", 200)
     st.session_state.setdefault("its_tica_dim", 10)
@@ -187,4 +189,6 @@ def _apply_analysis_config_to_state(cfg: "BuildConfig") -> None:
         analysis_fes_bandwidth=bw_value,
         analysis_min_count_per_bin=int(cfg.fes_min_count_per_bin),
         analysis_fes_grid_strategy=str(cfg.fes_grid_strategy).lower(),
+        analysis_fes_bins_x=int(cfg.fes_bins[0]) if cfg.fes_bins else 64,
+        analysis_fes_bins_y=int(cfg.fes_bins[1]) if cfg.fes_bins else 64,
     )

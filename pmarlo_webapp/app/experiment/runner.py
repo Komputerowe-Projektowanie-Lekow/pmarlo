@@ -207,6 +207,25 @@ def _compute_weights_summary(
     return WeightSummary(status=status, info=info, violations=violations)
 
 
+def _parse_bundle_fes_bins(value: Any) -> tuple[int, int] | None:
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)) and len(value) >= 2:
+        try:
+            return (int(value[0]), int(value[1]))
+        except (TypeError, ValueError):
+            return None
+    if isinstance(value, Mapping):
+        x = value.get("x") or value.get("cv1")
+        y = value.get("y") or value.get("cv2")
+        if x is not None and y is not None:
+            try:
+                return (int(x), int(y))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
 def _build_config(bundle: ExperimentBundle, shards: Sequence[Any]) -> BuildConfig:
     transform_cfg = bundle.configs.transform
     discretize_cfg = bundle.configs.discretize
@@ -250,6 +269,7 @@ def _build_config(bundle: ExperimentBundle, shards: Sequence[Any]) -> BuildConfi
         fes_bandwidth=fes_cfg.get("bandwidth", "scott"),
         fes_min_count_per_bin=int(fes_cfg.get("min_count", 1)),
         fes_grid_strategy=str(fes_cfg.get("grid_strategy", "adaptive")),
+        fes_bins=_parse_bundle_fes_bins(fes_cfg.get("bins")),
     )
 
 

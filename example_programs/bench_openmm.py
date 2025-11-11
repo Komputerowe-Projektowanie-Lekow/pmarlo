@@ -14,7 +14,11 @@ from openmm.app import ForceField, PDBFile, Simulation
 from openmm import VerletIntegrator
 import yaml
 
-from pmarlo.replica_exchange.system_builder import create_system
+from pmarlo.features.deeptica.export import load_cv_model_info
+from pmarlo.replica_exchange.system_builder import (
+    create_system,
+    resolve_cv_model_torchscript_path,
+)
 from pmarlo.settings import load_defaults, resolve_feature_spec_path
 
 
@@ -26,37 +30,43 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--torch-threads", type=int, default=None, help="Override Torch threads")
     parser.add_argument("--model", type=Path, default=None, help="Path to TorchScript CV model")
     parser.add_argument("--report-interval", type=int, default=1000, help="Logging interval (default: 1000 steps)")
+    parser.add_argument(
+        "--pdb",
+        type=Path,
+        default=None,
+        help="Path to the solvated PDB structure compatible with the CV model (default: bundled 3gd8-fixed.pdb)",
+    )
     return parser.parse_args()
 
 
 def validate_model_bundle(model_path: Path) -> None:
-    """Validate that all required model bundle files exist."""
+    """Validate that the TorchScript model exists and report any companion files."""
     if not model_path.exists():
         raise FileNotFoundError(f"Model file not found: {model_path}")
 
-    # Check for associated files
     stem = model_path.stem
     parent = model_path.parent
 
-    # Try both naming conventions for scaler file
     scaler_pt = parent / f"{stem}.scaler.pt"
     scaler_npz = parent / f"{stem}_scaler.npz"
-
-    if not scaler_pt.exists() and not scaler_npz.exists():
-        raise FileNotFoundError(
-            f"Scaler file not found. Expected either:\n"
-            f"  - {scaler_pt}\n"
-            f"  - {scaler_npz}"
-        )
-
     json_file = parent / f"{stem}.json"
-    if not json_file.exists():
-        raise FileNotFoundError(f"JSON metadata file not found: {json_file}")
 
-    print(f"Model bundle validated:")
+    available = []
+    if scaler_pt.exists():
+        available.append(f"Scaler (TorchScript) : {scaler_pt}")
+    elif scaler_npz.exists():
+        available.append(f"Scaler (NumPy)       : {scaler_npz}")
+
+    if json_file.exists():
+        available.append(f"Metadata            : {json_file}")
+
+    print(f"Model bundle inspection:")
     print(f"  Model: {model_path}")
-    print(f"  Scaler: {scaler_pt if scaler_pt.exists() else scaler_npz}")
-    print(f"  Metadata: {json_file}")
+    if available:
+        for line in available:
+            print(f"  {line}")
+    else:
+        print("  No scaler/metadata files detected; continuing with TorchScript-only bundle.")
 
 
 def write_config(spec_path: Path, enable_bias: bool, torch_threads: int | None, tmpdir: Path) -> Path:
@@ -85,6 +95,7 @@ def load_system(pdb_path: Path, model_path: Path | None, platform_name: str) -> 
     platform = Platform.getPlatformByName(platform_name)
     simulation = Simulation(pdb.topology, system, integrator, platform)
     simulation.context.setPositions(pdb.positions)
+    simulation.minimizeEnergy(maxIterations=200)
     simulation.context.setVelocitiesToTemperature(300 * unit.kelvin)
     return simulation
 
@@ -160,21 +171,44 @@ if __name__ == "__main__":
         except FileNotFoundError as e:
             raise SystemExit(f"Error: {e}")
 
-    base_spec = resolve_feature_spec_path()
-    pdb_path = Path(__file__).resolve().parents[1] / "tests" / "_assets" / "3gd8-fixed.pdb"
+    default_pdb = Path(__file__).resolve().parents[1] / "tests" / "_assets" / "3gd8-fixed.pdb"
+    pdb_path = args.pdb if args.pdb is not None else default_pdb
+    if not pdb_path.exists():
+        raise SystemExit(f"PDB file not found: {pdb_path}")
+    requested_model_path = args.model
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
-        cfg_path = write_config(base_spec, bias_enabled, args.torch_threads, tmp_path)
+        spec_path = resolve_feature_spec_path()
+
+        torchscript_model_path: Path | None = None
+        if bias_enabled and requested_model_path is not None:
+            torchscript_model_path = Path(resolve_cv_model_torchscript_path(requested_model_path))
+            bundle_info = load_cv_model_info(
+                torchscript_model_path.parent, torchscript_model_path.stem
+            )
+            model_spec = bundle_info.get("metadata", {}).get("feature_spec")
+            if model_spec:
+                spec_override = tmp_path / "feature_spec.yaml"
+                spec_override.write_text(yaml.safe_dump(model_spec), encoding="utf-8")
+                spec_path = spec_override
+            if torchscript_model_path.resolve() != Path(requested_model_path).resolve():
+                print(f"Resolved TorchScript CV model: {torchscript_model_path}")
+
+        cfg_path = write_config(spec_path, bias_enabled, args.torch_threads, tmp_path)
         os.environ["PMARLO_CONFIG_FILE"] = str(cfg_path)
         load_defaults.cache_clear()
 
-        simulation = load_system(pdb_path, args.model if bias_enabled else None, args.platform)
+        simulation = load_system(
+            pdb_path,
+            torchscript_model_path if bias_enabled else None,
+            args.platform,
+        )
         bias_samples, cv_samples, steps_per_second = gather_stats(
             simulation,
             steps=args.steps,
             report_interval=max(1, args.report_interval),
-            model_path=args.model if bias_enabled else None,
+            model_path=torchscript_model_path if bias_enabled else None,
         )
         config = load_defaults()
         summarise(bias_samples, cv_samples, steps_per_second, config, bias_enabled, args.platform, args.steps)

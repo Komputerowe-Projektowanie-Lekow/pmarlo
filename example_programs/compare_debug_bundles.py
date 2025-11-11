@@ -32,7 +32,7 @@ def diag_mass(counts: np.ndarray) -> float:
 
 def main() -> int:
     if len(sys.argv) != 3:
-        print("Usage: python scripts/compare_debug_bundles.py <debug_A> <debug_B>")
+        print("Usage: python example_programs/compare_debug_bundles.py <debug_A> <debug_B>")
         return 1
 
     a_dir, b_dir = sys.argv[1:]

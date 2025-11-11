@@ -49,6 +49,7 @@ def test_ck_its_selector_synthetic_data():
         ck_threshold=0.20,  # Relaxed for synthetic data
         coverage_threshold=0.95,
         min_median_count=50,
+        diag_mass_threshold=0.0,
     )
 
     # Verify results
@@ -85,6 +86,7 @@ def test_ck_its_selector_with_multiple_trajectories():
         ck_threshold=0.20,
         coverage_threshold=0.90,
         min_median_count=30,
+        diag_mass_threshold=0.0,
     )
 
     # Verify results
@@ -111,6 +113,7 @@ def test_ck_its_selector_stability():
         ck_threshold=0.20,
         coverage_threshold=0.95,
         min_median_count=40,
+        diag_mass_threshold=0.0,
     )
 
     selected_lag2, _ = select_optimal_lag_ck_its(
@@ -120,6 +123,7 @@ def test_ck_its_selector_stability():
         ck_threshold=0.20,
         coverage_threshold=0.95,
         min_median_count=40,
+        diag_mass_threshold=0.0,
     )
 
     # Should select same lag
@@ -141,6 +145,7 @@ def test_ck_its_selector_prefers_smaller_lag():
         ck_threshold=0.30,  # Very relaxed
         coverage_threshold=0.80,  # Very relaxed
         min_median_count=20,  # Very relaxed
+        diag_mass_threshold=0.0,
     )
 
     # Find all passing lags
@@ -167,6 +172,7 @@ def test_ck_its_selector_with_insufficient_data():
         ck_threshold=0.10,
         coverage_threshold=0.95,
         min_median_count=100,
+        diag_mass_threshold=0.0,
     )
 
     # Should still select something (fallback behavior)
@@ -190,6 +196,7 @@ def test_ck_its_selector_coverage_check():
         ck_threshold=0.50,
         coverage_threshold=0.99,  # Strict coverage
         min_median_count=10,
+        diag_mass_threshold=0.0,
     )
 
     # Check that coverage was computed
@@ -212,6 +219,7 @@ def test_ck_its_selector_macrostate_determination():
         ck_threshold=0.25,
         coverage_threshold=0.90,
         min_median_count=30,
+        diag_mass_threshold=0.0,
     )
 
     # Check that macrostates were determined
@@ -240,6 +248,7 @@ def test_ck_its_selector_timescales_computation():
         ck_threshold=0.25,
         coverage_threshold=0.90,
         min_median_count=30,
+        diag_mass_threshold=0.0,
     )
 
     # Check that at least some timescales were computed
@@ -270,6 +279,7 @@ def test_ck_its_selector_ck_error_increases_with_horizon():
         ck_threshold=0.50,
         coverage_threshold=0.90,
         min_median_count=30,
+        diag_mass_threshold=0.0,
     )
 
     # CK error should reflect maximum across all horizons

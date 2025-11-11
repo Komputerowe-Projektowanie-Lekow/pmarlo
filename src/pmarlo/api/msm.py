@@ -6,6 +6,7 @@ from typing import List, Literal, Optional, Sequence
 
 import numpy as np
 
+from pmarlo.analysis import compute_diagnostics
 from pmarlo.api.features import compute_universal_embedding
 from pmarlo.api.fes import generate_free_energy_surface
 from pmarlo.data.aggregate import load_shards_as_dataset
@@ -561,6 +562,7 @@ def select_lag_with_ck_validation(
     coverage_threshold: float = 0.98,
     min_median_count: int = 100,
     tica_lag: int = 10,
+    diag_mass_threshold: float = 0.6,
 ) -> CKITSSelectionResult:
     """Select optimal lag using CK+ITS analysis on shard data.
 
@@ -605,6 +607,8 @@ def select_lag_with_ck_validation(
         Minimum median microstate count (default: 100).
     tica_lag : int
         Lag time for TICA dimensionality reduction (default: 10).
+    diag_mass_threshold : float
+        Minimum acceptable MSM diagonal mass (default: 0.6).
 
     Returns
     -------
@@ -673,6 +677,30 @@ def select_lag_with_ck_validation(
     n_frames, n_features = X.shape
     logger.info("[CK-ITS API] Loaded %d frames with %d features", n_frames, n_features)
 
+    diag_payload = compute_diagnostics(
+        {
+            "__shards__": dataset.get("__shards__", []),
+            "splits": {"aggregate": {"X": X}},
+        }
+    )
+    autocorr_entry = (
+        diag_payload.get("autocorrelation", {}).get("aggregate", {}) or {}
+    )
+    tau_int = autocorr_entry.get("tau_int")
+    recommended_lags = autocorr_entry.get("recommended_ck_lags", [])
+    lag_window = autocorr_entry.get("lag_window")
+    derived_taus = diag_payload.get("taus", [])
+    autocorr_curve = {
+        "taus": autocorr_entry.get("taus"),
+        "values": autocorr_entry.get("values"),
+    }
+    if not tau_candidates:
+        tau_candidates = recommended_lags or derived_taus or [25, 50, 75, 100]
+        logger.info(
+            "[CK-ITS API] Tau candidates derived from autocorrelation: %s",
+            tau_candidates,
+        )
+
     # Apply TICA reduction
     from pmarlo.markov_state_model.reduction import reduce_features
 
@@ -713,6 +741,9 @@ def select_lag_with_ck_validation(
 
     # Prepare discrete trajectories
     dtrajs = [discrete]
+    max_supported_lag = max((int(traj.size) for traj in dtrajs if traj.size > 0), default=0) - 1
+    max_supported_lag = max(0, max_supported_lag)
+    requested_tau_candidates = list(tau_candidates)
 
     # Run CK+ITS selection
     selected_lag, evaluations = select_optimal_lag_ck_its(
@@ -722,7 +753,14 @@ def select_lag_with_ck_validation(
         ck_threshold=ck_threshold,
         coverage_threshold=coverage_threshold,
         min_median_count=min_median_count,
+        diag_mass_threshold=diag_mass_threshold,
     )
+
+    evaluated_lags = sorted({e.lag for e in evaluations})
+    evaluated_set = set(evaluated_lags)
+    ignored_tau_candidates = [
+        tau for tau in requested_tau_candidates if tau not in evaluated_set
+    ]
 
     # Collect ITS timescales from evaluations
     its_lags = []
@@ -764,6 +802,19 @@ def select_lag_with_ck_validation(
             "tica_dim": tica_components,
             "tica_lag": tica_lag,
             "n_unique_states": int(unique_states.size),
+            "tau_int": tau_int,
+            "recommended_tau_candidates": recommended_lags,
+            "lag_window": lag_window,
+            "autocorr_curve": autocorr_curve,
+            "derived_tau_grid": derived_taus,
+            "tau_candidates": requested_tau_candidates,
+            "evaluated_tau_candidates": evaluated_lags,
+            "ignored_tau_candidates": ignored_tau_candidates,
+            "max_supported_lag": max_supported_lag,
+            "ck_threshold": ck_threshold,
+            "coverage_threshold": coverage_threshold,
+            "min_median_count": min_median_count,
+            "diag_mass_threshold": diag_mass_threshold,
             "evaluations": [
                 {
                     "lag": e.lag,
@@ -774,6 +825,7 @@ def select_lag_with_ck_validation(
                     "passed_sanity": e.passed_sanity,
                     "failure_reason": e.failure_reason,
                     "eigenvalue_gap": e.eigenvalue_gap,
+                    "diag_mass": getattr(e, "diag_mass", None),
                 }
                 for e in evaluations
             ],
