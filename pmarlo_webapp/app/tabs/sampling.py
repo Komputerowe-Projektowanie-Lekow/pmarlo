@@ -1,6 +1,6 @@
 import streamlit as st
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from core.context import AppContext
 from core.session import (
@@ -358,30 +358,72 @@ def render_sampling_tab(ctx: AppContext) -> None:
                 value="",
                 key="emit_reference",
             )
+            feature_spec_path = layout.app_root / "app" / "feature_spec.yaml"
             profile_options = [
                 "cv_analysis",
                 "molecular_cv_biasing",
                 "molecular_custom",
             ]
+            profile_details: Dict[str, Dict[str, Any]] = {}
+            for name in profile_options:
+                spec = feature_spec_path if name == "molecular_custom" else None
+                profile_details[name] = get_feature_profile_info(name, spec_path=spec)
+
+            def _profile_label(name: str) -> str:
+                info = profile_details.get(name, {})
+                features = info.get("features") or []
+                if features:
+                    return f"{name} ({', '.join(features)})"
+                feature_count_local = info.get("feature_count")
+                if isinstance(feature_count_local, int):
+                    return f"{name} ({feature_count_local} features)"
+                return name
+
             feature_profile = st.radio(
                 "Feature profile",
                 options=profile_options,
                 index=profile_options.index("cv_analysis"),
                 key="emit_feature_profile",
+                format_func=_profile_label,
                 help=(
                     "Choose which feature set to extract when creating shards:\n"
                     "- CV analysis uses Rg/RMSD for MSM + clustering\n"
                     "- Molecular profiles extract distances/angles/dihedrals for CV biasing"
                 ),
             )
-            profile_info = get_feature_profile_info(feature_profile)
+            profile_info = get_feature_profile_info(
+                feature_profile,
+                spec_path=feature_spec_path if feature_profile == "molecular_custom" else None,
+            )
             feature_count = profile_info.get("feature_count", "variable")
             st.caption(
                 f"{profile_info.get('description', '').strip()} "
                 f"(type: {profile_info.get('feature_type', 'cv')}, features: {feature_count})"
             )
+            display_features = profile_info.get("display_features") or profile_info.get("features") or []
+            if display_features:
+                st.caption(
+                    "Variables used for shard emission: "
+                    + ", ".join(display_features)
+                )
+            if feature_profile == "cv_analysis":
+                st.caption(
+                    "Source: pmarlo/api/shards.py::emit_shards_rg_rmsd emits Rg and RMSD_ref after CA alignment."
+                )
+            elif feature_profile.startswith("molecular"):
+                st.caption(
+                    "Source: pmarlo_webapp/app/backend/shard_extraction.py computes these via pmarlo.api.compute_features."
+                )
             if feature_profile == "molecular_custom":
-                st.caption("Uses feature definitions from app/feature_spec.yaml.")
+                spec_status = profile_info.get("spec_status")
+                spec_path_str = profile_info.get("spec_path")
+                if spec_status == "loaded" and spec_path_str:
+                    st.caption(f"Custom feature spec: {spec_path_str}")
+                elif isinstance(spec_status, str) and spec_status.startswith("missing:"):
+                    missing_path = spec_status.split(":", 1)[1]
+                    st.error(f"feature_spec.yaml not found at {missing_path}")
+                elif spec_status == "spec_path_not_provided":
+                    st.warning("Provide feature_spec.yaml to describe custom molecular features.")
             compatible, compatibility_msg = validate_profile_for_cv_biasing(feature_profile)
             if compatible:
                 st.success(compatibility_msg)

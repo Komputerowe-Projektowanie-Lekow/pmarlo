@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from scripts.check_extras_parity import check_extras_parity
+from example_programs.check_extras_parity import check_extras_parity
 
 
 def write_pyproject(tmp_path: Path, content: str) -> Path:

@@ -1,3 +1,141 @@
+<a id='changelog-1.0.64'></a>
+# 1.0.64 — 2025-11-11
+### Fixed
+
+- CK+ITS automatic lag selection now filters out tau candidates that exceed the available trajectory length before evaluation, preventing the spurious 'inf' CK errors that appeared when users typed lags longer than the trajectory itself.
+- `select_lag_with_ck_validation()` now records which lag requests were ignored and the maximum supported lag so the Streamlit UI can surface a clear warning instead of leaving users guessing why certain lags failed.
+- Guard distance features against periodic flags during feature computation and shard emission so MSM/FES metadata (and the webapp's exports) can no longer wrap inherently non-periodic pairwise distances.
+- Restored canonical correlation visibility in the MSM/FES metrics logger by reading `diagnostics["canonical_correlation"]` and reporting each split/component, so the post-build sanity check is no longer swallowed by a mismatched key.
+- Clarified the MSM metrics in `pmarlo_webapp/app/tabs/msm_fes.py` by explicitly calling out transition probabilities and showing min/max stationary distribution values so users no longer confuse MSM state probabilities with FES bin populations.
+- Ensure parsing of list-style molecular features now returns both `indices` and `atoms` metadata so integration suites consume consistent descriptors without relying on fragile fallbacks.
+- Classify microstates within the configured committor tolerance of 0.5 as transition state ensemble members, surface their count via `n_transition_state_ensemble`, and keep them accessible through `ConformationSet.get_transition_state_ensemble()`.
+- Ensure protein path expansion honors the `HOME` override when users pass `~` paths so Windows tests can create isolated fixtures without hitting the invalid-path guardrails.
+- Compute the detailed-balance MAD inside `experiments.kpi` with numpy instead of relying on
+  `sklearn.metrics.mean_absolute_error`, so the KPI benchmark stays reproducible even when the
+  heavier dependency cannot be loaded and the experiments KPI test keeps its checkpoint valid.
+- Ensure molecular feature specs like `distance([0, 1])` emit only the supported `indices` kwargs so downstream consumers can compare expectations without extra keys.
+- Keep the `phi_psi` built-in wrapped to (-π, π] so no column ever reports -180° and the Ramachandran wiring assertions stay valid.
+- Flush the fast DCD writer after every header update so the crash-recovery snapshot is fully persisted even if the process is terminated before closing the file, which keeps Windows readers happy.
+- The crash-recovery regression test now deletes the reporter reference and runs `gc.collect()` before loading the DCD, mirroring the OS closing handles after a crash and avoiding Windows sharing errors.
+- Avoid raising when `min_count` masks every histogram cell by falling back to the unmasked density before smoothing so KDE blending can still run.
+- Keep the adaptive Gaussian smoother output two-dimensional by gathering the blur kernels with `np.take_along_axis`, ensuring the smoothed surface can be compared directly with the histogram grid.
+- Ensure `pmarlo.api` exposes the REMD `ReplicaExchange` helper and let `run_replica_exchange` honor that override so the seed-wiring API tests can patch the simulator implementation.
+- Restore the workspace helper so `run_short_sim` can delegate to the real backend (`run_sampling`)
+  while normalizing persisted paths, preventing the previously raised `AttributeError`.
+- Ensure `demultiplex_run` validates the temperature ladder size against the replica trajectories before reading the exchange log so ladder mismatches surface immediately rather than being masked by missing files.
+- Ensure quick-mode sampling obtains `run_replica_exchange` from the backend module at runtime so the default quick workflow still executes a real REMD run when requested and unit tests that patch `pmarlo_webapp.app.backend.run_replica_exchange` now observe the mocked engine (`pmarlo_webapp/app/backend/sampling.py`).
+- Align the aggregate-and-build integration helpers with canonical shard IDs so the generated shards now include the recorded `run_id`, allowing `write_shard` to accept them and the bundle workflow tests to run without value errors.
+- Default `Simulation` platform to CPU so deterministic runs and integration tests do not fail when CUDA is unavailable while still allowing CUDA via an explicit request.
+- Ensured `_create_clustering_estimator` now detects whether the selected estimator accepts `fixed_seed` at construction so deterministic seeding can be applied in the same way for real deeptime estimators and lightweight mock replacements, preventing the auto-selection sampling test from crashing with unexpected keyword errors while keeping reproducible clustering for real runs (`src/pmarlo/markov_state_model/clustering.py`).
+- Align `tests/integration/smoke/test_features_quick.py` expectations with `parse_feature_spec` so both unit and integration suites consume the same `indices` argument semantics.
+- Ensure `parse_feature_spec` exposes an `atoms` key for list-style molecular specs so CV parsing consumes consistent metadata within the integration suite.
+- Update the molecular feature parsing unit tests to assert on both `indices` and `atoms`, matching the richer payload emitted by `parse_feature_spec`.
+- Ensure the build pipeline canonicalizes FES metadata names by following the dataset CV order and records the axis ordering separately so provenance stays deterministic even when variance-based selection swaps axes.
+- Reworked `tests/unit/data/test_demux_dataset.py` so the shard helper now derives IDs with the run-aware suffix enforced by `pmarlo.shards.canonical_shard_id`, preventing helper-generated shards from conflicting with the canonical validation in recent test cases.
+- Align `tests/unit/app/test_app_gating.py` with the actual skip banner source by asserting the `DEEPTICA_SKIP_MESSAGE` constant contains the expected text, ensuring the gating regression is caught directly at the data layer.
+- Updated `tests/unit/data/test_temperature_contract.py' helper to emit canonical shard IDs derived from the run metadata so `write_shard` now accepts the fixtures and the remaining `TemperatureConsistencyError` checks can run as intended.
+- Ensured `tests/unit/io/test_shard_io.py` now derives the canonical shard ID from the provided run identifier before calling `write_shard`, so the helper-generated IDs match what `canonical_shard_id` expects and the shard IO regression no longer fails.
+- Make `tests/devtools/test_lines_report.py::test_format_table_handles_empty_rows` assert the real em dash placeholder, reflecting how `scripts.lines_report.format_table` renders an empty table.
+- Avoid whitening MSM inputs when DeepTICA artifacts lack output transform metadata so missing-dependency/no-pairs runs no longer raise during MSM prep.
+- Fixed `tests/unit/app_usecase/test_backend_analysis_pairs.py::test_analysis_total_pairs_matches_summary` by importing `BuildConfig` from `pmarlo_webapp.app.backend` and ensuring the test monkeypatches `pmarlo_webapp.app.backend.analysis.load_shards_as_dataset` / `build_from_shards`, keeping the fake dataset/build logic active instead of triggering actual shard reads.
+- Ensured `tests/unit/markov_state_model/test_bootstrap_counts.py` now supplies an `output_dir` to `EnhancedMSM` so its bootstrap-counts self-check can run without `MSMBase` raising a `TypeError`.
+- Conformations analysis now infers and enforces the physical frame stride recorded in shard metadata, so strided shards whose `source.range` spans more frames than the feature count no longer fail with `frame range ... does not match feature count` and representative extraction resolves the correct trajectory indices for those frames.
+- The `tests/unit/io/test_iterload_stream.py::test_iterload_streaming` fixture now supplies a dedicated temporary `output_dir` so `EnhancedMSM` can initialize without raising `MSMBase requires \`output_dir\` to be provided.` and the log assertions stay focused on streaming behavior.
+- Require `run_labels` to match the length of `projection_data` inside `create_sampling_validation_plot`
+  so malformed metadata now raises a `ValueError` before the visualization is drawn.
+- Make the shard summary demo helper generate the canonical `T…_run-…` identifiers so different-run shards no longer raise the canonicalization `ValueError`.
+- Extend the OpenMM unit stub used by the tests with all frequently used units (e.g., `nanometer`, `kilojoule_per_mole`, `bar`, `amu`, `femtoseconds`, `picosecond`, `Unit`, …) so replica-setup and force-related tests no longer fail with missing attribute errors when OpenMM itself is unavailable.
+- Let the replica-exchange OpenMM platform selector fall back to the first available backend when neither CUDA nor CPU are present so platform detection keeps working even with OpenCL-only installations.
+- Instantiate `PDBFixer` with the supported `pdbfile` argument so deterministic replica-exchange simulation smoke tests stop crashing before they even reach OpenMM preparation.
+- Give each mdtraj stub created in tests a ModuleSpec so `importlib.util.find_spec("mdtraj")` can run without error and dependent API tests can reliably assert the presence of mdtraj instead of crashing.
+- Keep `tests/unit/markov_state_model/test_lag_window_formatter.py` aligned with `format_lag_window_ps` by decoding the lag-window expectation with a proper en dash so the regression passes.
+- `emit_shards_from_trajectories` now derives shard IDs with the provenance
+  `run_id` for both demux and replica outputs, matching the canonical ID rules
+  enforced by `pmarlo.shards`. This prevents shard writers from failing with
+  “shard_id ... does not match canonical ...” when run metadata is present.
+- Added regression coverage to ensure future emitters continue to include the
+  run-aware suffixes in their shard filenames.
+- Streamlit conformations workflow now reconstructs missing shard `source.range`
+  metadata by tracking shard ordering per run/trajectory, so legacy shard sets
+  that never recorded frame offsets can still extract representative structures
+  instead of failing with “frame range” errors.
+- Added regression tests around the range-derivation helper to ensure future
+  changes keep the inferred spans stable across runs and replicas.
+- `example_programs/bench_openmm.py` now resolves TorchScript CV bundles from `.pt` checkpoints before launching OpenMM, so benchmarking runs work with the `.pt` artifacts produced by the webapp and the monitoring code reuses the same TorchScript module instead of failing to load the raw checkpoint.
+- Benchmarks now search sibling `training-*` directories for the exported `deeptica_cv_model.*` bundle, reuse the bundle's embedded `feature_spec` (written into the temp config), and minimise the system before integration. That removes the brittle auto-export fallback, ensures OpenMM loads the exact CV definition that was trained, and prevents the instant NaNs that happened when the script re-traced checkpoints with missing history.
+- TorchForce initialisation now tolerates OpenMM builds that reject the `precision` property, preventing the CPU runs of `bench_openmm.py` from crashing with “TorchForce: Unknown property 'precision'”.
+- Fixed critical FES component selection bug in `src/pmarlo/analysis/fes.py` where free energy surfaces were always computed using the first two CV columns instead of selecting components by variance, causing incorrect FES plots when using mlcolvar/DeepTICA outputs where component importance varies
+- Conformations analysis now tolerates shard metadata that omits `source.range` by reusing the recorded global spans when mapping frames back to trajectories, preventing the downstream error described in the webapp logs
+- Ensured the default FES builder in `src/pmarlo/transform/build.py` now reuses the variance-based `select_highest_variance_components` helper so recorded MSM/FES runs also choose the most informative CV pair instead of the original hardcoded first two axes
+- Fixed `_export_cv_model` method in `pmarlo_webapp/app/backend/training.py` that was trying to pickle.load a JSON file, causing silent CV bundle export failures during training
+- Added `weights_only=False` parameter to `torch.load()` calls in `src/pmarlo/features/deeptica/_full.py` for PyTorch 2.6+ compatibility
+- Improved error handling in CV model export to raise informative errors instead of silently failing
+- Added strict feature-count validation to both the webapp backend and `export_cv_bundle.py`, preventing CV bundle exports when the trained model does not match `feature_spec.yaml`
+- Streamlit backend now auto-discovers DeepTICA bundles in `app_output/models`, ensuring newly trained models immediately appear in the Model Preview picker even if the state file was out of sync
+- Sampling tab now auto-generates the CV bias bundle when you choose a model: the backend recreates missing `deeptica_cv_model.*` files from the stored bundle metadata, surfaces errors if the shards are incompatible, and persists the bundle path for future runs
+- Fixed cross-platform path conversion so Windows paths captured in `state.json` resolve correctly when the app runs either natively on Windows or inside WSL; this previously caused auto-export to fail with "Model bundle is missing on disk" even when the file existed
+- Improved `check_openmm_torch_available()` to load the TorchForce plugin via OpenMM when the standalone `openmmtorch` Python module is not importable, and to search additional directories (including those provided via `PMARLO_OPENMM_PLUGIN_DIR` / `OPENMM_PLUGIN_DIR`), eliminating spurious "openmm-torch is not installed" errors when the plugin lives in a sibling Conda/Mamba environment
+- Fixed adaptive FES grid sizing so the bin count can shrink below the previous 40-bin floor and loop longer when needed, which keeps the empty-bin fraction below the target even when the data occupy a narrow range
+- Fixed test expectation in `tests/analysis/test_fes.py` where `ensure_fes_inputs_whitened` was expected to return True for already-whitened data, but correctly returns False to indicate no new whitening was applied
+- Fixed `tests/unit/replica_exchange/test_single_temp_production.py` so its configuration stub now mirrors `RemdConfig` (including `forcefield_files` and `target_accept`) and the step-count assertion tolerates the extra production churn triggered by the single-temperature path
+
+
+
+### Added
+
+- Added per-shard autocorrelation analysis metadata (τ grid including τ=0, τ_int, recommended lag window) to `compute_diagnostics` so downstream tooling can reason about decorrelation time instead of relying on hardcoded heuristics.
+- Surfaced τ_int guidance and the recommended lag range throughout the MSM/FES Streamlit tab so users can immediately see how the CV dynamics inform lag selection.
+- Extended the CK+ITS backend/webapp plumbing to persist per-lag diagonal mass measurements, expose them in the UI, and allow users to configure the diagonal-mass threshold enforced during lag scanning.
+- The ITS/CK Streamlit tab warns explicitly when user-provided lag candidates were ignored because the dataset is too short, mirroring the new diagnostics returned by the backend.
+- Sampling tab now labels each feature profile with the actual CV list (e.g., `cv_analysis (Rg, RMSD_ref)`) and shows the precise variables plus their source modules, including custom definitions loaded from `app/feature_spec.yaml`, so users immediately know how shards will be generated.
+- Added the `--fes-bins` headless CLI flag plus parsing helpers so users can drive MSM/FES resolution from scripts, and surfaced the ability to set FES bins in the experiment runner configuration pipeline.
+- Added `select_highest_variance_components` function to `src/pmarlo/analysis/fes.py` that intelligently selects CV components based on variance for FES computation, ensuring mlcolvar/DeepTICA outputs are properly utilized by choosing the most informative components
+- Created `pmarlo_webapp/export_cv_bundle.py` utility script to manually export CV bias bundles from existing trained DeepTICA models
+- Added comprehensive `pmarlo_webapp/CV_BIAS_REQUIREMENTS.md` documentation explaining the difference between CV-based and molecular feature-based models and their use cases
+- Enhanced error messages in sampling tab to guide users when CV bias bundles are missing, including specific causes and solutions
+- Sampling tab now exposes a feature profile selector with live compatibility messaging so users can request molecular shards directly from the UI
+- Training tab surfaces feature profile metadata and compatibility badges for the selected shard batches
+
+
+### Changed
+
+
+- Reworked the autocorrelation estimator to operate strictly within shard boundaries, weight shard contributions by `(T-τ)`, and clip the tau grid to ≤ one third of the shard length; the new implementation mean-centres/normalises each shard independently and integrates the resulting curve to obtain τ_int.
+- Tau derivation now respects shard stride metadata (minimum lag equals the effective stride) and defaults to a dense 10-point geometric grid capped at one third of the shortest shard.
+- CK lag selection now consumes the autocorrelation diagnostics: it seeds the candidate tau list from the recommended geometric grid, enforces a minimum diagonal mass (default 0.6) alongside CK coverage/count guardrails, and includes the diagonal-mass verdict in the returned diagnostics.
+- Updated the CK+ITS tab to highlight the diagonal-mass guardrail, show τ_int-derived suggestions, and annotate plots with the recommended lag window so analysts can quickly see why a lag was accepted or rejected.
+
+- Updated CV bundle export logic to properly load DeepTICAModel from separate `.pt`, `.scaler.pt`, and `.json` files instead of attempting to unpickle the bundle
+- Modified model loading to handle architecture evolution with `strict=False` parameter and automatic key prefix remapping for backward compatibility
+- Analysis tabs (MSM/FES, conformations, ITS/CK diagnostics, validation) now warn when mixed CV and molecular feature sets are selected, reducing accidental misuse of shards
+- Updated Streamlit renderers across the webapp (validation, MSM/FES, run discovery, CK+ITS tabs and shared helpers) to replace the deprecated `use_container_width` flag with the new `width` parameter so the UI keeps stretching layouts reliably without relying on removed options
+- Reorganized the Sampling and Training tabs so their recorded-run/model loaders sit inside collapsible expanders at the top of each page, matching the existing pattern for other analysis tabs and making load controls easy to find.
+- Added a configurable FES grid strategy option to the MSM/FES build (UI, CLI, and analysis backend) so adaptive histogram grids can be requested and persist in recorded build metadata
+
+
+- Updated the README quickstart-to-dependencies sections to walk through the real `example_programs` workflows (verify install, quick REMD, shard emission, TPT analysis) and refreshed the diagnostics snippet so it uses the bundled 3gd8 assets instead of abstract pseudo-code.
+
+- Clarified the sampling validation legend in `src/pmarlo/reporting/plots.py` by documenting
+  that standard traces use solid lines and metabiased traces use dashed lines, ensuring the
+  legend title explicitly references the metabiased style.
+
+- Moved `bench_openmm.py`, `check_extras_parity.py`, `compare_debug_bundles.py`, and `diagnose_cvs.py` into `example_programs/` so all runnable programs sit with the other demos, updated the docs/tests to reference the new paths, and turned `example_programs` into a package so the parity checker remains importable.
+- Shard emission persists the real feature specifications and friendly labels, and every downstream tab (training, MSM/FES, ITS, CK+ITS auto lag, conformations, and validation) surfaces the detected variable set for the selected shard batches, removing guesswork about what each dataset contains.
+- `example_programs/bench_openmm.py` now reports the available scaler/metadata artifacts but no longer hard-fails when only the TorchScript `.pt` file is present, and the replica exchange system builder will infer the scaler statistics and dimensionality directly from the scripted module so benchmarking works with TorchScript-only exports.
+- `example_programs/bench_openmm.py` gained a `--pdb` flag so you can point the benchmark at the solvated structure used to train a given CV model instead of the bundled 3gd8 test system—preventing runaway forces when the model targets a different topology.
+- `src/pmarlo/replica_exchange/system_builder.py` can now convert a DeepTICA checkpoint `.pt` bundle into a TorchScript CV bias module on the fly (keeping the export around for the benchmark) so the OpenMM harness accepts vanilla `.pt` bundles that only include the training checkpoint, scaler, and metadata files.
+- `src/pmarlo/replica_exchange/system_builder.py` now tolerates platforms where `TorchForce.setProperty("precision", ...)` is unavailable by logging and continuing with the default precision instead of aborting.
+- Align the deeptime-backed MSM estimation so both `MarkovStateModel` and `build_simple_msm`
+  use `MaximumLikelihoodMSM(reversible=False)`, matching the reference estimator used in the
+  unit test and avoiding the earlier reversible regularization that skewed the transition
+  matrix and stationary distribution comparison.
+
+- Added explicit `fes_bins` support throughout the analysis build path so `BuildConfig`, the backend FES builder, and the minibuild metadata all persist the requested bin tuple instead of relying on hidden defaults.
+- Started exposing the new FES bin controls in the MSM/FES Streamlit tab (with dedicated session state) so builds persist the requested histogram resolution and the recorded override travels through `analysis_overrides`.
+- Updated the headless CLI and experiment runner adapters to accept bundle-defined overrides and forward `fes_bins` to the builder so automation workflows can pick the desired resolution just like the interactive UI.
+
+
+
 <a id='changelog-1.0.58'></a>
 # 1.0.58 — 2025-11-08
 
@@ -576,7 +714,7 @@ Configuration module (src/pmarlo/settings/) with explicit required keys (enable_
 
 Periodic CV and bias energy logging every 1000 steps during replica exchange simulations, reporting mean and standard deviation of collective variables and bias energy.
 
-Benchmark harness (scripts/bench_openmm.py) to measure OpenMM performance with and without CV biasing, reporting steps/second, bias energy statistics, and CV statistics for performance assessment on CPU and GPU platforms.
+Benchmark harness (example_programs/bench_openmm.py) to measure OpenMM performance with and without CV biasing, reporting steps/second, bias energy statistics, and CV statistics for performance assessment on CPU and GPU platforms.
 
 Test suite for TorchScript feature extraction: parity tests (eager vs scripted), finite-difference force validation, and PBC wrap invariance tests in tests/force/.
 
@@ -652,7 +790,7 @@ Refactored across ~15 modules to align logging (visibility), remove lazy imports
 - **Enhanced CV integration error handling**: Added comprehensive logging and warnings in `backend.py` for missing openmm-torch, CPU-only PyTorch performance warnings, and graceful degradation when CV models can't be loaded
 - **Fixed GitHub Actions test collection failure**: Added `tests/integration` to `testpaths` in `pyproject.toml` and added `@pytest.mark.integration` markers to all integration test files to enable proper test discovery.
 - **Fixed GitHub Actions pytest exit code 5 issue**: Updated all GitHub Actions workflow test commands to explicitly specify test directories (`tests/unit tests/devtools tests/integration`) instead of relying on marker filters alone, preventing pytest from collecting unmarked tests incorrectly.
-- **Fixed tomli import error in Python 3.11+**: Updated `scripts/check_extras_parity.py` to use `tomllib` from the standard library for Python 3.11+ instead of the external `tomli` package, fixing test collection errors in devtools tests.
+- **Fixed tomli import error in Python 3.11+**: Updated `example_programs/check_extras_parity.py` to use `tomllib` from the standard library for Python 3.11+ instead of the external `tomli` package, fixing test collection errors in devtools tests.
 - Restored Poetry package metadata (`name`, `description`, `authors`) in `[tool.poetry]` to satisfy package-mode CI checks while keeping it synchronized with the canonical `[project]` metadata.
 - **CRITICAL PERFORMANCE FIX: Disabled CV-biased sampling** due to catastrophic 10-100x slowdown caused by incomplete implementation. Root causes: (1) TorchForce passes raw atomic positions but CV model expects molecular features (distances/angles/dihedrals) - feature extraction not implemented, (2) PyTorch runs on CPU when random_seed is set (Reference platform for determinism), (3) PyTorch model called at every MD integration step. With 50k steps × 3 replicas = 150k PyTorch CPU calls → hours instead of minutes. Temporarily disabled CV biasing in `app.py` until proper OpenMM feature extraction is implemented. See `mdfiles/cv_biasing_performance_issue.md` for details.
 - Updated integration and analysis test fixtures to emit canonical shard metadata so new schema validations pass and cache invalidation remains covered without depending on legacy shard IDs.
@@ -878,7 +1016,7 @@ new runs start clean.
 - Default analysis configuration now requests 20 microstates (down from 150) across headless/UI flows to better match modest datasets.
 - Analyses now propagate `kmeans_kwargs={'n_init': 50}` so every K-means invocation retries with 50 restarts for more stable clustering.
 - Headless analysis runner now aborts with a clear error message when `summary.json` reports `analysis_healthy=false`, echoing the recorded guardrail violations.
-- Standalone `scripts/diagnose_cvs.py` utility to load trajectories, compute Rg/RMSD_ref, and dump detailed pandas/matplotlib diagnostics without triggering MSM/FES builds.
+- Standalone `example_programs/diagnose_cvs.py` utility to load trajectories, compute Rg/RMSD_ref, and dump detailed pandas/matplotlib diagnostics without triggering MSM/FES builds.
 - Core DeepTICA trainer package modules (`config`, `loops`, `sampler`, `schedulers`, `trainer`) and focused unit tests under `tests/unit/features/deeptica/core/` covering each helper.
 - Lightweight README for `src/pmarlo/features/deeptica/core/` documenting module responsibilities.
 - Expanded reweighter unit coverage for TRAM aliasing, input immutability, and bias validation regressions.
@@ -943,7 +1081,7 @@ new runs start clean.
 - Default analysis configuration now requests 20 microstates (down from 150) across headless/UI flows to better match modest datasets.
 - Analyses now propagate `kmeans_kwargs={'n_init': 50}` so every K-means invocation retries with 50 restarts for more stable clustering.
 - Headless analysis runner now aborts with a clear error message when `summary.json` reports `analysis_healthy=false`, echoing the recorded guardrail violations.
-- Standalone `scripts/diagnose_cvs.py` utility to load trajectories, compute Rg/RMSD_ref, and dump detailed pandas/matplotlib diagnostics without triggering MSM/FES builds.
+- Standalone `example_programs/diagnose_cvs.py` utility to load trajectories, compute Rg/RMSD_ref, and dump detailed pandas/matplotlib diagnostics without triggering MSM/FES builds.
 
 - Core DeepTICA trainer package modules (`config`, `loops`, `sampler`, `schedulers`, `trainer`) and focused unit tests under `tests/unit/features/deeptica/core/` covering each helper.
 - Lightweight README for `src/pmarlo/features/deeptica/core/` documenting module responsibilities.
@@ -1053,7 +1191,7 @@ new runs start clean.
 - Default analysis configuration now requests 20 microstates (down from 150) across headless/UI flows to better match modest datasets.
 - Analyses now propagate `kmeans_kwargs={'n_init': 50}` so every K-means invocation retries with 50 restarts for more stable clustering.
 - Headless analysis runner now aborts with a clear error message when `summary.json` reports `analysis_healthy=false`, echoing the recorded guardrail violations.
-- Standalone `scripts/diagnose_cvs.py` utility to load trajectories, compute Rg/RMSD_ref, and dump detailed pandas/matplotlib diagnostics without triggering MSM/FES builds.
+- Standalone `example_programs/diagnose_cvs.py` utility to load trajectories, compute Rg/RMSD_ref, and dump detailed pandas/matplotlib diagnostics without triggering MSM/FES builds.
 
 - Core DeepTICA trainer package modules (`config`, `loops`, `sampler`, `schedulers`, `trainer`) and focused unit tests under `tests/unit/features/deeptica/core/` covering each helper.
 - Lightweight README for `src/pmarlo/features/deeptica/core/` documenting module responsibilities.
@@ -1236,3 +1374,6 @@ Also:
 ## Added
 
 - Added the **\[tool.scriv]** section to `pyproject.toml`, setting the format to `md`, the output file to `CHANGELOG.md`, and the fragments directory to `changelog.d`.
+
+
+

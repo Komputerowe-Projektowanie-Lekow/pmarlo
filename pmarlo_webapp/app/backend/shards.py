@@ -69,10 +69,21 @@ class ShardsMixin:
         profile_name = request.feature_profile
         logger.info(f"Using feature profile: {profile_name}")
 
-        profile_info = get_feature_profile_info(profile_name)
+        spec_path = (
+            self.layout.app_root / "app" / "feature_spec.yaml"
+            if profile_name == "molecular_custom"
+            else None
+        )
+        profile_info = get_feature_profile_info(profile_name, spec_path=spec_path)
         note["feature_profile"] = profile_name
         note["feature_type"] = profile_info.get("feature_type", "unknown")
         note["cv_biasing_compatible"] = profile_info.get("cv_biasing_compatible", False)
+        if profile_info.get("features"):
+            note["feature_variables"] = list(profile_info["features"])
+        if profile_info.get("display_features"):
+            note["feature_variable_labels"] = list(profile_info["display_features"])
+        if spec_path is not None:
+            note["feature_spec_path"] = str(spec_path)
 
         # Extract shards based on profile type
         if profile_info.get("feature_type") == "cv":
@@ -103,7 +114,7 @@ class ShardsMixin:
             try:
                 profile = load_feature_profile(
                     profile_name,
-                    spec_path=self.layout.app_root / "app" / "feature_spec.yaml" if profile_name == "molecular_custom" else None
+                    spec_path=spec_path,
                 )
                 logger.info(f"Loaded profile with {len(profile.features)} features")
             except Exception as e:
@@ -214,6 +225,9 @@ class ShardsMixin:
                 "feature_profile": request.feature_profile,
                 "feature_type": profile_info.get("feature_type", "unknown"),
                 "cv_biasing_compatible": profile_info.get("cv_biasing_compatible", False),
+                "feature_variables": list(profile_info.get("features") or []),
+                "feature_variable_labels": list(profile_info.get("display_features") or []),
+                "feature_spec_path": str(spec_path) if spec_path is not None else None,
             }
         )
 

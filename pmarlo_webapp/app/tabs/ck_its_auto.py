@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Mapping
 
+import numpy as np
 import streamlit as st
 
 from core.context import AppContext
@@ -18,6 +19,7 @@ from core.view_helpers import (
     _summarize_selected_shards,
     render_shard_selection_table,
     summarize_selected_feature_profiles,
+    format_feature_variable_caption,
 )
 from pmarlo.api import select_shard_paths
 
@@ -107,6 +109,12 @@ def render_ck_its_tab(ctx: AppContext) -> None:
             elif profile_summary["feature_types"]:
                 detected_type = next(iter(profile_summary["feature_types"]))
                 st.caption(f"Detected shard feature type: {detected_type}")
+            feature_variable_caption = format_feature_variable_caption(profile_summary)
+            if feature_variable_caption:
+                st.caption(
+                    "Variables detected in selected shards: "
+                    + feature_variable_caption
+                )
             try:
                 selected_paths = select_shard_paths(shard_groups, selected_runs)
                 _, selection_text = _summarize_selected_shards(selected_paths)
@@ -174,7 +182,7 @@ def render_ck_its_tab(ctx: AppContext) -> None:
             help="Comma-separated CK test horizons k (e.g., 1, 2, 3, 4, 5).",
         )
 
-        threshold_cols = st.columns(3)
+        threshold_cols = st.columns(4)
         threshold_cols[0].number_input(
             "CK error threshold",
             min_value=0.01,
@@ -201,6 +209,15 @@ def render_ck_its_tab(ctx: AppContext) -> None:
             step=10,
             key="ck_its_min_median_count",
             help="Minimum median microstate count (default: 100).",
+        )
+        threshold_cols[3].number_input(
+            "Diagonal mass threshold",
+            min_value=0.0,
+            max_value=1.0,
+            value=float(st.session_state.get("ck_its_diag_mass_threshold", 0.6)),
+            step=0.05,
+            key="ck_its_diag_mass_threshold",
+            help="Minimum acceptable average diagonal probability (default: 0.6).",
         )
 
     compute_btn = st.button(
@@ -253,6 +270,9 @@ def render_ck_its_tab(ctx: AppContext) -> None:
                     ck_threshold=float(st.session_state["ck_its_ck_threshold"]),
                     coverage_threshold=float(st.session_state["ck_its_coverage_threshold"]),
                     min_median_count=int(st.session_state["ck_its_min_median_count"]),
+                    diag_mass_threshold=float(
+                        st.session_state["ck_its_diag_mass_threshold"]
+                    ),
                 )
 
         except Exception as exc:
@@ -303,18 +323,44 @@ def _display_ck_its_results(result: Mapping) -> None:
     median_counts = result.get("median_counts", {})
     macrostate_counts = result.get("macrostate_counts", {})
     passed_sanity = result.get("passed_sanity", {})
+    diag_masses = result.get("diag_masses", {})
     its_timescales = result.get("its_timescales", np.array([]))
     its_lag_times = result.get("its_lag_times", np.array([]))
     diagnostics = result.get("diagnostics", {})
 
     # Display selected lag prominently
     st.subheader("Selected Optimal Lag")
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("Selected Lag", f"{selected_lag} steps")
     if selected_lag in ck_errors:
         col2.metric("CK Error", f"{ck_errors[selected_lag]:.3f}")
     if selected_lag in coverage_fractions:
         col3.metric("Coverage", f"{coverage_fractions[selected_lag]:.1%}")
+    if selected_lag in diag_masses and diag_masses[selected_lag] is not None:
+        col4.metric("Diagonal Mass", f"{diag_masses[selected_lag]:.3f}")
+
+    ignored_lags = diagnostics.get("ignored_tau_candidates") or []
+    max_supported_lag = diagnostics.get("max_supported_lag")
+    if ignored_lags:
+        if max_supported_lag is not None and max_supported_lag > 0:
+            st.warning(
+                "Ignored lag candidates %s because the trajectories only support "
+                "lags up to %d steps."
+                % (", ".join(str(lag) for lag in ignored_lags), int(max_supported_lag))
+            )
+        else:
+            st.warning(
+                "Ignored lag candidates %s because the trajectories were too short "
+                "to evaluate them."
+                % (", ".join(str(lag) for lag in ignored_lags))
+            )
+
+    tau_hint = diagnostics.get("tau_int")
+    recommended = diagnostics.get("recommended_tau_candidates", [])
+    if tau_hint is not None and np.isfinite(tau_hint) and recommended:
+        st.caption(
+            f"Autocorrelation guidance: τ_int≈{tau_hint:.0f} · suggested candidates {recommended}"
+        )
 
     # Plot CK errors
     st.subheader("CK Error vs Lag Time")
@@ -359,6 +405,11 @@ def _display_ck_its_results(result: Mapping) -> None:
             "CK Error": f"{ck_errors.get(lag, float('nan')):.3f}",
             "Coverage": f"{coverage_fractions.get(lag, 0.0):.1%}",
             "Median Count": median_counts.get(lag, 0),
+            "Diagonal Mass": (
+                f"{diag_masses.get(lag, float('nan')):.3f}"
+                if diag_masses.get(lag) is not None
+                else "—"
+            ),
             "Macrostates": n_macro if n_macro > 0 else "N/A",
             "Mode": mode_indicator,
             "Passed": "✓" if passed_sanity.get(lag, False) else "✗",

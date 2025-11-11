@@ -34,6 +34,37 @@ class LagEvaluationResult:
     failure_reason: Optional[str] = None
     timescales: Optional[np.ndarray] = None
     eigenvalue_gap: Optional[float] = None
+    diag_mass: Optional[float] = None
+
+
+def _max_supported_lag(dtrajs: Sequence[np.ndarray]) -> int:
+    """Return the largest lag that still yields at least one transition."""
+
+    max_length = 0
+    for traj in dtrajs:
+        if traj is None:
+            continue
+        length = int(getattr(traj, "size", 0))
+        if length > max_length:
+            max_length = length
+    return max(0, max_length - 1)
+
+
+def _filter_tau_candidates(
+    dtrajs: Sequence[np.ndarray],
+    tau_candidates: Sequence[int],
+) -> tuple[list[int], list[int], int]:
+    """Filter tau candidates that exceed the available trajectory length."""
+
+    max_supported_lag = _max_supported_lag(dtrajs)
+    valid: list[int] = []
+    ignored: list[int] = []
+    for tau in tau_candidates:
+        if tau <= max_supported_lag:
+            valid.append(int(tau))
+        else:
+            ignored.append(int(tau))
+    return valid, ignored, max_supported_lag
 
 
 def _count_transitions(
@@ -252,6 +283,7 @@ def _evaluate_single_lag(
     n_states: int,
     coverage_threshold: float,
     min_median_count: int,
+    diag_mass_threshold: float,
 ) -> LagEvaluationResult:
     """Evaluate a single candidate lag time."""
     logger.info("[CK-ITS] Evaluating lag=%d", lag)
@@ -281,6 +313,8 @@ def _evaluate_single_lag(
                 passed_sanity=False,
                 failure_reason=failure_reason,
             )
+
+        use_microstate_ck = False
 
         # Normalize to transition matrix
         T_tau = _row_normalize(C_tau)
@@ -357,25 +391,43 @@ def _evaluate_single_lag(
                 T_tau, dtrajs, n_states, lag, horizons
             )
 
-        # Compute timescales for ITS
+        # Compute timescales for ITS and diagonal mass guardrail
+        diag_mass = float("nan")
         try:
             estimator = MaximumLikelihoodMSM(lagtime=lag, reversible=True)
             msm_model = estimator.fit(dtrajs).fetch_model()
             timescales = np.asarray(msm_model.timescales(), dtype=float)
+            transition = np.asarray(msm_model.transition_matrix, dtype=float)
+            if transition.size:
+                diag_mass = float(np.trace(transition) / transition.shape[0])
         except Exception as e:
             logger.warning(
                 "[CK-ITS] Failed to compute timescales for lag %d: %s", lag, e
             )
             timescales = None
+        diag_failure_reason: Optional[str] = None
+        diag_ok = np.isfinite(diag_mass) and diag_mass >= diag_mass_threshold
+        if not diag_ok:
+            diag_failure_reason = (
+                f"Diagonal mass {diag_mass:.3f} < threshold {diag_mass_threshold:.3f}"
+                if np.isfinite(diag_mass)
+                else "Diagonal mass undefined"
+            )
+            logger.warning(
+                "[CK-ITS] Lag %d failed diagonal-mass guardrail: %s",
+                lag,
+                diag_failure_reason,
+            )
 
         mode_text = "microstate" if use_microstate_ck else "macrostate"
         logger.info(
-            "[CK-ITS] Lag %d (%s): CK error=%.4f, coverage=%.2f%%, median_count=%d, n_macro=%d",
+            "[CK-ITS] Lag %d (%s): CK error=%.4f, coverage=%.2f%%, median_count=%d, diag_mass=%.3f, n_macro=%d",
             lag,
             mode_text,
             max_ck_error,
             coverage * 100,
             median_count,
+            diag_mass,
             n_macro,
         )
 
@@ -386,9 +438,11 @@ def _evaluate_single_lag(
             median_count=median_count,
             n_macrostates=n_macro,
             n_microstates=n_states,
-            passed_sanity=True,
+            passed_sanity=diag_failure_reason is None,
+            failure_reason=diag_failure_reason,
             timescales=timescales,
             eigenvalue_gap=eigenvalue_gap,
+            diag_mass=diag_mass,
         )
 
     except Exception as e:
@@ -412,6 +466,7 @@ def select_optimal_lag_ck_its(
     ck_threshold: float = 0.15,
     coverage_threshold: float = 0.98,
     min_median_count: int = 100,
+    diag_mass_threshold: float = 0.6,
 ) -> Tuple[int, List[LagEvaluationResult]]:
     """Select optimal lag time using CK test with ITS validation.
 
@@ -419,6 +474,7 @@ def select_optimal_lag_ck_its(
     1. Passes CK test: max CK error ≤ ck_threshold (default 10-15%)
     2. Has high coverage: giant connected component ≥ coverage_threshold
     3. Has sufficient statistics: median microstate count ≥ min_median_count
+    4. Exhibits adequate diagonal mass: trace(T)/n ≥ diag_mass_threshold
 
     Parameters
     ----------
@@ -434,6 +490,8 @@ def select_optimal_lag_ck_its(
         Minimum coverage fraction (default: 0.98).
     min_median_count : int
         Minimum median microstate count (default: 100).
+    diag_mass_threshold : float
+        Minimum acceptable diagonal mass averaged across states (default: 0.6).
 
     Returns
     -------
@@ -445,32 +503,64 @@ def select_optimal_lag_ck_its(
     if not dtrajs or len(dtrajs) == 0:
         raise ValueError("No discrete trajectories provided")
 
+    usable_dtrajs = [traj for traj in dtrajs if traj is not None and traj.size > 0]
+    if not usable_dtrajs:
+        raise ValueError(
+            "Discrete trajectories contain no frames for CK analysis; "
+            "provide trajectories with at least two time steps."
+        )
+
     if tau_candidates is None:
         tau_candidates = [25, 50, 75, 100]
+    else:
+        tau_candidates = list(tau_candidates)
 
     if horizons is None:
         horizons = [1, 2, 3, 4, 5]
 
+    (
+        valid_tau_candidates,
+        ignored_tau_candidates,
+        max_supported_lag,
+    ) = _filter_tau_candidates(usable_dtrajs, tau_candidates)
+
+    if ignored_tau_candidates:
+        logger.warning(
+            "[CK-ITS] Ignoring %d tau candidates that exceed available length "
+            "(max supported lag=%d): %s",
+            len(ignored_tau_candidates),
+            max_supported_lag,
+            ignored_tau_candidates,
+        )
+
+    if not valid_tau_candidates:
+        raise ValueError(
+            "All tau candidates exceed the available trajectory length "
+            f"(max supported lag {max_supported_lag}). "
+            "Provide smaller lag values or shorter horizons."
+        )
+
     # Infer number of microstates
-    n_states = int(max(np.max(dt) for dt in dtrajs if dt.size > 0)) + 1
+    n_states = int(max(np.max(dt) for dt in usable_dtrajs)) + 1
 
     logger.info(
         "[CK-ITS] Starting lag selection: candidates=%s, horizons=%s, n_states=%d",
-        tau_candidates,
+        valid_tau_candidates,
         horizons,
         n_states,
     )
 
     # Evaluate each candidate lag
     evaluations: List[LagEvaluationResult] = []
-    for lag in sorted(tau_candidates):
+    for lag in sorted(valid_tau_candidates):
         result = _evaluate_single_lag(
-            dtrajs,
+            usable_dtrajs,
             lag,
             horizons,
             n_states,
             coverage_threshold,
             min_median_count,
+            diag_mass_threshold,
         )
         evaluations.append(result)
 

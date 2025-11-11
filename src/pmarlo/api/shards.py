@@ -539,6 +539,8 @@ def build_from_shards(
     kmeans_kwargs: dict | None = None,
     n_microstates: int | None = None,
     fes_grid_strategy: str | None = None,
+    fes_bins: Tuple[int, int] | None = None,
+    fes_min_count: int = 1,
 ):
     """Aggregate shard JSONs and build a bundle with an app-friendly API.
 
@@ -548,6 +550,8 @@ def build_from_shards(
     - Optional ``kmeans_kwargs`` are forwarded to the clustering step to tune K-means.
     - ``n_microstates`` enforces the requested number of discrete microstates in the MSM
       build when provided.
+    - ``fes_bins`` lets the caller override the FES grid resolution as ``(x_bins, y_bins)``.
+    - ``fes_min_count`` enforces the minimum histogram count threshold before smoothing.
     - Returns (BuildResult, dataset_hash).
     """
     logger.info(
@@ -595,6 +599,8 @@ def build_from_shards(
         kmeans_kwargs,
         n_microstates=n_microstates,
         fes_grid_strategy=fes_grid_strategy,
+        fes_bins=fes_bins,
+        fes_min_count=fes_min_count,
     )
     logger.debug(
         "[shards] Build options: n_clusters=%d, n_states=%d, lag_candidates=%s",
@@ -726,6 +732,8 @@ def _build_opts(
     *,
     n_microstates: int | None = None,
     fes_grid_strategy: str | None = None,
+    fes_bins: Tuple[int, int] | None = None,
+    fes_min_count: int = 1,
 ) -> _BuildOpts:
     """Create BuildOpts with a simple lag candidate ladder."""
 
@@ -762,6 +770,8 @@ def _build_opts(
         n_states=int(resolved_states),
         kmeans_kwargs=microstate_kwargs,
         fes_grid_strategy=grid_strategy,
+        fes_bins=fes_bins,
+        fes_min_count=int(fes_min_count),
     )
 
 

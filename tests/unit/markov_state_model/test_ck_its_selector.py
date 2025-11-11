@@ -226,6 +226,7 @@ def test_evaluate_single_lag(simple_dtrajs):
         n_states=4,
         coverage_threshold=0.5,  # Relaxed for test
         min_median_count=1,  # Relaxed for test
+        diag_mass_threshold=0.0,
     )
 
     assert result.lag == 1
@@ -234,6 +235,8 @@ def test_evaluate_single_lag(simple_dtrajs):
     assert result.median_count >= 0
     assert result.n_macrostates >= 0
     assert result.n_microstates == 4
+    if result.diag_mass is not None and np.isfinite(result.diag_mass):
+        assert 0.0 <= result.diag_mass <= 1.0
 
 
 def test_select_optimal_lag_ck_its():
@@ -261,6 +264,7 @@ def test_select_optimal_lag_ck_its():
         ck_threshold=0.5,  # Relaxed for test
         coverage_threshold=0.5,
         min_median_count=10,
+        diag_mass_threshold=0.0,
     )
 
     assert selected_lag in [5, 10, 15]
@@ -296,8 +300,43 @@ def test_select_optimal_lag_fallback():
         ck_threshold=0.001,  # Very strict
         coverage_threshold=0.99,
         min_median_count=1000,  # Very high
+        diag_mass_threshold=0.0,
     )
 
     # Should still select something (fallback to smallest)
     assert selected_lag in [1, 2]
     assert len(evaluations) == 2
+
+
+def test_select_optimal_lag_filters_long_candidates(simple_dtrajs):
+    """Ensure candidates longer than the trajectories are ignored."""
+    selected_lag, evaluations = select_optimal_lag_ck_its(
+        dtrajs=simple_dtrajs,
+        tau_candidates=[1, 5, 500],
+        horizons=[1],
+        ck_threshold=1.0,
+        coverage_threshold=0.3,
+        min_median_count=1,
+        diag_mass_threshold=0.0,
+    )
+
+    lags = [ev.lag for ev in evaluations]
+    assert 500 not in lags
+    assert selected_lag in lags
+
+
+def test_select_optimal_lag_all_candidates_filtered(simple_dtrajs):
+    """Raise when every candidate exceeds the supported lag."""
+    max_len = max(traj.size for traj in simple_dtrajs)
+    too_large = max_len + 10
+
+    with pytest.raises(ValueError, match="max supported lag"):
+        select_optimal_lag_ck_its(
+            dtrajs=simple_dtrajs,
+            tau_candidates=[too_large],
+            horizons=[1],
+            ck_threshold=1.0,
+            coverage_threshold=0.3,
+            min_median_count=1,
+            diag_mass_threshold=0.0,
+        )

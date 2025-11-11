@@ -258,7 +258,15 @@ def _append_feature_outputs(
     feats.append(X)
     n_cols = X.shape[1]
     columns.extend(_feature_labels(fc, feat_name, n_cols, kwargs))
-    periodic_flags.append(fc.is_periodic())
+    periodic_mask = fc.is_periodic()
+    if feat_name in {"distance", "distance_pair"} and bool(np.asarray(periodic_mask).any()):
+        raise ValueError(
+            (
+                "Distance features must not be flagged as periodic; "
+                f"feature '{feat_name}' returned periodicity {periodic_mask}"
+            )
+        )
+    periodic_flags.append(periodic_mask)
 
 
 def _feature_labels(
