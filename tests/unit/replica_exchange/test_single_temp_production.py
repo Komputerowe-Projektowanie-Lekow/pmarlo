@@ -33,16 +33,16 @@ def test_single_replica_production_runs_md_steps(monkeypatch):
             type(
                 "Config",
                 (),
-            {
-                "pdb_file": str(test_pdb),
-                "temperatures": [300.0],  # Single temperature
-                "output_dir": str(output_dir),
-                "forcefield_files": ["amber14-all.xml", "amber14/tip3pfb.xml"],
-                "exchange_frequency": 99999999,  # Effectively disabled
-                "auto_setup": False,
-                "dcd_stride": 1,
-                "target_accept": 0.3,
-                "random_seed": 42,
+                {
+                    "pdb_file": str(test_pdb),
+                    "temperatures": [300.0],  # Single temperature
+                    "output_dir": str(output_dir),
+                    "forcefield_files": ["amber14-all.xml", "amber14/tip3pfb.xml"],
+                    "exchange_frequency": 99999999,  # Effectively disabled
+                    "auto_setup": False,
+                    "dcd_stride": 1,
+                    "target_accept": 0.3,
+                    "random_seed": 42,
                     "start_from_checkpoint": None,
                     "start_from_pdb": None,
                     "jitter_sigma_A": 0.0,
@@ -108,16 +108,16 @@ def test_single_temp_production_no_exchange_warnings():
             type(
                 "Config",
                 (),
-            {
-                "pdb_file": str(test_pdb),
-                "temperatures": [300.0],
-                "output_dir": str(output_dir),
-                "forcefield_files": ["amber14-all.xml", "amber14/tip3pfb.xml"],
-                "exchange_frequency": 99999999,
-                "auto_setup": False,
-                "dcd_stride": 1,
-                "target_accept": 0.3,
-                "random_seed": 42,
+                {
+                    "pdb_file": str(test_pdb),
+                    "temperatures": [300.0],
+                    "output_dir": str(output_dir),
+                    "forcefield_files": ["amber14-all.xml", "amber14/tip3pfb.xml"],
+                    "exchange_frequency": 99999999,
+                    "auto_setup": False,
+                    "dcd_stride": 1,
+                    "target_accept": 0.3,
+                    "random_seed": 42,
                     "start_from_checkpoint": None,
                     "start_from_pdb": None,
                     "jitter_sigma_A": 0.0,
@@ -180,16 +180,16 @@ def test_large_exchange_frequency_triggers_single_temp_path():
             type(
                 "Config",
                 (),
-            {
-                "pdb_file": str(test_pdb),
-                "temperatures": [300.0],
-                "output_dir": str(output_dir),
-                "forcefield_files": ["amber14-all.xml", "amber14/tip3pfb.xml"],
-                "exchange_frequency": 99999999,  # Very large
-                "auto_setup": False,
-                "dcd_stride": 1,
-                "target_accept": 0.3,
-                "random_seed": 42,
+                {
+                    "pdb_file": str(test_pdb),
+                    "temperatures": [300.0],
+                    "output_dir": str(output_dir),
+                    "forcefield_files": ["amber14-all.xml", "amber14/tip3pfb.xml"],
+                    "exchange_frequency": 99999999,  # Very large
+                    "auto_setup": False,
+                    "dcd_stride": 1,
+                    "target_accept": 0.3,
+                    "random_seed": 42,
                     "start_from_checkpoint": None,
                     "start_from_pdb": None,
                     "jitter_sigma_A": 0.0,

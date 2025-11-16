@@ -5,7 +5,7 @@ import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import numpy as np
 
@@ -513,12 +513,14 @@ class ConformationsMixin:
                 "kmeans": "kmeans",
                 "minibatchkmeans": "minibatchkmeans",
                 "auto": "auto",
+                "dbscan": "dbscan",
             }
             if cluster_mode not in method_alias:
                 raise ValueError(
                     "Unsupported cluster_mode for conformations analysis: "
                     f"{config.cluster_mode!r}."
                 )
+            cluster_method = method_alias[cluster_mode]
 
             cluster_kwargs: Mapping[str, Any]
             if config.kmeans_kwargs is None:
@@ -541,38 +543,50 @@ class ConformationsMixin:
             if total_frames == 0:
                 raise ValueError("No frames available after dimensionality reduction")
 
-            frames_per_cluster = total_frames / float(n_clusters)
-            if frames_per_cluster > 10_000:
-                logger.warning(
-                    (
-                        "Using %d clusters for %d frames (~%.0f frames/cluster) may be too coarse. "
-                        "Increase n_clusters to improve transition state resolution."
-                    ),
-                    n_clusters,
-                    total_frames,
-                    frames_per_cluster,
+            if cluster_method != "dbscan":
+                frames_per_cluster = total_frames / float(n_clusters)
+                if frames_per_cluster > 10_000:
+                    logger.warning(
+                        (
+                            "Using %d clusters for %d frames (~%.0f frames/cluster) may be too coarse. "
+                            "Increase n_clusters to improve transition state resolution."
+                        ),
+                        n_clusters,
+                        total_frames,
+                        frames_per_cluster,
+                    )
+            if cluster_method == "dbscan":
+                cluster_kwargs.pop("n_init", None)
+                n_states_requested: int | Literal["auto"] = "auto"
+                n_init_kwargs: Dict[str, Any] = {}
+                logger.info(
+                    "Clustering with DBSCAN (seed=%s, kwargs=%s)",
+                    "None" if config.cluster_seed is None else int(config.cluster_seed),
+                    cluster_kwargs,
                 )
-
-            logger.info(
-                "Clustering into %d microstates using %s (seed=%s, n_init=%d, kwargs=%s)",
-                n_clusters,
-                method_alias[cluster_mode],
-                "None" if config.cluster_seed is None else int(config.cluster_seed),
-                int(config.kmeans_n_init),
-                cluster_kwargs,
-            )
+            else:
+                n_states_requested = n_clusters
+                n_init_kwargs = {"n_init": int(config.kmeans_n_init)}
+                logger.info(
+                    "Clustering into %d microstates using %s (seed=%s, n_init=%d, kwargs=%s)",
+                    n_clusters,
+                    cluster_method,
+                    "None" if config.cluster_seed is None else int(config.cluster_seed),
+                    int(config.kmeans_n_init),
+                    cluster_kwargs,
+                )
 
             clusterer = _backend_attr("cluster_microstates", _DEFAULT_CLUSTER_MICROSTATES)
             clustering_result = clusterer(
                 features_reduced,
-                method=method_alias[cluster_mode],
-                n_states=n_clusters,
+                method=cluster_method,
+                n_states=n_states_requested,
                 random_state=(
                     None
                     if config.cluster_seed is None
                     else int(config.cluster_seed)
                 ),
-                n_init=int(config.kmeans_n_init),
+                **n_init_kwargs,
                 **cluster_kwargs,
             )
             labels_raw = getattr(clustering_result, "labels", None)
@@ -599,6 +613,18 @@ class ConformationsMixin:
                 )
             tica_cluster_coords = cluster_centers[:, :2]
             n_states = int(np.max(labels) + 1)
+            if n_states < 2:
+                raise ValueError(
+                    "Clustering produced fewer than two microstates; increase the "
+                    "number of clusters or relax DBSCAN parameters (eps, min_samples)."
+                )
+            if cluster_method == "dbscan" and n_states < int(config.n_metastable):
+                raise ValueError(
+                    "DBSCAN clustering yielded only %d microstate(s), but the analysis "
+                    "requested %d metastable states. Adjust the DBSCAN parameters "
+                    "(e.g., larger eps or smaller min_samples) or lower the metastable count."
+                    % (n_states, int(config.n_metastable))
+                )
 
             logger.info("Building MSM (lag=%s) via backend helper", config.lag)
             msm_builder = _backend_attr("build_simple_msm", _DEFAULT_BUILD_SIMPLE_MSM)

@@ -17,8 +17,8 @@ def _open_shareable_dcd_file(path: str) -> BinaryIO:
         return open(path, "wb")
 
     import ctypes
-    from ctypes import wintypes
     import msvcrt
+    from ctypes import wintypes
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateFileW.argtypes = [

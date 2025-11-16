@@ -1,7 +1,8 @@
-import streamlit as st
-import traceback
 from pathlib import Path
 from typing import List, Optional
+
+import streamlit as st
+import traceback
 
 from core.context import AppContext
 from core.session import (
@@ -19,6 +20,7 @@ from core.view_helpers import (
 )
 from backend.types import ConformationsConfig, ConformationsResult
 from pmarlo.api import select_shard_paths
+from ._cluster_controls import render_dbscan_controls, render_kmeans_controls
 
 def render_conformations_tab(ctx: AppContext) -> None:
     """Render the conformations analysis tab."""
@@ -220,46 +222,68 @@ def render_conformations_tab(ctx: AppContext) -> None:
             # Clustering Configuration
             st.markdown(" Clustering Configuration")
             conf_cluster_col1, conf_cluster_col2 = st.columns(2)
-            conf_n_clusters = conf_cluster_col1.number_input(
-                "N microstates (clusters)",
-                min_value=50,
-                max_value=1000,
-                value=int(conf_n_clusters),
-                step=10,
-                help=(
-                    "Controls the number of clusters used when constructing the"
-                    " conformational microstates. Increase this to resolve"
-                    " additional transition states."
-                ),
-                key="conf_n_clusters_input",
+            cluster_options = ["kmeans", "minibatchkmeans", "auto", "dbscan"]
+            current_mode = (
+                conf_cluster_mode
+                if conf_cluster_mode in cluster_options
+                else "kmeans"
             )
             conf_cluster_mode = conf_cluster_col2.selectbox(
                 "Clustering method",
-                options=["kmeans", "minibatchkmeans", "auto"],
-                index=["kmeans", "minibatchkmeans", "auto"].index(
-                    conf_cluster_mode if conf_cluster_mode in {"kmeans", "minibatchkmeans", "auto"} else "kmeans"
-                ),
+                options=cluster_options,
+                index=cluster_options.index(current_mode),
                 key="conf_cluster_mode",
                 help="Algorithm for partitioning CV space"
             )
+            cluster_is_dbscan = conf_cluster_mode == "dbscan"
+            if cluster_is_dbscan:
+                conf_cluster_col1.caption(
+                    "DBSCAN determines the number of microstates from density alone."
+                )
+            else:
+                conf_n_clusters = conf_cluster_col1.number_input(
+                    "N microstates (clusters)",
+                    min_value=50,
+                    max_value=1000,
+                    value=int(conf_n_clusters),
+                    step=10,
+                    help=(
+                        "Controls the number of clusters used when constructing the"
+                        " conformational microstates. Increase this to resolve"
+                        " additional transition states."
+                    ),
+                    key="conf_n_clusters_input",
+                )
 
             conf_cluster_col3, conf_cluster_col4 = st.columns(2)
-            conf_cluster_seed = conf_cluster_col3.number_input(
-                "Clustering seed (-1 for random)",
-                min_value=-1,
-                value=int(conf_cluster_seed),
-                step=1,
-                key="conf_cluster_seed",
-                help="Random seed for reproducible clustering"
-            )
-            conf_kmeans_n_init = conf_cluster_col4.number_input(
-                "K-means n_init",
-                min_value=1,
-                value=int(conf_kmeans_n_init),
-                step=1,
-                key="conf_kmeans_n_init",
-                help="Number of k-means initializations"
-            )
+            if cluster_is_dbscan:
+                conf_cluster_col3.caption("DBSCAN is deterministic; seed is ignored.")
+                conf_cluster_col4.caption("Restarts are disabled for DBSCAN.")
+            else:
+                conf_cluster_seed = conf_cluster_col3.number_input(
+                    "Clustering seed (-1 for random)",
+                    min_value=-1,
+                    value=int(conf_cluster_seed),
+                    step=1,
+                    key="conf_cluster_seed",
+                    help="Random seed for reproducible clustering"
+                )
+                conf_kmeans_n_init = conf_cluster_col4.number_input(
+                    "K-means n_init",
+                    min_value=1,
+                    value=int(conf_kmeans_n_init),
+                    step=1,
+                    key="conf_kmeans_n_init",
+                    help="Number of k-means initializations"
+                )
+
+            if cluster_is_dbscan:
+                conf_cluster_kwargs = render_dbscan_controls(prefix="conf_")
+            else:
+                conf_cluster_kwargs = render_kmeans_controls(
+                    prefix="conf_",
+                    allow_minibatch=(conf_cluster_mode == "minibatchkmeans"),
+                )
 
             st.divider()
 
@@ -349,66 +373,68 @@ def render_conformations_tab(ctx: AppContext) -> None:
                 )
                 conf_deeptica_metadata = Path(metadata_str) if metadata_str else None
 
-    if st.button(
-            "Run Conformations Analysis",
-            type="primary",
-            disabled=(
+            if st.button(
+                "Run Conformations Analysis",
+                type="primary",
+                disabled=(
                     len(selected_paths) == 0
                     or not topology_path_str
                     or (
-                            conf_cv_method == "deeptica" and conf_deeptica_projection is None
+                        conf_cv_method == "deeptica" and conf_deeptica_projection is None
                     )
-            ),
-            key="conformations_button",
-    ):
-        try:
-            conf_config = ConformationsConfig(
-                lag=int(conf_lag),
-                n_clusters=int(conf_n_clusters),
-                cluster_mode=str(conf_cluster_mode),
-                cluster_seed=(
-                    int(conf_cluster_seed)
-                    if int(conf_cluster_seed) >= 0
-                    else None
                 ),
-                kmeans_n_init=int(conf_kmeans_n_init),
-                n_components=int(conf_n_components),
-                n_metastable=int(conf_n_metastable),
-                temperature=float(conf_temperature),
-                auto_detect_states=bool(conf_auto_detect),
-                n_paths=int(conf_n_paths),
-                compute_kis=bool(conf_compute_kis),
-                uncertainty_analysis=bool(conf_uncertainty),
-                bootstrap_samples=int(conf_bootstrap_samples),
-                topology_pdb=Path(topology_path_str),
-                cv_method=str(conf_cv_method),
-                deeptica_projection_path=conf_deeptica_projection,
-                deeptica_metadata_path=conf_deeptica_metadata,
-                committor_thresholds=tuple(conf_committor_thresholds),
-            )
+                key="conformations_button",
+            ):
+                try:
+                    cluster_kwargs = dict(conf_cluster_kwargs)
+                    conf_config = ConformationsConfig(
+                        lag=int(conf_lag),
+                        n_clusters=int(conf_n_clusters),
+                        cluster_mode=str(conf_cluster_mode),
+                        cluster_seed=(
+                            int(conf_cluster_seed)
+                            if int(conf_cluster_seed) >= 0
+                            else None
+                        ),
+                        kmeans_n_init=int(conf_kmeans_n_init),
+                        kmeans_kwargs=cluster_kwargs,
+                        n_components=int(conf_n_components),
+                        n_metastable=int(conf_n_metastable),
+                        temperature=float(conf_temperature),
+                        auto_detect_states=bool(conf_auto_detect),
+                        n_paths=int(conf_n_paths),
+                        compute_kis=bool(conf_compute_kis),
+                        uncertainty_analysis=bool(conf_uncertainty),
+                        bootstrap_samples=int(conf_bootstrap_samples),
+                        topology_pdb=Path(topology_path_str),
+                        cv_method=str(conf_cv_method),
+                        deeptica_projection_path=conf_deeptica_projection,
+                        deeptica_metadata_path=conf_deeptica_metadata,
+                        committor_thresholds=tuple(conf_committor_thresholds),
+                    )
 
-            with st.spinner("Running conformations analysis..."):
-                conf_result = backend.run_conformations_analysis(
-                    selected_paths, conf_config
-                )
+                    with st.spinner("Running conformations analysis..."):
+                        conf_result = backend.run_conformations_analysis(
+                            selected_paths, conf_config
+                        )
 
-            st.session_state[_LAST_CONFORMATIONS] = conf_result
-            if conf_result.error:
-                st.session_state[_CONFORMATIONS_FEEDBACK] = (
-                    "error",
-                    f"Conformations analysis failed: {conf_result.error}",
-                )
-            else:
-                st.session_state[_CONFORMATIONS_FEEDBACK] = (
-                    "success",
-                    f"Conformations analysis complete! Output saved to {conf_result.output_dir.name}",
-                )
-        except Exception as exc:
-            traceback.print_exc()
-            st.session_state[_CONFORMATIONS_FEEDBACK] = (
-                "error",
-                f"Conformations analysis failed: {exc}",
-            )
+                    st.session_state[_LAST_CONFORMATIONS] = conf_result
+                    if conf_result.error:
+                        st.session_state[_CONFORMATIONS_FEEDBACK] = (
+                            "error",
+                            f"Conformations analysis failed: {conf_result.error}",
+                        )
+                    else:
+                        st.session_state[_CONFORMATIONS_FEEDBACK] = (
+                            "success",
+                            f"Conformations analysis complete! Output saved to {conf_result.output_dir.name}",
+                        )
+                except Exception as exc:
+                    traceback.print_exc()
+                    st.session_state[_CONFORMATIONS_FEEDBACK] = (
+                        "error",
+                        f"Conformations analysis failed: {exc}",
+                    )
 
     feedback = st.session_state.get(_CONFORMATIONS_FEEDBACK)
     if isinstance(feedback, tuple) and len(feedback) == 2:

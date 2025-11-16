@@ -268,7 +268,9 @@ def plot_pathways(
         )
 
     ax.set_xlabel("Position", fontsize=12)
-    ax.set_title(f"Top {len(top_pathways)} Reactive Pathways", fontsize=14, fontweight="bold")
+    ax.set_title(
+        f"Top {len(top_pathways)} Reactive Pathways", fontsize=14, fontweight="bold"
+    )
     ax.legend(loc="best", fontsize=9)
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -334,7 +336,9 @@ def plot_tpt_summary(
 
     # 4. Flux through states
     ax4 = fig.add_subplot(gs[1, 1])
-    flux_through_state = 0.5 * (np.sum(flux_matrix, axis=1) + np.sum(flux_matrix, axis=0))
+    flux_through_state = 0.5 * (
+        np.sum(flux_matrix, axis=1) + np.sum(flux_matrix, axis=0)
+    )
     states = np.arange(len(flux_through_state))
     ax4.bar(states, flux_through_state, color="coral")
     ax4.set_xlabel("State", fontsize=12)
@@ -357,4 +361,3 @@ __all__ = [
     "plot_pathways",
     "plot_tpt_summary",
 ]
-

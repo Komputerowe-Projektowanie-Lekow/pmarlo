@@ -64,9 +64,14 @@ if "sklearn" not in sys.modules:
 
     class _KMeans:
         def __init__(self, *args, **kwargs) -> None:  # pragma: no cover - stub
-            pass
+            self.cluster_centers_ = None
+            self.labels_ = None
 
         def fit(self, X):  # pragma: no cover - stub
+            length = len(X)
+            self.labels_ = [idx % 2 for idx in range(length)]
+            dim = len(X[0]) if length and hasattr(X[0], "__len__") else 1
+            self.cluster_centers_ = [[0.0] * dim for _ in range(2)]
             return self
 
     class _MiniBatchKMeans(_KMeans):

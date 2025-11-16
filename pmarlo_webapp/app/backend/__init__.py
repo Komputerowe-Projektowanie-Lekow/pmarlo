@@ -17,7 +17,7 @@ from .state import PersistentState
 from .sampling import SamplingMixin, run_short_sim
 from .shards import ShardsMixin
 from .training import TrainingMixin
-from .analysis import AnalysisMixin
+from .analysis import AnalysisMixin, compute_analysis_diag_mass as _compute_analysis_diag_mass
 from .conformations import ConformationsMixin
 from .validation import ValidationMixin
 from .utils import *
@@ -119,4 +119,6 @@ __all__ = [
     "build_simple_msm",
     "find_conformations",
     "run_short_sim",
+    "compute_analysis_diag_mass",
+    "_compute_analysis_diag_mass",
 ]

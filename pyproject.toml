@@ -51,6 +51,7 @@ dependencies = [
   "tomli>=2.0,<3.0",
   "typing-extensions>=4.8",
   "pyyaml>=6.0,<7.0",
+  "tqdm>=4.66,<5.0",
 ]
 
 # ─────────────────────── Optional runtime extras ──────────────────────
@@ -120,6 +121,7 @@ matplotlib = ">=3.8,<4.0"
 tomli = ">=2.0,<3.0"
 typing-extensions = ">=4.8"
 pyyaml = ">=6.0,<7.0"
+tqdm = ">=4.66,<5.0"
 # Optional dependencies (enabled via extras)
 plotly = {version = ">=5.15", optional = true}
 streamlit = {version = ">=1.31", optional = true}

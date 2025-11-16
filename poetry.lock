@@ -4479,4 +4479,4 @@ mlcv = ["deeptime", "lightning", "torch"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.14"
-content-hash = "852bca6b6e8263781fc0b678aa11a56d4cc3075167c1318e5caebc913299361e"
+content-hash = "3e8b810ccfcfbee0dabaef50a6a7a947435aa551b6924e59745ed0fa7a01707f"

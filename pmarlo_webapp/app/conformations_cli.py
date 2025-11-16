@@ -11,6 +11,7 @@ import json
 import sys
 import warnings
 from pathlib import Path
+from typing import Any, Literal
 
 import numpy as np
 
@@ -64,7 +65,7 @@ def main():
         "--cluster-mode",
         type=str,
         default="kmeans",
-        choices=["kmeans", "minibatchkmeans", "auto"],
+        choices=["kmeans", "minibatchkmeans", "auto", "dbscan"],
         help="Clustering algorithm to use for microstate assignment",
     )
     parser.add_argument(
@@ -89,6 +90,48 @@ def main():
             "JSON object with additional parameters forwarded to the KMeans-based "
             "clusterers (e.g. '{\"max_iter\": 200}')"
         ),
+    )
+    parser.add_argument(
+        "--dbscan-eps",
+        type=float,
+        default=None,
+        help="Manual epsilon radius for DBSCAN. Leave unset to auto-tune from data.",
+    )
+    parser.add_argument(
+        "--dbscan-min-samples",
+        type=int,
+        default=None,
+        help="Override the DBSCAN core sample threshold.",
+    )
+    parser.add_argument(
+        "--dbscan-metric",
+        type=str,
+        default=None,
+        help="Distance metric used by DBSCAN (e.g. 'euclidean', 'manhattan').",
+    )
+    parser.add_argument(
+        "--dbscan-algorithm",
+        type=str,
+        default=None,
+        help="Neighbour search algorithm for DBSCAN (auto, ball_tree, kd_tree, brute).",
+    )
+    parser.add_argument(
+        "--dbscan-leaf-size",
+        type=int,
+        default=None,
+        help="Leaf size used by Ball Tree/KD Tree search backends.",
+    )
+    parser.add_argument(
+        "--dbscan-p",
+        type=float,
+        default=None,
+        help="Power parameter for Minkowski distances when metric='minkowski'.",
+    )
+    parser.add_argument(
+        "--dbscan-n-jobs",
+        type=int,
+        default=None,
+        help="Parallel workers for DBSCAN (-1 to use all cores).",
     )
     parser.add_argument(
         "--shard-indices",
@@ -131,11 +174,28 @@ def main():
         "kmeans": "kmeans",
         "minibatchkmeans": "minibatchkmeans",
         "auto": "auto",
+        "dbscan": "dbscan",
     }
     if cluster_mode not in method_alias:
         print(f"Error: Unsupported cluster-mode '{args.cluster_mode}'")
         return 1
     cluster_method = method_alias[cluster_mode]
+
+    if cluster_method == "dbscan":
+        if args.dbscan_eps is not None:
+            kmeans_kwargs["eps"] = float(args.dbscan_eps)
+        if args.dbscan_min_samples is not None:
+            kmeans_kwargs["min_samples"] = int(args.dbscan_min_samples)
+        if args.dbscan_metric:
+            kmeans_kwargs["metric"] = args.dbscan_metric.strip()
+        if args.dbscan_algorithm:
+            kmeans_kwargs["algorithm"] = args.dbscan_algorithm.strip()
+        if args.dbscan_leaf_size is not None:
+            kmeans_kwargs["leaf_size"] = int(args.dbscan_leaf_size)
+        if args.dbscan_p is not None:
+            kmeans_kwargs["p"] = float(args.dbscan_p)
+        if args.dbscan_n_jobs is not None:
+            kmeans_kwargs["n_jobs"] = int(args.dbscan_n_jobs)
 
     # Find shard files
     shards_dir = args.shards_dir.expanduser().resolve()
@@ -277,17 +337,27 @@ def main():
         return 1
 
     # Clustering
-    print(
-        f"\n[6/8] Clustering into {args.n_clusters} microstates using {cluster_method} "
-        f"(seed={'None' if cluster_seed is None else cluster_seed}, n_init={args.kmeans_n_init})..."
-    )
+    if cluster_method == "dbscan":
+        print(
+            f"\n[6/8] Clustering with DBSCAN (seed={'None' if cluster_seed is None else cluster_seed})..."
+        )
+        n_states_requested: int | Literal["auto"] = "auto"
+        n_init_kwargs: dict[str, Any] = {}
+        kmeans_kwargs.pop("n_init", None)
+    else:
+        print(
+            f"\n[6/8] Clustering into {args.n_clusters} microstates using {cluster_method} "
+            f"(seed={'None' if cluster_seed is None else cluster_seed}, n_init={args.kmeans_n_init})..."
+        )
+        n_states_requested = int(args.n_clusters)
+        n_init_kwargs = {"n_init": int(args.kmeans_n_init)}
     try:
         clustering_result = cluster_microstates(
             features_reduced,
             method=cluster_method,
-            n_states=args.n_clusters,
+            n_states=n_states_requested,
             random_state=cluster_seed,
-            n_init=args.kmeans_n_init,
+            **n_init_kwargs,
             **kmeans_kwargs,
         )
         # Extract labels from ClusteringResult object

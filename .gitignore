@@ -15,6 +15,7 @@ final.xml
 /example_programs/app_usecase/app_output/sims/*
 /example_programs/app_usecase/app_output/state.json
 
+example_programs/programs_outputs/conformations/*
 
 pmarlo_webapp/app_output/*
 pmarlo_webapp/app_input/*

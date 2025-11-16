@@ -196,9 +196,7 @@ class TPTMixin:
         """
         flux = self.reactive_flux(source_states, sink_states)
 
-        logger.info(
-            f"Extracting pathways: fraction={fraction}, maxiter={maxiter}"
-        )
+        logger.info(f"Extracting pathways: fraction={fraction}, maxiter={maxiter}")
 
         pathways, pathway_fluxes = flux.pathways(fraction=fraction, maxiter=maxiter)
 
@@ -206,7 +204,9 @@ class TPTMixin:
         pathways = [list(map(int, path)) for path in pathways]
         pathway_fluxes = np.asarray(pathway_fluxes, dtype=float)
 
-        logger.info(f"Extracted {len(pathways)} pathways capturing {fraction*100}% of flux")
+        logger.info(
+            f"Extracted {len(pathways)} pathways capturing {fraction*100}% of flux"
+        )
 
         return pathways, pathway_fluxes
 
@@ -427,4 +427,3 @@ class TPTMixin:
 
 
 __all__ = ["TPTMixin"]
-

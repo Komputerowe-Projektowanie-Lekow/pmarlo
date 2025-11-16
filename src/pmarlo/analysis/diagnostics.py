@@ -38,6 +38,41 @@ class _SegmentDescriptor:
     stride: int
 
 
+def _covariance(
+    values: np.ndarray,
+    length: int,
+    *,
+    regularisation: float = const.NUMERIC_RELATIVE_TOLERANCE,
+) -> np.ndarray:
+    """Compute an unbiased covariance matrix for the first ``length`` samples.
+
+    Parameters
+    ----------
+    values:
+        Sample matrix with shape (n_samples, n_features).
+    length:
+        Number of rows to consider; truncated to ``values.shape[0]``.
+    regularisation:
+        Small value added to the diagonal to preserve positive semidefiniteness
+        for nearly-singular inputs.
+    """
+    arr = np.asarray(values, dtype=np.float64)
+    if arr.ndim != 2:
+        raise ValueError(f"Expected 2D sample matrix, got ndim={arr.ndim}")
+    n = min(int(length), arr.shape[0])
+    if n < 2:
+        raise ValueError(f"Need at least 2 samples for covariance, got {n}")
+    working = np.array(arr[:n], copy=True)
+    working -= np.mean(working, axis=0, keepdims=True)
+    denom = max(1, n - 1)
+    cov = working.T @ working
+    cov /= denom
+    if regularisation > 0.0:
+        cov.flat[:: cov.shape[0] + 1] += float(regularisation)
+    # Ensure symmetry for numerical stability
+    return 0.5 * (cov + cov.T)
+
+
 def _segment_descriptors_for_split(
     dataset: DatasetLike,
     split_name: str,
@@ -118,12 +153,7 @@ def _recommend_ck_lags(
     span = upper_bound - lower
     num_points = min(5, span + 1)
     raw = np.geomspace(lower, upper_bound, num=num_points)
-    candidates = sorted(
-        {
-            max(lower, min(upper_bound, int(round(val))))
-            for val in raw
-        }
-    )
+    candidates = sorted({max(lower, min(upper_bound, int(round(val)))) for val in raw})
     if candidates[0] > lower:
         candidates.insert(0, lower)
     if candidates[-1] < upper_bound:
@@ -288,7 +318,9 @@ def _autocorrelation_curve(
     tau_array = np.asarray(tau_grid, dtype=np.int32)
     numerator = np.zeros_like(tau_array, dtype=np.float64)
     denominator = np.zeros_like(tau_array, dtype=np.float64)
-    usable_lengths = [descriptor.length for descriptor in segments if descriptor.length > 1]
+    usable_lengths = [
+        descriptor.length for descriptor in segments if descriptor.length > 1
+    ]
     if usable_lengths:
         min_segment_length = min(usable_lengths)
     else:
@@ -627,6 +659,10 @@ def compute_diagnostics(
     if not lengths:
         raise ValueError("Could not determine split lengths for tau derivation")
     min_length = min(lengths)
+    if min_length < 2:
+        raise InsufficientSamplesError(
+            f"Need at least 2 samples per split for diagnostics (min={min_length})"
+        )
 
     if taus is None:
         taus_used = derive_taus(lengths)

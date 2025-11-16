@@ -7,7 +7,10 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence
 
 import numpy as np
-from sklearn.cluster import KMeans, MiniBatchKMeans
+from sklearn.cluster import DBSCAN, KMeans, MiniBatchKMeans
+from sklearn.neighbors import NearestNeighbors
+
+from pmarlo.utils.dbscan import normalize_dbscan_kwargs
 
 from .counting import expected_pairs
 from .errors import CountingLogicError, PruningFailedError
@@ -183,6 +186,8 @@ def _extract_feature_schema(split: Any, n_features: int) -> Dict[str, Any]:
         if not names and hasattr(split, "columns"):
             names = _coerce_feature_names(getattr(split, "columns"))
 
+    if not names:
+        names = [f"feature_{idx}" for idx in range(int(n_features))]
     return {"names": names, "n_features": int(n_features)}
 
 
@@ -467,6 +472,7 @@ class _KMeansDiscretizer:
         *,
         random_state: int | None = None,
         apply_whitening: bool = True,
+        cluster_kwargs: Mapping[str, Any] | None = None,
     ) -> None:
         self.n_states = int(n_states)
         self.random_state = random_state
@@ -476,6 +482,7 @@ class _KMeansDiscretizer:
         # Whitening parameters (StandardScaler)
         self.scaler_mean_: np.ndarray | None = None
         self.scaler_std_: np.ndarray | None = None
+        self.cluster_kwargs = dict(cluster_kwargs or {})
 
     def _standardize(self, X: np.ndarray) -> np.ndarray:
         """Apply standardization (z-score normalization) to features."""
@@ -512,16 +519,24 @@ class _KMeansDiscretizer:
             X_scaled = X
             logger.info("Feature whitening disabled")
 
+        estimator_kwargs = {
+            key: value
+            for key, value in self.cluster_kwargs.items()
+            if key not in {"n_clusters", "random_state"}
+        }
         if _minibatch_threshold(X.shape[0], X.shape[1]):
             self.model = MiniBatchKMeans(
                 n_clusters=self.n_states,
                 random_state=self.random_state,
+                **estimator_kwargs,
             )
         else:
+            kmeans_kwargs = dict(estimator_kwargs)
+            kmeans_kwargs.setdefault("n_init", 10)
             self.model = KMeans(
                 n_clusters=self.n_states,
                 random_state=self.random_state,
-                n_init=10,
+                **kmeans_kwargs,
             )
         self.model.fit(X_scaled)
 
@@ -562,6 +577,163 @@ class _KMeansDiscretizer:
     @property
     def scaler_params(self) -> Dict[str, Any]:
         """Return scaler parameters for fingerprinting."""
+        if not self.apply_whitening or self.scaler_mean_ is None:
+            return {}
+        return {
+            "mean": self.scaler_mean_.tolist(),
+            "std": self.scaler_std_.tolist() if self.scaler_std_ is not None else None,
+            "enabled": True,
+        }
+
+
+class _DBSCANDiscretizer:
+    def __init__(
+        self,
+        *,
+        random_state: int | None = None,
+        apply_whitening: bool = True,
+        cluster_kwargs: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.random_state = random_state
+        self.apply_whitening = bool(apply_whitening)
+        self.feature_schema: Dict[str, Any] | None = None
+        self.scaler_mean_: np.ndarray | None = None
+        self.scaler_std_: np.ndarray | None = None
+        self.cluster_kwargs = normalize_dbscan_kwargs(cluster_kwargs)
+        self._nn_index: NearestNeighbors | None = None
+        self._nn_radius: float = float(self.cluster_kwargs["eps"])
+        self._core_labels: np.ndarray | None = None
+        self._cluster_centers: np.ndarray | None = None
+        self._label_mapping: Dict[int, int] = {}
+
+    def _standardize(self, X: np.ndarray) -> np.ndarray:
+        if not self.apply_whitening:
+            return X
+        if self.scaler_mean_ is None or self.scaler_std_ is None:
+            raise RuntimeError("Scaler parameters not fitted")
+        std_safe = np.where(self.scaler_std_ > 1e-10, self.scaler_std_, 1.0)
+        return (X - self.scaler_mean_) / std_safe
+
+    def _remap_dense_labels(
+        self, raw_labels: np.ndarray, X_original: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        unique = [int(label) for label in np.unique(raw_labels) if int(label) >= 0]
+        if not unique:
+            raise ValueError(
+                "DBSCAN failed to identify any clusters; adjust 'eps' or 'min_samples'."
+            )
+        mapping = {original: idx for idx, original in enumerate(unique)}
+        dense = np.full(raw_labels.shape, -1, dtype=int)
+        for original, dense_idx in mapping.items():
+            dense[raw_labels == original] = dense_idx
+        centers = np.zeros((len(unique), X_original.shape[1]), dtype=float)
+        for original, dense_idx in mapping.items():
+            mask = raw_labels == original
+            centers[dense_idx] = np.asarray(X_original[mask], dtype=float).mean(axis=0)
+        self._label_mapping = mapping
+        return dense, centers
+
+    def _build_neighbor_index(self, components: np.ndarray) -> None:
+        metric = self.cluster_kwargs.get("metric", "euclidean")
+        if metric == "precomputed":
+            raise ValueError(
+                "DBSCAN metric='precomputed' is not supported when discretizing "
+                "multiple splits; please supply coordinate-based metrics."
+            )
+        nn_kwargs: Dict[str, Any] = {
+            "metric": metric,
+            "algorithm": self.cluster_kwargs.get("algorithm", "auto"),
+            "leaf_size": int(self.cluster_kwargs.get("leaf_size", 30)),
+        }
+        if self.cluster_kwargs.get("p") is not None:
+            nn_kwargs["p"] = float(self.cluster_kwargs["p"])
+        if self.cluster_kwargs.get("metric_params") is not None:
+            nn_kwargs["metric_params"] = self.cluster_kwargs["metric_params"]
+        if self.cluster_kwargs.get("n_jobs") is not None:
+            nn_kwargs["n_jobs"] = int(self.cluster_kwargs["n_jobs"])
+        self._nn_index = NearestNeighbors(**nn_kwargs)
+        self._nn_index.fit(components)
+        self._nn_radius = float(self.cluster_kwargs["eps"])
+
+    def fit(
+        self,
+        X: np.ndarray,
+        feature_schema: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.feature_schema = _normalise_feature_schema_for_fit(
+            feature_schema,
+            X.shape[1],
+        )
+        if self.apply_whitening:
+            self.scaler_mean_ = np.mean(X, axis=0)
+            self.scaler_std_ = np.std(X, axis=0, ddof=1)
+            X_scaled = self._standardize(X)
+            logger.info(
+                "Feature whitening enabled: mean=%s, std=%s",
+                self.scaler_mean_,
+                self.scaler_std_,
+            )
+        else:
+            X_scaled = X
+            logger.info("Feature whitening disabled")
+
+        if self.random_state is not None:
+            logger.info(
+                "DBSCAN is deterministic; ignoring requested random_state=%s",
+                self.random_state,
+            )
+
+        dbscan = DBSCAN(**self.cluster_kwargs)
+        labels_raw = np.asarray(dbscan.fit_predict(X_scaled), dtype=int)
+        dense_labels, centers = self._remap_dense_labels(labels_raw, X)
+        if dbscan.core_sample_indices_.size == 0 or dbscan.components_.size == 0:
+            raise ValueError(
+                "DBSCAN did not produce any core samples; increase density thresholds."
+            )
+        self._cluster_centers = centers
+        self._core_labels = dense_labels[dbscan.core_sample_indices_]
+        components = np.asarray(dbscan.components_, dtype=float)
+        self._build_neighbor_index(components)
+
+    def transform(
+        self,
+        X: np.ndarray,
+        feature_schema: Mapping[str, Any] | None = None,
+        *,
+        split_name: str | None = None,
+    ) -> np.ndarray:
+        if self._nn_index is None or self._core_labels is None:
+            raise RuntimeError("Discretizer has not been fitted")
+        if feature_schema is not None and self.feature_schema is not None:
+            _validate_feature_schema(
+                self.feature_schema,
+                feature_schema,
+                split_name=split_name or "split",
+            )
+        if self.apply_whitening:
+            X_scaled = self._standardize(X)
+        else:
+            X_scaled = X
+
+        distances, neighbors = self._nn_index.radius_neighbors(
+            X_scaled, radius=self._nn_radius
+        )
+        labels = np.full(X.shape[0], -1, dtype=np.int32)
+        for idx, (dist_row, neigh_row) in enumerate(zip(distances, neighbors)):
+            if len(neigh_row) == 0:
+                continue
+            nearest_pos = int(neigh_row[int(np.argmin(dist_row))])
+            labels[idx] = int(self._core_labels[nearest_pos])
+        return labels
+
+    @property
+    def centers(self) -> np.ndarray | None:
+        if self._cluster_centers is None:
+            return None
+        return np.asarray(self._cluster_centers, dtype=np.float64)
+
+    @property
+    def scaler_params(self) -> Dict[str, Any]:
         if not self.apply_whitening or self.scaler_mean_ is None:
             return {}
         return {
@@ -746,12 +918,13 @@ def _prepare_discretizer_and_schema(
     n_microstates: int,
     random_state: int | None,
     apply_whitening: bool = True,
+    cluster_kwargs: Mapping[str, Any] | None = None,
 ) -> tuple[
     str,
     np.ndarray,
     Dict[str, Any],
     Dict[str, Dict[str, Any]],
-    _KMeansDiscretizer | _GridDiscretizer,
+    _KMeansDiscretizer | _GridDiscretizer | _DBSCANDiscretizer,
 ]:
     train_key = "train" if "train" in splits else next(iter(splits))
     train_data = _coerce_array(splits[train_key])
@@ -761,17 +934,24 @@ def _prepare_discretizer_and_schema(
     stats_by_split: Dict[str, Dict[str, Any]] = {}
     stats_by_split[train_key] = validate_features(train_data, feature_names)
 
-    discretizer: _KMeansDiscretizer | _GridDiscretizer
+    discretizer: _KMeansDiscretizer | _GridDiscretizer | _DBSCANDiscretizer
     if cluster_mode == "kmeans":
         discretizer = _KMeansDiscretizer(
             n_microstates,
             random_state=random_state,
             apply_whitening=apply_whitening,
+            cluster_kwargs=cluster_kwargs,
+        )
+    elif cluster_mode == "dbscan":
+        discretizer = _DBSCANDiscretizer(
+            random_state=random_state,
+            apply_whitening=apply_whitening,
+            cluster_kwargs=cluster_kwargs,
         )
     elif cluster_mode == "grid":
         discretizer = _GridDiscretizer(target_states=n_microstates)
     else:
-        raise ValueError("cluster_mode must be 'kmeans' or 'grid'")
+        raise ValueError("cluster_mode must be 'kmeans', 'dbscan', or 'grid'")
 
     discretizer.fit(train_data, feature_schema)
     fitted_schema = discretizer.feature_schema or feature_schema
@@ -789,7 +969,7 @@ def _process_split_assignment(
     split_name: str,
     split: Any,
     feature_schema: Mapping[str, Any],
-    discretizer: _KMeansDiscretizer | _GridDiscretizer,
+    discretizer: _KMeansDiscretizer | _GridDiscretizer | _DBSCANDiscretizer,
     *,
     lag_time: int,
     stats_by_split: Dict[str, Dict[str, Any]],
@@ -977,6 +1157,7 @@ def discretize_dataset(
     min_out_count: int = 0,
     random_state: int | None = None,
     apply_whitening: bool = True,
+    cluster_kwargs: Mapping[str, Any] | None = None,
 ) -> MSMDiscretizationResult:
     """Discretise continuous CVs into microstates and build MSM statistics."""
 
@@ -996,6 +1177,7 @@ def discretize_dataset(
         n_microstates=n_microstates,
         random_state=random_state,
         apply_whitening=apply_whitening,
+        cluster_kwargs=cluster_kwargs,
     )
 
     segment_lengths_by_split: Dict[str, List[int]] = {}
@@ -1143,6 +1325,9 @@ def discretize_dataset(
         "mode": str(cluster_mode),
         "n_states": int(max(n_states, 0)),
         "seed": None if random_state is None else int(random_state),
+        "cluster_kwargs": dict(
+            getattr(discretizer, "cluster_kwargs", cluster_kwargs or {})
+        ),
         "feature_schema": {
             "names": list(feature_schema.get("names", [])),
             "n_features": int(feature_schema.get("n_features", 0)),

@@ -154,6 +154,7 @@ def cmd_run_analysis(args: argparse.Namespace) -> int:
         fes_min_count_per_bin=int(args.fes_min_count),
         fes_grid_strategy=str(args.fes_grid_strategy),
         fes_bins=fes_bins,
+        require_fully_connected_msm=not args.allow_disconnected_msm,
     )
 
     artifact = backend.build_analysis(shard_paths, config)
@@ -342,6 +343,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Override the FES histogram bins in the format 'x,y'.",
+    )
+    parser_run.add_argument(
+        "--allow-disconnected-msm",
+        action="store_true",
+        help="Permit analysis to proceed even if the MSM is not fully connected.",
     )
 
     return parser

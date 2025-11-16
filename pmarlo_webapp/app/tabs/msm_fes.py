@@ -1,8 +1,9 @@
+from pathlib import Path
+from typing import Any, Dict, List
+
+import numpy as np
 import streamlit as st
 import traceback
-import numpy as np
-from pathlib import Path
-from typing import Dict, Any, List
 
 from core.context import AppContext
 from core.session import (
@@ -23,6 +24,7 @@ from plots.diagnostics import (
     plot_autocorrelation_curves,
     format_warnings,
 )
+from ._cluster_controls import render_dbscan_controls, render_kmeans_controls
 
 def render_msm_fes_tab(ctx: AppContext) -> None:
     """Render the MSM/FES analysis tab."""
@@ -152,28 +154,41 @@ def render_msm_fes_tab(ctx: AppContext) -> None:
                 help="Time delay for building the Markov State Model"
             )
             col_cluster, col_micro = st.columns(2)
+            cluster_options = ["kmeans", "dbscan", "grid"]
+            stored_mode = str(
+                st.session_state.get("analysis_cluster_mode", "kmeans")
+            ).lower()
+            try:
+                cluster_index = cluster_options.index(stored_mode)
+            except ValueError:
+                cluster_index = 0
             cluster_mode = col_cluster.selectbox(
                 "Discretization mode",
-                options=["kmeans", "grid"],
-                index=(
-                    0
-                    if str(
-                        st.session_state.get("analysis_cluster_mode", "kmeans")
-                    ).lower()
-                       != "grid"
-                    else 1
-                ),
+                options=cluster_options,
+                index=cluster_index,
                 key="analysis_cluster_mode",
-                help="Method for partitioning CV space into microstates"
+                help="Choose between centroid-based KMeans, density-based DBSCAN, or uniform grid binning"
             )
-            n_microstates = col_micro.number_input(
-                "Number of microstates",
-                min_value=2,
-                value=int(st.session_state.get("analysis_n_microstates", 20)),
-                step=1,
-                key="analysis_n_microstates",
-                help="Number of discrete states for MSM construction"
-            )
+            n_microstates = int(st.session_state.get("analysis_n_microstates", 20))
+            if cluster_mode == "dbscan":
+                col_micro.caption(
+                    "DBSCAN automatically determines the number of microstates."
+                )
+            else:
+                n_microstates = col_micro.number_input(
+                    "Number of microstates",
+                    min_value=2,
+                    value=int(st.session_state.get("analysis_n_microstates", 20)),
+                    step=1,
+                    key="analysis_n_microstates",
+                    help="Number of discrete states for MSM construction"
+                )
+            if cluster_mode == "dbscan":
+                analysis_cluster_kwargs = render_dbscan_controls(prefix="analysis_")
+            elif cluster_mode == "kmeans":
+                analysis_cluster_kwargs = render_kmeans_controls(prefix="analysis_")
+            else:
+                analysis_cluster_kwargs = {}
             reweight_default = str(
                 st.session_state.get("analysis_reweight_mode", "TRAM")
             )
@@ -358,6 +373,7 @@ def render_msm_fes_tab(ctx: AppContext) -> None:
                     reweight_final = reweight_norm.upper()
                 else:
                     reweight_final = "none"
+                cluster_kwargs = dict(analysis_cluster_kwargs)
                 build_cfg = BuildConfig(
                     lag=int(lag),
                     bins={"Rg": int(bins_rg), "RMSD_ref": int(bins_rmsd)},
@@ -369,6 +385,7 @@ def render_msm_fes_tab(ctx: AppContext) -> None:
                     apply_cv_whitening=bool(apply_whitening),
                     cluster_mode=str(cluster_mode),
                     n_microstates=int(n_microstates),
+                    kmeans_kwargs=cluster_kwargs,
                     reweight_mode=reweight_final,
                     fes_method=str(fes_method),
                     fes_bandwidth=bandwidth_val,

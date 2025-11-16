@@ -20,7 +20,7 @@ A Python package for Conformation finding, protein simulation and Markov state m
 - **Markov State Models**: MSM analysis
 - **DeepTICA model training**: Creates model to metabias the simulations with specific force on the CVs.
 - **ITS analysis**: Helps to find the slow modes of the protein to get the most of the data from the smalles computation time.
-- **Conformations finding**: Enables to get the conformations from currently discovered potential FES. 
+- **Conformations finding**: Enables to get the conformations from currently discovered potential FES.
 - **Pipeline Orchestration**: Complete workflow coordination
 
 
@@ -35,16 +35,16 @@ Those were generated in this fashion:
 - 4 shards + model creation
 - 4 shards + 1 meta_shard guided by the metadynamcis of the model
 
-FES(PMARLO Webapp) 
+FES(PMARLO Webapp)
 ![Free Energy Surface animation](figs/fes.gif)
 
-TM(PMARLO Webapp) 
+TM(PMARLO Webapp)
 ![Transition Matrix animation](figs/transition.gif)
 
-Idea of sampling the protein(PMARLO Webapp) 
+Idea of sampling the protein(PMARLO Webapp)
 ![Idea of sampling the protein](https://i.imgur.com/4zQpIU6.png)
 
-FES with different shard(PMARLO Webapp) 
+FES with different shard(PMARLO Webapp)
 ![FES with different shard](https://i.imgur.com/zpSrVgP.png)
 
 Stationary distirbution of the protein(PMARLO Webapp)
@@ -129,7 +129,7 @@ My examples:
 1. Pmarlo_webapp
 ```commandline
 micromamba activate ommtorch
-streamlit run .\pmarlo_webapp\app\app.py 
+streamlit run .\pmarlo_webapp\app\app.py
 ```
 2. Bias benchmark(the model and protein should be provided by user)
 ```commandline

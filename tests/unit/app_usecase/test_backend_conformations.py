@@ -195,9 +195,7 @@ def test_conformations_rejects_non_reversible_transition_matrix(
     shard_path.parent.mkdir(parents=True, exist_ok=True)
     shard_path.write_text("{}", encoding="utf-8")
 
-    calls = _patch_common_conformation_dependencies(
-        monkeypatch, _workspace, _fake_dataset
-    )
+    _patch_common_conformation_dependencies(monkeypatch, _workspace, _fake_dataset)
 
     monkeypatch.setattr(
         "pmarlo_webapp.app.backend.build_simple_msm",
@@ -217,7 +215,9 @@ def test_conformations_rejects_non_reversible_transition_matrix(
 
     assert result.error is not None
     assert "reversible" in result.error.lower()
-    assert "plot" not in calls  # analysis should abort before plotting
+    assert result.plots == {}
+    for plot_stem in ("committors", "flux_network", "pathways"):
+        assert not (result.output_dir / f"{plot_stem}.png").exists()
 
 
 @pytest.mark.unit
@@ -300,9 +300,7 @@ def test_conformations_successful_run_uses_conformation_set_api(
     shard_path.parent.mkdir(parents=True, exist_ok=True)
     shard_path.write_text("{}", encoding="utf-8")
 
-    calls = _patch_common_conformation_dependencies(
-        monkeypatch, _workspace, _fake_dataset
-    )
+    _patch_common_conformation_dependencies(monkeypatch, _workspace, _fake_dataset)
 
     monkeypatch.setattr(
         "pmarlo_webapp.app.backend.build_simple_msm",
@@ -354,14 +352,22 @@ def test_conformations_successful_run_uses_conformation_set_api(
         ),
     ]
 
+    saved_structures: List[Path] = []
+
     def fake_find_conformations(**kwargs: Any) -> ConformationSet:
-        calls.append("find")
         memberships = _mock_macrostate_memberships(kwargs.get("msm_data"))
         locator = kwargs.get("trajectory_locator")
-        if locator is not None:
-            for conf in conformations:
-                locator.resolve(conf.frame_index)
-            calls.append("load:trajectory_stub")
+        if locator is None:
+            raise AssertionError("trajectory_locator is required to extract structures")
+        output_dir = Path(kwargs["output_dir"])
+        saved_structures.clear()
+        for conf in conformations:
+            resolved_path, local_frame = locator.resolve(conf.frame_index)
+            pdb_name = f"{Path(resolved_path).stem}_frame-{local_frame}.pdb"
+            pdb_path = output_dir / pdb_name
+            pdb_path.write_text("MODEL\nENDMDL\n", encoding="utf-8")
+            conf.structure_path = str(pdb_path)
+            saved_structures.append(pdb_path)
         return ConformationSet(
             conformations=conformations,
             tpt_result=tpt_result,
@@ -385,8 +391,12 @@ def test_conformations_successful_run_uses_conformation_set_api(
     assert result.metastable_states["0"]["n_states"] == 2
     assert result.transition_states[0]["committor"] == pytest.approx(0.5)
     assert {"committors", "flux_network", "pathways"}.issubset(result.plots.keys())
-    assert "find" in calls
-    assert any(key.startswith("load:") for key in calls)
+    assert result.representative_pdbs
+    assert {path.name for path in result.representative_pdbs} == {
+        path.name for path in saved_structures
+    }
+    for pdb_file in result.representative_pdbs:
+        assert pdb_file.exists()
 
 
 @pytest.mark.unit
@@ -597,7 +607,7 @@ def test_conformations_uses_precomputed_deeptica_features(
     shard_path.parent.mkdir(parents=True, exist_ok=True)
     shard_path.write_text("{}", encoding="utf-8")
 
-    calls = _patch_common_conformation_dependencies(
+    _patch_common_conformation_dependencies(
         monkeypatch, _workspace, _fake_dataset, patch_reduce=False
     )
 
@@ -677,7 +687,10 @@ def test_conformations_uses_precomputed_deeptica_features(
     result = backend.run_conformations_analysis([shard_path], config)
 
     assert result.error is None
-    assert "plot" in calls
+    expected_plots = {"committors", "flux_network", "pathways"}
+    assert expected_plots.issubset(result.plots.keys())
+    for plot_name in expected_plots:
+        assert result.plots[plot_name].exists()
     expected, _ = apply_whitening_from_metadata(
         np.asarray(projection, dtype=float), metadata
     )

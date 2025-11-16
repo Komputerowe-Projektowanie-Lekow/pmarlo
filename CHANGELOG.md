@@ -1374,6 +1374,3 @@ Also:
 ## Added
 
 - Added the **\[tool.scriv]** section to `pyproject.toml`, setting the format to `md`, the output file to `CHANGELOG.md`, and the fragments directory to `changelog.d`.
-
-
-

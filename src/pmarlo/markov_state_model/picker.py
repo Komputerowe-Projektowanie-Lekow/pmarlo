@@ -1,11 +1,10 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Tuple
 
-import logging
 import numpy as np
 from scipy import ndimage
-
 
 logger = logging.getLogger(__name__)
 

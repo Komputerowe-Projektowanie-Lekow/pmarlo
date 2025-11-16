@@ -90,7 +90,9 @@ def test_tpt_full_workflow():
         assert mfpt == pytest.approx(1.0 / rate, rel=1e-10)
 
         # 5. Pathway decomposition
-        pathways, pathway_fluxes = msm.pathway_decomposition(source, sink, fraction=0.95)
+        pathways, pathway_fluxes = msm.pathway_decomposition(
+            source, sink, fraction=0.95
+        )
         assert len(pathways) > 0
         assert len(pathway_fluxes) == len(pathways)
         assert all(p[0] in source for p in pathways)
@@ -189,7 +191,9 @@ def test_tpt_vs_deeptime_comprehensive():
         intermediate = [i for i in range(10) if i not in source + sink]
         sets = [source, intermediate, sink]
 
-        cg_sets_pmarlo, cg_flux_pmarlo = msm_pmarlo.coarse_grain_flux(source, sink, sets)
+        cg_sets_pmarlo, cg_flux_pmarlo = msm_pmarlo.coarse_grain_flux(
+            source, sink, sets
+        )
         cg_sets_deeptime, cg_flux_deeptime = flux_deeptime.coarse_grain(sets)
 
         np.testing.assert_allclose(
@@ -334,7 +338,10 @@ def test_net_flux_formula():
         expected_net_flux = np.maximum(0, gross_flux - gross_flux.T)
 
         np.testing.assert_allclose(
-            net_flux, expected_net_flux, rtol=1e-10, err_msg="Net flux formula incorrect"
+            net_flux,
+            expected_net_flux,
+            rtol=1e-10,
+            err_msg="Net flux formula incorrect",
         )
 
 
@@ -368,4 +375,3 @@ def test_committor_boundary_conditions():
         # All states should have 0 <= q+ <= 1
         assert np.all(q_forward >= -1e-10)
         assert np.all(q_forward <= 1.0 + 1e-10)
-

@@ -12,7 +12,7 @@ logger = logging.getLogger("pmarlo")
 
 def cluster_microstates(
     Y: np.ndarray,
-    method: Literal["auto", "minibatchkmeans", "kmeans"] = "auto",
+    method: Literal["auto", "minibatchkmeans", "kmeans", "dbscan"] = "auto",
     n_states: int | Literal["auto"] = "auto",
     random_state: int | None = 42,
     minibatch_threshold: int = 5_000_000,
@@ -27,7 +27,8 @@ def cluster_microstates(
     method:
         Clustering algorithm to use.  ``"auto"`` selects
         ``MiniBatchKMeans`` when the dataset size exceeds
-        ``minibatch_threshold``.
+        ``minibatch_threshold`` while ``"dbscan"`` enables the
+        density-based workflow exposed by :func:`pmarlo.markov_state_model.clustering.cluster_microstates`.
     n_states:
         Number of states or ``"auto"`` to select via silhouette.
     random_state:

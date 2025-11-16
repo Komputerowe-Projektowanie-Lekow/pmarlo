@@ -83,13 +83,22 @@ if "sklearn" not in sys.modules:
 
     class _DummyKMeans:  # pragma: no cover - minimal stub
         def __init__(self, *args: object, **kwargs: object) -> None:
-            pass
+            self.cluster_centers_: list[list[float]] | None = None
+            self.labels_: list[int] | None = None
 
         def fit(self, X: Sequence[object]) -> "_DummyKMeans":
+            length = len(X)
+            self.labels_ = [idx % 2 for idx in range(length)]
+            if length:
+                first = X[0]
+                dim = len(first) if hasattr(first, "__len__") else 1
+            else:
+                dim = 1
+            self.cluster_centers_ = [[0.0] * dim for _ in range(2)]
             return self
 
         def predict(self, X: Sequence[object]) -> list[int]:
-            return [0 for _ in X]
+            return [idx % 2 for idx in range(len(X))]
 
     cluster_mod.KMeans = _DummyKMeans
     cluster_mod.MiniBatchKMeans = _DummyKMeans

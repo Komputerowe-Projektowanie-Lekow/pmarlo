@@ -4,6 +4,8 @@ import sys
 import time
 from typing import IO, Any, Callable, Mapping, Optional, Tuple
 
+from tqdm.auto import tqdm
+
 from pmarlo import constants as const
 
 ProgressCB = Callable[[str, Mapping[str, Any]], None]
@@ -78,66 +80,52 @@ class ProgressReporter:
 
 
 class ProgressPrinter:
-    """Lightweight in-terminal progress bar with ETA.
+    """Wrapper around :mod:`tqdm` so loops get a rich, battle-tested progress bar."""
 
-    Designed to be dependency-free and safe for long-running loops. Prints using
-    carriage returns and flushes on each update. Provides a helper to terminate the
-    current progress line before emitting regular log lines.
-    """
+    _BAR_FORMAT = "[{bar}] {percentage:3.0f}%/100% ETA {remaining}{postfix}"
 
     def __init__(
         self, total: int, bar_width: int = 30, stream: IO[str] | None = None
     ) -> None:
         self.total = max(1, int(total))
         self.bar_width = max(10, int(bar_width))
-        self.start_t = time.monotonic()
-        self.last_percent_drawn = -1
         self.stream: IO[str] = stream or sys.stdout
+        self._bar = tqdm(
+            total=self.total,
+            file=self.stream,
+            ncols=self.bar_width + 30,
+            leave=False,
+            mininterval=0.1,
+            bar_format=self._BAR_FORMAT,
+            dynamic_ncols=False,
+        )
         self._active = False
-
-    def _format_eta(self, remaining_seconds: float) -> str:
-        remaining_seconds = max(0, int(remaining_seconds))
-        hours, rem = divmod(remaining_seconds, 3600)
-        minutes, seconds = divmod(rem, 60)
-        if hours > 0:
-            return f"{hours:d}:{minutes:02d}:{seconds:02d}"
-        return f"{minutes:d}:{seconds:02d}"
 
     def draw(self, current: int, suffix: Optional[str] = None) -> None:
         current = max(0, min(self.total, int(current)))
-        frac = current / self.total
-        percent = int(frac * 100)
-        if percent == self.last_percent_drawn:
-            return
-        self.last_percent_drawn = percent
-        filled = int(self.bar_width * frac)
-        bar = "#" * filled + "-" * (self.bar_width - filled)
-        elapsed = time.monotonic() - self.start_t
-        eta = (
-            (elapsed / max(const.NUMERIC_PROGRESS_MIN_FRACTION, current))
-            * (self.total - current)
-            if current > 0
-            else 0.0
-        )
-        eta_str = self._format_eta(eta)
-        suffix_str = f" {suffix}" if suffix else ""
-        print(
-            f"\r[{bar}] {percent}%/100% ETA {eta_str}{suffix_str}",
-            end="",
-            flush=True,
-            file=self.stream,
-        )
+        delta = current - int(self._bar.n)
+        if delta > 0:
+            self._bar.update(delta)
+        elif delta < 0:
+            # Reset when callers rewind unexpectedly (should be rare)
+            self._bar.reset(total=self.total)
+            self._bar.update(current)
+        postfix = suffix or ""
+        self._bar.set_postfix_str(postfix, refresh=False)
+        self._bar.refresh()
         self._active = True
 
     def newline_if_active(self) -> None:
         if self._active:
-            # End the current progress line so following logs appear on a new line
-            print("", file=self.stream)
+            self._bar.clear()
+            self.stream.flush()
             self._active = False
 
     def close(self) -> None:
-        self.draw(self.total)
-        print("", flush=True, file=self.stream)
+        remaining = self.total - int(self._bar.n)
+        if remaining > 0:
+            self._bar.update(remaining)
+        self._bar.close()
         self._active = False
 
 

@@ -1,5 +1,7 @@
 ﻿from unittest.mock import patch
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -144,9 +146,19 @@ class TestReplicaExchangeValidation:
             basic_remd.attempt_exchange(0, 5)
         assert "out of bounds" in str(exc_info.value)
 
-    def test_auto_setup_if_needed(self, basic_remd):
+    def test_auto_setup_if_needed(
+        self, test_fixed_pdb_file: Path, temp_output_dir: Path
+    ):
         """Test auto-setup functionality."""
-        assert not basic_remd.is_setup()
-        with patch.object(basic_remd, "setup_replicas") as mock_setup:
-            basic_remd.auto_setup_if_needed()
-            mock_setup.assert_called_once()
+        remd = ReplicaExchange(
+            pdb_file=str(test_fixed_pdb_file),
+            temperatures=[300, 310, 320],
+            output_dir=temp_output_dir,
+            auto_setup=False,
+        )
+        assert not remd.is_setup()
+        remd.plan_reporter_stride(total_steps=2_000, equilibration_steps=100)
+        remd.auto_setup_if_needed()
+        assert remd.is_setup()
+        assert len(remd.contexts) == remd.n_replicas
+        assert len(remd.replicas) == remd.n_replicas

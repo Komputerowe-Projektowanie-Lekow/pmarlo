@@ -10,6 +10,7 @@ from matplotlib.figure import Figure
 from pmarlo.visualization.diagnostics import (
     create_fes_validation_plot,
     create_sampling_validation_plot,
+    create_shard_frame_histogram,
 )
 
 
@@ -39,13 +40,13 @@ def test_create_sampling_validation_plot_basic():
     legend = ax.get_legend()
     assert legend is not None
     legend_labels = [text.get_text() for text in legend.get_texts()]
-    assert "run-b (metabiased)" in legend_labels
+    assert any("run-b" in label and "metabiased" in label for label in legend_labels)
     assert "Standard Run" in legend_labels
     assert "Metabiased Run" in legend_labels
-    assert (
-        legend.get_title().get_text()
-        == "Simulation Runs (solid=standard, dashed=metabiased)"
-    )
+    legend_title = legend.get_title().get_text()
+    assert "Runs:" in legend_title
+    assert "standard" in legend_title
+    assert "metabiased" in legend_title
     plt.close(fig)
 
 
@@ -153,3 +154,53 @@ def test_create_fes_validation_plot_rejects_bad_grid():
         ValueError, match="Coordinate arrays xx and yy must have identical shapes"
     ):
         create_fes_validation_plot(fes_grid=(xx, yy), fes_data=fes)
+
+
+def test_create_shard_frame_histogram_basic():
+    frame_counts = [842, 913, 760, 1012]
+    shard_labels = ["shard-a", "shard-b", "shard-c", "shard-d"]
+
+    fig = create_shard_frame_histogram(
+        frame_counts,
+        shard_labels=shard_labels,
+        max_label_count=10,
+        figsize=(6.0, 4.0),
+    )
+    assert isinstance(fig, Figure)
+    assert fig.axes, "Expected histogram axes"
+    ax = fig.axes[0]
+    assert ax.get_title() == "Frames per shard"
+    assert ax.get_ylabel() == "Frames"
+    assert [tick.get_text() for tick in ax.get_xticklabels()] == shard_labels
+    assert [patch.get_height() for patch in ax.patches] == frame_counts
+    plt.close(fig)
+
+
+def test_create_shard_frame_histogram_limits_labels():
+    frame_counts = list(range(1, 9))
+    labels = [f"shard-{idx}" for idx in range(len(frame_counts))]
+
+    fig = create_shard_frame_histogram(
+        frame_counts,
+        shard_labels=labels,
+        max_label_count=4,
+    )
+    ax = fig.axes[0]
+    xtick_labels = [tick.get_text() for tick in ax.get_xticklabels()]
+    assert xtick_labels[0] == "1"
+    assert xtick_labels[-1] == str(len(frame_counts))
+    plt.close(fig)
+
+
+def test_create_shard_frame_histogram_validates_inputs():
+    with pytest.raises(ValueError, match="frame_counts must contain at least one value"):
+        create_shard_frame_histogram([])
+
+    with pytest.raises(ValueError, match="frame_counts must contain only finite values"):
+        create_shard_frame_histogram([1.0, np.nan])
+
+    with pytest.raises(ValueError, match="frame_counts must be non-negative"):
+        create_shard_frame_histogram([-1])
+
+    with pytest.raises(ValueError, match="shard_labels length must match"):
+        create_shard_frame_histogram([1, 2], shard_labels=["only-one"])

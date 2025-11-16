@@ -7,7 +7,10 @@ from pathlib import Path
 
 import numpy as np
 
+from pmarlo import constants as const
 from pmarlo.data.shard import write_shard
+from pmarlo.shards.id import canonical_shard_id
+from pmarlo.shards.schema import FeatureSpec, ShardMeta
 from pmarlo_webapp.app.backend import (
     Backend,
     BuildArtifact,
@@ -19,8 +22,23 @@ _SEGMENT_COUNTER = count()
 
 
 def _canonical_shard_id(temperature_K: float, segment_id: int, replica_id: int) -> str:
-    temp = int(round(temperature_K))
-    return f"T{temp}K_seg{segment_id:04d}_rep{replica_id:03d}"
+    """Derive canonical shard id through the shared helper for parity with writes."""
+    provenance = _source_metadata(segment_id, replica_id)
+    feature_spec = FeatureSpec(name="test", scaler="identity", columns=("cv1",))
+    meta = ShardMeta(
+        schema_version=const.SHARD_SCHEMA_VERSION,
+        shard_id="placeholder",
+        temperature_K=float(temperature_K),
+        beta=float(1.0 / (const.BOLTZMANN_CONSTANT_KJ_PER_MOL * float(temperature_K))),
+        replica_id=int(replica_id),
+        segment_id=int(segment_id),
+        exchange_window_id=int(provenance.get("exchange_window_id", 0)),
+        n_frames=1,
+        dt_ps=1.0,
+        feature_spec=feature_spec,
+        provenance=provenance,
+    )
+    return canonical_shard_id(meta)
 
 
 def _source_metadata(segment_id: int, replica_id: int) -> dict[str, object]:
@@ -90,6 +108,7 @@ def _run_build(
         bins={"cv1": 64, "cv2": 64},
         seed=2025,
         temperature=300.0,
+        require_fully_connected_msm=False,
         learn_cv=False,
         apply_cv_whitening=True,
         cluster_mode="kmeans",
@@ -131,4 +150,5 @@ def test_fingerprint_changes_invalidate_cache(tmp_path):
 
     counts_a = np.load(dir_a / "transition_counts.npy")
     counts_b = np.load(dir_b / "transition_counts.npy")
-    assert counts_a.shape == counts_b.shape
+    assert counts_a.shape == (40, 40)
+    assert counts_b.shape == (60, 60)

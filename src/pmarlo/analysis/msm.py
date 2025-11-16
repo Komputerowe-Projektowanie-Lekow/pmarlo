@@ -57,6 +57,7 @@ def prepare_msm_discretization(
     min_out_count: int = 0,
     random_state: int | None = None,
     apply_whitening: bool = True,
+    cluster_kwargs: Mapping[str, Any] | None = None,
 ) -> MSMDiscretizationResult:
     """Whiten CVs when possible and build MSM discretisation statistics."""
 
@@ -76,6 +77,8 @@ def prepare_msm_discretization(
         frame_weights=frame_weights,
         min_out_count=min_out_count,
         random_state=random_state,
+        apply_whitening=apply_whitening,
+        cluster_kwargs=cluster_kwargs,
     )
 
     if isinstance(dataset, MutableMapping):

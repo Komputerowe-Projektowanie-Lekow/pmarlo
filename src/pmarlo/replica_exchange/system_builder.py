@@ -103,9 +103,9 @@ def _find_existing_cv_bundle_dir(checkpoint_path: Path) -> Path | None:
             except Exception:
                 metadata = {}
             history = metadata.get("history")
-            recorded_values = _collect_recorded_model_paths(metadata) + _collect_recorded_model_paths(
-                history
-            )
+            recorded_values = _collect_recorded_model_paths(
+                metadata
+            ) + _collect_recorded_model_paths(history)
             for raw in recorded_values:
                 normalised = _normalise_path_string(raw)
                 if normalised and base_norm and normalised == base_norm:
@@ -187,7 +187,9 @@ def _tensor_to_numpy(value):
     return np.asarray(value, dtype=np.float32)
 
 
-def _extract_scaler_from_script_module(module: torch.jit.ScriptModule) -> dict[str, Any]:
+def _extract_scaler_from_script_module(
+    module: torch.jit.ScriptModule,
+) -> dict[str, Any]:
     """Pull scaler statistics and feature names directly from a TorchScript bias module."""
     mean_tensor = _get_jit_attribute(module, "scaler_mean")
     scale_tensor = _get_jit_attribute(module, "scaler_scale")
@@ -201,9 +203,9 @@ def _extract_scaler_from_script_module(module: torch.jit.ScriptModule) -> dict[s
     return {
         "mean": _tensor_to_numpy(mean_tensor),
         "scale": _tensor_to_numpy(scale_tensor),
-        "feature_names": list(feature_names)
-        if hasattr(feature_names, "__iter__")
-        else [],
+        "feature_names": (
+            list(feature_names) if hasattr(feature_names, "__iter__") else []
+        ),
     }
 
 

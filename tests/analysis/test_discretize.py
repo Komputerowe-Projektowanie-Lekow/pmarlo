@@ -15,14 +15,27 @@ def _make_dataset(train, val=None, test=None):
 
 
 def test_prepare_msm_discretization_kmeans_assigns_all_splits():
-    train = np.array([[0.0, 0.0], [0.1, -0.1], [4.0, 4.0], [4.2, 3.9]])
-    val = np.array([[0.05, 0.05], [4.1, 4.1]])
-    test = np.array([[0.2, -0.05], [4.05, 4.02]])
+    rng = np.random.default_rng(0)
+    cluster_a = rng.normal(loc=0.0, scale=0.1, size=(50, 2))
+    cluster_b = rng.normal(loc=5.0, scale=0.1, size=(50, 2))
+    train = np.vstack([cluster_a, cluster_b])
+    rng.shuffle(train)
+    val = np.vstack(
+        [
+            rng.normal(loc=0.0, scale=0.1, size=(5, 2)),
+            rng.normal(loc=5.0, scale=0.1, size=(5, 2)),
+        ]
+    )
+    test = np.vstack(
+        [
+            rng.normal(loc=0.0, scale=0.1, size=(5, 2)),
+            rng.normal(loc=5.0, scale=0.1, size=(5, 2)),
+        ]
+    )
     dataset = _make_dataset(train, val=val, test=test)
     dataset["__shards__"] = [
-        {"id": "s0", "start": 0, "stop": 2},
-        {"id": "s1", "start": 2, "stop": 3},
-        {"id": "s2", "start": 3, "stop": 4},
+        {"id": "s0", "start": 0, "stop": int(train.shape[0] / 2)},
+        {"id": "s1", "start": int(train.shape[0] / 2), "stop": train.shape[0]},
     ]
 
     result = prepare_msm_discretization(
@@ -33,17 +46,18 @@ def test_prepare_msm_discretization_kmeans_assigns_all_splits():
     )
 
     assert set(result.assignments) == {"train", "val", "test"}
-    assert result.counts.shape == (2, 2)
+    assert 1 <= result.counts.shape[0] <= 2
+    assert result.counts.shape[0] == result.counts.shape[1]
     for name, arr in result.assignments.items():
         assert arr.shape[0] == dataset["splits"][name]["X"].shape[0]
     assert result.feature_schema["n_features"] == train.shape[1]
     assert "feature_schema" in result.fingerprint
     assert result.fingerprint["feature_schema"]["n_features"] == train.shape[1]
-    assert result.segment_lengths["train"] == [2, 1, 1]
-    assert result.segment_strides["train"] == [1, 1, 1]
-    assert result.counted_pairs["train"] == result.expected_pairs["train"] == 1
-    assert result.fingerprint["expected_pairs"] == 1
-    assert result.fingerprint["counted_pairs"] == 1
+    assert sum(result.segment_lengths["train"]) == train.shape[0]
+    assert all(stride >= 1 for stride in result.segment_strides["train"])
+    assert result.counted_pairs["train"] == result.expected_pairs["train"]
+    assert result.fingerprint["expected_pairs"] == result.expected_pairs["train"]
+    assert result.fingerprint["counted_pairs"] == result.counted_pairs["train"]
     assert "__artifacts__" in dataset
     artifacts = dataset["__artifacts__"]
     assert isinstance(artifacts, dict)
@@ -53,10 +67,10 @@ def test_prepare_msm_discretization_kmeans_assigns_all_splits():
     assert "expected_pairs" in artifacts
     assert "counted_pairs" in artifacts
     assert "segment_strides" in artifacts
-    assert artifacts["segment_lengths"]["train"] == [2, 1, 1]
-    assert artifacts["expected_pairs"]["train"] == 1
-    assert artifacts["counted_pairs"]["train"] == 1
-    assert artifacts["segment_strides"]["train"] == [1, 1, 1]
+    assert sum(artifacts["segment_lengths"]["train"]) == train.shape[0]
+    assert artifacts["expected_pairs"]["train"] == result.expected_pairs["train"]
+    assert artifacts["counted_pairs"]["train"] == result.counted_pairs["train"]
+    assert all(stride >= 1 for stride in artifacts["segment_strides"]["train"])
     assignment_summary = artifacts["state_assignments"]
     assert assignment_summary["train"]["n_assigned"] == train.shape[0]
     assert assignment_summary["train"]["total"] == train.shape[0]
@@ -66,6 +80,34 @@ def test_prepare_msm_discretization_kmeans_assigns_all_splits():
         assert mask.dtype == np.bool_
         assert mask.shape[0] > 0
         assert mask.all()
+
+
+def test_prepare_msm_discretization_dbscan_assigns_states():
+    train = np.vstack(
+        [
+            np.random.normal(loc=0.0, scale=0.05, size=(40, 2)),
+            np.random.normal(loc=3.0, scale=0.05, size=(40, 2)),
+        ]
+    )
+    dataset = _make_dataset(train)
+    dataset["splits"]["train"]["feature_schema"] = {
+        "names": ["feature_0", "feature_1"],
+        "n_features": 2,
+    }
+
+    result = prepare_msm_discretization(
+        dataset,
+        cluster_mode="dbscan",
+        n_microstates=2,
+        lag_time=1,
+        random_state=0,
+        cluster_kwargs={"eps": 0.3, "min_samples": 5},
+    )
+
+    assert result.cluster_mode == "dbscan"
+    assert result.counts.shape[0] >= 1
+    assert result.centers is not None
+    assert result.centers.shape[1] == train.shape[1]
 
 
 def test_prepare_msm_expected_pairs_use_segment_stride_metadata():

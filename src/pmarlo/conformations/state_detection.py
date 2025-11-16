@@ -113,10 +113,14 @@ class StateDetector:
                 try:
                     source, sink = self.detect_from_fes(fes, n_basins=target_states)
                     # Validate against MSM size
-                    source, sink = self._validate_state_indices(source, sink, n_msm_states)
+                    source, sink = self._validate_state_indices(
+                        source, sink, n_msm_states
+                    )
                     if source is not None and sink is not None:
                         return source, sink
-                    logger.debug("FES detection produced out-of-bounds states, trying next method")
+                    logger.debug(
+                        "FES detection produced out-of-bounds states, trying next method"
+                    )
                 except Exception as e:
                     logger.debug(f"FES detection failed: {e}")
 
