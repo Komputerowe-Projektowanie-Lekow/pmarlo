@@ -599,7 +599,7 @@ class CurriculumConfig:
     val_fraction: float = 0.2
     shuffle: bool = True
     num_workers: int = 0
-    device: str = "auto"
+    device: str = "cpu"
     grad_clip_norm: Optional[float] = 1.0
     log_every: int = 1
     checkpoint_dir: Optional[Path] = None

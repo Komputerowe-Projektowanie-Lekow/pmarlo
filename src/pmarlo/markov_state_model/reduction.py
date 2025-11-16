@@ -3,9 +3,6 @@ from __future__ import annotations
 from typing import List, Optional
 
 import numpy as np
-from sklearn.decomposition import PCA, IncrementalPCA
-from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import StandardScaler
 
 from pmarlo import constants as const
 
@@ -23,17 +20,20 @@ def _preprocess(X: np.ndarray, scale: bool = True) -> np.ndarray:
         Xp = Xp.reshape(-1, 1)
         squeeze_1d = True
 
-    imputer = SimpleImputer(strategy="mean")
-    try:
-        X_imputed = imputer.fit_transform(Xp)
-    except ValueError:
-        # ``SimpleImputer`` cannot compute the mean for all-NaN columns; mirror the
-        # historical behaviour by replacing those columns with zeros instead.
-        X_imputed = SimpleImputer(strategy="constant", fill_value=0.0).fit_transform(Xp)
+    means = np.nanmean(Xp, axis=0, keepdims=True)
+    means = np.where(np.isfinite(means), means, 0.0)
+    X_imputed = np.array(Xp, copy=True)
+    mask = np.isnan(X_imputed)
+    if mask.any():
+        X_imputed[mask] = np.broadcast_to(means, X_imputed.shape)[mask]
 
-    scaler = StandardScaler(with_mean=True, with_std=scale)
-    result = scaler.fit_transform(X_imputed)
-    result = np.nan_to_num(result, nan=0.0)
+    centered = X_imputed - means
+    if scale:
+        std = np.std(centered, axis=0, ddof=1)
+        std = np.where(std > const.NUMERIC_MIN_POSITIVE, std, 1.0)
+        result = centered / std
+    else:
+        result = centered
 
     if squeeze_1d:
         result = result.reshape(-1)
@@ -66,11 +66,16 @@ def pca_reduce(
     """
     X_prep = _preprocess(X, scale=scale)
 
-    if batch_size is not None:
-        pca = IncrementalPCA(n_components=n_components, batch_size=batch_size)
-    else:
-        pca = PCA(n_components=n_components)
-    transformed = pca.fit_transform(X_prep)
+    n_components = int(max(1, n_components))
+    n_components = min(n_components, min(X_prep.shape))
+    if n_components <= 0:
+        raise ValueError("n_components must be positive")
+    try:
+        _, _, Vt = np.linalg.svd(X_prep, full_matrices=False)
+    except np.linalg.LinAlgError as exc:  # pragma: no cover - defensive
+        raise ValueError(f"PCA failed: {exc}") from exc
+    components = Vt[:n_components].T
+    transformed = X_prep @ components
     return np.asarray(transformed, dtype=float)
 
 

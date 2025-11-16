@@ -8,6 +8,7 @@ balanced sampler utilities, so we expose everything lazily to keep
 
 from __future__ import annotations
 
+import os
 from importlib import import_module
 from typing import Any, Dict, Tuple
 
@@ -53,17 +54,43 @@ __all__.extend(sorted(_OPTIONAL_EXPORTS.keys()))
 
 _BUILTINS_IMPORT_ERROR: ModuleNotFoundError | None = None
 
-try:
-    import_module("pmarlo.features.builtins")
-except ModuleNotFoundError as exc:  # pragma: no cover - depends on optional deps
-    if getattr(exc, "name", None) != "mdtraj":
-        raise
-    _BUILTINS_IMPORT_ERROR = exc
+_BUILTINS_IMPORT_ERROR: ModuleNotFoundError | None = None
+_BUILTINS_READY = False
+_FORCE_MDTRAJ_MISSING = bool(
+    int(os.environ.get("PMARLO_FORCE_MDTRAJ_MISSING", "0"))  # type: ignore[arg-type]
+    if os.environ.get("PMARLO_FORCE_MDTRAJ_MISSING") is not None
+    else 0
+)
+
+
+def _ensure_builtins_loaded() -> None:
+    """Import builtin molecular features on-demand.
+
+    Importing at module import time eagerly pulled in mdtraj, breaking
+    environments where the optional dependency is intentionally absent.  By
+    deferring to first use we keep ``import pmarlo.features`` lightweight while
+    still surfacing a descriptive error once a built-in feature is requested.
+    """
+    global _BUILTINS_READY, _BUILTINS_IMPORT_ERROR
+    if _BUILTINS_READY or _BUILTINS_IMPORT_ERROR is not None:
+        return
+    if _FORCE_MDTRAJ_MISSING:
+        _BUILTINS_IMPORT_ERROR = ModuleNotFoundError("mdtraj (forced missing)")
+        return
+    try:
+        import_module("pmarlo.features.builtins")
+    except ModuleNotFoundError as exc:  # pragma: no cover - optional deps
+        if getattr(exc, "name", None) != "mdtraj":
+            raise
+        _BUILTINS_IMPORT_ERROR = exc
+    else:
+        _BUILTINS_READY = True
 
 
 def get_feature(name: str) -> FeatureComputer:
     """Retrieve a registered feature, ensuring optional dependencies are present."""
 
+    _ensure_builtins_loaded()
     try:
         return _base_get_feature(name)
     except KeyError as exc:

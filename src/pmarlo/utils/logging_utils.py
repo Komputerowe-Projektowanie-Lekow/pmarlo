@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import timedelta
-from time import perf_counter
 from types import TracebackType
 from typing import Literal, Optional, Sequence
+
+import humanize
+from contexttimer import Timer
 
 BORDER = "=" * 80
 
@@ -15,25 +16,34 @@ BORDER = "=" * 80
 def format_duration(seconds: float) -> str:
     """Render a duration in seconds into a human-readable ASCII string."""
 
-    duration = timedelta(seconds=max(seconds, 0.0))
-    total_seconds = duration.total_seconds()
-
+    total_seconds = max(seconds, 0.0)
     if total_seconds < 1.0:
-        return f"{total_seconds * 1000.0:.0f} ms"
+        return humanize.precisedelta(
+            total_seconds,
+            minimum_unit="milliseconds",
+            format="%.0f",
+            suppress=["microseconds"],
+        )
     if total_seconds < 60.0:
-        return f"{total_seconds:.2f} s"
-
-    days = duration.days
-    remaining_seconds = duration.seconds
-    hours, remaining_seconds = divmod(remaining_seconds, 3600)
-    minutes, seconds_whole = divmod(remaining_seconds, 60)
-    seconds_fraction = seconds_whole + duration.microseconds / 1_000_000
-
-    if days == 0 and hours == 0:
-        return f"{minutes} min {seconds_fraction:.1f} s"
-    if days == 0:
-        return f"{hours} h {minutes} min {seconds_fraction:.1f} s"
-    return f"{days} d {hours} h {minutes} min"
+        return humanize.precisedelta(
+            total_seconds,
+            minimum_unit="seconds",
+            format="%.2f",
+            suppress=["microseconds"],
+        )
+    if total_seconds < 86_400.0:
+        return humanize.precisedelta(
+            total_seconds,
+            minimum_unit="seconds",
+            format="%.1f",
+            suppress=["microseconds"],
+        )
+    return humanize.precisedelta(
+        total_seconds,
+        minimum_unit="minutes",
+        format="%.0f",
+        suppress=["microseconds"],
+    )
 
 
 def format_stage_header(
@@ -132,11 +142,12 @@ class StageTimer:
     start_message: Optional[str] = None
     details: Sequence[str] | None = None
 
-    _start: float = field(init=False, default=0.0)
+    _timer: Timer | None = field(init=False, default=None)
     elapsed: float = field(init=False, default=0.0)
 
     def __enter__(self) -> "StageTimer":
-        self._start = perf_counter()
+        self._timer = Timer()
+        self._timer.__enter__()
         if self.start_message:
             print(self.start_message, flush=True)
             self.logger.info(self.start_message)
@@ -148,7 +159,10 @@ class StageTimer:
         exc: BaseException | None,
         _tb: TracebackType | None,
     ) -> Literal[False]:
-        self.elapsed = perf_counter() - self._start
+        if self._timer is None:
+            raise RuntimeError("StageTimer entered without initializing timer.")
+        self._timer.__exit__(exc_type, exc, _tb)
+        self.elapsed = self._timer.elapsed
         status = "completed" if exc is None else "failed"
         message = f"{self.label} {status} in {format_duration(self.elapsed)}."
         if self.print_on_complete:

@@ -9,12 +9,27 @@ simplifies logging and makes debugging across passes repeatable.
 from __future__ import annotations
 
 import re
-import unicodedata
 from datetime import datetime
 from functools import lru_cache
 from typing import Optional, Tuple
 
-_UNSAFE_SLUG_CHARS = re.compile(r"[^a-z0-9_-]")
+try:  # pragma: no cover - optional dependency
+    from slugify import slugify as _slugify  # type: ignore[import]
+except ModuleNotFoundError:  # pragma: no cover - exercised in minimal envs
+
+    def _slugify(
+        text: str,
+        *,
+        separator: str = "_",
+        regex_pattern: str = r"[^-a-zA-Z0-9_]+",
+        lowercase: bool = True,
+        allow_unicode: bool = False,  # noqa: ARG001 - parity with python-slugify
+    ) -> str:
+        """Minimal slugifier replicating the subset needed by PMARLO."""
+
+        slug = re.sub(regex_pattern, separator, text)
+        slug = re.sub(rf"{re.escape(separator)}+", separator, slug)
+        return slug.lower() if lowercase else slug
 
 
 @lru_cache(maxsize=None)
@@ -107,17 +122,17 @@ def slugify(label: Optional[str]) -> Optional[str]:
 
     Notes
     -----
-    The function performs the following transformations:
-    - Unicode normalization (NFKD)
-    - ASCII encoding (non-ASCII characters are removed)
-    - Lowercase conversion
-    - Special characters replaced with underscores
-    - Leading/trailing underscores stripped
+    Delegates to :mod:`python-slugify` for the heavy lifting so we inherit its
+    Unicode normalization, ASCII folding, separator handling, and edge-case
+    hardening instead of maintaining our own regex sanitiser.
     """
     if not label:
         return None
-    normalised = unicodedata.normalize("NFKD", str(label)).strip()
-    ascii_label = normalised.encode("ascii", "ignore").decode("ascii")
-    slug = _UNSAFE_SLUG_CHARS.sub("_", ascii_label.lower())
-    slug = slug.strip("_")
+    slug = _slugify(
+        label,
+        separator="_",
+        regex_pattern=r"[^-a-zA-Z0-9_]+",
+        lowercase=True,
+        allow_unicode=False,
+    ).strip("_")
     return slug or None

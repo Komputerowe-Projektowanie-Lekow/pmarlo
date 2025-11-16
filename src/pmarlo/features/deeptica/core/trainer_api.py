@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import numbers
 import os
 import time
@@ -89,6 +90,59 @@ class _TrainingOutcome:
     history: dict[str, Any]
     summary_dir: Optional[Path]
     device: str
+
+
+def _coerce_positive_int(value: Any) -> int | None:
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return None
+    return result if result > 0 else None
+
+
+def _coerce_finite_float(value: Any) -> float | None:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
+
+
+def _ensure_best_metrics(
+    history: dict[str, Any],
+    *,
+    fallback_score: float,
+    tau: int,
+    fallback_epoch_hint: Any | None = None,
+) -> None:
+    """Populate best score/epoch/tau with concrete values."""
+
+    best_val_score = _coerce_finite_float(history.get("best_val_score"))
+    if best_val_score is None:
+        best_val_score = float(fallback_score)
+    history["best_val_score"] = best_val_score
+
+    best_tau = _coerce_positive_int(history.get("best_tau"))
+    if best_tau is None:
+        best_tau = _coerce_positive_int(tau)
+    if best_tau is None:
+        raise ValueError("DeepTICA history missing a valid tau value")
+    history["best_tau"] = best_tau
+
+    best_epoch = _coerce_positive_int(history.get("best_epoch"))
+    if best_epoch is None:
+        candidates = [
+            fallback_epoch_hint,
+            len(history.get("val_score_curve", [])),
+        ]
+        for candidate in candidates:
+            candidate_val = _coerce_positive_int(candidate)
+            if candidate_val is not None:
+                best_epoch = candidate_val
+                break
+    if best_epoch is None:
+        raise ValueError("DeepTICA history missing a valid epoch count")
+    history["best_epoch"] = best_epoch
 
 
 def _prepare_training_prep(
@@ -303,6 +357,13 @@ def _finalize_training_artifacts(
     history["output_transform"] = whitening_info.get("transform")
     history["output_transform_applied"] = whitening_info.get("transform_applied", False)
     history["whitening"] = whitening_info
+
+    _ensure_best_metrics(
+        history,
+        fallback_score=obj_after,
+        tau=int(prep.lag_used),
+        fallback_epoch_hint=history.get("epochs_completed"),
+    )
 
     summary_dir = outcome.summary_dir or _resolve_summary_directory(history)
     _write_training_summary(summary_dir, cfg, history, output_variance, top_eigs)

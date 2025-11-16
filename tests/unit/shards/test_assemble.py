@@ -8,19 +8,8 @@ import pytest
 
 from pmarlo.shards.assemble import load_shards
 from pmarlo.shards.format import write_shard_npz_json
+from pmarlo.shards.id import canonical_shard_id
 from pmarlo.shards.schema import FeatureSpec, Shard, ShardMeta
-
-
-def _canonical_shard_id(
-    kind: str, *, temperature: float, segment_id: int, replica_id: int
-) -> str:
-    t_kelvin = int(round(float(temperature)))
-    run_suffix = "default"
-    if kind == "replica":
-        return (
-            f"replica_T{t_kelvin}K_{run_suffix}_seg{segment_id:04d}_rep{replica_id:03d}"
-        )
-    return f"T{t_kelvin}K_{run_suffix}_seg{segment_id:04d}_rep{replica_id:03d}"
 
 
 def _write_shard(
@@ -32,12 +21,9 @@ def _write_shard(
         columns=("phi", "psi"),
     )
     temperature = 300.0
-    shard_id = _canonical_shard_id(
-        kind, temperature=temperature, segment_id=segment_id, replica_id=replica_id
-    )
     meta = ShardMeta(
         schema_version="pmarlo.shard.v1",
-        shard_id=shard_id,
+        shard_id="placeholder",
         temperature_K=temperature,
         beta=1.0,
         replica_id=replica_id,
@@ -60,8 +46,31 @@ def _write_shard(
         bias=None,
         w_frame=None,
     )
-    npz_path = tmp_path / f"{shard_id}.npz"
-    json_path = tmp_path / f"{shard_id}.json"
+    canonical_id = canonical_shard_id(shard.meta)
+    meta = ShardMeta(
+        schema_version=shard.meta.schema_version,
+        shard_id=canonical_id,
+        temperature_K=shard.meta.temperature_K,
+        beta=shard.meta.beta,
+        replica_id=shard.meta.replica_id,
+        segment_id=shard.meta.segment_id,
+        exchange_window_id=shard.meta.exchange_window_id,
+        n_frames=shard.meta.n_frames,
+        dt_ps=shard.meta.dt_ps,
+        feature_spec=shard.meta.feature_spec,
+        provenance=shard.meta.provenance,
+    )
+    shard = Shard(
+        meta=meta,
+        X=shard.X,
+        t_index=shard.t_index,
+        dt_ps=shard.dt_ps,
+        energy=shard.energy,
+        bias=shard.bias,
+        w_frame=shard.w_frame,
+    )
+    npz_path = tmp_path / f"{canonical_id}.npz"
+    json_path = tmp_path / f"{canonical_id}.json"
     write_shard_npz_json(shard, npz_path, json_path)
     return json_path
 

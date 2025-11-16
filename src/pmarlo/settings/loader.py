@@ -26,8 +26,20 @@ def _default_config_path() -> Path:
     return Path(__file__).resolve().parent / DEFAULT_CONFIG_FILENAME
 
 
+def _expand_user(value: str | Path) -> Path:
+    """Expand '~' respecting the HOME override even on Windows."""
+
+    raw = str(value)
+    if raw.startswith("~"):
+        home_override = os.environ.get("HOME")
+        if home_override:
+            suffix = raw[2:] if raw.startswith("~/") else raw[1:]
+            return Path(home_override) / suffix
+    return Path(value).expanduser()
+
+
 def _resolve_path(base: Path, value: str | Path) -> Path:
-    candidate = Path(value).expanduser()
+    candidate = _expand_user(value)
     if candidate.is_absolute():
         return candidate
     return (base / candidate).resolve()

@@ -193,10 +193,14 @@ def test_create_shard_frame_histogram_limits_labels():
 
 
 def test_create_shard_frame_histogram_validates_inputs():
-    with pytest.raises(ValueError, match="frame_counts must contain at least one value"):
+    with pytest.raises(
+        ValueError, match="frame_counts must contain at least one value"
+    ):
         create_shard_frame_histogram([])
 
-    with pytest.raises(ValueError, match="frame_counts must contain only finite values"):
+    with pytest.raises(
+        ValueError, match="frame_counts must contain only finite values"
+    ):
         create_shard_frame_histogram([1.0, np.nan])
 
     with pytest.raises(ValueError, match="frame_counts must be non-negative"):

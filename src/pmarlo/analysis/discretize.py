@@ -7,10 +7,21 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence
 
 import numpy as np
-from sklearn.cluster import DBSCAN, KMeans, MiniBatchKMeans
-from sklearn.neighbors import NearestNeighbors
+from sklearn.cluster import KMeans, MiniBatchKMeans
 
-from pmarlo.utils.dbscan import normalize_dbscan_kwargs
+try:  # pragma: no cover - optional dependency
+    from sklearn.cluster import DBSCAN  # type: ignore[import]
+except Exception:  # pragma: no cover - fallback
+    DBSCAN = None
+try:  # pragma: no cover - optional dependency
+    from sklearn.neighbors import NearestNeighbors  # type: ignore[import]
+except Exception:  # pragma: no cover - fallback
+    NearestNeighbors = None
+
+from pmarlo.utils.dbscan import (
+    fit_predict_dbscan,
+    normalize_dbscan_kwargs,
+)
 
 from .counting import expected_pairs
 from .errors import CountingLogicError, PruningFailedError
@@ -586,6 +597,40 @@ class _KMeansDiscretizer:
         }
 
 
+class _RadiusNeighborsFallback:
+    def __init__(self, *, metric: str = "euclidean", p: float = 2.0, **_: Any) -> None:
+        if metric not in ("euclidean", "l2"):
+            raise ValueError(f"Unsupported metric '{metric}' without scikit-learn")
+        self.metric = metric
+        self.p = float(p)
+        self._data: np.ndarray | None = None
+
+    def fit(self, data: np.ndarray) -> None:
+        self._data = np.asarray(data, dtype=float)
+
+    def radius_neighbors(
+        self, samples: np.ndarray, radius: float
+    ) -> tuple[list[np.ndarray], list[np.ndarray]]:
+        if self._data is None:
+            raise RuntimeError("Neighbor index has not been fitted")
+        samples = np.asarray(samples, dtype=float)
+        distances: list[np.ndarray] = []
+        neighbors: list[np.ndarray] = []
+        for point in samples:
+            diffs = self._data - point
+            dists = np.linalg.norm(diffs, axis=1)
+            mask = np.where(dists <= radius)[0]
+            distances.append(dists[mask])
+            neighbors.append(mask)
+        return distances, neighbors
+
+
+def _make_radius_neighbors(**kwargs: Any):
+    if NearestNeighbors is None:
+        return _RadiusNeighborsFallback(**kwargs)
+    return NearestNeighbors(**kwargs)
+
+
 class _DBSCANDiscretizer:
     def __init__(
         self,
@@ -651,7 +696,7 @@ class _DBSCANDiscretizer:
             nn_kwargs["metric_params"] = self.cluster_kwargs["metric_params"]
         if self.cluster_kwargs.get("n_jobs") is not None:
             nn_kwargs["n_jobs"] = int(self.cluster_kwargs["n_jobs"])
-        self._nn_index = NearestNeighbors(**nn_kwargs)
+        self._nn_index = _make_radius_neighbors(**nn_kwargs)
         self._nn_index.fit(components)
         self._nn_radius = float(self.cluster_kwargs["eps"])
 
@@ -683,16 +728,30 @@ class _DBSCANDiscretizer:
                 self.random_state,
             )
 
-        dbscan = DBSCAN(**self.cluster_kwargs)
-        labels_raw = np.asarray(dbscan.fit_predict(X_scaled), dtype=int)
-        dense_labels, centers = self._remap_dense_labels(labels_raw, X)
-        if dbscan.core_sample_indices_.size == 0 or dbscan.components_.size == 0:
-            raise ValueError(
-                "DBSCAN did not produce any core samples; increase density thresholds."
+        if DBSCAN is not None:
+            dbscan = DBSCAN(**self.cluster_kwargs)
+            labels_raw = np.asarray(dbscan.fit_predict(X_scaled), dtype=int)
+            dense_labels, centers = self._remap_dense_labels(labels_raw, X)
+            if dbscan.core_sample_indices_.size == 0 or dbscan.components_.size == 0:
+                raise ValueError(
+                    "DBSCAN did not produce any core samples; increase density thresholds."
+                )
+            core_indices = np.asarray(dbscan.core_sample_indices_, dtype=int)
+            components = np.asarray(dbscan.components_, dtype=float)
+        else:
+            labels_raw, core_indices, components = fit_predict_dbscan(
+                X_scaled,
+                eps=float(self.cluster_kwargs["eps"]),
+                min_samples=int(self.cluster_kwargs["min_samples"]),
+                metric=self.cluster_kwargs.get("metric"),
             )
+            dense_labels, centers = self._remap_dense_labels(labels_raw, X)
+            if core_indices.size == 0 or components.size == 0:
+                raise ValueError(
+                    "DBSCAN did not produce any core samples; increase density thresholds."
+                )
         self._cluster_centers = centers
-        self._core_labels = dense_labels[dbscan.core_sample_indices_]
-        components = np.asarray(dbscan.components_, dtype=float)
+        self._core_labels = dense_labels[core_indices]
         self._build_neighbor_index(components)
 
     def transform(

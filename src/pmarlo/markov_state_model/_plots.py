@@ -261,11 +261,19 @@ class PlotsMixin:
             save_file if str(save_file).lower().endswith(".png") else f"{save_file}.png"
         )
 
-        import matplotlib.pyplot as _plt
-        from deeptime.markov import TransitionCountEstimator  # type: ignore
-        from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
-        from deeptime.plots import plot_ck_test  # type: ignore
-        from deeptime.util.validation import ck_test  # type: ignore
+        try:
+            import matplotlib.pyplot as _plt
+            from deeptime.markov import TransitionCountEstimator  # type: ignore
+            from deeptime.markov.msm import MaximumLikelihoodMSM  # type: ignore
+            from deeptime.plots import plot_ck_test  # type: ignore
+            from deeptime.util.validation import ck_test  # type: ignore
+        except Exception:
+            return _plot_ck_test_fallback(
+                self,
+                out_path=out_path,
+                n_macrostates=n_macrostates,
+                factors=factors,
+            )
 
         base_lag = int(max(1, self.lag_time))
         facs = [2, 3, 4] if factors is None else [int(f) for f in factors if int(f) > 1]
@@ -312,3 +320,62 @@ class PlotsMixin:
         fig.savefig(str(out_path), dpi=200)
         _plt.close(fig)
         return out_path
+
+
+def _estimate_transition_matrix(
+    dtrajs: Sequence[np.ndarray], n_states: int, lag: int
+) -> np.ndarray:
+    counts = np.zeros((n_states, n_states), dtype=float)
+    for traj in dtrajs:
+        traj_arr = np.asarray(traj, dtype=int)
+        if traj_arr.ndim != 1:
+            continue
+        for idx in range(0, traj_arr.shape[0] - lag):
+            a = int(traj_arr[idx])
+            b = int(traj_arr[idx + lag])
+            if 0 <= a < n_states and 0 <= b < n_states:
+                counts[a, b] += 1.0
+    rows = counts.sum(axis=1, keepdims=True)
+    rows[rows == 0] = 1.0
+    return counts / rows
+
+
+def _plot_ck_test_fallback(
+    msm: _HasMSMAttrs,
+    *,
+    out_path: Path,
+    n_macrostates: int,
+    factors: Optional[List[int]],
+) -> Optional[Path]:
+    import matplotlib.pyplot as _plt
+
+    if not msm.dtrajs:
+        return None
+    base_lag = int(max(1, msm.lag_time))
+    facs = [2, 3, 4] if factors is None else [int(f) for f in factors if int(f) > 1]
+    lags = [base_lag] + [base_lag * f for f in facs]
+    n_states = int(max(1, msm.n_states or 0))
+    base_T = _estimate_transition_matrix(msm.dtrajs, n_states, lags[0])
+
+    x_vals: list[int] = []
+    mse_vals: list[float] = []
+    for lag in lags[1:]:
+        empirical = _estimate_transition_matrix(msm.dtrajs, n_states, lag)
+        factor = max(1, lag // base_lag)
+        theoretical = np.linalg.matrix_power(base_T, factor)
+        diff = empirical - theoretical
+        mse_vals.append(float(np.mean(diff * diff)))
+        x_vals.append(lag)
+
+    if not x_vals:
+        return None
+    fig, ax = _plt.subplots(figsize=(6, 4))
+    ax.plot(x_vals, mse_vals, marker="o")
+    ax.set_xlabel("Lag time")
+    ax.set_ylabel("MSE")
+    ax.set_title("CK test (microstates)")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(str(out_path), dpi=200)
+    _plt.close(fig)
+    return out_path

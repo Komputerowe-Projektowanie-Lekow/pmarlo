@@ -32,11 +32,17 @@ from dataclasses import dataclass
 from typing import Any, Dict, Literal, Mapping
 
 import numpy as np
-from sklearn.cluster import DBSCAN, KMeans, MiniBatchKMeans
+from sklearn.cluster import KMeans, MiniBatchKMeans
 from sklearn.metrics import silhouette_score
+
+try:  # pragma: no cover - optional dependency
+    from sklearn.cluster import DBSCAN  # type: ignore[import]
+except Exception:  # pragma: no cover - fallback path
+    DBSCAN = None
 
 from pmarlo.utils.dbscan import (
     estimate_dbscan_eps,
+    fit_predict_dbscan,
     normalize_dbscan_kwargs,
     summarise_dbscan_kwargs,
 )
@@ -251,17 +257,25 @@ _KMEANS_ALLOWED_KWARGS: frozenset[str] = frozenset(
     {"max_iter", "tol", "init", "n_init", "verbose", "copy_x", "algorithm"}
 )
 _MINIBATCH_ONLY_KWARGS: frozenset[str] = frozenset(
-    {"batch_size", "compute_labels", "max_no_improvement", "init_size", "reassignment_ratio"}
+    {
+        "batch_size",
+        "compute_labels",
+        "max_no_improvement",
+        "init_size",
+        "reassignment_ratio",
+    }
 )
-_MINIBATCH_ALLOWED_KWARGS: frozenset[str] = frozenset(
-    {"max_iter", "tol", "init", "n_init", "verbose"}
-) | _MINIBATCH_ONLY_KWARGS
+_MINIBATCH_ALLOWED_KWARGS: frozenset[str] = (
+    frozenset({"max_iter", "tol", "init", "n_init", "verbose"}) | _MINIBATCH_ONLY_KWARGS
+)
 _LEGACY_KWARGS: Dict[str, str] = {
     "tolerance": "tol",
     "init_strategy": "init",
     "initial_centers": "init",
 }
-_UNSUPPORTED_KWARGS: frozenset[str] = frozenset({"metric", "n_jobs", "progress", "fixed_seed"})
+_UNSUPPORTED_KWARGS: frozenset[str] = frozenset(
+    {"metric", "n_jobs", "progress", "fixed_seed"}
+)
 
 
 def _normalize_kmeans_kwargs(
@@ -325,7 +339,9 @@ def _create_clustering_estimator(
                 "n_init must be provided as an integer or 'auto' for scikit-learn estimators"
             ) from exc
         if estimator_kwargs["n_init"] <= 0:
-            raise ValueError("n_init must be a positive integer when clustering microstates")
+            raise ValueError(
+                "n_init must be a positive integer when clustering microstates"
+            )
 
     return estimator_cls(
         n_clusters=n_states,
@@ -394,8 +410,17 @@ def _cluster_with_dbscan(
             meta["percentile"],
             int(meta["neighbor_rank"]),
         )
-    dbscan = DBSCAN(**estimator_kwargs)
-    labels_raw = np.asarray(dbscan.fit_predict(Y), dtype=int)
+    if DBSCAN is not None:
+        dbscan = DBSCAN(**estimator_kwargs)
+        labels_raw = np.asarray(dbscan.fit_predict(Y), dtype=int)
+    else:
+        labels_raw, _, _ = fit_predict_dbscan(
+            Y,
+            eps=float(estimator_kwargs["eps"]),
+            min_samples=int(estimator_kwargs["min_samples"]),
+            metric=estimator_kwargs.get("metric"),
+        )
+        labels_raw = labels_raw.astype(int, copy=False)
     labels, centers, n_states = _remap_labels_with_noise(Y, labels_raw)
     noise_count = int(np.count_nonzero(labels < 0))
     rationale = summarise_dbscan_kwargs(estimator_kwargs)

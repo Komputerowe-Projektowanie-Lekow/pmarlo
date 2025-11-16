@@ -24,6 +24,7 @@ class TrainerConfig(CurriculumConfig):  # type: ignore[misc]
     """Wrapper accepting the historical ``tau_steps`` argument."""
 
     def __init__(self, tau_steps: Any = None, **kwargs: Any) -> None:
+        requested_tau_steps = tau_steps
         schedule_input = kwargs.pop("tau_schedule", None)
         schedule: tuple[int, ...] = ()
         if schedule_input is not None:
@@ -47,6 +48,9 @@ class TrainerConfig(CurriculumConfig):  # type: ignore[misc]
         if scheduler == "cosine" and not total_steps:
             raise ValueError("cosine scheduler requires total_steps")
 
+        if "device" not in kwargs:
+            kwargs["device"] = "cpu"
+
         super().__init__(**kwargs)
 
         if schedule:
@@ -60,6 +64,8 @@ class TrainerConfig(CurriculumConfig):  # type: ignore[misc]
             object.__setattr__(self, "grad_clip_mode", str(grad_clip_mode).lower())
         if log_every is not None:
             object.__setattr__(self, "log_every", max(1, int(log_every)))
+        if requested_tau_steps is not None:
+            object.__setattr__(self, "tau_steps", requested_tau_steps)
 
 
 def resolve_curriculum(cfg: TrainerConfig) -> List[int]:

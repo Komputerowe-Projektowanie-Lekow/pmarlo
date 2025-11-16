@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Dict, Mapping
+from typing import Any, Dict
 
 import numpy as np
 
@@ -48,34 +49,52 @@ def normalize_for_json_row(row: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def sanitize(obj: Any) -> Any:
-    """Recursively convert arbitrary objects into JSON-serializable structures.
+def _preprocess_value(value: Any) -> Any:
+    """Convert domain-specific objects to JSON-friendly primitives before validation."""
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        scalar = value.item()
+        if isinstance(scalar, float):
+            return scalar if math.isfinite(scalar) else None
+        return scalar
+    if isinstance(value, Mapping):
+        return value
+    if isinstance(value, (list, tuple, set)):
+        return list(value)
+    return str(value)
 
-    This function handles various Python and NumPy types and converts them to
-    JSON-compatible types:
-    - None, bool, int, float, str are passed through (with NaN/Inf -> None)
-    - Path objects are converted to strings
-    - NumPy arrays are converted to lists
-    - NumPy scalars are converted to Python scalars
-    - Mappings are converted to dicts with string keys
-    - Lists, tuples, sets are converted to lists
-    - All other types are converted to strings
-    """
-    if obj is None or isinstance(obj, (bool, int, float, str)):
-        if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
-            return None
-        return obj
-    if isinstance(obj, Path):
-        return str(obj)
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    if isinstance(obj, np.generic):
-        return obj.item()
-    if isinstance(obj, Mapping):
-        return {str(k): sanitize(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple, set)):
-        return [sanitize(v) for v in obj]
-    return str(obj)
+
+def _normalize_sequence(value: Any) -> Any:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, (tuple, set)):
+        return list(value)
+    return value
+
+
+def _normalize_mapping(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(k): v for k, v in value.items()}
+    return value
+
+
+def sanitize(obj: Any) -> Any:
+    """Normalize arbitrary objects into JSON-serializable structures recursively."""
+    value = _preprocess_value(obj)
+    if isinstance(value, list):
+        normalized = _normalize_sequence(value)
+        return [sanitize(item) for item in normalized]
+    if isinstance(value, Mapping):
+        normalized = _normalize_mapping(value)
+        return {str(k): sanitize(v) for k, v in normalized.items()}
+    return value
 
 
 def write_json(path: Path, payload: Mapping[str, Any]) -> Path:

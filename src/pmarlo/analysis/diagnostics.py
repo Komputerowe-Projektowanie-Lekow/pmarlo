@@ -5,8 +5,6 @@ from dataclasses import dataclass
 from typing import Any, Dict, Mapping, MutableMapping, Sequence
 
 import numpy as np
-from sklearn.cross_decomposition import CCA
-
 from pmarlo import constants as const
 
 from .discretize import (
@@ -246,27 +244,39 @@ def _canonical_correlations(
     n_components = min(X.shape[1], Y.shape[1], n)
     if n_components <= 0:
         return []
+
+    Xc = np.asarray(X[:n], dtype=np.float64)
+    Yc = np.asarray(Y[:n], dtype=np.float64)
+    Xc -= np.mean(Xc, axis=0, keepdims=True)
+    Yc -= np.mean(Yc, axis=0, keepdims=True)
+    denom = max(1, n - 1)
+    cov_x = (Xc.T @ Xc) / float(denom)
+    cov_y = (Yc.T @ Yc) / float(denom)
+    cov_xy = (Xc.T @ Yc) / float(denom)
+
+    reg = max(float(regularisation), const.NUMERIC_MIN_POSITIVE)
+
+    def _inv_sqrt(mat: np.ndarray) -> np.ndarray:
+        eigvals, eigvecs = np.linalg.eigh(mat)
+        eigvals = np.clip(eigvals, reg, None)
+        inv_sqrt_vals = 1.0 / np.sqrt(eigvals)
+        return eigvecs @ np.diag(inv_sqrt_vals) @ eigvecs.T
+
     try:
-        cca = CCA(n_components=n_components, scale=False, max_iter=5000)
-        X_c, Y_c = cca.fit_transform(X, Y)
-    except ValueError as exc:  # pragma: no cover - validation/fit failures are rare
-        raise CanonicalCorrelationError(f"CCA fitting failed: {exc}") from exc
-    correlations: list[float] = []
-    for idx in range(n_components):
-        x_comp = np.asarray(X_c[:, idx], dtype=np.float64)
-        y_comp = np.asarray(Y_c[:, idx], dtype=np.float64)
-        if x_comp.size == 0 or y_comp.size == 0:
-            continue
-        var_x = float(np.var(x_comp))
-        var_y = float(np.var(y_comp))
-        if var_x <= regularisation or var_y <= regularisation:
-            correlations.append(0.0)
-            continue
-        corr_matrix = np.corrcoef(x_comp, y_comp)
-        corr_value = float(corr_matrix[0, 1]) if corr_matrix.shape == (2, 2) else 0.0
-        if not np.isfinite(corr_value):
-            corr_value = 0.0
-        correlations.append(float(np.clip(abs(corr_value), 0.0, 1.0)))
+        inv_sqrt_x = _inv_sqrt(cov_x)
+        inv_sqrt_y = _inv_sqrt(cov_y)
+    except np.linalg.LinAlgError as exc:  # pragma: no cover - defensive
+        raise CanonicalCorrelationError(f"CCA whitening failed: {exc}") from exc
+
+    M = inv_sqrt_x @ cov_xy @ inv_sqrt_y
+    try:
+        singular_values = np.linalg.svd(M, compute_uv=False)
+    except np.linalg.LinAlgError as exc:  # pragma: no cover - defensive
+        raise CanonicalCorrelationError(f"CCA singular value computation failed: {exc}") from exc
+
+    correlations = [
+        float(np.clip(abs(val), 0.0, 1.0)) for val in singular_values[:n_components]
+    ]
     return correlations
 
 

@@ -1,9 +1,29 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Mapping, MutableMapping, Optional, Sequence
+from typing import Any, Dict, Mapping, Optional, Sequence
 
 __all__ = ["normalize_training_metrics"]
+
+
+def _coerce_finite_float(value: Any, *, field: str) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+        raise ValueError(f"{field} must be a numeric value") from exc
+    if not math.isfinite(result):
+        raise ValueError(f"{field} must be finite (received {value!r})")
+    return result
+
+
+def _coerce_positive_int(value: Any, *, field: str) -> int:
+    try:
+        result = int(value)
+    except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+        raise ValueError(f"{field} must be an integer") from exc
+    if result <= 0:
+        raise ValueError(f"{field} must be positive (received {value!r})")
+    return result
 
 
 def normalize_training_metrics(
@@ -12,89 +32,33 @@ def normalize_training_metrics(
     tau_schedule: Optional[Sequence[Any]] = None,
     epochs_per_tau: Optional[int | float] = None,
 ) -> Dict[str, Any]:
-    """Return training history metrics with best score/epoch/tau inferred.
+    """Validate training metrics now that training backends provide best scalars.
 
-    Parameters
-    ----------
-    metrics:
-        Original metrics mapping collected during training.
-    tau_schedule:
-        Sequence of lag times that were traversed during curriculum training.
-    epochs_per_tau:
-        Number of epochs spent at each tau stage. Required to infer ``best_tau``
-        when the training metadata does not contain it explicitly.
+    ``tau_schedule`` and ``epochs_per_tau`` remain in the signature for API
+    compatibility but no longer influence the returned values.
     """
 
+    del tau_schedule, epochs_per_tau  # Preserve signature while silencing lint
+
     if not isinstance(metrics, Mapping):
-        return {}
+        raise TypeError("normalize_training_metrics expects a mapping of metrics")
 
-    normalized: MutableMapping[str, Any] = dict(metrics)
+    normalized: Dict[str, Any] = dict(metrics)
+    required = ("best_val_score", "best_epoch", "best_tau")
+    missing = [key for key in required if normalized.get(key) is None]
+    if missing:
+        raise ValueError(
+            f"training metrics missing required fields: {', '.join(sorted(missing))}"
+        )
 
-    raw_curve = normalized.get("val_score_curve")
-    finite_scores: List[tuple[int, float]] = []
-    if isinstance(raw_curve, Sequence):
-        for idx, value in enumerate(raw_curve):
-            try:
-                score = float(value)
-            except (TypeError, ValueError):
-                continue
-            if math.isfinite(score):
-                finite_scores.append((idx, score))
+    normalized["best_val_score"] = _coerce_finite_float(
+        normalized["best_val_score"], field="best_val_score"
+    )
+    normalized["best_epoch"] = _coerce_positive_int(
+        normalized["best_epoch"], field="best_epoch"
+    )
+    normalized["best_tau"] = _coerce_positive_int(
+        normalized["best_tau"], field="best_tau"
+    )
 
-    best_val_score = normalized.get("best_val_score")
-    if best_val_score is None and finite_scores:
-        best_idx, best_score = max(finite_scores, key=lambda item: item[1])
-        normalized["best_val_score"] = float(best_score)
-        normalized.setdefault("_best_epoch_index", best_idx)
-    elif finite_scores and isinstance(normalized.get("best_epoch"), (int, float)):
-        idx = int(normalized["best_epoch"]) - 1
-        if 0 <= idx < len(finite_scores):
-            normalized.setdefault("_best_epoch_index", idx)
-
-    best_epoch = normalized.get("best_epoch")
-    if best_epoch is None and finite_scores:
-        best_idx = normalized.get("_best_epoch_index")
-        if not isinstance(best_idx, int):
-            best_idx = max(finite_scores, key=lambda item: item[1])[0]
-        normalized["best_epoch"] = int(best_idx + 1)
-        if normalized.get("best_val_score") is None:
-            normalized["best_val_score"] = float(finite_scores[best_idx][1])
-    elif isinstance(best_epoch, (int, float)):
-        normalized["best_epoch"] = int(best_epoch)
-
-    if normalized.get("best_val_score") is not None:
-        try:
-            normalized["best_val_score"] = float(normalized["best_val_score"])
-        except (TypeError, ValueError):
-            normalized["best_val_score"] = None
-
-    best_tau = normalized.get("best_tau")
-    if best_tau is None:
-        schedule: List[int] = []
-        if isinstance(tau_schedule, Sequence):
-            for item in tau_schedule:
-                try:
-                    schedule.append(int(item))
-                except (TypeError, ValueError):
-                    continue
-        epochs = None
-        if isinstance(epochs_per_tau, (int, float)):
-            epochs = int(epochs_per_tau)
-        if schedule and epochs and epochs > 0:
-            idx = normalized.get("_best_epoch_index")
-            if not isinstance(idx, int):
-                if finite_scores:
-                    idx = max(finite_scores, key=lambda item: item[1])[0]
-                else:
-                    idx = None
-            if isinstance(idx, int):
-                stage = max(0, min(idx // epochs, len(schedule) - 1))
-                normalized["best_tau"] = schedule[stage]
-    else:
-        try:
-            normalized["best_tau"] = int(best_tau)
-        except (TypeError, ValueError):
-            normalized["best_tau"] = None
-
-    normalized.pop("_best_epoch_index", None)
-    return dict(normalized)
+    return normalized

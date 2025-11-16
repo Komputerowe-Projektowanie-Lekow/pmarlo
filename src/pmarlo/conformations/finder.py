@@ -487,8 +487,34 @@ def _find_metastable_states(
 
 
 def _calculate_state_flux(flux_matrix: np.ndarray) -> np.ndarray:
-    """Compute the total reactive flux through each state."""
-    return np.sum(flux_matrix, axis=1) + np.sum(flux_matrix, axis=0)
+    """Compute the mean reactive flux through each state.
+
+    For each state we average the per-edge incoming and outgoing magnitudes.
+    Using means (rather than plain sums) prevents hubs with many weak
+    connections from appearing artificially dominant and matches the bottleneck
+    heuristic used in the tests and UI.
+    """
+    flux_matrix = np.asarray(flux_matrix, dtype=np.float64)
+    outgoing_sum = np.sum(flux_matrix, axis=1)
+    outgoing_edges = np.count_nonzero(flux_matrix, axis=1)
+
+    incoming_sum = np.sum(flux_matrix, axis=0)
+    incoming_edges = np.count_nonzero(flux_matrix, axis=0)
+
+    outgoing_mean = np.divide(
+        outgoing_sum,
+        np.maximum(outgoing_edges, 1),
+        out=np.zeros_like(outgoing_sum),
+        where=outgoing_edges > 0,
+    )
+    incoming_mean = np.divide(
+        incoming_sum,
+        np.maximum(incoming_edges, 1),
+        out=np.zeros_like(incoming_sum),
+        where=incoming_edges > 0,
+    )
+
+    return 0.5 * (outgoing_mean + incoming_mean)
 
 
 def _assign_frame_indices(

@@ -309,10 +309,9 @@ class TPTAnalysis:
         Returns:
             Array of state indices sorted by flux (descending)
         """
-        # Sum flux passing through each state
-        flux_through_state = 0.5 * (
-            np.sum(flux_matrix, axis=1) + np.sum(flux_matrix, axis=0)
-        )
+        from .finder import _calculate_state_flux  # avoid circular import
+
+        flux_through_state = _calculate_state_flux(flux_matrix)
 
         # Sort by flux
         sorted_indices = np.argsort(flux_through_state)[::-1]

@@ -1,6 +1,5 @@
-﻿from unittest.mock import patch
-
-from pathlib import Path
+﻿from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pytest

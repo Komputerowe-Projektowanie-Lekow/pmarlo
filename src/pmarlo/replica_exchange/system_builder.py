@@ -438,6 +438,16 @@ def _initialise_torch_force_legacy(
     return cv_force
 
 
+def _initialise_torch_force(
+    model_path: Path,
+    uses_pbc: bool,
+    precision: str,
+):
+    """Alias retained for compatibility with historical monkeypatch targets."""
+
+    return _initialise_torch_force_legacy(model_path, uses_pbc, precision)
+
+
 def _initialise_optimized_cv_forces(
     model_path: Path,
     feature_spec: Dict[str, Any],
@@ -588,9 +598,10 @@ def create_system(
             feature_indices = []
 
     # Always add the legacy TorchForce for bias computation (required until openmmtorch supports feature input)
-    cv_force = _initialise_torch_force_legacy(
-        torchscript_path, uses_pbc, config.precision
+    selected_model_path = (
+        torchscript_path if torchscript_path is not None else model_path
     )
+    cv_force = _initialise_torch_force(selected_model_path, uses_pbc, config.precision)
     system.addForce(cv_force)
 
     # Store feature force information for monitoring (if available)

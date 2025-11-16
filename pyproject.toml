@@ -48,10 +48,14 @@ dependencies = [
   "scikit-learn>=1.2,<2.0",
   "deeptime>=0.4.5,<0.5",
   "matplotlib>=3.8,<4.0",
+  "humanize>=4.14,<5.0",
+  "contexttimer>=0.3.3,<0.4",
   "tomli>=2.0,<3.0",
   "typing-extensions>=4.8",
   "pyyaml>=6.0,<7.0",
   "tqdm>=4.66,<5.0",
+  "python-slugify>=8.0,<9.0",
+  "pydantic>=2.7,<3.0",
 ]
 
 # ─────────────────────── Optional runtime extras ──────────────────────
@@ -118,10 +122,14 @@ mlcolvar = ">=1.2"
 scikit-learn = ">=1.2,<2.0"
 deeptime = ">=0.4.5,<0.5"
 matplotlib = ">=3.8,<4.0"
+humanize = ">=4.14,<5.0"
+contexttimer = ">=0.3.3,<0.4"
 tomli = ">=2.0,<3.0"
 typing-extensions = ">=4.8"
 pyyaml = ">=6.0,<7.0"
 tqdm = ">=4.66,<5.0"
+python-slugify = ">=8.0,<9.0"
+pydantic = ">=2.7,<3.0"
 # Optional dependencies (enabled via extras)
 plotly = {version = ">=5.15", optional = true}
 streamlit = {version = ">=1.31", optional = true}

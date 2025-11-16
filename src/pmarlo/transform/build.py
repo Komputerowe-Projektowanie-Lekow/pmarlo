@@ -1415,11 +1415,6 @@ def _resolve_diagnostics_dir(
 
     example_programs_root = project_root / "example_programs"
     if example_programs_root.exists():
-        _add_candidate(
-            example_programs_root,
-            ensure_subdir=True,
-            label="examples_root",
-        )
         programs_output_root = example_programs_root / "programs_outputs"
         if programs_output_root.exists():
             _add_candidate(
@@ -1427,6 +1422,11 @@ def _resolve_diagnostics_dir(
                 ensure_subdir=True,
                 label="examples_output",
             )
+        _add_candidate(
+            example_programs_root,
+            ensure_subdir=True,
+            label="examples_root",
+        )
 
     tests_root = project_root / "tests"
     if tests_root.exists():

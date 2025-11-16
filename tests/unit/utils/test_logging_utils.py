@@ -8,13 +8,13 @@ from pmarlo.utils.logging_utils import format_duration
 @pytest.mark.parametrize(
     ("seconds", "expected"),
     [
-        (-5.0, "0 ms"),
-        (0.5, "500 ms"),
-        (1.234, "1.23 s"),
-        (59.9, "59.90 s"),
-        (61.789, "1 min 1.8 s"),
-        (3661.2, "1 h 1 min 1.2 s"),
-        (90061.0, "1 d 1 h 1 min"),
+        (-5.0, "0 milliseconds"),
+        (0.5, "500 milliseconds"),
+        (1.234, "1.23 seconds"),
+        (59.9, "59.90 seconds"),
+        (61.789, "1 minute and 1.8 seconds"),
+        (3661.2, "1 hour, 1 minute and 1.2 seconds"),
+        (90061.0, "1 day, 1 hour and 1 minute"),
     ],
 )
 def test_format_duration(seconds: float, expected: str) -> None:

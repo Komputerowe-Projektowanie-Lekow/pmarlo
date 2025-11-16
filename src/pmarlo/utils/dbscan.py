@@ -6,7 +6,16 @@ from typing import Any, Mapping
 
 import numpy as np
 from numpy.random import Generator, default_rng
-from sklearn.neighbors import NearestNeighbors
+
+try:  # pragma: no cover - optional acceleration
+    from sklearn.neighbors import NearestNeighbors as _SKNearestNeighbors
+except Exception:  # pragma: no cover - optional dependency
+    _SKNearestNeighbors = None
+
+try:  # pragma: no cover - optional acceleration
+    from scipy.spatial import cKDTree as _KDTree
+except Exception:  # pragma: no cover - optional dependency
+    _KDTree = None
 
 DBSCAN_SUPPORTED_KWARGS = frozenset(
     {
@@ -120,6 +129,26 @@ def _subsample_for_eps(
     return data[indices]
 
 
+def _compute_kth_distances(sample: np.ndarray, neighbor_rank: int) -> np.ndarray:
+    if _SKNearestNeighbors is not None:
+        nbrs = _SKNearestNeighbors(n_neighbors=neighbor_rank)
+        nbrs.fit(sample)
+        distances, _ = nbrs.kneighbors(sample)
+        return distances[:, -1]
+
+    if _KDTree is not None:
+        tree = _KDTree(sample)
+        distances, _ = tree.query(sample, k=neighbor_rank)
+        if distances.ndim == 1:
+            return distances
+        return distances[:, -1]
+
+    diffs = sample[:, None, :] - sample[None, :, :]
+    dists = np.linalg.norm(diffs, axis=2)
+    sorted_dists = np.sort(dists, axis=1)
+    return sorted_dists[:, min(neighbor_rank - 1, sorted_dists.shape[1] - 1)]
+
+
 def estimate_dbscan_eps(
     data: np.ndarray,
     *,
@@ -172,10 +201,7 @@ def estimate_dbscan_eps(
     if neighbour_rank == sample.shape[0]:
         neighbour_rank = max(2, sample.shape[0] - 1)
 
-    nbrs = NearestNeighbors(n_neighbors=neighbour_rank)
-    nbrs.fit(sample)
-    distances, _ = nbrs.kneighbors(sample)
-    kth_distances = distances[:, -1]
+    kth_distances = _compute_kth_distances(sample, neighbour_rank)
 
     percentile = float(np.clip(quantile * 100.0, 1.0, 99.0))
     eps = float(np.percentile(kth_distances, percentile))
@@ -194,9 +220,66 @@ def estimate_dbscan_eps(
     return eps, metadata
 
 
+def fit_predict_dbscan(
+    data: np.ndarray,
+    *,
+    eps: float,
+    min_samples: int,
+    metric: str | None = "euclidean",
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Lightweight DBSCAN implementation used when scikit-learn is unavailable."""
+
+    if metric not in (None, "euclidean"):
+        raise ValueError(f"Unsupported metric {metric!r}; only Euclidean is implemented")
+
+    X = np.asarray(data, dtype=float)
+    n = X.shape[0]
+    if n == 0:
+        return np.empty((0,), dtype=int)
+    if X.ndim != 2:
+        raise ValueError("DBSCAN input must be a 2-D array")
+
+    labels = np.full(n, -1, dtype=int)
+    visited = np.zeros(n, dtype=bool)
+    cluster_id = 0
+    core_mask = np.zeros(n, dtype=bool)
+
+    def region_query(idx: int) -> np.ndarray:
+        diffs = X - X[idx]
+        distances = np.linalg.norm(diffs, axis=1)
+        return np.where(distances <= eps)[0]
+
+    for point_idx in range(n):
+        if visited[point_idx]:
+            continue
+        visited[point_idx] = True
+        neighbours = region_query(point_idx)
+        if neighbours.size < min_samples:
+            continue
+        core_mask[point_idx] = True
+        labels[point_idx] = cluster_id
+        seeds = set(int(v) for v in neighbours if int(v) != point_idx)
+        while seeds:
+            current = seeds.pop()
+            if not visited[current]:
+                visited[current] = True
+                current_neighbours = region_query(current)
+                if current_neighbours.size >= min_samples:
+                    core_mask[current] = True
+                    seeds.update(int(v) for v in current_neighbours)
+            if labels[current] == -1:
+                labels[current] = cluster_id
+        cluster_id += 1
+
+    core_indices = np.where(core_mask)[0]
+    components = X[core_indices] if core_indices.size else np.empty((0, X.shape[1]))
+    return labels, core_indices, components
+
+
 __all__ = [
     "DBSCAN_SUPPORTED_KWARGS",
     "normalize_dbscan_kwargs",
     "summarise_dbscan_kwargs",
     "estimate_dbscan_eps",
+    "fit_predict_dbscan",
 ]
