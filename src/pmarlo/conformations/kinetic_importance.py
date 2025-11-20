@@ -1,6 +1,5 @@
-"""Kinetic Importance Score (KIS) calculation and validation."""
+"""Kinetic Importance Score (KIS) calculation and validation.
 
-"""
 The file is after the analysis. All should be working with the new test suite.
 """
 
@@ -13,7 +12,7 @@ import numpy as np
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components
 
-from ..markov_state_model._msm_utils import ensure_connected_counts
+from pmarlo.utils.msm_utils import ensure_connected_counts
 from .results import KISResult
 
 logger = logging.getLogger("pmarlo.conformations")

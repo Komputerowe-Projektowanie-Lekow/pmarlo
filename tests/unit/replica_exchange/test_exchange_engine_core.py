@@ -34,7 +34,7 @@ def test_calculate_probability_matches_metropolis_expression():
 
     beta_i = 1.0 / (openmm.unit.MOLAR_GAS_CONSTANT_R * 300.0 * openmm.unit.kelvin)
     beta_j = 1.0 / (openmm.unit.MOLAR_GAS_CONSTANT_R * 600.0 * openmm.unit.kelvin)
-    delta_q = (beta_i - beta_j) * (energies[1] - energies[0])
+    delta_q = (beta_i - beta_j) * (energies[0] - energies[1])
     if hasattr(delta_q, "value_in_unit"):
         delta_value = delta_q.value_in_unit(openmm.unit.dimensionless)
     else:
@@ -48,8 +48,8 @@ def test_calculate_probability_is_one_for_favorable_swap():
     rng = np.random.default_rng(7)
     engine = ExchangeEngine([300.0, 600.0], rng)
     energies = [
-        5.0 * openmm.unit.kilojoules_per_mole,
         25.0 * openmm.unit.kilojoules_per_mole,
+        5.0 * openmm.unit.kilojoules_per_mole,
     ]
     replica_states = [0, 1]
 

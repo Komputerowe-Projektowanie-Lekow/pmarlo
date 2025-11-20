@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from pmarlo.markov_state_model._msm_utils import _expand_results as utils_expand
+from pmarlo.utils.msm_utils import _expand_results as utils_expand
 from pmarlo.markov_state_model.bridge import _expand_results as bridge_expand
 
 

@@ -67,7 +67,7 @@ def _random_transition_matrix(n_states: int, seed: int = 123) -> np.ndarray:
 
 def test_stationary_distribution_benchmark(benchmark: pytest.BenchmarkFixture) -> None:
     """Benchmark stationary distribution extraction from a dense MSM."""
-    from pmarlo.markov_state_model._msm_utils import _stationary_from_T
+from pmarlo.utils.msm_utils import _stationary_from_T
 
     transition_matrix = _random_transition_matrix(75)
 

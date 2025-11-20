@@ -9,7 +9,7 @@ from pmarlo.data.aggregate import load_shards_as_dataset
 from pmarlo.markov_state_model.reduction import reduce_features
 from pmarlo.markov_state_model.clustering import cluster_microstates
 from pmarlo.conformations.visualizations import plot_tpt_summary
-from pmarlo.markov_state_model._msm_utils import build_simple_msm
+from pmarlo.utils.msm_utils import build_simple_msm
 
 from .types import *
 from .layout import WorkspaceLayout

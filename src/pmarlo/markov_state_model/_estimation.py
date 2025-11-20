@@ -8,7 +8,7 @@ from scipy.sparse import csc_matrix, issparse, save_npz
 
 from pmarlo import constants as const
 
-from ._msm_utils import ensure_connected_counts
+from pmarlo.utils.msm_utils import ensure_connected_counts
 
 
 class _HasEstimationAttrs(Protocol):

@@ -5,11 +5,18 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Sequence, Tuple, cast
 
 import numpy as np
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    computed_field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from pmarlo.markov_state_model.free_energy import FESResult
 from pmarlo.utils.coercion import coerce_finite_float
@@ -27,25 +34,93 @@ __all__ = [
 ]
 
 
-@dataclass
-class AnalysisDebugData:
+class AnalysisDebugData(BaseModel):
     """Container for dataset-level debug information gathered prior to MSM build."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     summary: Dict[str, Any]
     counts: np.ndarray
     state_counts: np.ndarray
     component_labels: np.ndarray
 
+    @field_validator("summary", mode="before")
+    @classmethod
+    def _ensure_summary(cls, value: Any) -> Dict[str, Any]:
+        if value is None:
+            return {}
+        if not isinstance(value, Mapping):
+            raise TypeError("summary must be a mapping of debug statistics")
+        return dict(value)
+
+    @field_validator("counts", mode="before")
+    @classmethod
+    def _coerce_counts(cls, value: Any) -> np.ndarray:
+        arr = np.asarray(value, dtype=float)
+        if arr.ndim != 2:
+            raise TypeError("counts must be a 2D transition count matrix")
+        if arr.shape[0] != arr.shape[1]:
+            raise ValueError("counts must be a square matrix (n_states x n_states)")
+        return arr
+
+    @field_validator("state_counts", mode="before")
+    @classmethod
+    def _coerce_state_counts(cls, value: Any) -> np.ndarray:
+        arr = np.asarray(value, dtype=float)
+        if arr.ndim != 1:
+            raise TypeError("state_counts must be a 1D array of visit counts")
+        return arr
+
+    @field_validator("component_labels", mode="before")
+    @classmethod
+    def _coerce_component_labels(cls, value: Any) -> np.ndarray:
+        arr = np.asarray(value, dtype=int)
+        if arr.ndim != 1:
+            raise TypeError("component_labels must be a 1D array of SCC labels")
+        return arr
+
+    @model_validator(mode="after")
+    def _validate_shapes(self) -> "AnalysisDebugData":
+        n_states = self.counts.shape[0]
+        if self.counts.shape[1] != n_states:
+            raise ValueError("counts must be square with shape (n_states, n_states)")
+        if self.state_counts.shape[0] != n_states:
+            raise ValueError(
+                "state_counts length must match counts dimensions (n_states)"
+            )
+        if self.component_labels.shape[0] != n_states:
+            raise ValueError(
+                "component_labels length must match counts dimensions (n_states)"
+            )
+        return self
+
+    @computed_field(return_type=int)
+    def counts_nonzero(self) -> int:
+        return int(np.count_nonzero(self.counts))
+
+    @computed_field(return_type=float)
+    def counts_density(self) -> float:
+        if not self.counts.size:
+            return 0.0
+        return float(self.counts_nonzero / float(self.counts.size))
+
+    @field_serializer("counts", "state_counts", "component_labels")
+    def _serialise_array(self, value: np.ndarray, _info: Any) -> List[Any]:
+        return np.asarray(value).tolist()
+
     def to_summary_dict(self) -> Dict[str, Any]:
         """Return a JSON-serialisable summary dictionary."""
         payload = dict(self.summary)
-        payload["component_labels"] = self.component_labels.astype(int).tolist()
-        payload["state_counts"] = self.state_counts.astype(float).tolist()
-        payload["counts_nonzero"] = int(np.count_nonzero(self.counts))
-        payload["counts_density"] = (
-            float(payload["counts_nonzero"] / float(self.counts.size))
-            if self.counts.size
-            else 0.0
+        payload.update(
+            self.model_dump(
+                mode="json",
+                include={
+                    "component_labels",
+                    "state_counts",
+                    "counts_nonzero",
+                    "counts_density",
+                },
+            )
         )
         return payload
 

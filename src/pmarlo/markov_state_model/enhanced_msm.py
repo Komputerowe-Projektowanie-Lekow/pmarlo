@@ -15,8 +15,20 @@ from typing import (
     cast,
 )
 
+from pmarlo.markov_state_model.results import ITSResult
+
 
 class EnhancedMSMProtocol(Protocol):
+    count_mode: str
+    lag_time: int
+    trajectories: Sequence[Any]
+    implied_timescales: ITSResult | dict[str, Any] | None
+    output_dir: str | Path
+    ck_max_error: float
+    ck_pass: bool
+    ck_threshold: float
+    dtrajs: Sequence[Any]
+
     def __init__(
         self,
         *,
@@ -50,7 +62,17 @@ class EnhancedMSMProtocol(Protocol):
 
     def build_msm(self, *, lag_time: int, method: str = "standard") -> None: ...
 
-    def compute_implied_timescales(self) -> None: ...
+    def compute_implied_timescales(
+        self,
+        lag_times: Optional[Sequence[int]] = ...,
+        n_timescales: int = ...,
+        *,
+        n_samples: int = ...,
+        ci: float = ...,
+        dirichlet_alpha: float = ...,
+        plateau_m: int | None = ...,
+        plateau_epsilon: float = ...,
+    ) -> None: ...
 
     def generate_free_energy_surface(
         self,
@@ -63,7 +85,7 @@ class EnhancedMSMProtocol(Protocol):
 
     def create_state_table(self) -> None: ...
 
-    def extract_representative_structures(self) -> None: ...
+    def extract_representative_structures(self, save_pdb: bool = ...) -> None: ...
 
     def save_analysis_results(self) -> None: ...
 

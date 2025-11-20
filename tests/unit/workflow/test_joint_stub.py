@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from pmarlo.api import build_joint_workflow
 from pmarlo.workflow.joint import JointWorkflow, WorkflowConfig
 from pmarlo.workflow.metrics import Metrics
@@ -22,9 +24,10 @@ def test_joint_workflow_instantiation(tmp_path):
         use_reweight=False,
     )
     workflow = JointWorkflow(cfg)
-    workflow.bootstrap_cv()
-    metrics = workflow.iteration(0)
-    assert isinstance(metrics, Metrics)
+    with pytest.raises(ValueError):
+        workflow.bootstrap_cv()
+    with pytest.raises(ValueError):
+        workflow.iteration(0)
 
     wf_from_api = build_joint_workflow(
         shards_root=tmp_path,

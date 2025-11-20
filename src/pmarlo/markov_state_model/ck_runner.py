@@ -22,9 +22,8 @@ import numpy as np
 from numpy.typing import NDArray
 
 from pmarlo.utils.path_utils import ensure_directory
-
-from ._msm_utils import _row_normalize
-from ._msm_utils import pcca_like_macrostates as _pcca_like
+from pmarlo.utils.msm_utils import _row_normalize
+from pmarlo.utils.msm_utils import pcca_like_macrostates as _pcca_like
 
 logger = logging.getLogger(__name__)
 

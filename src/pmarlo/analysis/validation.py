@@ -10,12 +10,12 @@ import numpy as np
 
 from pmarlo import constants as const
 
-__all__ = ["ValidationError", "validate_features"]
+__all__ = ["FeatureValidationError", "validate_features"]
 
 logger = logging.getLogger("pmarlo")
 
 
-class ValidationError(RuntimeError):
+class FeatureValidationError(RuntimeError):
     """Raised when continuous CV features fail numerical sanity checks."""
 
     def __init__(self, message: str, *, code: str, stats: Dict[str, Any]) -> None:
@@ -107,7 +107,7 @@ def validate_features(
 
     Raises
     ------
-    ValidationError
+    FeatureValidationError
         When no rows contain exclusively finite values (``code=cv_no_finite_rows``),
         any element is NaN/Inf (``code=cv_non_finite``), or a column exhibits
         zero / numerically negligible standard deviation (``code=cv_zero_std``).
@@ -141,14 +141,14 @@ def validate_features(
     stats.update(column_stats)
 
     if finite_rows == 0:
-        raise ValidationError(
+        raise FeatureValidationError(
             "No rows with fully finite CV values detected",
             code="cv_no_finite_rows",
             stats=stats,
         )
 
     if non_finite_entries > 0:
-        raise ValidationError(
+        raise FeatureValidationError(
             "CV matrix contains non-finite values",
             code="cv_non_finite",
             stats=stats,
@@ -163,7 +163,7 @@ def validate_features(
     if problematic:
         extra = {"problematic_features": problematic}
         extra.update(stats)
-        raise ValidationError(
+        raise FeatureValidationError(
             "Detected CV columns with zero or invalid standard deviation",
             code="cv_zero_std",
             stats=extra,

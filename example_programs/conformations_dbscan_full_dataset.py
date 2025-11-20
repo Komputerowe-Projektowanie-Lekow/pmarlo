@@ -43,7 +43,7 @@ from pmarlo.conformations.visualizations import (  # noqa: E402
     plot_pcca_states_on_fes,
 )
 from pmarlo.data.aggregate import load_shards_as_dataset  # noqa: E402
-from pmarlo.markov_state_model._msm_utils import build_simple_msm  # noqa: E402
+from pmarlo.utils.msm_utils import build_simple_msm  # noqa: E402
 from pmarlo.markov_state_model.clustering import cluster_microstates  # noqa: E402
 from pmarlo.markov_state_model.free_energy import FESResult  # noqa: E402
 from pmarlo.markov_state_model.reduction import reduce_features  # noqa: E402

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence
 
 import numpy as np
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 from sklearn.cluster import KMeans, MiniBatchKMeans
 
 try:  # pragma: no cover - optional dependency
@@ -33,29 +33,77 @@ logger = logging.getLogger("pmarlo")
 DatasetLike = Mapping[str, Any] | MutableMapping[str, Any]
 
 
-@dataclass(slots=True)
-class MSMDiscretizationResult:
+class MSMDiscretizationResult(BaseModel):
     """Container with the outcome of MSM discretisation."""
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     assignments: Dict[str, np.ndarray]
-    centers: np.ndarray | None
+    centers: np.ndarray | None = None
     counts: np.ndarray
     transition_matrix: np.ndarray
-    lag_time: int
+    lag_time: int = Field(..., gt=0)
     diag_mass: float
     cluster_mode: str
-    assignment_masks: Dict[str, np.ndarray] = field(default_factory=dict)
-    segment_lengths: Dict[str, List[int]] = field(default_factory=dict)
-    segment_strides: Dict[str, List[int]] = field(default_factory=dict)
-    counted_pairs: Dict[str, int] = field(default_factory=dict)
-    expected_pairs: Dict[str, int] = field(default_factory=dict)
-    feature_schema: Dict[str, Any] = field(default_factory=dict)
-    fingerprint: Dict[str, Any] = field(default_factory=dict)
-    feature_stats: Dict[str, Any] = field(default_factory=dict)
+    assignment_masks: Dict[str, np.ndarray] = Field(default_factory=dict)
+    segment_lengths: Dict[str, List[int]] = Field(default_factory=dict)
+    segment_strides: Dict[str, List[int]] = Field(default_factory=dict)
+    counted_pairs: Dict[str, int] = Field(default_factory=dict)
+    expected_pairs: Dict[str, int] = Field(default_factory=dict)
+    feature_schema: Dict[str, Any] = Field(default_factory=dict)
+    fingerprint: Dict[str, Any] = Field(default_factory=dict)
+    feature_stats: Dict[str, Any] = Field(default_factory=dict)
     counts_before_prune: np.ndarray | None = None
     state_counts_before_prune: np.ndarray | None = None
     state_counts: np.ndarray | None = None
     pruned_state_indices: np.ndarray | None = None
+
+    @field_validator("counts", "transition_matrix", mode="before")
+    @classmethod
+    def _require_array(cls, value: Any, info: Any) -> np.ndarray:
+        if value is None:
+            raise ValueError(f"{info.field_name} must not be None")
+        return np.asarray(value)
+
+    @field_validator(
+        "counts_before_prune",
+        "state_counts_before_prune",
+        "state_counts",
+        "pruned_state_indices",
+        mode="before",
+    )
+    @classmethod
+    def _optional_array(cls, value: Any) -> np.ndarray | None:
+        if value is None:
+            return None
+        return np.asarray(value)
+
+    @field_validator("assignments", "assignment_masks", mode="before")
+    @classmethod
+    def _normalise_mapping(cls, value: Any, info: Any) -> Dict[str, np.ndarray]:
+        if not isinstance(value, Mapping):
+            raise TypeError(
+                f"{info.field_name} must be a mapping of split keys to arrays"
+            )
+        return {str(key): np.asarray(val) for key, val in value.items()}
+
+    @field_serializer(
+        "assignments",
+        "assignment_masks",
+        "counts",
+        "transition_matrix",
+        "centers",
+        "counts_before_prune",
+        "state_counts_before_prune",
+        "state_counts",
+        "pruned_state_indices",
+    )
+    def _serialize_arrays(self, value: Any, _info: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, Mapping):
+            return {key: np.asarray(val).tolist() for key, val in value.items()}
+        return np.asarray(value).tolist()
 
 
 class FeatureMismatchError(ValueError):

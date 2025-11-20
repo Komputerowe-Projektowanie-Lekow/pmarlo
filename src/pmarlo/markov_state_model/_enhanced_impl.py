@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
+    Iterable,
     List,
     Literal,
     Optional,
@@ -31,22 +32,141 @@ if TYPE_CHECKING:  # pragma: no cover - import for type checking only
     from .enhanced_msm import EnhancedMSMProtocol
 
 
-class EnhancedMSM(
-    LoadingMixin,
-    FeaturesMixin,
-    ClusteringMixin,
-    EstimationMixin,
-    ITSMixin,
-    CKMixin,
-    FESMixin,
-    TPTMixin,
-    PlotsMixin,
-    StatesMixin,
-    TRAMMixin,
-    ExportMixin,
-    MSMBase,
-):
-    """Concrete EnhancedMSM implementation backed by the full dependency stack."""
+class _ComponentAdapter:
+    """Routes attribute access from a component back to the owning EnhancedMSM."""
+
+    def __init__(self, owner: "EnhancedMSM") -> None:
+        object.__setattr__(self, "_owner", owner)
+
+    @property
+    def owner(self) -> "EnhancedMSM":
+        return cast("EnhancedMSM", object.__getattribute__(self, "_owner"))
+
+    def __getattr__(self, name: str):
+        return getattr(self.owner, name)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if name == "_owner":
+            object.__setattr__(self, name, value)
+            return
+        setattr(self.owner, name, value)
+
+
+class _Loader(_ComponentAdapter, LoadingMixin):
+    """Streaming trajectory loader."""
+
+
+class _Featurizer(_ComponentAdapter, FeaturesMixin):
+    """Feature computation pipeline."""
+
+
+class _Clusterer(_ComponentAdapter, ClusteringMixin):
+    """Discrete trajectory assignments."""
+
+
+class _Estimator(_ComponentAdapter, EstimationMixin):
+    """MSM estimation and bootstrapping."""
+
+
+class _ITS(_ComponentAdapter, ITSMixin):
+    """Implied timescale analysis."""
+
+
+class _CK(_ComponentAdapter, CKMixin):
+    """Chapman-Kolmogorov validation."""
+
+
+class _FES(_ComponentAdapter, FESMixin):
+    """Free energy surface utilities."""
+
+
+class _TPT(_ComponentAdapter, TPTMixin):
+    """Transition path theory routines."""
+
+
+class _Plots(_ComponentAdapter, PlotsMixin):
+    """Plot rendering helpers."""
+
+
+class _States(_ComponentAdapter, StatesMixin):
+    """State table and representative extraction."""
+
+
+class _TRAM(_ComponentAdapter, TRAMMixin):
+    """TRAM-specific workflows."""
+
+
+class _Exporter(_ComponentAdapter, ExportMixin):
+    """Disk export helpers."""
+
+
+class EnhancedMSM(MSMBase):
+    """Concrete EnhancedMSM composed of focused components instead of mixins."""
+
+    def __init__(
+        self,
+        *,
+        trajectory_files: Optional[Union[str, List[str]]] = None,
+        topology_file: Optional[str] = None,
+        temperatures: Optional[List[float]] = None,
+        output_dir: str | Path | None = None,
+        random_state: Optional[int] = 42,
+        ignore_trajectory_errors: bool = False,
+        **kwargs: object,
+    ) -> None:
+        super().__init__(
+            trajectory_files=trajectory_files,
+            topology_file=topology_file,
+            temperatures=temperatures,
+            output_dir=output_dir,
+            random_state=random_state,
+            ignore_trajectory_errors=ignore_trajectory_errors,
+        )
+        # Dedicated components keep namespaces isolated while enabling focused tests.
+        self.loader = _Loader(self)
+        self.featurizer = _Featurizer(self)
+        self.clusterer = _Clusterer(self)
+        self.estimator = _Estimator(self)
+        self.its = _ITS(self)
+        self.ck = _CK(self)
+        self.fes = _FES(self)
+        self.tpt = _TPT(self)
+        self.plots = _Plots(self)
+        self.states = _States(self)
+        self.tram = _TRAM(self)
+        self.exporter = _Exporter(self)
+        self._components: tuple[_ComponentAdapter, ...] = (
+            self.loader,
+            self.featurizer,
+            self.clusterer,
+            self.estimator,
+            self.its,
+            self.ck,
+            self.fes,
+            self.tpt,
+            self.plots,
+            self.states,
+            self.tram,
+            self.exporter,
+        )
+        if kwargs:
+            raise TypeError(
+                f"Unexpected arguments for EnhancedMSM: {', '.join(kwargs.keys())}"
+            )
+
+    def __getattr__(self, name: str):  # pragma: no cover - delegation glue
+        components: Iterable[_ComponentAdapter] = self.__dict__.get("_components", ())
+        for component in components:
+            if hasattr(component, name):
+                return getattr(component, name)
+        raise AttributeError(f"{type(self).__name__!s} has no attribute {name}")
+
+    def __dir__(self) -> list[str]:  # pragma: no cover - developer ergonomics
+        base = set(super().__dir__())
+        components: Iterable[_ComponentAdapter] = self.__dict__.get("_components", ())
+        for component in components:
+            base.update(dir(component))
+        return sorted(base)
 
 
 def run_complete_msm_analysis(

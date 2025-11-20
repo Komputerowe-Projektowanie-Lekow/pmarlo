@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import List, Literal, Optional, Sequence
+from typing import Any, List, Literal, Mapping, Optional, Sequence, cast
 
 import numpy as np
 
@@ -11,7 +11,8 @@ from pmarlo.api.features import compute_universal_embedding
 from pmarlo.api.fes import generate_free_energy_surface
 from pmarlo.data.aggregate import load_shards_as_dataset
 from pmarlo.markov_state_model import MarkovStateModel
-from pmarlo.markov_state_model._msm_utils import (
+from pmarlo.markov_state_model.enhanced_msm import EnhancedMSMProtocol
+from pmarlo.utils.msm_utils import (
     build_simple_msm,
     candidate_lag_ladder,
     compute_macro_mfpt,
@@ -23,7 +24,7 @@ from pmarlo.markov_state_model._msm_utils import (
 from pmarlo.markov_state_model.ck_its_selector import select_optimal_lag_ck_its
 from pmarlo.markov_state_model.ck_runner import run_ck
 from pmarlo.markov_state_model.free_energy import generate_1d_pmf
-from pmarlo.markov_state_model.results import CKITSSelectionResult
+from pmarlo.markov_state_model.results import CKITSSelectionResult, ITSResult
 from pmarlo.reporting.plots import save_fes_contour, save_pmf_line
 from pmarlo.utils.path_utils import ensure_directory
 
@@ -94,12 +95,15 @@ def analyze_msm(  # noqa: C901
     logger.debug("[msm] MSM output directory: %s", msm_out)
 
     logger.info("[msm] Initializing MarkovStateModel...")
-    msm = MarkovStateModel(
-        trajectory_files=trajectory_files,
-        topology_file=str(topology_pdb),
-        temperatures=analysis_temperatures or [300.0],
-        output_dir=str(msm_out),
-        random_state=random_state,
+    msm: EnhancedMSMProtocol = cast(
+        EnhancedMSMProtocol,
+        MarkovStateModel(
+            trajectory_files=trajectory_files,
+            topology_file=str(topology_pdb),
+            temperatures=analysis_temperatures or [300.0],
+            output_dir=str(msm_out),
+            random_state=random_state,
+        ),
     )
     logger.debug(
         "[msm] MarkovStateModel initialized with temperatures: %s",
@@ -107,19 +111,16 @@ def analyze_msm(  # noqa: C901
     )
 
     # Configure MSM parameters
-    if use_effective_for_uncertainty and hasattr(msm, "count_mode"):
-        msm.count_mode = "sliding"  # type: ignore[attr-defined]
+    if use_effective_for_uncertainty:
+        msm.count_mode = "sliding"
         logger.debug("[msm] Set count_mode to 'sliding' for effective counts")
 
     # Load trajectories
     logger.info("[msm] Loading trajectories with stride=%d...", traj_stride)
-    if hasattr(msm, "load_trajectories"):
-        msm.load_trajectories(  # type: ignore[attr-defined]
-            stride=traj_stride, atom_selection=atom_selection, chunk_size=chunk_size
-        )
-        logger.info("[msm] Trajectories loaded successfully")
-    else:
-        logger.warning("[msm] MSM object does not support load_trajectories method")
+    msm.load_trajectories(
+        stride=traj_stride, atom_selection=atom_selection, chunk_size=chunk_size
+    )
+    logger.info("[msm] Trajectories loaded successfully")
 
     # Compute features
     ft = feature_type
@@ -128,20 +129,14 @@ def analyze_msm(  # noqa: C901
         logger.debug("[msm] Modified feature_type to include TICA: %s", ft)
 
     logger.info("[msm] Computing features: %s", ft)
-    if hasattr(msm, "compute_features"):
-        msm.compute_features(feature_type=ft)  # type: ignore[attr-defined]
-        logger.info("[msm] Features computed successfully")
-    else:
-        logger.warning("[msm] MSM object does not support compute_features method")
+    msm.compute_features(feature_type=ft)
+    logger.info("[msm] Features computed successfully")
 
     # Cluster
     N_CLUSTERS = 8
     logger.info("[msm] Clustering features into %d states...", N_CLUSTERS)
-    if hasattr(msm, "cluster_features"):
-        msm.cluster_features(n_states=int(N_CLUSTERS))  # type: ignore[attr-defined]
-        logger.info("[msm] Clustering complete")
-    else:
-        logger.warning("[msm] MSM object does not support cluster_features method")
+    msm.cluster_features(n_states=int(N_CLUSTERS))
+    logger.info("[msm] Clustering complete")
 
     # Method selection
     method = (
@@ -182,70 +177,61 @@ def analyze_msm(  # noqa: C901
     )
 
     logger.info("[msm] Building initial MSM with lag_time=5...")
-    if hasattr(msm, "build_msm"):
-        msm.build_msm(lag_time=5, method=method)  # type: ignore[attr-defined]
-        logger.debug("[msm] Initial MSM built")
+    msm.build_msm(lag_time=5, method=method)
+    logger.debug("[msm] Initial MSM built")
 
     logger.info("[msm] Computing implied timescales...")
-    if hasattr(msm, "compute_implied_timescales"):
-        msm.compute_implied_timescales(lag_times=candidate_lags, n_timescales=3)  # type: ignore[attr-defined]
-        logger.info(
-            "[msm] Implied timescales computed for %d lag times", len(candidate_lags)
-        )
+    msm.compute_implied_timescales(lag_times=candidate_lags, n_timescales=3)
+    logger.info(
+        "[msm] Implied timescales computed for %d lag times", len(candidate_lags)
+    )
 
     # Select lag time from ITS plateau detection
     logger.debug("[msm] Selecting optimal lag time from implied timescales...")
     chosen_lag = 10  # default fallback
     try:
-        its_data = getattr(msm, "implied_timescales", None)
-        if its_data is not None:
-            # Extract ITS results
-            if hasattr(its_data, "lag_times") and hasattr(its_data, "timescales"):
-                lags = np.asarray(its_data.lag_times, dtype=int)
-                its = np.asarray(its_data.timescales, dtype=float)
-                logger.debug(
-                    "[msm] ITS data extracted: lags shape=%s, its shape=%s",
-                    lags.shape,
-                    its.shape,
-                )
-
-                # Use the new plateau detection method
-                from pmarlo.markov_state_model._msm_utils import (
-                    select_lag_from_its as detect_plateau,
-                )
-
-                chosen_lag = detect_plateau(
-                    lags, its, min_lag_idx=3, plateau_threshold=0.15
-                )
-                logger.info(
-                    "[msm] Selected lag_time=%d from ITS plateau detection", chosen_lag
-                )
-            elif hasattr(its_data, "__getitem__"):
-                # Fallback for dict-like interface
-                lags = np.array(its_data["lag_times"])  # type: ignore[index]
-                its = np.array(its_data["timescales"])  # type: ignore[index]
-                logger.debug(
-                    "[msm] ITS data extracted (dict interface): lags shape=%s, its shape=%s",
-                    lags.shape,
-                    its.shape,
-                )
-
-                from pmarlo.markov_state_model._msm_utils import (
-                    select_lag_from_its as detect_plateau,
-                )
-
-                chosen_lag = detect_plateau(
-                    lags, its, min_lag_idx=3, plateau_threshold=0.15
-                )
-                logger.info(
-                    "[msm] Selected lag_time=%d from ITS plateau detection", chosen_lag
-                )
-            else:
-                logger.warning("[msm] ITS data exists but has unexpected structure")
-                chosen_lag = 10
-        else:
+        its_data: ITSResult | Mapping[str, Any] | None = getattr(
+            msm, "implied_timescales", None
+        )
+        if its_data is None:
             logger.warning("[msm] No ITS data available, using default lag_time=10")
-            chosen_lag = 10
+        elif isinstance(its_data, ITSResult):
+            lags = np.asarray(its_data.lag_times, dtype=int)
+            its = np.asarray(its_data.timescales, dtype=float)
+            logger.debug(
+                "[msm] ITS data extracted: lags shape=%s, its shape=%s",
+                lags.shape,
+                its.shape,
+            )
+            from pmarlo.utils.msm_utils import select_lag_from_its as detect_plateau
+
+            chosen_lag = detect_plateau(
+                lags, its, min_lag_idx=3, plateau_threshold=0.15
+            )
+            logger.info("[msm] Selected lag_time=%d from ITS plateau detection", chosen_lag)
+        elif isinstance(its_data, Mapping):
+            lag_entry = its_data.get("lag_times")
+            timescales_entry = its_data.get("timescales")
+            if lag_entry is None or timescales_entry is None:
+                logger.warning("[msm] ITS mapping missing expected keys")
+            else:
+                lags = np.asarray(lag_entry, dtype=int)
+                its = np.asarray(timescales_entry, dtype=float)
+                logger.debug(
+                    "[msm] ITS data extracted (mapping interface): lags shape=%s, its shape=%s",
+                    lags.shape,
+                    its.shape,
+                )
+                from pmarlo.utils.msm_utils import select_lag_from_its as detect_plateau
+
+                chosen_lag = detect_plateau(
+                    lags, its, min_lag_idx=3, plateau_threshold=0.15
+                )
+                logger.info(
+                    "[msm] Selected lag_time=%d from ITS plateau detection", chosen_lag
+                )
+        else:
+            logger.warning("[msm] ITS data exists but has unexpected structure")
     except Exception as e:
         chosen_lag = 10
         logger.warning(
@@ -255,13 +241,11 @@ def analyze_msm(  # noqa: C901
         )
 
     # Store selected lag for downstream analysis
-    if hasattr(msm, "lag_time"):
-        msm.lag_time = chosen_lag  # type: ignore[attr-defined]
+    msm.lag_time = chosen_lag
 
     logger.info("[msm] Building final MSM with chosen lag_time=%d...", chosen_lag)
-    if hasattr(msm, "build_msm"):
-        msm.build_msm(lag_time=chosen_lag, method=method)  # type: ignore[attr-defined]
-        logger.info("[msm] Final MSM built successfully")
+    msm.build_msm(lag_time=chosen_lag, method=method)
+    logger.info("[msm] Final MSM built successfully")
 
     # CK test with macro → micro fallback
     logger.debug("[msm] Running Chapman-Kolmogorov test...")
@@ -287,10 +271,9 @@ def analyze_msm(  # noqa: C901
             )
 
             # Store CK metrics in MSM object
-            if hasattr(msm, "__dict__"):
-                msm.ck_max_error = ck_max_error  # type: ignore[attr-defined]
-                msm.ck_pass = ck_pass  # type: ignore[attr-defined]
-                msm.ck_threshold = ck_threshold  # type: ignore[attr-defined]
+            msm.ck_max_error = ck_max_error
+            msm.ck_pass = ck_pass
+            msm.ck_threshold = ck_threshold
         else:
             logger.warning("[msm] No dtrajs available for CK test")
     except Exception as e:
@@ -394,21 +377,16 @@ def analyze_msm(  # noqa: C901
 
     # Generate plots and analysis results with attribute checks
     logger.info("[msm] Generating analysis plots and results...")
-    if hasattr(msm, "plot_implied_timescales"):
-        msm.plot_implied_timescales(save_file="implied_timescales")  # type: ignore[attr-defined]
-        logger.debug("[msm] Implied timescales plot generated")
-    if hasattr(msm, "plot_free_energy_profile"):
-        msm.plot_free_energy_profile(save_file="free_energy_profile")  # type: ignore[attr-defined]
-        logger.debug("[msm] Free energy profile plot generated")
-    if hasattr(msm, "create_state_table"):
-        msm.create_state_table()  # type: ignore[attr-defined]
-        logger.debug("[msm] State table created")
-    if hasattr(msm, "extract_representative_structures"):
-        msm.extract_representative_structures(save_pdb=True)  # type: ignore[attr-defined]
-        logger.debug("[msm] Representative structures extracted")
-    if hasattr(msm, "save_analysis_results"):
-        msm.save_analysis_results()  # type: ignore[attr-defined]
-        logger.debug("[msm] Analysis results saved")
+    msm.plot_implied_timescales(save_file="implied_timescales")
+    logger.debug("[msm] Implied timescales plot generated")
+    msm.plot_free_energy_profile(save_file="free_energy_profile")
+    logger.debug("[msm] Free energy profile plot generated")
+    msm.create_state_table()
+    logger.debug("[msm] State table created")
+    msm.extract_representative_structures(save_pdb=True)
+    logger.debug("[msm] Representative structures extracted")
+    msm.save_analysis_results()
+    logger.debug("[msm] Analysis results saved")
 
     logger.info("[msm] MSM analysis complete: output_dir=%s", msm_out)
     return msm_out

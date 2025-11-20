@@ -159,7 +159,7 @@ def deeptica_workflow(
 @pytest.fixture(scope="module")
 def simple_msm():
     pytest.importorskip("deeptime")
-    import pmarlo.markov_state_model._msm_utils as msm_mod
+    import pmarlo.utils.msm_utils as msm_mod
 
     dtrajs = [
         np.array([0, 1, 2, 1, 0, 1, 2, 2, 1, 0], dtype=int),

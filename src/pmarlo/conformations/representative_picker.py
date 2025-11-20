@@ -1,6 +1,5 @@
-"""Representative structure selection with corrected weighting."""
+"""Representative structure selection with corrected weighting.
 
-"""
 The file is after the analysis. All should be working with the new test suite.
 """
 

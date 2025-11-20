@@ -133,6 +133,188 @@ def compute_analysis_diag_mass(
     return diag_mass, matrix, None
 
 
+def validate_msm_build(
+    debug_data: AnalysisDebugData,
+    msm_obj: Any,
+    config_payload: Mapping[str, Any],
+    fingerprint: Mapping[str, Any],
+    total_pairs: int,
+    diag_guardrail: dict[str, Any] | None,
+    transition_matrix_array: np.ndarray | None,
+    effective_tau_frames: int,
+    expected_effective_tau: int,
+) -> tuple[list[dict[str, Any]], int | None, float, bool, float]:
+    """Evaluate MSM guardrails and return violations with CK metrics.
+
+    Parameters
+    ----------
+    debug_data:
+        Debug export collected during analysis.
+    msm_obj:
+        MSM payload or object produced by the build.
+    config_payload:
+        Build configuration represented as a mapping.
+    fingerprint:
+        Discretizer fingerprint including requested state count.
+    total_pairs:
+        Total transition pairs observed after filtering.
+    diag_guardrail:
+        Optional violation produced while computing diagonal mass.
+    transition_matrix_array:
+        Normalised transition matrix, if available.
+    effective_tau_frames:
+        Tau in physical frames after stride adjustment.
+    expected_effective_tau:
+        Expected tau derived from the configured lag and stride.
+
+    Returns
+    -------
+    guardrail_violations, msm_state_count, ck_max_error, ck_pass, ck_threshold
+    """
+
+    guardrail_violations: list[dict[str, Any]] = []
+    ck_max_error = float("inf")
+    ck_pass = False
+    ck_threshold = 0.05  # Default RMS error threshold
+    msm_n_states_actual: int | None = None
+
+    if msm_obj is not None:
+        if isinstance(msm_obj, Mapping):
+            ck_max_error = float(msm_obj.get("ck_max_error", float("inf")))
+            ck_pass = bool(msm_obj.get("ck_pass", False))
+            ck_threshold = float(msm_obj.get("ck_threshold", 0.05))
+        else:
+            ck_max_error = float(getattr(msm_obj, "ck_max_error", float("inf")))
+            ck_pass = bool(getattr(msm_obj, "ck_pass", False))
+            ck_threshold = float(getattr(msm_obj, "ck_threshold", 0.05))
+
+        if not ck_pass and ck_max_error != float("inf"):
+            guardrail_violations.append(
+                {
+                    "code": "ck_test_failed",
+                    "message": (
+                        f"Chapman-Kolmogorov test failed: max_error={ck_max_error:.4f} "
+                        f"exceeds threshold={ck_threshold:.4f}"
+                    ),
+                    "max_error": float(ck_max_error),
+                    "threshold": float(ck_threshold),
+                }
+            )
+            logger.warning(
+                "CK test failed: max_error=%.4f > threshold=%.4f",
+                ck_max_error,
+                ck_threshold,
+            )
+        elif ck_pass:
+            logger.info(
+                "CK test passed: max_error=%.4f < threshold=%.4f",
+                ck_max_error,
+                ck_threshold,
+            )
+
+    if total_pairs == 0:
+        guardrail_violations.append(
+            {
+                "code": "no_transition_pairs",
+                "message": "no transition pairs after filtering",
+            }
+        )
+
+    if diag_guardrail is not None:
+        guardrail_violations.append(diag_guardrail)
+
+    if transition_matrix_array is None:
+        guardrail_violations.append(
+            {"code": "msm_build_failed", "actual": "no_transition_matrix"}
+        )
+    else:
+        msm_n_states_actual = int(transition_matrix_array.shape[0])
+        if msm_n_states_actual == 0:
+            guardrail_violations.append({"code": "no_states_in_msm", "actual": 0})
+
+    declared_states_raw = fingerprint.get("n_states")
+    try:
+        declared_states = int(declared_states_raw) if declared_states_raw is not None else None
+    except (TypeError, ValueError):
+        declared_states = None
+        logger.error("Invalid discretizer fingerprint n_states value %r", declared_states_raw)
+
+    if (
+        msm_n_states_actual is not None
+        and declared_states is not None
+        and msm_n_states_actual != declared_states
+    ):
+        guardrail_violations.append(
+            {
+                "code": "state_count_mismatch",
+                "message": (
+                    f"state_count_mismatch: declared={declared_states}, "
+                    f"actual={msm_n_states_actual}"
+                ),
+                "declared": int(declared_states),
+                "actual": int(msm_n_states_actual),
+            }
+        )
+
+    if effective_tau_frames != expected_effective_tau:
+        logger.warning(
+            "Effective tau mismatch: expected=%d, actual=%d",
+            expected_effective_tau,
+            effective_tau_frames,
+        )
+
+    is_fully_connected = debug_data.summary.get("is_fully_connected", False)
+    isolated_states = debug_data.summary.get("isolated_states", [])
+    n_components = debug_data.summary.get("n_components", 0)
+
+    require_full_connectivity = config_payload.get("require_fully_connected_msm", True)
+
+    if require_full_connectivity and not is_fully_connected:
+        if n_components == 0:
+            logger.error(
+                "MSM construction failed: no valid states detected in discrete trajectories. "
+                "Check clustering configuration and data quality."
+            )
+            error_msg = (
+                "No valid states detected in discrete trajectories. "
+                "This indicates clustering failed or produced no valid state assignments. "
+                "Check your data quality and clustering configuration."
+            )
+        elif isolated_states:
+            logger.error(
+                "MSM is not fully connected: %d isolated state(s) detected: %s",
+                len(isolated_states),
+                isolated_states,
+            )
+            error_msg = (
+                f"MSM has {n_components} strongly connected components "
+                f"(must be 1 for fully connected). "
+                f"Isolated states: {isolated_states}"
+            )
+        else:
+            logger.error(
+                "MSM is not fully connected: %d components detected",
+                n_components,
+            )
+            error_msg = (
+                f"MSM has {n_components} strongly connected components "
+                f"(must be 1 for fully connected). "
+                f"Isolated states: {isolated_states}"
+            )
+
+        guardrail_violations.append(
+            {
+                "code": "msm_not_fully_connected",
+                "message": error_msg,
+                "n_components": int(n_components),
+                "isolated_states": isolated_states,
+                "is_fully_connected": False,
+            }
+        )
+
+    return guardrail_violations, msm_n_states_actual, ck_max_error, ck_pass, ck_threshold
+
+
 # AnalysisMixin class containing all methods for analysis operations
 class AnalysisMixin:
     """Methods for MSM analysis and build operations."""
@@ -605,7 +787,6 @@ class AnalysisMixin:
             diag_mass_val, transition_matrix_array, diag_guardrail = (
                 compute_analysis_diag_mass(transition_matrix_attr)
             )
-            msm_n_states_actual: Optional[int] = None
 
             actual_seed = int(config.seed)
             if getattr(br.metadata, "seed", None) is not None:
@@ -638,163 +819,19 @@ class AnalysisMixin:
             }
             fingerprint_changed = fingerprint_compare != requested_fingerprint
 
-            # Guardrail checks based on post-clustering statistics
-            # Note: total_pairs and zero_rows checks are removed because they require
-            # post-clustering data which we'll validate from the build result instead
-            guardrail_violations: List[Dict[str, Any]] = []
-
-            # Extract CK test results from build result
-            ck_max_error = float('inf')
-            ck_pass = False
-            ck_threshold = 0.05  # 5% RMS error threshold
-
-            msm_obj = getattr(br, "msm", None)
-            if msm_obj is not None:
-                # Try to extract CK metrics from MSM object
-                if isinstance(msm_obj, Mapping):
-                    ck_max_error = float(msm_obj.get("ck_max_error", float('inf')))
-                    ck_pass = bool(msm_obj.get("ck_pass", False))
-                    ck_threshold = float(msm_obj.get("ck_threshold", 0.05))
-                else:
-                    ck_max_error = float(getattr(msm_obj, "ck_max_error", float('inf')))
-                    ck_pass = bool(getattr(msm_obj, "ck_pass", False))
-                    ck_threshold = float(getattr(msm_obj, "ck_threshold", 0.05))
-
-                # Add CK failure to guardrail violations
-                if not ck_pass and ck_max_error != float('inf'):
-                    guardrail_violations.append(
-                        {
-                            "code": "ck_test_failed",
-                            "message": f"Chapman-Kolmogorov test failed: max_error={ck_max_error:.4f} exceeds threshold={ck_threshold:.4f}",
-                            "max_error": float(ck_max_error),
-                            "threshold": float(ck_threshold),
-                        }
-                    )
-                    logger.warning(
-                        "CK test failed: max_error=%.4f > threshold=%.4f",
-                        ck_max_error,
-                        ck_threshold,
-                    )
-                elif ck_pass:
-                    logger.info(
-                        "CK test passed: max_error=%.4f < threshold=%.4f",
-                        ck_max_error,
-                        ck_threshold,
-                    )
-
-            if total_pairs_val == 0:
-                guardrail_violations.append(
-                    {
-                        "code": "no_transition_pairs",
-                        "message": "no transition pairs after filtering",
-                    }
+            guardrail_violations, msm_n_states_actual, ck_max_error, ck_pass, ck_threshold = (
+                validate_msm_build(
+                    debug_data=debug_data,
+                    msm_obj=msm_obj,
+                    config_payload=config_payload,
+                    fingerprint=fingerprint,
+                    total_pairs=total_pairs_val,
+                    diag_guardrail=diag_guardrail,
+                    transition_matrix_array=transition_matrix_array,
+                    effective_tau_frames=effective_tau_frames,
+                    expected_effective_tau=expected_effective_tau,
                 )
-
-            if diag_guardrail is not None:
-                guardrail_violations.append(diag_guardrail)
-
-            if transition_matrix_array is None:
-                guardrail_violations.append(
-                    {"code": "msm_build_failed", "actual": "no_transition_matrix"}
-                )
-            else:
-                msm_n_states_actual = int(transition_matrix_array.shape[0])
-                if msm_n_states_actual == 0:
-                    guardrail_violations.append(
-                        {"code": "no_states_in_msm", "actual": 0}
-                    )
-            declared_states_raw = fingerprint.get("n_states")
-            try:
-                declared_states = (
-                    int(declared_states_raw)
-                    if declared_states_raw is not None
-                    else None
-                )
-            except (TypeError, ValueError):
-                declared_states = None
-                logger.error(
-                    "Invalid discretizer fingerprint n_states value %r", declared_states_raw
-                )
-            if (
-                    msm_n_states_actual is not None
-                    and declared_states is not None
-                    and msm_n_states_actual != declared_states
-            ):
-                guardrail_violations.append(
-                    {
-                        "code": "state_count_mismatch",
-                        "message": (
-                            f"state_count_mismatch: declared={declared_states}, "
-                            f"actual={msm_n_states_actual}"
-                        ),
-                        "declared": int(declared_states),
-                        "actual": int(msm_n_states_actual),
-                    }
-                )
-
-            if effective_tau_frames != expected_effective_tau:
-                logger.warning(
-                    "Effective tau mismatch: expected=%d, actual=%d",
-                    expected_effective_tau,
-                    effective_tau_frames,
-                )
-                # Don't treat tau mismatch as a hard failure
-
-            # SCC Guardrail: MSM must be fully connected (require fraction = 1.0)
-            # Check if the MSM is fully connected by looking at component information
-            is_fully_connected = debug_data.summary.get("is_fully_connected", False)
-            isolated_states = debug_data.summary.get("isolated_states", [])
-            n_components = debug_data.summary.get("n_components", 0)
-
-            # Allow override via config, but default to requiring full connectivity
-            require_full_connectivity = config_payload.get(
-                "require_fully_connected_msm", True
             )
-
-            if require_full_connectivity and not is_fully_connected:
-                # Provide clearer error messages depending on the situation
-                if n_components == 0:
-                    # This shouldn't happen with the new checks, but keep as fallback
-                    logger.error(
-                        "MSM construction failed: no valid states detected in discrete trajectories. "
-                        "Check clustering configuration and data quality."
-                    )
-                    error_msg = (
-                        "No valid states detected in discrete trajectories. "
-                        "This indicates clustering failed or produced no valid state assignments. "
-                        "Check your data quality and clustering configuration."
-                    )
-                elif isolated_states:
-                    logger.error(
-                        "MSM is not fully connected: %d isolated state(s) detected: %s",
-                        len(isolated_states),
-                        isolated_states,
-                    )
-                    error_msg = (
-                        f"MSM has {n_components} strongly connected components "
-                        f"(must be 1 for fully connected). "
-                        f"Isolated states: {isolated_states}"
-                    )
-                else:
-                    logger.error(
-                        "MSM is not fully connected: %d components detected",
-                        n_components,
-                    )
-                    error_msg = (
-                        f"MSM has {n_components} strongly connected components "
-                        f"(must be 1 for fully connected). "
-                        f"Isolated states: {isolated_states}"
-                    )
-
-                guardrail_violations.append(
-                    {
-                        "code": "msm_not_fully_connected",
-                        "message": error_msg,
-                        "n_components": int(n_components),
-                        "isolated_states": isolated_states,
-                        "is_fully_connected": False,
-                    }
-                )
 
             analysis_healthy = not guardrail_violations
 

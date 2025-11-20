@@ -8,8 +8,9 @@ You provide a pluggable CV extractor callable returning:
 - dtraj: optional 1-D integer labels, or None
 - source_info: extra provenance merged into the shard metadata
 
-The function writes shard_{i:04d}.npz/.json under an output directory with
-canonical JSON and integrity hashes suitable for reproducible map→reduce.
+The function writes shards using canonical identifiers (for example,
+``T300K_<run>_seg0000_rep000``) with paired NPZ/JSON outputs and integrity
+hashes suitable for reproducible map-reduce.
 """
 
 import re

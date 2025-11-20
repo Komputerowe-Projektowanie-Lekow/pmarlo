@@ -29,6 +29,59 @@ from .uncertainty import UncertaintyQuantifier
 logger = logging.getLogger("pmarlo.conformations")
 
 
+def _compute_kT(temperature_K: float) -> float:
+    """Return thermal energy in kJ/mol for the given temperature."""
+    return constants.k * temperature_K * constants.Avogadro / 1000.0
+
+
+def _create_conformation(
+    *,
+    state_id: int,
+    conformation_type: str,
+    pi_vec: np.ndarray,
+    committor_vec: np.ndarray,
+    flux_vec: np.ndarray,
+    kT: float,
+    kis_scores: Optional[np.ndarray] = None,
+    macrostate_labels: Optional[np.ndarray] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    committor_value: Optional[float] = None,
+    frame_index: int = -1,
+) -> Conformation:
+    """Build a Conformation with consistently computed thermodynamic fields."""
+    population = float(pi_vec[state_id])
+    committor = (
+        float(committor_value)
+        if committor_value is not None
+        else float(committor_vec[state_id])
+    )
+    free_energy = -kT * np.log(max(population, 1e-10))
+    flux = float(flux_vec[state_id])
+
+    kis_score = None
+    if kis_scores is not None:
+        kis_score = float(kis_scores[state_id])
+
+    macrostate_id = None
+    if macrostate_labels is not None and state_id < macrostate_labels.shape[0]:
+        macrostate_id = int(macrostate_labels[state_id])
+
+    conf_metadata: Dict[str, Any] = {} if metadata is None else dict(metadata)
+
+    return Conformation(
+        conformation_type=conformation_type,
+        state_id=int(state_id),
+        frame_index=frame_index,
+        population=population,
+        free_energy=free_energy,
+        committor=committor,
+        kis_score=kis_score,
+        flux=flux,
+        macrostate_id=macrostate_id,
+        metadata=conf_metadata,
+    )
+
+
 def _resolve_n_metastable(requested: Optional[int], n_states: int) -> int:
     """Resolve the requested number of macrostates with sanity checks."""
     resolved = 2 if requested is None else int(requested)
@@ -447,37 +500,25 @@ def _find_transition_states(
                     f"{label} state {state} is out of range for {n_states} states"
                 )
 
-    kT = constants.k * temperature_K * constants.Avogadro / 1000.0
+    kT = _compute_kT(temperature_K)
 
     conformations = []
     for state_id in range(n_states):
         if state_id in source_states or state_id in sink_states:
             continue
 
-        population = float(pi[state_id])
-        free_energy = -kT * np.log(max(population, 1e-10))
         committor = float(forward_committor[state_id])
-        flux = float(flux_by_state[state_id])
-
-        kis_score = None
-        if kis_scores is not None:
-            kis_score = float(kis_scores[state_id])
-
-        macrostate_id = None
-        if macrostate_labels is not None and state_id < macrostate_labels.shape[0]:
-            macrostate_id = int(macrostate_labels[state_id])
-
-        is_tse = abs(committor - 0.5) <= tolerance
-        conf = Conformation(
+        is_tse = np.isclose(committor, 0.5, atol=tolerance)
+        conf = _create_conformation(
+            state_id=state_id,
             conformation_type="tse" if is_tse else "transition",
-            state_id=int(state_id),
-            frame_index=-1,
-            population=population,
-            free_energy=free_energy,
-            committor=committor,
-            kis_score=kis_score,
-            flux=flux,
-            macrostate_id=macrostate_id,
+            pi_vec=pi,
+            committor_vec=forward_committor,
+            flux_vec=flux_by_state,
+            kT=kT,
+            kis_scores=kis_scores,
+            macrostate_labels=macrostate_labels,
+            committor_value=committor,
         )
 
         conformations.append(conf)
@@ -546,19 +587,12 @@ def _find_metastable_states(
                 f"kis_scores do not cover metastable state {state_id}"
             )
 
-    kT = constants.k * temperature_K * constants.Avogadro / 1000.0
+    kT = _compute_kT(temperature_K)
 
     conformations: List[Conformation] = []
 
     for state_id in metastable_states:
-        population = float(pi[state_id])
-        free_energy = -kT * np.log(max(population, 1e-10))
         committor = float(forward_committor[state_id])
-        flux = float(flux_by_state[state_id])
-
-        kis_score = None
-        if kis_scores is not None:
-            kis_score = float(kis_scores[state_id])
 
         is_source = state_id in source_set
         is_sink = state_id in sink_set
@@ -582,21 +616,21 @@ def _find_metastable_states(
         ):
             macro_members = macrostate_memberships[state_id].tolist()
 
-        conf_metadata = {"role": role}
+        metadata = {"role": role}
         if macro_members is not None:
-            conf_metadata["macrostate_members"] = macro_members
+            metadata["macrostate_members"] = macro_members
 
-        conf = Conformation(
+        conf = _create_conformation(
+            state_id=state_id,
             conformation_type="metastable",
-            state_id=int(state_id),
-            frame_index=-1,
-            population=population,
-            free_energy=free_energy,
-            committor=committor,
-            kis_score=kis_score,
-            flux=flux,
-            macrostate_id=macrostate_id,
-            metadata=conf_metadata,
+            pi_vec=pi,
+            committor_vec=forward_committor,
+            flux_vec=flux_by_state,
+            kT=kT,
+            kis_scores=kis_scores,
+            macrostate_labels=macrostate_labels,
+            metadata=metadata,
+            committor_value=committor,
         )
 
         conformations.append(conf)

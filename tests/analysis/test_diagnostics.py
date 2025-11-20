@@ -2,6 +2,7 @@
 import pytest
 
 from pmarlo.analysis.diagnostics import (
+    DiagnosticsResult,
     InsufficientSamplesError,
     _canonical_correlations,
     _covariance,
@@ -14,13 +15,14 @@ def test_compute_diagnostics_triviality_and_mass_warning():
     dataset = {"splits": {"train": {"X": X, "inputs": X.copy()}}}
     result = compute_diagnostics(dataset, diag_mass=0.99)
 
-    canon = result.get("canonical_correlation", {})
-    assert (
-        "train" in canon and canon["train"]
-    ), "expected canonical correlations for train split"
-    warnings = result.get("warnings", [])
+    assert isinstance(result, DiagnosticsResult)
+
+    canon = result.canonical_correlation
+    assert "train" in canon and canon["train"], "expected canonical correlations"
+    warnings = result.warnings
     assert any("reparametrize" in w for w in warnings)
     assert any("MSM diagonal mass" in w for w in warnings)
+    assert result["taus"] == result.taus
 
 
 def test_compute_diagnostics_handles_missing_inputs():
@@ -28,11 +30,10 @@ def test_compute_diagnostics_handles_missing_inputs():
     dataset = {"splits": {"train": {"X": rng.normal(size=(40, 2))}}}
     result = compute_diagnostics(dataset, diag_mass=0.1)
 
-    assert result.get("canonical_correlation", {}) == {}
-    ac_entry = result.get("autocorrelation", {}).get("train")
-    assert ac_entry is not None
-    assert ac_entry.get("taus", [])[0] == 0
-    assert "tau_int" in ac_entry
+    assert result.canonical_correlation == {}
+    ac_entry = result.autocorrelation["train"]
+    assert ac_entry.taus[0] == 0
+    assert np.isfinite(ac_entry.tau_int) or np.isnan(ac_entry.tau_int)
 
 
 def test_canonical_correlation_raises_on_insufficient_samples():

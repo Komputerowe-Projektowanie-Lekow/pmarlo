@@ -181,17 +181,6 @@ if "pmarlo.markov_state_model" not in sys.modules:
     markov_state_model_stub = types.ModuleType("pmarlo.markov_state_model")
     sys.modules["pmarlo.markov_state_model"] = markov_state_model_stub
 
-if "pmarlo.markov_state_model._msm_utils" not in sys.modules:
-    msm_utils_stub = types.ModuleType("pmarlo.markov_state_model._msm_utils")
-
-    def _build_simple_msm(*args, **kwargs):  # pragma: no cover - stub
-        return np.empty((0, 0)), np.empty((0,))
-
-    msm_utils_stub.build_simple_msm = _build_simple_msm
-    sys.modules["pmarlo.markov_state_model._msm_utils"] = msm_utils_stub
-    if "pmarlo.markov_state_model" in sys.modules:
-        sys.modules["pmarlo.markov_state_model"]._msm_utils = msm_utils_stub
-
 from pmarlo.transform.build import BuildOpts, estimate_memory_usage
 
 

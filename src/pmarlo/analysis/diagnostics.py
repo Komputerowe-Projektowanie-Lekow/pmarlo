@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Dict, Mapping, MutableMapping, Sequence
+from typing import Any
 
 import numpy as np
+from pydantic import BaseModel, ConfigDict, Field
 from pmarlo import constants as const
 
 from .discretize import (
@@ -28,6 +30,59 @@ _TAU_SEQUENCE: tuple[int, ...] = (
 _MAX_TAU_FRACTION = 1.0 / 3.0
 _MIN_CK_MULTIPLIER = 2.0
 _MAX_CK_MULTIPLIER = 5.0
+
+
+class _MappingModel(BaseModel, Mapping[str, Any]):
+    """Base model that behaves like a Mapping for compatibility."""
+
+    model_config = ConfigDict(frozen=True)
+
+    def __getitem__(self, key: str) -> Any:
+        try:
+            return getattr(self, key)
+        except AttributeError as exc:
+            raise KeyError(key) from exc
+
+    def __iter__(self):
+        return iter(self.model_dump())
+
+    def __len__(self) -> int:
+        return len(self.model_dump())
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
+
+class AutocorrelationDiagnostics(_MappingModel):
+    """Structured view of an autocorrelation curve and its summary stats."""
+
+    taus: list[int] = Field(default_factory=list)
+    values: list[float] = Field(default_factory=list)
+    tau_int: float
+    lag_window: tuple[int, int] | None = None
+    recommended_ck_lags: list[int] = Field(default_factory=list)
+
+
+class SplitDiagnostics(BaseModel):
+    """Diagnostics for a single split."""
+
+    model_config = ConfigDict(frozen=True)
+
+    canonical_correlation: list[float] | None = None
+    autocorrelation: AutocorrelationDiagnostics
+    warnings: list[str] = Field(default_factory=list)
+
+
+class DiagnosticsResult(_MappingModel):
+    """Top-level diagnostics payload returned by ``compute_diagnostics``."""
+
+    canonical_correlation: dict[str, list[float]] = Field(default_factory=dict)
+    autocorrelation: dict[str, AutocorrelationDiagnostics] = Field(
+        default_factory=dict
+    )
+    diag_mass: float | None = None
+    taus: list[int] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -307,7 +362,7 @@ def _autocorrelation_curve(
     X: np.ndarray,
     taus: Sequence[int],
     segments: Sequence[_SegmentDescriptor],
-) -> Dict[str, Any]:
+) -> AutocorrelationDiagnostics:
     """Compute shard-wise autocorrelation and summary statistics."""
 
     Xc = _validate_autocorr_input(X)
@@ -317,13 +372,13 @@ def _autocorrelation_curve(
             "Autocorrelation: invalid input; returning NaNs for %d taus", len(tau_grid)
         )
         nan_curve = [float("nan") for _ in tau_grid]
-        return {
-            "taus": [int(t) for t in tau_grid],
-            "values": nan_curve,
-            "tau_int": float("nan"),
-            "lag_window": None,
-            "recommended_ck_lags": [],
-        }
+        return AutocorrelationDiagnostics(
+            taus=[int(t) for t in tau_grid],
+            values=nan_curve,
+            tau_int=float("nan"),
+            lag_window=None,
+            recommended_ck_lags=[],
+        )
 
     tau_array = np.asarray(tau_grid, dtype=np.int32)
     numerator = np.zeros_like(tau_array, dtype=np.float64)
@@ -401,13 +456,13 @@ def _autocorrelation_curve(
     tau_int = _integrated_autocorrelation_time(tau_list, values_list)
     recommended, window = _recommend_ck_lags(tau_int, tau_limit)
 
-    return {
-        "taus": tau_list,
-        "values": values_list,
-        "tau_int": float(tau_int),
-        "lag_window": window,
-        "recommended_ck_lags": recommended,
-    }
+    return AutocorrelationDiagnostics(
+        taus=tau_list,
+        values=values_list,
+        tau_int=float(tau_int),
+        lag_window=window,
+        recommended_ck_lags=recommended,
+    )
 
 
 # --- Tau derivation / validation (core logic) -------------------------------------
@@ -649,11 +704,15 @@ def compute_diagnostics(
     *,
     diag_mass: float | None = None,
     taus: Sequence[int] | None = None,
-) -> Dict[str, Any]:
+) -> DiagnosticsResult:
     """Compute triviality/stability diagnostics for downstream reporting.
 
     If ``taus`` is None, dynamically derive lag times using ``derive_taus``'s
     geometric heuristic. User-supplied ``taus`` are strictly validated.
+
+    Returns:
+        DiagnosticsResult: Pydantic-validated payload containing per-split
+        canonical correlations, autocorrelation summaries, and aggregate warnings.
     """
     splits = _normalise_splits(dataset)
 
@@ -682,32 +741,36 @@ def compute_diagnostics(
             "Validated user taus %s (min split length %d)", taus_used, min_length
         )
 
-    canonical: Dict[str, list[float]] = {}
-    autocorr: Dict[str, Dict[str, Any]] = {}
+    canonical: dict[str, list[float]] = {}
+    autocorr: dict[str, AutocorrelationDiagnostics] = {}
     warnings: list[str] = []
 
     for name, split in splits.items():
-        processed = _compute_split_diagnostics(name, split, taus_used, dataset)
-        if processed is None:
+        split_diag = _compute_split_diagnostics(name, split, taus_used, dataset)
+        if split_diag is None:
             continue
-        split_canonical, split_autocorr, split_warnings = processed
-        if split_canonical:
-            canonical[name] = split_canonical
-        autocorr[name] = split_autocorr
-        warnings.extend(split_warnings)
+        if split_diag.canonical_correlation:
+            canonical[name] = split_diag.canonical_correlation
+        autocorr[name] = split_diag.autocorrelation
+        warnings.extend(split_diag.warnings)
 
-    if diag_mass is not None and np.isfinite(diag_mass) and diag_mass > 0.95:
-        msg = f"MSM diagonal mass high ({diag_mass:.3f})"
+    diag_mass_value: float | None = None
+    if diag_mass is not None:
+        diag_mass_value = float(diag_mass)
+        if not np.isfinite(diag_mass_value):
+            raise ValueError("diag_mass must be finite when provided")
+    if diag_mass_value is not None and diag_mass_value > 0.95:
+        msg = f"MSM diagonal mass high ({diag_mass_value:.3f})"
         warnings.append(msg)
         logger.warning(msg)
 
-    return {
-        "canonical_correlation": canonical,
-        "autocorrelation": autocorr,
-        "diag_mass": float(diag_mass) if diag_mass is not None else None,
-        "taus": list(taus_used),
-        "warnings": warnings,
-    }
+    return DiagnosticsResult(
+        canonical_correlation=canonical,
+        autocorrelation=autocorr,
+        diag_mass=diag_mass_value,
+        taus=list(taus_used),
+        warnings=warnings,
+    )
 
 
 def _compute_split_diagnostics(
@@ -715,7 +778,7 @@ def _compute_split_diagnostics(
     split: Any,
     taus: Sequence[int],
     dataset: DatasetLike,
-) -> tuple[list[float] | None, Dict[str, Any], list[str]] | None:
+) -> SplitDiagnostics | None:
     """Gather canonical correlations and autocorrelation curve for one split.
 
     Raises errors if data is malformed. Returns None only if split cannot be coerced.
@@ -774,11 +837,15 @@ def _compute_split_diagnostics(
         whitened_full.shape[0],
     )
     autocorr = _autocorrelation_curve(whitened_full, taus, descriptors)
-    values = autocorr.get("values", [])
+    values = autocorr.values
     if len(values) >= 4 and np.isfinite(values[1]) and np.isfinite(values[3]):
         if abs(values[1] - values[3]) < 0.05:
             msg = f"{name}: CV autocorrelation flat across early lags"
             warnings.append(msg)
             logger.warning(msg)
 
-    return canonical, autocorr, warnings
+    return SplitDiagnostics(
+        canonical_correlation=canonical,
+        autocorrelation=autocorr,
+        warnings=warnings,
+    )

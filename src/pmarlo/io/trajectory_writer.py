@@ -23,6 +23,14 @@ from pmarlo.utils.mdtraj import load_mdtraj_topology
 from .trajectory_reader import MDTrajReader
 
 
+class _DCDWriterProtocol(Protocol):
+    def write_next_timestep(self, coords: np.ndarray) -> None: ...
+
+    def close(self) -> None: ...
+
+    def flush(self) -> None: ...
+
+
 @dataclass
 class MDAnalysisDCDWriter:
     """MDAnalysis-based DCD writer with simple append-like API.
@@ -35,12 +43,12 @@ class MDAnalysisDCDWriter:
     topology_path: Optional[str] = None
     _path: Optional[str] = field(default=None, init=False, repr=False)
     _n_atoms: Optional[int] = field(default=None, init=False, repr=False)
-    _writer: Optional[object] = field(default=None, init=False, repr=False)
+    _writer: Optional[_DCDWriterProtocol] = field(default=None, init=False, repr=False)
     _is_open: bool = field(default=False, init=False, repr=False)
 
     def _require(self):
         try:
-            import MDAnalysis  # type: ignore  # noqa: F401
+            import MDAnalysis  # noqa: F401
         except Exception as exc:  # pragma: no cover - dependency optional
             raise TrajectoryWriteError(
                 "MDAnalysis is required for backend='mdanalysis'. Install extra 'pmarlo[mdanalysis]' or 'MDAnalysis'."
@@ -84,7 +92,7 @@ class MDAnalysisDCDWriter:
             )
         if c.size == 0:
             return
-        from MDAnalysis.coordinates.DCD import DCDWriter  # type: ignore
+        from MDAnalysis.coordinates.DCD import DCDWriter
 
         if self._n_atoms is None:
             self._n_atoms = int(c.shape[1])
@@ -97,7 +105,7 @@ class MDAnalysisDCDWriter:
         assert writer is not None
         # MDAnalysis DCD expects Angstroms; we write raw floats as-is to avoid implicit unit conversions
         for i in range(c.shape[0]):
-            writer.write_next_timestep(c[i, :, :])  # type: ignore[arg-type,attr-defined]
+            writer.write_next_timestep(c[i, :, :])
 
     def close(self) -> None:
         if not self._is_open:
@@ -105,7 +113,7 @@ class MDAnalysisDCDWriter:
         try:
             if self._writer is not None:
                 try:
-                    self._writer.close()  # type: ignore[call-arg,attr-defined]
+                    self._writer.close()
                 except Exception:
                     pass
         finally:
@@ -115,7 +123,7 @@ class MDAnalysisDCDWriter:
         # MDAnalysis DCDWriter does not expose flush; best-effort no-op
         try:
             if self._writer is not None and hasattr(self._writer, "flush"):
-                self._writer.flush()  # type: ignore[call-arg]
+                self._writer.flush()
         except Exception:
             pass
 
@@ -316,7 +324,7 @@ class MDTrajDCDWriter:
         old_len: int,
         new_chunk: np.ndarray,
     ):
-        import mdtraj as md  # type: ignore
+        import mdtraj as md
 
         assert self.topology_path is not None
         topo = load_mdtraj_topology(self.topology_path)
@@ -327,7 +335,7 @@ class MDTrajDCDWriter:
         return new_traj if joined is None else joined.join(new_traj)
 
     def _join_existing_frames(self, reader: MDTrajReader, old_len: int, topo: Any):
-        import mdtraj as md  # type: ignore
+        import mdtraj as md
 
         chunk_list: list[md.Trajectory] = []
         joined: Optional[md.Trajectory] = None
@@ -345,7 +353,7 @@ class MDTrajDCDWriter:
     def _rewrite_all(self, coords: np.ndarray) -> None:
         assert self._path is not None
         try:
-            import mdtraj as md  # type: ignore
+            import mdtraj as md
 
             assert self.topology_path is not None
             topo = load_mdtraj_topology(self.topology_path)

@@ -523,7 +523,7 @@ class ITSMixin:
         return lag_times, max_valid_lag
 
     def _counts_for_lag(self, lag: int, alpha: float):
-        from ._msm_utils import ensure_connected_counts
+        from pmarlo.utils.msm_utils import ensure_connected_counts
 
         C = self._counts_from_deeptime_backend(lag)
         res = ensure_connected_counts(C, alpha=alpha)

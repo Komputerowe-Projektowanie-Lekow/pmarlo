@@ -28,26 +28,43 @@ class ShardIndexState:
 
 
 def _collect_existing_indices(out_dir: Path) -> list[int]:
-    """Scan an output directory and return sorted shard indices."""
+    """Scan an output directory and return sorted shard indices.
+
+    Legacy shard filename patterns are no longer supported and will raise.
+    """
+
+    out_path = Path(out_dir)
+    legacy_candidates = sorted(out_path.glob("shard_*.json"))
+    if legacy_candidates:
+        names = ", ".join(sf.name for sf in legacy_candidates)
+        raise ValueError(
+            "Legacy shard filenames are unsupported; rename to the canonical "
+            "T{temp}K_<run>_segXXXX_repYYY.json pattern before emitting new shards. "
+            f"Found: {names}"
+        )
 
     indices: list[int] = []
-    out_path = Path(out_dir)
-    # Legacy pattern: shard_XXXX.json
-    for shard_file in sorted(out_path.glob("shard_*.json")):
-        stem = shard_file.stem
-        try:
-            indices.append(int(stem.split("_")[1]))
-        except (IndexError, ValueError):
-            continue
-    # Canonical pattern: T{temp}K_segXXXX_repYYY.json
     for shard_file in sorted(out_path.glob("T*K_seg*_rep*.json")):
-        stem = shard_file.stem
+        parts = shard_file.stem.split("_")
         try:
-            parts = stem.split("_")
             seg_part = next(part for part in parts if part.startswith("seg"))
+            rep_part = next(part for part in parts if part.startswith("rep"))
+        except StopIteration as exc:
+            raise ValueError(
+                f"Shard file '{shard_file.name}' is missing expected seg/rep components"
+            ) from exc
+        try:
             indices.append(int(seg_part.removeprefix("seg")))
-        except (StopIteration, ValueError):
-            continue
+        except ValueError as exc:
+            raise ValueError(
+                f"Shard file '{shard_file.name}' uses non-numeric segment '{seg_part}'"
+            ) from exc
+        try:
+            int(rep_part.removeprefix("rep"))
+        except ValueError as exc:
+            raise ValueError(
+                f"Shard file '{shard_file.name}' uses non-numeric replica '{rep_part}'"
+            ) from exc
     return sorted(set(indices))
 
 

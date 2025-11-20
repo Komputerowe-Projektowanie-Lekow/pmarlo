@@ -45,7 +45,7 @@ _MANDATORY_EXPORTS: Dict[str, Tuple[str, str]] = {
         "power_of_two_temperature_ladder",
     ),
     "candidate_lag_ladder": (
-        "pmarlo.markov_state_model._msm_utils",
+        "pmarlo.utils.msm_utils",
         "candidate_lag_ladder",
     ),
     "pm_get_plan": ("pmarlo.transform", "pm_get_plan"),

@@ -1,6 +1,8 @@
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Sequence, Tuple, Mapping
+
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from pmarlo.conformations.representative_picker import (
     TrajectoryFrameLocator,
@@ -283,6 +285,136 @@ class ConformationsResult:
     tpt_converged: bool = True
     tpt_pathway_iterations: Optional[int] = None
     tpt_pathway_max_iterations: Optional[int] = None
+
+
+class TPTSummarySchema(BaseModel):
+    """Structured TPT summary for serialization."""
+
+    rate: float
+    mfpt: float
+    total_flux: float
+    n_pathways: int
+    source_states: List[int]
+    sink_states: List[int]
+    tpt_converged: bool
+    pathway_iterations: int
+    pathway_max_iterations: int
+
+    model_config = ConfigDict(frozen=True)
+
+
+class MetastableStateSchema(BaseModel):
+    """Serialized metadata for a metastable state."""
+
+    population: float
+    n_states: int
+    representative_pdb: Path | None = None
+
+    model_config = ConfigDict(frozen=True)
+
+    @field_serializer("representative_pdb")
+    def _serialize_path(self, value: Path | None) -> str | None:
+        return str(value) if value is not None else None
+
+
+class TransitionStateSchema(BaseModel):
+    """Serialized metadata for a transition state."""
+
+    committor: float
+    state_index: int
+    representative_pdb: Path | None = None
+
+    model_config = ConfigDict(frozen=True)
+
+    @field_serializer("representative_pdb")
+    def _serialize_path(self, value: Path | None) -> str | None:
+        return str(value) if value is not None else None
+
+
+class ConformationsResultSchema(BaseModel):
+    """Pydantic schema to align JSON summaries with in-memory results."""
+
+    output_dir: Path
+    tpt: TPTSummarySchema
+    metastable_states: Dict[str, MetastableStateSchema] = Field(
+        default_factory=dict
+    )
+    transition_states: List[TransitionStateSchema] = Field(default_factory=list)
+    pathways: List[List[int]] = Field(default_factory=list)
+    config: ConformationsConfig = Field(default_factory=ConformationsConfig)
+    created_at: str
+    plots: Dict[str, Path] = Field(default_factory=dict)
+    representative_pdbs: List[Path] = Field(default_factory=list)
+    tpt_converged: bool = True
+    tpt_pathway_iterations: Optional[int] = None
+    tpt_pathway_max_iterations: Optional[int] = None
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @staticmethod
+    def serialize_config(config: ConformationsConfig) -> Dict[str, Any]:
+        data = asdict(config)
+        for key in (
+            "topology_pdb",
+            "deeptica_projection_path",
+            "deeptica_metadata_path",
+        ):
+            value = data.get(key)
+            data[key] = str(value) if value is not None else None
+        return data
+
+    @field_serializer("output_dir")
+    def _serialize_output_dir(self, value: Path) -> str:
+        return str(value)
+
+    @field_serializer("plots")
+    def _serialize_plots(self, value: Dict[str, Path]) -> Dict[str, str]:
+        return {str(name): str(path) for name, path in value.items()}
+
+    @field_serializer("representative_pdbs")
+    def _serialize_representatives(self, value: List[Path]) -> List[str]:
+        return [str(path) for path in value]
+
+    @field_serializer("config")
+    def _serialize_config(self, value: ConformationsConfig) -> Dict[str, Any]:
+        return self.serialize_config(value)
+
+    def to_result(self) -> ConformationsResult:
+        """Create the dataclass result from the validated schema."""
+        tpt_converged = (
+            bool(self.tpt_converged)
+            if self.tpt_converged is not None
+            else bool(self.tpt.tpt_converged)
+        )
+        pathway_iterations = (
+            int(self.tpt_pathway_iterations)
+            if self.tpt_pathway_iterations is not None
+            else int(self.tpt.pathway_iterations)
+        )
+        pathway_max_iterations = (
+            int(self.tpt_pathway_max_iterations)
+            if self.tpt_pathway_max_iterations is not None
+            else int(self.tpt.pathway_max_iterations)
+        )
+        return ConformationsResult(
+            output_dir=self.output_dir,
+            tpt_summary=self.tpt.model_dump(mode="python"),
+            metastable_states={
+                str(key): state.model_dump(mode="python")
+                for key, state in self.metastable_states.items()
+            },
+            transition_states=[
+                state.model_dump(mode="python") for state in self.transition_states
+            ],
+            pathways=[[int(v) for v in path] for path in self.pathways],
+            representative_pdbs=list(self.representative_pdbs),
+            plots=dict(self.plots),
+            created_at=self.created_at,
+            config=self.config,
+            tpt_converged=tpt_converged,
+            tpt_pathway_iterations=pathway_iterations,
+            tpt_pathway_max_iterations=pathway_max_iterations,
+        )
 
 @dataclass(frozen=True)
 class _AnalysisMSMStats:

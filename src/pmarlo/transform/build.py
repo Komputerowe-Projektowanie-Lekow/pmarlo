@@ -30,13 +30,13 @@ from pmarlo.utils.json_io import load_json_file
 from pmarlo.utils.path_utils import ensure_directory
 from pmarlo.utils.temperature import collect_temperature_values
 
-from ..analysis import compute_diagnostics
+from ..analysis import DiagnosticsResult, compute_diagnostics
 from ..analysis.fes import (
     ensure_fes_inputs_whitened,
     select_highest_variance_components,
 )
 from ..analysis.msm import ensure_msm_inputs_whitened
-from ..markov_state_model._msm_utils import build_simple_msm
+from ..utils.msm_utils import build_simple_msm
 from .plan import TransformPlan, TransformStep
 from .progress import ProgressCB
 from .runner import apply_plan as _apply_plan
@@ -513,7 +513,7 @@ class BuildResult:
     artifacts: Dict[str, Any] = field(default_factory=dict)
     messages: List[str] = field(default_factory=list)
     flags: Dict[str, Any] = field(default_factory=dict)
-    diagnostics: Optional[Dict[str, Any]] = None
+    diagnostics: Optional[DiagnosticsResult | Dict[str, Any]] = None
 
     def to_json(self) -> str:
         applied_dict = _serialize_applied_opts(self.applied_opts)
@@ -1006,7 +1006,7 @@ def _collect_flags(
 
 def _compute_diagnostics_safe(
     dataset: Any, transition_matrix: Optional[np.ndarray]
-) -> Optional[Dict[str, Any]]:
+) -> Optional[DiagnosticsResult]:
     try:
         diag_mass_val = None
         if transition_matrix is not None and transition_matrix.size > 0:
@@ -1997,10 +1997,12 @@ def _sanitize_artifacts(obj: Any) -> Any:
         return value if math.isfinite(value) else None
     if isinstance(obj, str):
         return obj
+    if hasattr(obj, "model_dump"):
+        return _sanitize_artifacts(obj.model_dump())
+    if isinstance(obj, Mapping):
+        return {str(k): _sanitize_artifacts(v) for k, v in obj.items()}
     if isinstance(obj, np.ndarray):
         return _sanitize_artifacts(obj.tolist())
-    if isinstance(obj, dict):
-        return {str(k): _sanitize_artifacts(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
         return [_sanitize_artifacts(v) for v in obj]
     return str(obj)

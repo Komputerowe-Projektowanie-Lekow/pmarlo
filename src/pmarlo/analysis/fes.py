@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Mapping, MutableMapping, Sequence
+from typing import Any, Mapping, MutableMapping, Sequence, cast
 
 import numpy as np
 from scipy import ndimage
@@ -321,9 +321,10 @@ def ensure_fes_inputs_whitened(dataset: DatasetLike | Mapping[str, Any]) -> bool
     """
     if not isinstance(dataset, (MutableMapping, dict)):
         raise TypeError("Dataset must be a mutable mapping to apply whitening")
+    dataset_mut: DatasetLike = cast(DatasetLike, dataset)
 
     # If no artifacts exist, skip whitening (indicates raw CV workflow)
-    artifacts = dataset.get("__artifacts__")
+    artifacts = dataset_mut.get("__artifacts__")
     if artifacts is None:
         return False
 
@@ -338,10 +339,10 @@ def ensure_fes_inputs_whitened(dataset: DatasetLike | Mapping[str, Any]) -> bool
         return False
 
     # If there's no top-level X array, skip whitening (FES will use split data directly)
-    if "X" not in dataset:
+    if "X" not in dataset_mut:
         return False
 
-    X = dataset["X"]  # type: ignore[index]
+    X = dataset_mut.get("X")
     if X is None:
         raise ValueError("Dataset provides no coordinate array for whitening")
 
@@ -361,21 +362,21 @@ def ensure_fes_inputs_whitened(dataset: DatasetLike | Mapping[str, Any]) -> bool
 
     whitened, applied = apply_whitening_from_metadata(coords, summary)
 
-    dataset["X"] = whitened  # type: ignore[index]
+    dataset_mut["X"] = whitened
 
     # BUGFIX: ensure that every split receives the whitening transform when it
     # is first applied.  Previously only the top-level dataset was updated,
     # leaving per-split arrays stale and inconsistent.
     applied_any = bool(applied)
     if applied and isinstance(summary, MutableMapping):
-        splits = dataset.get("splits")
+        splits = dataset_mut.get("splits")
         if isinstance(splits, Mapping):
             for split_name, split_data in splits.items():
                 if not isinstance(split_data, MutableMapping):
                     continue
                 if "X" not in split_data:
                     continue
-                split_coords = split_data["X"]  # type: ignore[index]
+                split_coords = split_data.get("X")
                 if split_coords is None:
                     raise ValueError(
                         f"Split '{split_name}' provides no coordinate array for whitening"
@@ -386,7 +387,7 @@ def ensure_fes_inputs_whitened(dataset: DatasetLike | Mapping[str, Any]) -> bool
                     split_array,
                     summary,
                 )
-                split_data["X"] = split_whitened  # type: ignore[index]
+                split_data["X"] = split_whitened
                 applied_any = applied_any or bool(split_applied)
             summary["output_transform_applied"] = True
 
@@ -397,14 +398,26 @@ def _select_split(
     dataset: Mapping[str, Any], split: str | None
 ) -> tuple[str, Mapping[str, Any]]:
     splits = dataset.get("splits")
-    if isinstance(splits, Mapping) and splits:
-        if split is not None and split in splits:
-            return str(split), splits[split]  # type: ignore[index]
-        if "train" in splits:
-            return "train", splits["train"]  # type: ignore[index]
-        first_key = next(iter(splits))
-        return str(first_key), splits[first_key]  # type: ignore[index]
-    raise ValueError("Dataset must provide a 'splits' mapping for FES computation")
+    if not isinstance(splits, Mapping) or not splits:
+        raise ValueError("Dataset must provide a 'splits' mapping for FES computation")
+
+    if split is not None and split in splits:
+        split_value = splits[split]
+        if not isinstance(split_value, Mapping):
+            raise ValueError(f"Split '{split}' must be a mapping, got {type(split_value)}")
+        return str(split), split_value
+
+    if "train" in splits:
+        train_split = splits["train"]
+        if not isinstance(train_split, Mapping):
+            raise ValueError("Split 'train' must be a mapping when provided")
+        return "train", train_split
+
+    first_key = next(iter(splits))
+    first_split = splits[first_key]
+    if not isinstance(first_split, Mapping):
+        raise ValueError(f"Split '{first_key}' must be a mapping, got {type(first_split)}")
+    return str(first_key), first_split
 
 
 def _coerce_array(obj: Mapping[str, Any], key: str) -> np.ndarray:

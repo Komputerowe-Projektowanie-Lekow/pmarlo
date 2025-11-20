@@ -3,7 +3,6 @@ import logging
 import math
 import sys
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
@@ -22,17 +21,21 @@ from pmarlo.conformations.visualizations import (
     plot_tpt_summary as _DEFAULT_PLOT_TPT_SUMMARY,
 )
 from pmarlo.data.aggregate import load_shards_as_dataset as _DEFAULT_LOAD_SHARDS_AS_DATASET
-from pmarlo.markov_state_model._msm_utils import (
-    build_simple_msm as _DEFAULT_BUILD_SIMPLE_MSM,
-)
 from pmarlo.markov_state_model.clustering import (
     cluster_microstates as _DEFAULT_CLUSTER_MICROSTATES,
 )
 from pmarlo.markov_state_model.free_energy import FESResult
 from pmarlo.markov_state_model.reduction import reduce_features as _DEFAULT_REDUCE_FEATURES
+from pmarlo.utils.msm_utils import (
+    build_simple_msm as _DEFAULT_BUILD_SIMPLE_MSM,
+)
 from pmarlo.utils.path_utils import ensure_directory
 
-from .types import ConformationsConfig, ConformationsResult
+from .types import (
+    ConformationsConfig,
+    ConformationsResult,
+    ConformationsResultSchema,
+)
 from .utils import (
     _is_transition_matrix_reversible,
     _load_metadata_mapping,
@@ -357,7 +360,9 @@ class ConformationsMixin:
         stamp = _timestamp()
         output_dir = self.layout.bundles_dir / f"conformations-{stamp}"
         ensure_directory(output_dir)
-        config_dict: Dict[str, Any] = {}
+        config_dict: Dict[str, Any] = ConformationsResultSchema.serialize_config(
+            config
+        )
         summary_path = output_dir / "conformations_summary.json"
 
         fes_result: Optional[FESResult] = None
@@ -776,74 +781,42 @@ class ConformationsMixin:
             for path in tpt_result.pathways:
                 pathways.append([int(state) for state in path])
 
-            representative_pdbs = []
-            for f in output_dir.glob("*.pdb"):
-                representative_pdbs.append(f)
+            representative_pdbs = [p.resolve() for p in sorted(output_dir.glob("*.pdb"))]
 
-            config_dict = asdict(config)
-            if config.topology_pdb is not None:
-                config_dict["topology_pdb"] = str(
-                    Path(config.topology_pdb)
-                    if isinstance(config.topology_pdb, Path)
-                    else config.topology_pdb
-                )
-            if config.deeptica_projection_path is not None:
-                config_dict["deeptica_projection_path"] = str(
-                    Path(config.deeptica_projection_path)
-                    if isinstance(config.deeptica_projection_path, Path)
-                    else config.deeptica_projection_path
-                )
-            if config.deeptica_metadata_path is not None:
-                config_dict["deeptica_metadata_path"] = str(
-                    Path(config.deeptica_metadata_path)
-                    if isinstance(config.deeptica_metadata_path, Path)
-                    else config.deeptica_metadata_path
-                )
-            with open(summary_path, "w") as f:
-                json.dump({
-                    "tpt": tpt_summary,
-                    "metastable_states": metastable_states,
-                    "transition_states": transition_states,
-                    "pathways": pathways,
-                    "config": config_dict,
-                    "created_at": stamp,
-                }, f, indent=2)
-
-            logger.info(f"Conformations analysis complete. Output saved to {output_dir}")
-
-            conf_result_obj = ConformationsResult(
-                output_dir=output_dir,
-                tpt_summary=tpt_summary,
+            result_schema = ConformationsResultSchema(
+                output_dir=output_dir.resolve(),
+                tpt=tpt_summary,
                 metastable_states=metastable_states,
                 transition_states=transition_states,
                 pathways=pathways,
-                representative_pdbs=representative_pdbs,
-                plots=plots,
-                created_at=stamp,
                 config=config,
+                created_at=stamp,
+                plots={name: Path(path).resolve() for name, path in plots.items()},
+                representative_pdbs=representative_pdbs,
                 tpt_converged=bool(tpt_result.tpt_converged),
                 tpt_pathway_iterations=int(tpt_result.pathway_iterations),
                 tpt_pathway_max_iterations=int(tpt_result.pathway_max_iterations),
             )
 
-            self.state.append_conformations(
+            summary_path.write_text(
+                result_schema.model_dump_json(indent=2),
+                encoding="utf-8",
+            )
+
+            logger.info(f"Conformations analysis complete. Output saved to {output_dir}")
+
+            conf_result_obj = result_schema.to_result()
+
+            state_entry = result_schema.model_dump(mode="json")
+            state_entry.update(
                 {
                     "output_dir": str(output_dir.resolve()),
                     "summary": str(summary_path.resolve()),
-                    "created_at": stamp,
-                    "tpt_summary": _sanitize_artifacts(tpt_summary),
-                    "metastable_states": _sanitize_artifacts(metastable_states),
-                    "transition_states": _sanitize_artifacts(transition_states),
-                    "pathways": _sanitize_artifacts(pathways),
-                    "plots": {name: str(path) for name, path in plots.items()},
-                    "config": _sanitize_artifacts(config_dict),
-                    "tpt_converged": bool(tpt_result.tpt_converged),
-                    "tpt_pathway_iterations": int(tpt_result.pathway_iterations),
-                    "tpt_pathway_max_iterations": int(
-                        tpt_result.pathway_max_iterations
-                    ),
+                    "tpt_summary": state_entry.get("tpt"),
                 }
             )
+
+            self.state.append_conformations(state_entry)
 
             return conf_result_obj
 
@@ -1026,25 +999,34 @@ class ConformationsMixin:
         error_message = entry.get("error")
         error_str = str(error_message) if error_message is not None else None
 
-        return ConformationsResult(
-            output_dir=output_dir.resolve(),
-            tpt_summary=tpt_summary,
-            metastable_states=metastable_states,
-            transition_states=transition_states,
-            pathways=pathways,
-            representative_pdbs=representative_pdbs,
-            plots=plots,
-            created_at=created_at,
-            config=config_obj,
-            error=error_str,
-            tpt_converged=bool(tpt_converged),
-            tpt_pathway_iterations=(
-                int(tpt_iterations) if tpt_iterations is not None else None
-            ),
-            tpt_pathway_max_iterations=(
-                int(tpt_max_iterations) if tpt_max_iterations is not None else None
-            ),
-        )
+        try:
+            result_schema = ConformationsResultSchema(
+                output_dir=output_dir.resolve(),
+                tpt=tpt_summary,
+                metastable_states=metastable_states,
+                transition_states=transition_states,
+                pathways=pathways,
+                representative_pdbs=representative_pdbs,
+                plots=plots,
+                created_at=created_at,
+                config=config_obj,
+                tpt_converged=bool(tpt_converged),
+                tpt_pathway_iterations=(
+                    int(tpt_iterations) if tpt_iterations is not None else None
+                ),
+                tpt_pathway_max_iterations=(
+                    int(tpt_max_iterations) if tpt_max_iterations is not None else None
+                ),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Unable to parse conformations summary at %s: %s", summary_path, exc
+            )
+            return None
+
+        result = result_schema.to_result()
+        result.error = error_str
+        return result
 
     def _conformations_config_from_entry(
             self, payload: Any

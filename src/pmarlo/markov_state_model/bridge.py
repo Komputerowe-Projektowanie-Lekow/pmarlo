@@ -8,7 +8,7 @@ import numpy as np
 
 from pmarlo import constants as const
 
-from ._msm_utils import (
+from pmarlo.utils.msm_utils import (
     _stationary_from_T,
     check_transition_matrix,
     ensure_connected_counts,

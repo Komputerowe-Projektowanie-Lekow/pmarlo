@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from pmarlo.analysis.validation import ValidationError, validate_features
+from pmarlo.analysis.validation import FeatureValidationError, validate_features
 
 
 def test_validate_features_constant_column_raises_zero_std() -> None:
@@ -14,7 +14,7 @@ def test_validate_features_constant_column_raises_zero_std() -> None:
         )
     )
 
-    with pytest.raises(ValidationError) as excinfo:
+    with pytest.raises(FeatureValidationError) as excinfo:
         validate_features(X, ["constant", "varying"])
 
     error = excinfo.value
@@ -32,7 +32,7 @@ def test_validate_features_no_finite_rows_raises() -> None:
         dtype=np.float64,
     )
 
-    with pytest.raises(ValidationError) as excinfo:
+    with pytest.raises(FeatureValidationError) as excinfo:
         validate_features(X, ["a", "b"])
 
     assert excinfo.value.code == "cv_no_finite_rows"

@@ -10,8 +10,7 @@ from deeptime.markov.msm import MaximumLikelihoodMSM
 from scipy.sparse.csgraph import connected_components
 
 from pmarlo import constants as const
-
-from ._msm_utils import (
+from pmarlo.utils.msm_utils import (
     _row_normalize,
     _stationary_from_T,
     pcca_like_macrostates,

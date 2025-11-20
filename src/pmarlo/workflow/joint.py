@@ -6,6 +6,7 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -62,6 +63,7 @@ class JointWorkflow:
         self.last_guardrails: Optional[GuardrailReport] = None
         self.last_ck_decision: Optional[CKDecision] = None
         self.last_ck_config: Optional[CKConfig] = None
+        self.vamp2_history: List[float] = []
         self.remd_callback: Optional[
             Callable[[BiasHook, int], Optional[Sequence[Path]]]
         ] = None
@@ -81,11 +83,20 @@ class JointWorkflow:
         self.remd_callback = callback
 
     def bootstrap_cv(self) -> None:
-        """Initialise or load the CV model prior to joint iterations (TODO)."""
+        """Initialise the CV model using shards at the reference temperature."""
 
-        # TODO: integrate DeepTICA bootstrap (random/TICA @ T_ref)
-        self.cv_model = None
-        self.trainer = None
+        shard_jsons = select_shards(
+            self.cfg.shards_root, temperature_K=self.cfg.temperature_ref_K
+        )
+        if not shard_jsons:
+            raise ValueError(
+                f"No shards found for CV bootstrap at {self.cfg.temperature_ref_K} K "
+                f"under {self.cfg.shards_root}"
+            )
+
+        shards: Sequence[Shard] = load_shards(shard_jsons)
+        frame_weights = self._compute_frame_weights(shards)
+        self._bootstrap_from_shards(shards, frame_weights)
 
     def iteration(self, i: int) -> Metrics:
         """Perform a single CV training iteration and optionally run guided REMD."""
@@ -94,26 +105,143 @@ class JointWorkflow:
             self.cfg.shards_root, temperature_K=self.cfg.temperature_ref_K
         )
         if not shard_jsons:
-            logger.info(
-                "No shards found for joint workflow iteration at T=%s K under %s; "
-                "returning stub metrics.",
-                self.cfg.temperature_ref_K,
-                self.cfg.shards_root,
-            )
-            self.last_new_shards = []
-            self.last_guardrails = None
-            return Metrics(
-                vamp2_val=0.0,
-                its_val=0.0,
-                ck_error=0.0,
-                notes="no shards available",
+            raise ValueError(
+                f"No shards found for joint workflow iteration at "
+                f"T={self.cfg.temperature_ref_K} K under {self.cfg.shards_root}"
             )
 
         shards: Sequence[Shard] = load_shards(shard_jsons)
         frame_weights = self._compute_frame_weights(shards)
 
-        # TODO: plug in real DeepTICA training once trainer integration is complete
-        metrics = Metrics(vamp2_val=0.0, its_val=0.0, ck_error=0.0, notes=f"iter {i}")
+        if not self._has_cv_transform():
+            self._bootstrap_from_shards(shards, frame_weights)
+
+        cv_outputs: List[np.ndarray] = []
+        for shard in shards:
+            transformed = self._transform_shard_cv(shard)
+            if transformed.ndim == 1:
+                transformed = transformed.reshape(-1, 1)
+            elif transformed.ndim != 2:
+                raise ValueError("CV outputs must be 1D or 2D per shard")
+            cv_outputs.append(np.asarray(transformed, dtype=np.float64))
+
+        pairs, pair_weights = self._prepare_pairs(shards, frame_weights)
+        if pairs.size == 0:
+            raise ValueError(
+                "No usable lagged pairs found; ensure shards contain sufficient frames"
+            )
+
+        concatenated_cv = np.concatenate(cv_outputs, axis=0)
+        vamp2_val = self._compute_weighted_vamp2(
+            concatenated_cv, pairs, pair_weights
+        )
+        self._record_vamp2_history(vamp2_val)
+
+        kmeans_kwargs = {"n_init": 50}
+        clustering = cluster_microstates(
+            concatenated_cv,
+            n_states=self.cfg.n_clusters,
+            random_state=None,
+            **kmeans_kwargs,
+        )
+
+        labels = clustering.labels
+        n_states = int(clustering.n_states)
+        if n_states <= 0:
+            raise ValueError("Clustering returned zero states")
+
+        clusters_per_shard: List[np.ndarray] = []
+        weights_per_shard: List[np.ndarray] = []
+        offset = 0
+        for shard, weights in zip(shards, frame_weights):
+            length = shard.meta.n_frames
+            clusters_per_shard.append(labels[offset : offset + length])
+            weights_per_shard.append(np.asarray(weights, dtype=np.float64))
+            offset += length
+
+        counts = self._compute_counts(
+            shards,
+            clusters_per_shard,
+            weights_per_shard,
+            self.cfg.tau_steps,
+            n_states,
+        )
+        T = self._normalize_counts(counts)
+
+        row_sums = counts.sum(axis=1)
+        total_weight = row_sums.sum()
+        if total_weight > 0:
+            pi = row_sums / total_weight
+        else:
+            pi = np.full((n_states,), 1.0 / n_states, dtype=np.float64)
+
+        dt_ps = float(np.mean([shard.dt_ps for shard in shards]))
+        lag_time_ps = float(self.cfg.tau_steps * dt_ps)
+        its_array = self._compute_its(T, lag_time_ps)
+
+        ck_config = self._resolve_ck_config(
+            ck_mode=None,
+            ck_absolute=None,
+            ck_min_pass_fraction=None,
+            ck_per_lag_cap=None,
+            ck_k_steps=None,
+            ck_sigma_mult=None,
+        )
+        self.last_ck_config = ck_config
+
+        ck_errors: Dict[int, float] = {}
+        ck_transition_matrices: Dict[int, np.ndarray] = {}
+        ck_row_counts: Dict[int, np.ndarray] = {}
+        for multiplier in ck_config.k_steps:
+            counts_k = self._compute_counts(
+                shards,
+                clusters_per_shard,
+                weights_per_shard,
+                self.cfg.tau_steps * multiplier,
+                n_states,
+            )
+            T_actual = self._normalize_counts(counts_k)
+            T_pred = np.linalg.matrix_power(T, multiplier)
+            ck_errors[multiplier] = float(np.linalg.norm(T_pred - T_actual, ord="fro"))
+            ck_transition_matrices[multiplier] = T_actual
+            ck_row_counts[multiplier] = counts_k.sum(axis=1)
+
+        meta: Dict[str, Any] = {
+            "n_clusters": clustering.n_states,
+            "rationale": clustering.rationale,
+            "centers": (
+                clustering.centers.tolist() if clustering.centers is not None else None
+            ),
+            "lag_time_ps": lag_time_ps,
+            "ck_errors": ck_errors,
+        }
+
+        its_val = float(its_array[0]) if its_array.size else 0.0
+        ck_error_metric = max(ck_errors.values()) if ck_errors else 0.0
+        metrics = Metrics(
+            vamp2_val=float(vamp2_val),
+            its_val=its_val,
+            ck_error=float(ck_error_metric),
+            notes=f"iter {i}",
+        )
+
+        self.last_result = MSMResult(
+            T=T,
+            pi=pi,
+            its=its_array,
+            clusters=labels,
+            meta=meta,
+        )
+        self.last_artifacts = {
+            "transition_matrix": T,
+            "counts": counts,
+            "stationary_distribution": pi,
+            "its": its_array,
+            "ck_errors": ck_errors,
+            "ck_transition_matrices": ck_transition_matrices,
+            "ck_row_counts": ck_row_counts,
+        }
+        self.last_guardrails = None
 
         if self.remd_callback is not None:
             bias_hook = self._build_bias_hook(shards, frame_weights)
@@ -264,6 +392,160 @@ class JointWorkflow:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+    def _bootstrap_from_shards(
+        self, shards: Sequence[Shard], frame_weights: Sequence[np.ndarray]
+    ) -> None:
+        if not shards:
+            raise ValueError("Cannot bootstrap CV without at least one shard")
+
+        cv_arrays: List[np.ndarray] = []
+        for shard in shards:
+            X = np.asarray(shard.X, dtype=np.float64)
+            if X.ndim != 2:
+                raise ValueError("Shard feature arrays must be 2D for CV bootstrap")
+            cv_arrays.append(X)
+
+        mean, scale = self._compute_feature_stats(cv_arrays, frame_weights)
+        standardized = [self._standardize_features(arr, mean, scale) for arr in cv_arrays]
+
+        pairs, pair_weights = self._prepare_pairs(shards, frame_weights)
+        if pairs.size == 0:
+            raise ValueError(
+                "No usable lagged pairs found while bootstrapping the CV model"
+            )
+
+        concatenated = np.concatenate(standardized, axis=0)
+        vamp2_val = self._compute_weighted_vamp2(concatenated, pairs, pair_weights)
+
+        class _WhitenedIdentityCV:
+            def __init__(
+                self, mean_vec: np.ndarray, scale_vec: np.ndarray, initial_vamp2: float
+            ) -> None:
+                self.mean = np.asarray(mean_vec, dtype=np.float64)
+                self.scale = np.asarray(scale_vec, dtype=np.float64)
+                self.training_history = {"steps": [{"vamp2": float(initial_vamp2)}]}
+
+            def transform(self, X: np.ndarray) -> np.ndarray:
+                arr = np.asarray(X, dtype=np.float64)
+                if arr.ndim == 1:
+                    arr = arr.reshape(-1, 1)
+                if arr.shape[1] != self.mean.shape[0]:
+                    raise ValueError(
+                        "Input feature dimension does not match bootstrap statistics"
+                    )
+                return (arr - self.mean) / self.scale
+
+        self.cv_model = _WhitenedIdentityCV(mean, scale, vamp2_val)
+        self.trainer = SimpleNamespace(history=[{"vamp2": float(vamp2_val)}])
+        self.vamp2_history = [float(vamp2_val)]
+
+    def _compute_feature_stats(
+        self, features: Sequence[np.ndarray], frame_weights: Sequence[np.ndarray]
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        concatenated = np.concatenate(features, axis=0)
+        weights = np.concatenate([np.asarray(w, dtype=np.float64) for w in frame_weights])
+        if concatenated.shape[0] != weights.shape[0]:
+            raise ValueError("Frame weights length must match concatenated features")
+        total = float(weights.sum())
+        if not np.isfinite(total) or total <= 0.0:
+            raise ValueError("Frame weights must be finite and sum to a positive value")
+        w_norm = weights / total
+        mean = np.average(concatenated, axis=0, weights=w_norm)
+        centered = concatenated - mean
+        var = np.average(centered * centered, axis=0, weights=w_norm)
+        scale = np.sqrt(var) + const.NUMERIC_MIN_POSITIVE
+        return mean.astype(np.float64), scale.astype(np.float64)
+
+    def _standardize_features(
+        self, arr: np.ndarray, mean: np.ndarray, scale: np.ndarray
+    ) -> np.ndarray:
+        if arr.shape[1] != mean.shape[0]:
+            raise ValueError("Feature dimension mismatch during standardization")
+        return (np.asarray(arr, dtype=np.float64) - mean) / scale
+
+    def _prepare_pairs(
+        self, shards: Sequence[Shard], frame_weights: Sequence[np.ndarray]
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        pairs_all: List[np.ndarray] = []
+        weights_all: List[np.ndarray] = []
+        offset = 0
+        for shard, weights in zip(shards, frame_weights):
+            pairs = self.pair_builder.make_pairs(shard)
+            if pairs.size:
+                w = np.asarray(weights, dtype=np.float64)
+                pair_w = np.sqrt(w[pairs[:, 0]] * w[pairs[:, 1]])
+                pairs_all.append(pairs + offset)
+                weights_all.append(pair_w)
+            offset += shard.meta.n_frames
+
+        if not pairs_all:
+            return (
+                np.empty((0, 2), dtype=np.int64),
+                np.empty((0,), dtype=np.float64),
+            )
+
+        merged_pairs = np.vstack(pairs_all).astype(np.int64, copy=False)
+        merged_weights = np.concatenate(weights_all).astype(np.float64, copy=False)
+        total_weight = float(merged_weights.sum())
+        if not np.isfinite(total_weight) or total_weight <= 0.0:
+            raise ValueError("Pair weights must be finite and positive")
+        merged_weights = merged_weights / total_weight
+        return merged_pairs, merged_weights
+
+    def _compute_weighted_vamp2(
+        self, concatenated_cv: np.ndarray, pairs: np.ndarray, pair_weights: np.ndarray
+    ) -> float:
+        if pairs.shape[0] == 0:
+            raise ValueError("Cannot compute VAMP-2 without at least one lagged pair")
+        if pair_weights.shape[0] != pairs.shape[0]:
+            raise ValueError("Pair weights must align with provided pairs")
+        if concatenated_cv.ndim == 1:
+            concatenated_cv = concatenated_cv.reshape(-1, 1)
+        A = concatenated_cv[pairs[:, 0]]
+        B = concatenated_cv[pairs[:, 1]]
+        if A.shape != B.shape:
+            raise ValueError("Paired CV arrays must share the same shape")
+
+        w = np.asarray(pair_weights, dtype=np.float64).reshape(-1)
+        total = float(w.sum())
+        if not np.isfinite(total) or total <= 0.0:
+            raise ValueError("Pair weights must sum to a positive finite value")
+        w = w / total
+
+        mean_A = np.average(A, axis=0, weights=w)
+        mean_B = np.average(B, axis=0, weights=w)
+        A_c = A - mean_A
+        B_c = B - mean_B
+        A_std = np.sqrt(np.average(A_c * A_c, axis=0, weights=w)) + const.NUMERIC_MIN_POSITIVE
+        B_std = np.sqrt(np.average(B_c * B_c, axis=0, weights=w)) + const.NUMERIC_MIN_POSITIVE
+        A_norm = A_c / A_std
+        B_norm = B_c / B_std
+        corr = np.average(A_norm * B_norm, axis=0, weights=w)
+        return float(np.mean(corr * corr))
+
+    def _record_vamp2_history(self, vamp2_val: float) -> None:
+        self.vamp2_history.append(float(vamp2_val))
+        trainer = getattr(self, "trainer", None)
+        if trainer is not None:
+            history = list(getattr(trainer, "history", []))
+            history.append({"vamp2": float(vamp2_val)})
+            trainer.history = history
+
+        model = getattr(self, "cv_model", None)
+        if model is not None:
+            hist = getattr(model, "training_history", None)
+            if not isinstance(hist, dict):
+                hist = {}
+            steps = list(hist.get("steps", []))
+            steps.append({"vamp2": float(vamp2_val)})
+            hist["steps"] = steps
+            try:
+                model.training_history = hist
+            except Exception:
+                logger.debug(
+                    "CV model does not expose mutable training_history; skipping vamp2 log"
+                )
+
     def _compute_frame_weights(self, shards: Sequence[Shard]) -> List[np.ndarray]:
         if self.reweighter is not None:
             self.last_weights = self.reweighter.frame_weights(shards)
@@ -490,18 +772,29 @@ class JointWorkflow:
         return report
 
     def _extract_vamp2_series(self) -> List[float]:
-        history = []
+        history: List[float] = []
+        seen: set[float] = set()
+
+        def _append(val: float | None) -> None:
+            if val is None:
+                return
+            fval = float(val)
+            if fval not in seen:
+                history.append(fval)
+                seen.add(fval)
+
+        for val in getattr(self, "vamp2_history", []):
+            _append(val)
         trainer = getattr(self, "trainer", None)
         if trainer is not None:
             for entry in getattr(trainer, "history", []):
                 val = entry.get("vamp2") if isinstance(entry, dict) else None
-                if val is not None:
-                    history.append(float(val))
+                _append(val)
         model_hist = getattr(getattr(self, "cv_model", None), "training_history", None)
         if isinstance(model_hist, dict):
             for entry in model_hist.get("steps", []):
-                if isinstance(entry, dict) and entry.get("vamp2") is not None:
-                    history.append(float(entry["vamp2"]))
+                if isinstance(entry, dict):
+                    _append(entry.get("vamp2"))
         return history
 
     def _extract_its_array(self) -> np.ndarray:

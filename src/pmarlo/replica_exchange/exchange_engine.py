@@ -72,7 +72,7 @@ class ExchangeEngine:
         beta_i = 1.0 / (gas_constant * temp_i)
         beta_j = 1.0 / (gas_constant * temp_j)
 
-        delta = (beta_i - beta_j) * (energy_j_value - energy_i_value)
+        delta = (beta_i - beta_j) * (energy_i_value - energy_j_value)
         return float(delta)
 
     @staticmethod
@@ -172,7 +172,7 @@ class ExchangeEngine:
 
         # Vectorize: dBeta = beta[j] - beta[i], dU = U[j] - U[i]
         dBeta = beta_j - beta_i
-        dU = energies_j - energies_i
+        dU = energies_i - energies_j
 
         # Vectorize: delta = -dBeta * dU (note: sign convention)
         deltas = -dBeta * dU
