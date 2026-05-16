@@ -7,7 +7,7 @@ from typing import Any, Iterable, Sequence
 
 import numpy as np
 from scipy.sparse import csr_matrix
-from scipy.sparse.csgraph import strongly_connected_components
+from scipy.sparse.csgraph import connected_components
 
 __all__ = ["SCCSummary", "analyse_scc", "compute_component_coverage"]
 
@@ -95,7 +95,7 @@ def analyse_scc(
         )
 
     adjacency_matrix = csr_matrix(counts > 0.0)
-    n_components, labels = strongly_connected_components(
+    n_components, labels = connected_components(
         csgraph=adjacency_matrix, directed=True, connection="strong"
     )
 

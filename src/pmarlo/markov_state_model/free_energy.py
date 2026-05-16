@@ -421,13 +421,12 @@ def generate_2d_fes(  # noqa: C901
     temperature: float = 300.0,
     periodic: Tuple[bool, bool] = (False, False),
     ranges: Optional[Tuple[Tuple[float, float], Tuple[float, float]]] = None,
-    smooth: bool = False,
-    inpaint: bool = False,
     min_count: int = 1,
     kde_bw_deg: Tuple[float, float] = (20.0, 20.0),
     epsilon: float = const.NUMERIC_ABSOLUTE_TOLERANCE,
     config: Any | None = None,
     grid_strategy: str = "adaptive",
+    fes_smoothing_mode: str | None = None,
 ) -> FESResult:
     """Generate a two-dimensional free-energy surface (FES).
 
@@ -449,10 +448,6 @@ def generate_2d_fes(  # noqa: C901
         Flags indicating whether each dimension is periodic.
     ranges
         Optional histogram ranges as ((xmin, xmax), (ymin, ymax)).
-    smooth
-        If True, smooth the density with a periodic KDE (deprecated).
-    inpaint
-        If True, fill empty bins using KDE estimate (deprecated).
     min_count
         Histogram bins with fewer samples are marked as empty.
     kde_bw_deg
@@ -461,6 +456,8 @@ def generate_2d_fes(  # noqa: C901
         Numerical tolerance for bandwidth calculations.
     config
         Optional configuration object supplying fes_* smoothing parameters.
+    fes_smoothing_mode
+        Smoothing mode: "never" (default), "auto", or "always". Overrides config.
     grid_strategy
         Strategy for grid extent selection: "fixed" uses full data range,
         "adaptive" crops to [q1, q99] percentiles and adjusts bin counts
@@ -746,32 +743,8 @@ def generate_2d_fes(  # noqa: C901
                 stacklevel=2,
             )
 
-    mode_cfg = _config_get("fes_smoothing_mode", None)
-    if mode_cfg is None:
-        if smooth:
-            warnings.warn(
-                "The 'smooth' argument is deprecated; use fes_smoothing_mode instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            mode = "always"
-        elif inpaint:
-            warnings.warn(
-                "The 'inpaint' argument is deprecated; use fes_smoothing_mode='auto' instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            mode = "auto"
-        else:
-            mode = "never"
-    else:
-        mode = str(mode_cfg).lower()
-        if smooth or inpaint:
-            warnings.warn(
-                "The smooth/inpaint arguments are ignored when fes_smoothing_mode is provided.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
+    mode_cfg = fes_smoothing_mode if fes_smoothing_mode is not None else _config_get("fes_smoothing_mode", None)
+    mode = str(mode_cfg).lower() if mode_cfg is not None else "never"
     if mode not in {"never", "auto", "always"}:
         raise ValueError(f"Unknown fes_smoothing_mode={mode!r}")
 

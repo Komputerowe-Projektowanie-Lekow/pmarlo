@@ -23,10 +23,8 @@ from pmarlo.utils.seed import choose_sim_seed, extract_seed
 from .clustering import cluster_microstates
 from .conformations import (
     find_conformations,
-    find_conformations_with_msm,
     sanitize_label_for_filename,
 )
-from .demux import demultiplex_run
 from .feature_profiles import (
     FEATURE_PROFILES,
     FeatureProfile,
@@ -74,9 +72,6 @@ from .trajectory_utils import (
 )
 from .workflow import build_joint_workflow
 
-# Backward compatibility for code importing the underscored helper directly.
-_trig_expand_periodic = trig_expand_periodic
-
 __all__ = [
     "align_trajectory",
     "analyze_msm",
@@ -92,7 +87,6 @@ __all__ = [
     "compute_universal_embedding",
     "compute_universal_metric",
     "deep_merge",
-    "demultiplex_run",
     "emit_shards_rg_rmsd",
     "emit_shards_rg_rmsd_windowed",
     "extract_last_frame_to_pdb",
@@ -102,7 +96,6 @@ __all__ = [
     "FEATURE_PROFILES",
     "FeatureProfile",
     "find_conformations",
-    "find_conformations_with_msm",
     "generate_free_energy_surface",
     "generate_fes_and_pick_minima",
     "get_feature_profile_info",
@@ -130,7 +123,6 @@ __all__ = [
     "trig_expand_periodic",
     "validate_profile_for_cv_biasing",
     "write_json",
-    "_trig_expand_periodic",
     "_build_opts",
     "_fes_build_phi_psi_maps",
     "_fes_pair_from_phi_psi_maps",

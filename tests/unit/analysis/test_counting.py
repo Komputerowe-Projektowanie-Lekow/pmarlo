@@ -2,6 +2,7 @@
 
 from typing import List
 
+import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
@@ -52,3 +53,14 @@ def test_expected_pairs_supports_per_shard_stride(
     expected = expected_pairs(lengths, tau, strides)
     simulated = _simulate_pairs(lengths, tau, strides)
     assert expected == simulated
+
+
+def test_expected_pairs_rejects_invalid_lengths_and_strides() -> None:
+    with pytest.raises(ValueError, match="lengths must be non-negative"):
+        expected_pairs([5, -1], tau=1)
+
+    with pytest.raises(ValueError, match="stride values must be positive"):
+        expected_pairs([5], tau=1, stride=0)
+
+    with pytest.raises(ValueError, match="stride iterable must not be empty"):
+        expected_pairs([5], tau=1, stride=[])

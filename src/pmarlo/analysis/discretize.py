@@ -183,6 +183,9 @@ def _extract_feature_schema(split: Any, n_features: int) -> Dict[str, Any]:
         if not names and hasattr(split, "columns"):
             names = _coerce_feature_names(getattr(split, "columns"))
 
+    if not names:
+        names = [f"feature_{idx}" for idx in range(n_features)]
+
     return {"names": names, "n_features": int(n_features)}
 
 
@@ -929,7 +932,7 @@ def _prune_zero_rows_if_needed(
 
     for split_name, labels in list(assignments.items()):
         remapped = _remap_states(
-            np.asarray(labels, dtype=np.int32, copy=False), mapping
+            np.array(labels, dtype=np.int32, copy=False), mapping
         )
         assignments[split_name] = remapped
         mask = assignment_masks.get(split_name)
@@ -1028,7 +1031,7 @@ def discretize_dataset(
 
     n_states = max_state + 1 if max_state >= 0 else 0
 
-    train_labels = np.asarray(assignments[train_key], dtype=np.int32, copy=False)
+    train_labels = np.array(assignments[train_key], dtype=np.int32, copy=False)
     train_mask = assignment_masks[train_key]
     _ensure_train_assignments(train_key, train_data, discretizer, train_mask)
 

@@ -24,8 +24,7 @@ def test_kde_blending_reduces_holes():
         bins=(42, 42),
         temperature=300.0,
         periodic=(True, True),
-        smooth=False,
-        inpaint=False,
+        fes_smoothing_mode="never",
         min_count=5,
     )
     kde = generate_2d_fes(
@@ -34,8 +33,7 @@ def test_kde_blending_reduces_holes():
         bins=(42, 42),
         temperature=300.0,
         periodic=(True, True),
-        smooth=True,
-        inpaint=True,
+        fes_smoothing_mode="always",
         min_count=5,
     )
     holes_hist = np.isnan(hist.F).sum()
@@ -55,8 +53,6 @@ def test_ring_continuity_across_boundaries():
         temperature=300.0,
         periodic=(True, True),
         ranges=((-180.0, 180.0), (-180.0, 180.0)),
-        smooth=False,
-        inpaint=False,
         min_count=1,
     )
     res2 = generate_2d_fes(
@@ -66,8 +62,6 @@ def test_ring_continuity_across_boundaries():
         temperature=300.0,
         periodic=(True, True),
         ranges=((-180.0, 180.0), (-180.0, 180.0)),
-        smooth=False,
-        inpaint=False,
         min_count=1,
     )
     assert np.allclose(res1.F, res2.F, equal_nan=True)

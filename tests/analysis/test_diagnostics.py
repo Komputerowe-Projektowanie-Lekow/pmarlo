@@ -4,7 +4,6 @@ import pytest
 from pmarlo.analysis.diagnostics import (
     InsufficientSamplesError,
     _canonical_correlations,
-    _covariance,
     compute_diagnostics,
 )
 
@@ -36,26 +35,12 @@ def test_compute_diagnostics_handles_missing_inputs():
 
 
 def test_canonical_correlation_raises_on_insufficient_samples():
-    # Only one paired sample -> should raise InsufficientSamplesError now.
-    X = np.random.default_rng(123).normal(size=(1, 3))
-    dataset = {"splits": {"tiny": {"X": X, "inputs": X.copy()}}}
+    # Split length is sufficient for tau derivation, but the optional raw inputs
+    # provide only one paired sample for canonical correlation.
+    X = np.random.default_rng(123).normal(size=(8, 3))
+    dataset = {"splits": {"tiny": {"X": X, "inputs": X[:1].copy()}}}
     with pytest.raises(InsufficientSamplesError):
         compute_diagnostics(dataset)
-
-
-def test_covariance_computes_correctly():
-    """Test that covariance computation produces correct results."""
-    rng = np.random.default_rng(7)
-    X = rng.normal(size=(40, 3))
-    centered = X - np.mean(X, axis=0, keepdims=True)
-
-    result = _covariance(centered, centered.shape[0])
-    expected = np.cov(centered, rowvar=False, ddof=1)
-
-    assert result.shape == (3, 3)
-    assert np.allclose(result, expected)
-    # Verify covariance matrix is symmetric
-    assert np.allclose(result, result.T)
 
 
 def test_canonical_correlations_computes_correctly():

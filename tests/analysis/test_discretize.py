@@ -15,14 +15,12 @@ def _make_dataset(train, val=None, test=None):
 
 
 def test_prepare_msm_discretization_kmeans_assigns_all_splits():
-    train = np.array([[0.0, 0.0], [0.1, -0.1], [4.0, 4.0], [4.2, 3.9]])
+    train = np.array([[0.0, 0.0], [4.0, 4.0], [0.1, -0.1], [4.2, 3.9]])
     val = np.array([[0.05, 0.05], [4.1, 4.1]])
     test = np.array([[0.2, -0.05], [4.05, 4.02]])
     dataset = _make_dataset(train, val=val, test=test)
     dataset["__shards__"] = [
-        {"id": "s0", "start": 0, "stop": 2},
-        {"id": "s1", "start": 2, "stop": 3},
-        {"id": "s2", "start": 3, "stop": 4},
+        {"id": "s0", "split": "train", "length": train.shape[0]},
     ]
 
     result = prepare_msm_discretization(
@@ -39,11 +37,11 @@ def test_prepare_msm_discretization_kmeans_assigns_all_splits():
     assert result.feature_schema["n_features"] == train.shape[1]
     assert "feature_schema" in result.fingerprint
     assert result.fingerprint["feature_schema"]["n_features"] == train.shape[1]
-    assert result.segment_lengths["train"] == [2, 1, 1]
-    assert result.segment_strides["train"] == [1, 1, 1]
-    assert result.counted_pairs["train"] == result.expected_pairs["train"] == 1
-    assert result.fingerprint["expected_pairs"] == 1
-    assert result.fingerprint["counted_pairs"] == 1
+    assert result.segment_lengths["train"] == [train.shape[0]]
+    assert result.segment_strides["train"] == [1]
+    assert result.counted_pairs["train"] == result.expected_pairs["train"] == 3
+    assert result.fingerprint["expected_pairs"] == 3
+    assert result.fingerprint["counted_pairs"] == 3
     assert "__artifacts__" in dataset
     artifacts = dataset["__artifacts__"]
     assert isinstance(artifacts, dict)
@@ -53,10 +51,10 @@ def test_prepare_msm_discretization_kmeans_assigns_all_splits():
     assert "expected_pairs" in artifacts
     assert "counted_pairs" in artifacts
     assert "segment_strides" in artifacts
-    assert artifacts["segment_lengths"]["train"] == [2, 1, 1]
-    assert artifacts["expected_pairs"]["train"] == 1
-    assert artifacts["counted_pairs"]["train"] == 1
-    assert artifacts["segment_strides"]["train"] == [1, 1, 1]
+    assert artifacts["segment_lengths"]["train"] == [train.shape[0]]
+    assert artifacts["expected_pairs"]["train"] == 3
+    assert artifacts["counted_pairs"]["train"] == 3
+    assert artifacts["segment_strides"]["train"] == [1]
     assignment_summary = artifacts["state_assignments"]
     assert assignment_summary["train"]["n_assigned"] == train.shape[0]
     assert assignment_summary["train"]["total"] == train.shape[0]

@@ -1,6 +1,6 @@
 ﻿import pytest
 
-from src.pmarlo.analysis.diagnostics import derive_taus
+from pmarlo.analysis.diagnostics import derive_taus
 
 
 def test_derive_taus_geometric_basic():

@@ -32,11 +32,6 @@ class PairBuilder:
             raise ValueError("tau_steps must be > 0")
         self._tau = tau_int
 
-    def update_tau(self, tau_steps: int) -> None:
-        """Alias for :meth:`set_tau` for backwards compatibility."""
-
-        self.set_tau(tau_steps)
-
     def make_pairs(self, shard: Shard) -> np.ndarray:
         """Return contiguous pairs within a shard with no boundary crossings."""
 

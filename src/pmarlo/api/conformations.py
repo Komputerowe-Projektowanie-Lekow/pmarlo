@@ -157,7 +157,7 @@ def find_conformations(  # noqa: C901
         requested_pair=requested_pair,
         bins=(adaptive_bins, adaptive_bins),
         temperature=300.0,
-        smooth=True,
+        fes_smoothing_mode="always",
         min_count=1,
         kde_bw_deg=(20.0, 20.0),
         deltaF_kJmol=3.0,
@@ -200,28 +200,3 @@ def find_conformations(  # noqa: C901
     return out
 
 
-def find_conformations_with_msm(
-    topology_pdb: str | Path,
-    trajectory_file: str | Path,
-    output_dir: str | Path,
-    feature_specs: Optional[List[str]] = None,
-    requested_pair: Optional[Tuple[str, str]] = None,
-    traj_stride: int = 1,
-    atom_selection: str | Sequence[int] | None = None,
-    chunk_size: int = 1000,
-) -> Path:
-    """One-line convenience wrapper to find representative conformations.
-
-    This is a thin alias around :func:`find_conformations` to mirror the
-    example program name and make the public API more discoverable.
-    """
-    return find_conformations(
-        topology_pdb=topology_pdb,
-        trajectory_choice=trajectory_file,
-        output_dir=output_dir,
-        feature_specs=feature_specs,
-        requested_pair=requested_pair,
-        traj_stride=traj_stride,
-        atom_selection=atom_selection,
-        chunk_size=chunk_size,
-    )

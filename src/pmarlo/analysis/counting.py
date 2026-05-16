@@ -33,7 +33,9 @@ def expected_pairs(
     if tau < 0:
         raise ValueError("tau must be non-negative")
 
-    length_list = [max(0, int(length)) for length in lengths]
+    length_list = [int(length) for length in lengths]
+    if any(length < 0 for length in length_list):
+        raise ValueError("lengths must be non-negative")
     if not length_list or not any(length_list):
         return 0
 
@@ -41,12 +43,13 @@ def expected_pairs(
         raise TypeError("stride must be an integer or iterable of integers")
 
     if isinstance(stride, Iterable):
-        stride_values = [1 if value is None else int(value) for value in stride]
+        stride_values = [int(value) for value in stride]
     else:
-        stride_values = [max(1, int(stride))]
+        stride_values = [int(stride)]
     if not stride_values:
-        stride_values = [1]
-    stride_values = [max(1, int(value)) for value in stride_values]
+        raise ValueError("stride iterable must not be empty")
+    if any(value <= 0 for value in stride_values):
+        raise ValueError("stride values must be positive")
 
     total_pairs = 0
     last_stride = stride_values[-1]

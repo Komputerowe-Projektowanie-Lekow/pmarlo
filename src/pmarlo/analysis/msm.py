@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Mapping, MutableMapping
 
 import numpy as np
@@ -10,6 +11,8 @@ from .discretize import MSMDiscretizationResult, discretize_dataset
 from .project_cv import apply_whitening_from_metadata
 
 DatasetLike = MutableMapping[str, Any]
+
+logger = logging.getLogger("pmarlo")
 
 
 def ensure_msm_inputs_whitened(dataset: DatasetLike | Mapping[str, Any]) -> bool:

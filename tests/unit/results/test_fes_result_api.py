@@ -28,7 +28,7 @@ def test_generate_fes_and_pick_minima_runs():
         requested_pair=("a", "b"),
         bins=(10, 10),
         temperature=300.0,
-        smooth=True,
+        fes_smoothing_mode="always",
         min_count=1,
         kde_bw_deg=(20.0, 20.0),
         deltaF_kJmol=1.0,

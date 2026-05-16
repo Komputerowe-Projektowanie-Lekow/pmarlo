@@ -12,10 +12,15 @@ final.xml
 
 
 # Build and distribution files
+/build/
+/dist/
 /experiments_output/msm/*
 /experiments_output/replica_exchange/*
 /experiments_output/simulation/*
 /experiments_output_all/
+/tmp_shards/
+benchmark.prof
+benchmark_results.json
 
 
 /mdfiles/prompts.md

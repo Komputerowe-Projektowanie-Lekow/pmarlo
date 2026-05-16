@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
-from pmarlo.analysis.fes import _smooth_sparse_bins
+from pmarlo.analysis.fes import _smooth_sparse_bins, select_highest_variance_components
 
 
 def _manual_smooth_sparse_bins(
@@ -76,3 +77,15 @@ def test_smooth_sparse_bins_keeps_populated_bins() -> None:
 
     np.testing.assert_allclose(result, hist)
     assert smoothed_bins == 0
+
+
+def test_select_highest_variance_components_rejects_degenerate_inputs() -> None:
+    coords = np.column_stack(
+        (
+            np.ones(6, dtype=np.float64),
+            np.linspace(0.0, 1.0, 6, dtype=np.float64),
+        )
+    )
+
+    with pytest.raises(ValueError, match="2 non-constant CV columns"):
+        select_highest_variance_components(coords, n_components=2)

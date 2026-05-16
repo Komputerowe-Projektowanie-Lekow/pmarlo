@@ -265,7 +265,11 @@ def test_backward_pass_and_optimizer_step(benchmark):
     from torch import nn
 
     from pmarlo.features.deeptica.losses import VAMP2Loss
-    from pmarlo.features.deeptica_trainer import loops
+    from pmarlo.ml.deeptica.trainer import (
+        compute_grad_norm,
+        compute_loss_and_score,
+        prepare_batch,
+    )
 
     rng = np.random.default_rng(1234)
     feature_dim = 6
@@ -290,7 +294,7 @@ def test_backward_pass_and_optimizer_step(benchmark):
         ),
     ]
 
-    x_t, x_tau, w = loops.prepare_batch(batch, use_weights=True)
+    x_t, x_tau, w = prepare_batch(batch, use_weights=True)
 
     model = nn.Sequential(
         nn.Linear(feature_dim, 16),
@@ -308,9 +312,9 @@ def test_backward_pass_and_optimizer_step(benchmark):
         model.load_state_dict(baseline_state)
         optimizer = torch.optim.SGD(parameters, lr=0.05, momentum=0.0)
         optimizer.zero_grad(set_to_none=True)
-        loss, score = loops.compute_loss_and_score(model, loss_module, x_t, x_tau, w)
+        loss, score = compute_loss_and_score(model, loss_module, x_t, x_tau, w)
         loss.backward()
-        grad_norm = loops.compute_grad_norm(parameters)
+        grad_norm = compute_grad_norm(parameters)
         optimizer.step()
         return (
             float(loss.detach().cpu().item()),

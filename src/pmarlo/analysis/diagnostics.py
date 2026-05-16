@@ -19,14 +19,6 @@ from .project_cv import apply_whitening_from_metadata
 logger = logging.getLogger(__name__)
 
 DatasetLike = Mapping[str, Any] | MutableMapping[str, Any]
-_TAU_SEQUENCE: tuple[int, ...] = (
-    2,
-    5,
-    10,
-    20,
-    40,
-)  # historical base candidate lags retained for compatibility
-
 _MAX_TAU_FRACTION = 1.0 / 3.0
 _MIN_CK_MULTIPLIER = 2.0
 _MAX_CK_MULTIPLIER = 5.0

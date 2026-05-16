@@ -42,7 +42,8 @@ def select_highest_variance_components(
     Raises
     ------
     ValueError
-        If coords doesn't have enough dimensions or all columns are constant
+        If coords doesn't have enough dimensions or fewer than n_components
+        non-constant columns.
     """
     if coords.ndim != 2:
         raise ValueError(f"Expected 2D coordinate array, got shape {coords.shape}")
@@ -53,6 +54,10 @@ def select_highest_variance_components(
 
     if n_components < 1:
         raise ValueError("Must select at least one component")
+    if n_dims < n_components:
+        raise ValueError(
+            f"Coordinate array has {n_dims} dimensions, need {n_components}"
+        )
 
     # Compute variance for each column
     variances = np.var(coords, axis=0)
@@ -61,44 +66,26 @@ def select_highest_variance_components(
     non_const_mask = variances > 0
     non_const_indices = np.where(non_const_mask)[0]
 
-    if non_const_indices.size == 0:
-        logger.warning(
-            "[fes] All %d CV columns are constant; using first %d columns as fallback",
-            n_dims,
-            min(n_components, n_dims),
+    if non_const_indices.size < n_components:
+        raise ValueError(
+            "FES component selection requires at least "
+            f"{n_components} non-constant CV columns; found {non_const_indices.size}"
         )
-        fallback_indices = list(range(min(n_components, n_dims)))
-        return coords[:, fallback_indices], fallback_indices
 
     # Sort non-constant columns by variance (descending)
     sorted_order = non_const_indices[np.argsort(variances[non_const_indices])[::-1]]
 
-    # Select top n_components (or all available if fewer)
-    n_select = min(n_components, sorted_order.size)
-    selected_indices = sorted_order[:n_select].tolist()
-
-    # If we need more components than available, pad with duplicates of the highest-variance component
-    if n_select < n_components:
-        logger.warning(
-            "[fes] Only %d non-constant columns available, need %d; padding with duplicates",
-            n_select,
-            n_components,
-        )
-        padding = [selected_indices[0]] * (n_components - n_select)
-        selected_indices.extend(padding)
+    selected_indices = sorted_order[:n_components].tolist()
 
     selected_coords = coords[:, selected_indices]
 
     logger.info(
         "[fes] Selected components %s based on variance (variances: %s)",
         selected_indices,
-        [f"{variances[i]:.6f}" for i in selected_indices[:n_select]],
+        [f"{variances[i]:.6f}" for i in selected_indices],
     )
 
     return selected_coords, selected_indices
-
-
-_select_highest_variance_components = select_highest_variance_components
 
 
 def _normalise_weights(

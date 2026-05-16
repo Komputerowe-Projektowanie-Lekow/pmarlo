@@ -122,8 +122,6 @@ def generate_free_energy_surface(
     bins: Tuple[int, int] = (100, 100),
     temperature: float = 300.0,
     periodic: Tuple[bool, bool] = (False, False),
-    smooth: bool = False,
-    inpaint: bool = False,
     min_count: int = 1,
     kde_bw_deg: Tuple[float, float] = (20.0, 20.0),
     config: Any | None = None,
@@ -148,15 +146,10 @@ def generate_free_energy_surface(
         Simulation temperature in Kelvin.
     periodic
         Flags indicating whether each dimension is periodic.
-    smooth
-        If ``True``, smooth the density with a periodic KDE.
-    inpaint
-        If ``True``, fill empty bins using the KDE estimate.
     min_count
-        Histogram bins with fewer samples are marked as empty unless ``inpaint``
-        is ``True``.
+        Histogram bins with fewer samples are marked as empty.
     kde_bw_deg
-        Bandwidth in degrees for the periodic KDE when smoothing or inpainting.
+        Bandwidth in degrees for the periodic KDE when smoothing.
     config
         Optional configuration object supplying ``fes_*`` smoothing parameters.
     fes_smoothing_mode, fes_target_sd_kT, fes_alpha, fes_h0, fes_ess_ref,
@@ -183,16 +176,8 @@ def generate_free_energy_surface(
         grid_strategy,
     )
 
-    # Build processing options description
-    opts = []
-    if smooth:
-        opts.append(f"smooth(bw={kde_bw_deg})")
-    if inpaint:
-        opts.append("inpaint")
     if fes_smoothing_mode:
-        opts.append(f"mode={fes_smoothing_mode}")
-    if opts:
-        logger.info("[fes] Processing: %s", ", ".join(opts))
+        logger.info("[fes] Processing: mode=%s", fes_smoothing_mode)
 
     config_payload: dict[str, Any] = {}
     if isinstance(config, Mapping):
@@ -221,8 +206,6 @@ def generate_free_energy_surface(
         bins=bins,
         temperature=temperature,
         periodic=periodic,
-        smooth=smooth,
-        inpaint=inpaint,
         min_count=min_count,
         kde_bw_deg=kde_bw_deg,
         config=config_arg,
@@ -259,7 +242,7 @@ def generate_fes_and_pick_minima(
     requested_pair: Optional[Tuple[str, str]] = None,
     bins: Tuple[int, int] = (60, 60),
     temperature: float = 300.0,
-    smooth: bool = True,
+    fes_smoothing_mode: str = "always",
     min_count: int = 1,
     kde_bw_deg: Tuple[float, float] = (20.0, 20.0),
     deltaF_kJmol: float = 3.0,
@@ -300,7 +283,7 @@ def generate_fes_and_pick_minima(
         bins=bins,
         temperature=temperature,
         periodic=(per_i, per_j),
-        smooth=smooth,
+        fes_smoothing_mode=fes_smoothing_mode,
         min_count=min_count,
         kde_bw_deg=kde_bw_deg,
     )

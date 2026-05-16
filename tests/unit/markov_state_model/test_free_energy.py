@@ -28,7 +28,7 @@ def test_generate_2d_fes_reference():
     x = rng.normal(size=500)
     y = rng.normal(size=500)
     res = generate_2d_fes(
-        x, y, bins=(20, 20), temperature=300.0, smooth=False, min_count=0
+        x, y, bins=(20, 20), temperature=300.0, min_count=0
     )
     assert isinstance(res, FESResult)
 

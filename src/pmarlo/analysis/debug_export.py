@@ -7,13 +7,14 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Mapping, Sequence, Tuple, cast
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, Sequence, cast
 
 import numpy as np
 
 from pmarlo.markov_state_model.free_energy import FESResult
 from pmarlo.utils.coercion import coerce_finite_float
 from pmarlo.utils.path_utils import ensure_directory
+from pmarlo.utils.scc import analyse_scc, compute_component_coverage
 
 from .counting import expected_pairs
 from .errors import CountingLogicError
@@ -146,10 +147,12 @@ def compute_analysis_debug(
     ]
 
     zero_rows = _count_zero_rows(counts)
-    components, component_labels = _strongly_connected_components(counts)
-    largest_size = max((len(comp) for comp in components), default=0)
-    largest_indices = max(components, key=len) if components else []
-    largest_cover = _coverage_fraction(state_counts, largest_indices)
+    scc = analyse_scc(counts)
+    components = [component.astype(int).tolist() for component in scc.components]
+    component_labels = scc.component_labels.astype(int)
+    largest_indices = scc.largest_component.astype(int).tolist()
+    largest_size = int(scc.largest_component.size)
+    largest_cover = compute_component_coverage(state_counts, largest_indices)
     diag_mass_val = _transition_diag_mass(counts)
 
     # Compute dwell time statistics
@@ -749,89 +752,6 @@ def _transition_diag_mass(counts: np.ndarray) -> float:
         denom = np.where(row_sum == 0.0, 1.0, row_sum)
         T = counts / denom
     return float(np.trace(T) / T.shape[0]) if T.size else float("nan")
-
-
-class _TarjanSCC:
-    """Tarjan strongly connected components solver with minimal state."""
-
-    def __init__(self, adjacency: Sequence[Sequence[int]]) -> None:
-        self.adjacency = adjacency
-        self.n = len(adjacency)
-        self.index = 0
-        self.indices = np.full(self.n, -1, dtype=int)
-        self.lowlinks = np.zeros(self.n, dtype=int)
-        self.on_stack = np.zeros(self.n, dtype=bool)
-        self.stack: List[int] = []
-        self.components: List[List[int]] = []
-        self.labels = np.full(self.n, -1, dtype=int)
-
-    def run(self) -> Tuple[List[List[int]], np.ndarray]:
-        for v in range(self.n):
-            if self.indices[v] == -1:
-                self._visit(v)
-        return self.components, self.labels
-
-    def _visit(self, v: int) -> None:
-        self.indices[v] = self.index
-        self.lowlinks[v] = self.index
-        self.index += 1
-        self.stack.append(v)
-        self.on_stack[v] = True
-
-        for w in self.adjacency[v]:
-            if self.indices[w] == -1:
-                self._visit(w)
-                self.lowlinks[v] = min(self.lowlinks[v], self.lowlinks[w])
-            elif self.on_stack[w]:
-                self.lowlinks[v] = min(self.lowlinks[v], self.indices[w])
-
-        if self.lowlinks[v] == self.indices[v]:
-            component: List[int] = []
-            while True:
-                w = self.stack.pop()
-                self.on_stack[w] = False
-                component.append(w)
-                if w == v:
-                    break
-            comp_idx = len(self.components)
-            for node in component:
-                self.labels[node] = comp_idx
-            self.components.append(component)
-
-
-def _strongly_connected_components(
-    counts: np.ndarray,
-) -> Tuple[List[List[int]], np.ndarray]:
-    n = int(counts.shape[0])
-    if n == 0:
-        return [], np.empty((0,), dtype=int)
-
-    # Build adjacency list, checking if there are any transitions at all
-    adjacency = [np.where(counts[i] > 0.0)[0].astype(int).tolist() for i in range(n)]
-
-    # Check if all states are isolated (no transitions)
-    total_transitions = sum(len(neighbors) for neighbors in adjacency)
-    if total_transitions == 0:
-        # Every state is its own component (all isolated)
-        components = [[i] for i in range(n)]
-        labels = np.arange(n, dtype=int)
-        return components, labels
-
-    solver = _TarjanSCC(adjacency)
-    return solver.run()
-
-
-def _coverage_fraction(
-    state_counts: np.ndarray,
-    indices: Sequence[int],
-) -> float | None:
-    if state_counts.size == 0:
-        return None
-    total = float(state_counts.sum())
-    if total <= 0.0:
-        return None
-    in_component = float(state_counts[indices].sum()) if indices else 0.0
-    return in_component / total
 
 
 def _maybe_export_fes(

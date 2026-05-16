@@ -3,7 +3,6 @@ from __future__ import annotations
 """Utilities for maintaining shard indexes backed by strict metadata."""
 
 import json
-import warnings
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, cast
 
@@ -13,16 +12,12 @@ from pmarlo.shards.id import canonical_shard_id
 from pmarlo.shards.meta import load_shard_meta
 from pmarlo.utils.path_utils import ensure_directory
 
-from .shard_id import ShardId
-
 INDEX_VERSION = const.SHARD_INDEX_VERSION
 
 __all__ = [
     "rescan_shards",
     "prune_missing_shards",
     "ShardRegistry",
-    "parse_shard_json_filename",
-    "build_shard_id_from_json_fallback",
 ]
 
 
@@ -35,40 +30,6 @@ def _collect_json_paths(paths: Iterable[Path]) -> List[Path]:
         elif path.suffix.lower() == ".json":
             collected.append(path)
     return collected
-
-
-def parse_shard_json_filename(json_path: Path) -> Dict[str, object]:
-    """Deprecated shim retained for backwards compatibility."""
-
-    warnings.warn(
-        "parse_shard_json_filename is deprecated; use pmarlo.shards.meta.load_shard_meta",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    meta = load_shard_meta(json_path)
-    provenance = meta.provenance or {}
-    return {
-        "canonical_id": canonical_shard_id(meta),
-        "temperature_K": meta.temperature_K,
-        "replica_id": meta.replica_id,
-        "segment_id": meta.segment_id,
-        "run_id": provenance.get("run_id") or provenance.get("run_uid") or "",
-        "kind": provenance.get("kind") or provenance.get("source_kind") or "demux",
-    }
-
-
-def build_shard_id_from_json_fallback(
-    json_path: Path, dataset_hash: str = ""
-) -> ShardId:
-    """Deprecated helper returning ``ShardId`` built from strict metadata."""
-
-    warnings.warn(
-        "build_shard_id_from_json_fallback is deprecated; use ShardId.from_meta",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    meta = load_shard_meta(json_path)
-    return ShardId.from_meta(meta, json_path, dataset_hash)
 
 
 def rescan_shards(

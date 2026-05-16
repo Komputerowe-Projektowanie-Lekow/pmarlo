@@ -366,7 +366,7 @@ def analyze_msm(  # noqa: C901
                     bins=(int(adaptive_bins), int(adaptive_bins)),
                     temperature=300.0,
                     periodic=(False, False),
-                    smooth=True,
+                    fes_smoothing_mode="always",
                     min_count=1,
                 )
                 _ = save_fes_contour(

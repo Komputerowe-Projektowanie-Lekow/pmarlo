@@ -1,4 +1,4 @@
-"""Compatibility-friendly shard identifier utilities."""
+"""Shard identifier utilities."""
 
 from __future__ import annotations
 
@@ -55,12 +55,6 @@ class ShardId:
         if self.meta is not None:
             return str(self.meta.shard_id)
         return self.canonical()
-
-    @property
-    def segment_id(self) -> int:
-        """Backwards-compatible alias for the local segment index."""
-
-        return int(self.local_index)
 
     @classmethod
     def from_meta(

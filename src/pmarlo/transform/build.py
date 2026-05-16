@@ -53,13 +53,10 @@ def _load_or_train_model(
     cfg: Any,
     *,
     weights: Optional[np.ndarray] = None,
-    model_dir: Optional[str] = None,  # noqa: ARG001 - compatibility shim
-    model_prefix: Optional[str] = None,  # noqa: ARG001 - compatibility shim
     train_fn: Optional[Callable[..., Any]] = None,
 ) -> Any:
     """Return a Deep-TICA model, training one when persistence is unavailable."""
 
-    del model_dir, model_prefix  # retained for forward-compatibility
     if train_fn is None:
         from pmarlo.features.deeptica import train_deeptica as _train
 
@@ -108,14 +105,6 @@ def _is_demux_shard(path: Path, meta: Optional[Dict[str, Any]] = None) -> bool:
                 if isinstance(raw, str) and "demux" in raw.lower():
                     return True
     return "demux" in path.stem.lower()
-
-
-def _collect_demux_temperatures(meta: Mapping[str, Any] | None) -> List[float]:
-    """Compatibility shim delegating to the shared temperature collector."""
-
-    return list(
-        collect_temperature_values(meta, dedupe_tol=const.NUMERIC_PROGRESS_MIN_FRACTION)
-    )
 
 
 def _temperature_matches_target(

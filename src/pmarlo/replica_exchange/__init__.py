@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from .demux_compat import ExchangeRecord, parse_exchange_log, parse_temperature_ladder
 from .replica_exchange import ReplicaExchange
 from .replica_setup import (
     MinimizedState,
@@ -20,9 +19,6 @@ from .simulation import (
 )
 
 __all__ = [
-    "ExchangeRecord",
-    "parse_temperature_ladder",
-    "parse_exchange_log",
     "ReplicaExchange",
     "MinimizedState",
     "MinimizedStateCache",
