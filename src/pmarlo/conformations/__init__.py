@@ -23,8 +23,20 @@ Usage:
 
 from __future__ import annotations
 
-from importlib import import_module
-from typing import Any
+from .finder import find_conformations
+from .kinetic_importance import KineticImportanceScore
+from .representative_picker import RepresentativePicker
+from .results import ConformationSet, KISResult, TPTResult, UncertaintyResult
+from .state_detection import StateDetector
+from .tpt_analysis import TPTAnalysis
+from .uncertainty import UncertaintyQuantifier
+from .visualizations import (
+    plot_committors,
+    plot_flux_network,
+    plot_pathways,
+    plot_pcca_states_on_fes,
+    plot_tpt_summary,
+)
 
 __all__ = [
     "find_conformations",
@@ -43,95 +55,6 @@ __all__ = [
     "plot_pathways",
     "plot_pcca_states_on_fes",
 ]
-
-_EXPORTS: dict[str, tuple[str, str]] = {
-    "find_conformations": (
-        "pmarlo.conformations.finder",
-        "find_conformations",
-    ),
-    "TPTAnalysis": (
-        "pmarlo.conformations.tpt_analysis",
-        "TPTAnalysis",
-    ),
-    "KineticImportanceScore": (
-        "pmarlo.conformations.kinetic_importance",
-        "KineticImportanceScore",
-    ),
-    "ConformationSet": (
-        "pmarlo.conformations.results",
-        "ConformationSet",
-    ),
-    "StateDetector": (
-        "pmarlo.conformations.state_detection",
-        "StateDetector",
-    ),
-    "RepresentativePicker": (
-        "pmarlo.conformations.representative_picker",
-        "RepresentativePicker",
-    ),
-    "UncertaintyQuantifier": (
-        "pmarlo.conformations.uncertainty",
-        "UncertaintyQuantifier",
-    ),
-    "TPTResult": (
-        "pmarlo.conformations.results",
-        "TPTResult",
-    ),
-    "KISResult": (
-        "pmarlo.conformations.results",
-        "KISResult",
-    ),
-    "UncertaintyResult": (
-        "pmarlo.conformations.results",
-        "UncertaintyResult",
-    ),
-    "plot_tpt_summary": (
-        "pmarlo.conformations.visualizations",
-        "plot_tpt_summary",
-    ),
-    "plot_committors": (
-        "pmarlo.conformations.visualizations",
-        "plot_committors",
-    ),
-    "plot_flux_network": (
-        "pmarlo.conformations.visualizations",
-        "plot_flux_network",
-    ),
-    "plot_pathways": (
-        "pmarlo.conformations.visualizations",
-        "plot_pathways",
-    ),
-    "plot_pcca_states_on_fes": (
-        "pmarlo.conformations.visualizations",
-        "plot_pcca_states_on_fes",
-    ),
-}
-
-
-def __getattr__(name: str) -> Any:
-    """Lazy import to avoid loading heavy dependencies at package import."""
-    try:
-        module_name, attr_name = _EXPORTS[name]
-    except KeyError:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
-
-    try:
-        module = import_module(module_name)
-    except Exception as exc:
-        raise ImportError(
-            f"Failed to import {module_name!r} required for {name!r}. "
-            f"Ensure deeptime and scikit-learn are installed: {exc}"
-        ) from exc
-
-    try:
-        value = getattr(module, attr_name)
-    except AttributeError as exc:
-        raise ImportError(
-            f"Module {module_name!r} does not expose attribute {attr_name!r}"
-        ) from exc
-
-    globals()[name] = value
-    return value
 
 
 def __dir__() -> list[str]:

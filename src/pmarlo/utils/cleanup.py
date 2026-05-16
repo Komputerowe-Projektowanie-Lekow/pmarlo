@@ -52,7 +52,7 @@ class PruneReport:
         }
 
 
-def _iter_runs(root: Path) -> Iterable[Path]:
+def _iter_runs(root: Path, report: PruneReport) -> Iterable[Path]:
     """Yield run directories under a workspace root."""
 
     sims = root / "sims"
@@ -62,9 +62,13 @@ def _iter_runs(root: Path) -> Iterable[Path]:
     for run_dir in sorted(sims.glob("run-*")):
         replica_exchange_dir = run_dir / "replica_exchange"
         if not replica_exchange_dir.exists():
-            raise FileNotFoundError(
-                f"Missing replica_exchange directory in run '{run_dir}'"
+            report.errors.append(
+                (
+                    replica_exchange_dir,
+                    f"Missing replica_exchange directory in run '{run_dir}'",
+                )
             )
+            continue
         yield run_dir
 
 
@@ -137,7 +141,7 @@ def prune_workspace(
     root = Path(root)
     rep = PruneReport(root=root)
 
-    for run in _iter_runs(root):
+    for run in _iter_runs(root, rep):
         if not _has_downstream_artifacts(root, run):
             rep.kept.append(run)
             continue

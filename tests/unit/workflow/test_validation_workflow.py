@@ -8,7 +8,6 @@ and diagnostic message formatting.
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from pmarlo.workflow.validation import (
     format_validation_report,
@@ -103,8 +102,8 @@ class TestValidateBuildResult:
             "references shards not present" in msg for msg in validation["errors"]
         )
 
-    def test_non_canonical_shard_ids_raise(self, tmp_path):
-        """Non-canonical shard identifiers should raise immediately."""
+    def test_non_canonical_shard_ids_are_reported(self, tmp_path):
+        """Non-canonical shard identifiers should be collected as validation errors."""
         run_dir = tmp_path / "run-20250906-170155"
         run_dir.mkdir()
 
@@ -113,8 +112,13 @@ class TestValidateBuildResult:
 
         build_result = {"artifacts": {"shards_used": ["demux_T300K"]}}
 
-        with pytest.raises(ValueError):
-            validate_build_result(build_result, [f])
+        validation = validate_build_result(build_result, [f])
+
+        assert validation["is_valid"] is False
+        assert any(
+            "Non-canonical shard identifier: demux_T300K" in error
+            for error in validation["errors"]
+        )
 
     def test_mixed_source_kinds(self, tmp_path):
         """Test validation with mixed demux and replica files."""
@@ -195,6 +199,30 @@ class TestValidateBuildResult:
         assert "run_id" in table_entry
         assert "source_kind" in table_entry
         assert table_entry["canonical_id"] == "run-20250906-170155:demux:T300:0"
+
+    def test_build_result_validates_embedded_fes_artifact(self, tmp_path):
+        """Build validation should include FES quality diagnostics when present."""
+        run_dir = tmp_path / "run-20250906-170155"
+        run_dir.mkdir()
+
+        f = run_dir / "demux_T300K.dcd"
+        f.touch()
+
+        build_result = {
+            "artifacts": {
+                "shards_used": ["run-20250906-170155:demux:T300:0"],
+                "F": np.array([[0.0, np.nan], [2.0, 3.0]]),
+            }
+        }
+
+        validation = validate_build_result(build_result, [f])
+
+        assert validation["is_valid"] is True
+        assert "fes_quality" in validation
+        assert any(
+            "FES quality: FES contains 1 NaN values" in warning
+            for warning in validation["warnings"]
+        )
 
 
 class TestValidateFesQuality:
@@ -376,3 +404,32 @@ class TestFormatValidationReport:
         assert "run1:replica:R0:1" in report
         assert "demux" in report
         assert "replica" in report
+
+    def test_format_shard_table_truncates_to_column_width(self):
+        """Long shard fields should not overflow their fixed report columns."""
+        long_canonical = "run-with-very-long-name:demux:T300:123456789"
+        validation_results = {
+            "is_valid": True,
+            "messages": [],
+            "warnings": [],
+            "errors": [],
+            "summary": {},
+            "shard_table": [
+                {
+                    "canonical_id": long_canonical,
+                    "run_id": "run-with-very-long-name",
+                    "source_kind": "demux",
+                    "temp_or_replica": "T300K",
+                    "source_path": "/very/long/path/to/the/source/demux_T300K.dcd",
+                },
+            ],
+        }
+
+        report = format_validation_report(validation_results)
+        row = next(line for line in report.splitlines() if "demux" in line)
+        cells = [cell.strip() for cell in row.split("|")]
+
+        assert cells[0].endswith("...")
+        assert len(cells[0]) == 32
+        assert cells[1].endswith("...")
+        assert len(cells[1]) == 15

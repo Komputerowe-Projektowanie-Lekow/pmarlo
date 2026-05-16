@@ -931,9 +931,7 @@ def _prune_zero_rows_if_needed(
     mapping[keep_mask] = np.arange(int(np.count_nonzero(keep_mask)), dtype=np.int32)
 
     for split_name, labels in list(assignments.items()):
-        remapped = _remap_states(
-            np.array(labels, dtype=np.int32, copy=False), mapping
-        )
+        remapped = _remap_states(np.array(labels, dtype=np.int32, copy=False), mapping)
         assignments[split_name] = remapped
         mask = assignment_masks.get(split_name)
         if mask is not None:

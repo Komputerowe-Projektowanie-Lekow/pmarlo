@@ -16,6 +16,15 @@ from pmarlo.io.catalog import (
     build_catalog_from_paths,
 )
 
+FES_MAX_REASONABLE_ENERGY_KT = 100.0
+FES_EMPTY_BIN_RATIO_HIGH = 0.5
+FES_EMPTY_BIN_RATIO_LOW = 0.1
+FES_MIN_ENERGY_RANGE_KT = 1.0
+REMD_MIN_TEMPERATURE_RANGE_K = 100.0
+REPORT_CANONICAL_ID_WIDTH = 32
+REPORT_RUN_ID_WIDTH = 15
+REPORT_PATH_WIDTH = 40
+
 
 def validate_build_result(
     build_result: Dict[str, Any],
@@ -67,7 +76,7 @@ def validate_build_result(
     }
 
     # Extract used canonical IDs from build result
-    used_ids = _extract_used_canonical_ids(build_result)
+    used_ids = _extract_used_canonical_ids(build_result, validation_results)
     validation_results["summary"]["used_shard_count"] = len(used_ids)
 
     # Build catalog from available paths
@@ -99,9 +108,30 @@ def validate_build_result(
     # Generate shard information table
     validation_results["shard_table"] = catalog.get_shard_info_table()
 
-    # Generate summary messages
-    total_available = len(catalog.shards)
-    total_used = len(used_ids)
+    _build_summary_messages(validation_results, usage_validation)
+
+    # Mark as invalid if there are critical issues
+    if usage_validation["extra"]:
+        validation_results["is_valid"] = False
+        validation_results["errors"].append(
+            "Build references shards not present in available data"
+        )
+
+    # Additional quality checks
+    quality_issues = _check_data_quality(build_result, catalog)
+    validation_results["warnings"].extend(quality_issues)
+
+    _validate_build_fes_artifact(build_result, validation_results)
+
+    return validation_results
+
+
+def _build_summary_messages(
+    validation_results: Dict[str, Any], usage_validation: Dict[str, Any]
+) -> None:
+    summary = validation_results["summary"]
+    total_available = summary["available_shard_count"]
+    total_used = summary["used_shard_count"]
 
     if (
         total_used == total_available
@@ -121,18 +151,42 @@ def validate_build_result(
             f"Build used {total_used} shards ({total_available} available)"
         )
 
-    # Mark as invalid if there are critical issues
-    if usage_validation["extra"]:
+
+def _validate_build_fes_artifact(
+    build_result: Dict[str, Any], validation_results: Dict[str, Any]
+) -> None:
+    fes_data = _extract_build_fes_data(build_result)
+    if fes_data is None:
+        return
+
+    fes_validation = validate_fes_quality(fes_data, build_result)
+    validation_results["fes_quality"] = fes_validation
+    validation_results["warnings"].extend(
+        f"FES quality: {warning}" for warning in fes_validation["warnings"]
+    )
+
+    if not fes_validation["is_valid"]:
         validation_results["is_valid"] = False
-        validation_results["errors"].append(
-            "Build references shards not present in available data"
+        validation_results["errors"].extend(
+            f"FES quality: {error}" for error in fes_validation["errors"]
         )
 
-    # Additional quality checks
-    quality_issues = _check_data_quality(build_result, catalog)
-    validation_results["warnings"].extend(quality_issues)
 
-    return validation_results
+def _extract_build_fes_data(build_result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    artifacts_value = build_result.get("artifacts", {})
+    if not isinstance(artifacts_value, dict):
+        return None
+    artifacts: Dict[str, Any] = artifacts_value
+
+    for key in ("fes", "values", "F"):
+        if key in artifacts:
+            return artifacts
+
+    for key in ("fes", "fes_data", "fes_artifact", "free_energy_surface"):
+        value = artifacts.get(key)
+        if isinstance(value, dict):
+            return value
+    return None
 
 
 def validate_fes_quality(
@@ -193,8 +247,11 @@ def _extract_fes_array(fes_data: Dict[str, Any]) -> np.ndarray:
 def _evaluate_nan_metrics(
     fes_array: np.ndarray, validation_results: Dict[str, Any]
 ) -> None:
+    if fes_array.size == 0:
+        return
+
     nan_count = int(np.isnan(fes_array).sum())
-    if nan_count <= 0 or fes_array.size == 0:
+    if nan_count <= 0:
         return
     nan_ratio = nan_count / fes_array.size
     validation_results["warnings"].append(
@@ -205,23 +262,22 @@ def _evaluate_nan_metrics(
 def _evaluate_empty_bins(
     fes_array: np.ndarray, validation_results: Dict[str, Any]
 ) -> None:
-    if not hasattr(fes_array, "shape") or len(fes_array.shape) != 2:
+    if len(fes_array.shape) != 2:
         return
 
-    max_reasonable_energy = 100.0  # kT units
-    empty_bins = int(np.sum(fes_array > max_reasonable_energy))
+    empty_bins = int(np.sum(fes_array > FES_MAX_REASONABLE_ENERGY_KT))
     if empty_bins <= 0 or fes_array.size == 0:
         return
 
     empty_ratio = empty_bins / fes_array.size
     validation_results["metrics"]["empty_bins_ratio"] = empty_ratio
 
-    if empty_ratio >= 0.5:
+    if empty_ratio >= FES_EMPTY_BIN_RATIO_HIGH:
         validation_results["warnings"].append(
             f"High fraction of empty FES bins ({empty_ratio:.1%}) - "
             "consider increasing sampling or adjusting bin ranges"
         )
-    elif empty_ratio >= 0.1:
+    elif empty_ratio >= FES_EMPTY_BIN_RATIO_LOW:
         validation_results["warnings"].append(
             f"empty FES bins detected ({empty_ratio:.1%}) - check sampling quality"
         )
@@ -238,15 +294,17 @@ def _assess_fes_range(
     if finite_values.size == 0:
         return
 
-    fes_range = float(np.ptp(finite_values))  # peak-to-peak
+    fes_range = float(finite_values.max() - finite_values.min())
     validation_results["metrics"]["fes_range"] = fes_range
-    if fes_range < 1.0:
+    if fes_range < FES_MIN_ENERGY_RANGE_KT:
         validation_results["warnings"].append(
             f"Narrow FES range ({fes_range:.1f} kT) - check if data covers sufficient phase space"
         )
 
 
-def _extract_used_canonical_ids(build_result: Dict[str, Any]) -> Set[str]:
+def _extract_used_canonical_ids(
+    build_result: Dict[str, Any], validation_results: Dict[str, Any]
+) -> Set[str]:
     """
     Extract canonical shard IDs from build result artifacts.
 
@@ -272,9 +330,11 @@ def _extract_used_canonical_ids(build_result: Dict[str, Any]) -> Set[str]:
             if ":" in shard_id and len(shard_id.split(":")) == 4:
                 used_ids.add(shard_id)
             else:
-                raise ValueError(
-                    f"Non-canonical shard identifier encountered: {shard_id}"
+                validation_results["is_valid"] = False
+                validation_results["errors"].append(
+                    f"Non-canonical shard identifier: {shard_id}"
                 )
+                continue
 
     return used_ids
 
@@ -310,7 +370,7 @@ def _check_data_quality(
         temps = [s.temperature_K for s in demux_shards if s.temperature_K is not None]
         if temps:
             temp_range = max(temps) - min(temps)
-            if temp_range < 100:  # Less than 100K range
+            if temp_range < REMD_MIN_TEMPERATURE_RANGE_K:
                 warnings.append(
                     f"Narrow temperature range: {min(temps)}K - {max(temps)}K. "
                     "Consider broader temperature sampling for better convergence."
@@ -386,21 +446,16 @@ def format_validation_report(validation_results: Dict[str, Any]) -> str:
         lines.append("  " + "-" * 95)
 
         for i, shard in enumerate(shard_table[:10]):
-            canonical = (
-                shard["canonical_id"][:32] + "..."
-                if len(shard["canonical_id"]) > 32
-                else shard["canonical_id"]
+            source_path = shard.get("source_path", shard.get("path", ""))
+            temp_or_replica = shard.get(
+                "temp_or_replica",
+                shard.get("temperature_K") or shard.get("replica_id", ""),
             )
-            run_id = (
-                shard["run_id"][:15] + "..."
-                if len(shard["run_id"]) > 15
-                else shard["run_id"]
+            canonical = _truncate_with_ellipsis(
+                shard["canonical_id"], REPORT_CANONICAL_ID_WIDTH
             )
-            path = (
-                shard["source_path"][-40:]
-                if len(shard["source_path"]) > 40
-                else shard["source_path"]
-            )
+            run_id = _truncate_with_ellipsis(shard["run_id"], REPORT_RUN_ID_WIDTH)
+            path = _truncate_path(source_path, REPORT_PATH_WIDTH)
 
             row_template = (
                 "  {canonical:<32} | {run_id:<15} | {kind:<5} | {temp:<10} | {path}"
@@ -410,7 +465,7 @@ def format_validation_report(validation_results: Dict[str, Any]) -> str:
                     canonical=canonical,
                     run_id=run_id,
                     kind=shard["source_kind"],
-                    temp=shard["temp_or_replica"],
+                    temp=temp_or_replica,
                     path=path,
                 )
             )
@@ -420,3 +475,19 @@ def format_validation_report(validation_results: Dict[str, Any]) -> str:
         lines.append("")
 
     return "\n".join(lines)
+
+
+def _truncate_with_ellipsis(value: str, width: int) -> str:
+    if len(value) <= width:
+        return value
+    if width <= 3:
+        return "." * width
+    return value[: width - 3] + "..."
+
+
+def _truncate_path(value: str, width: int) -> str:
+    if len(value) <= width:
+        return value
+    if width <= 3:
+        return "." * width
+    return "..." + value[-(width - 3) :]

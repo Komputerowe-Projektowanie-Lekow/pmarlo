@@ -1,6 +1,5 @@
 import logging
 import pickle
-import sys
 from pathlib import Path
 from typing import Any, Iterable, List, Literal, Optional, Protocol, Tuple
 
@@ -47,15 +46,6 @@ class ReplicaExchangeProtocol(Protocol):
     ) -> str | Path | None: ...
 
 
-def _resolve_replica_exchange_class() -> type[Any]:
-    """Allow the public API to swap the replica exchange implementation."""
-
-    module = sys.modules.get("pmarlo.api")
-    if module is not None:
-        return getattr(module, "ReplicaExchange", ReplicaExchange)
-    return ReplicaExchange
-
-
 def run_replica_exchange(
     pdb_file: str | Path,
     output_dir: str | Path,
@@ -63,7 +53,6 @@ def run_replica_exchange(
     total_steps: int,
     *,
     random_seed: int | None = None,
-    random_state: int | None = None,
     start_from_checkpoint: str | Path | None = None,
     start_from_pdb: str | Path | None = None,
     cv_model_path: str | Path | None = None,
@@ -83,10 +72,8 @@ def run_replica_exchange(
     """Run REMD and return (trajectory_files, analysis_temperatures).
 
     Attempts demultiplexing to ~300 K; falls back to per-replica trajectories.
-    When ``random_state`` or ``random_seed`` is provided, the seed is forwarded
-    to the underlying :class:`ReplicaExchange` for deterministic behavior. If
-    both are provided, ``random_state`` takes precedence for backward
-    compatibility.
+    When ``random_seed`` is provided, the seed is forwarded to the underlying
+    :class:`ReplicaExchange` for deterministic behavior.
     """
     logger.info(
         "[remd] Starting replica exchange: n_replicas=%d, total_steps=%d, pdb=%s",
@@ -101,7 +88,7 @@ def run_replica_exchange(
     equil, exchange_frequency, dcd_stride = _derive_run_plan(
         total_steps, quick_mode, exchange_frequency_steps
     )
-    seed = _resolve_simulation_seed(random_seed, random_state)
+    seed = int(random_seed) if random_seed is not None else None
 
     logger.debug(
         "[remd] Configuration: equilibration=%d steps, exchange_freq=%d steps, dcd_stride=%d, seed=%s",
@@ -123,8 +110,7 @@ def run_replica_exchange(
     )
 
     logger.info("[remd] Creating ReplicaExchange instance from config")
-    remd_cls = _resolve_replica_exchange_class()
-    remd = remd_cls.from_config(
+    remd = ReplicaExchange.from_config(
         RemdConfig(
             pdb_file=str(pdb_file),
             temperatures=temperatures,
@@ -268,19 +254,6 @@ def run_replica_exchange(
     traj_files = [str(f) for f in remd.trajectory_files]
     logger.info("[remd] Returning %d per-replica trajectories", len(traj_files))
     return traj_files, temperatures
-
-
-def _resolve_simulation_seed(
-    random_seed: int | None,
-    random_state: int | None,
-) -> int | None:
-    """Resolve a deterministic simulation seed preferring ``random_state``."""
-
-    if random_state is not None:
-        return int(random_state)
-    if random_seed is not None:
-        return int(random_seed)
-    return None
 
 
 def _derive_run_plan(

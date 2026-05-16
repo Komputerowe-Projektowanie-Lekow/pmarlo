@@ -88,7 +88,6 @@ def test_conformations_full_workflow(real_trajectory):
             auto_detect=True,
             find_transition_states=True,
             find_metastable_states=True,
-            find_pathway_intermediates=True,
             compute_kis=True,
             uncertainty_analysis=False,  # Skip for speed
             output_dir=tmpdir,

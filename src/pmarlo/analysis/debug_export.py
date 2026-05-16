@@ -24,7 +24,6 @@ __all__ = [
     "CountingLogicError",
     "compute_analysis_debug",
     "export_analysis_debug",
-    "total_pairs_from_shards",
 ]
 
 
@@ -49,39 +48,6 @@ class AnalysisDebugData:
             else 0.0
         )
         return payload
-
-
-def total_pairs_from_shards(
-    lengths: Sequence[int],
-    tau: int,
-    *,
-    count_mode: str = "sliding",
-) -> int:
-    """Predict total (t, t+tau) pairs from shard lengths.
-
-    Parameters
-    ----------
-    lengths
-        Effective lengths (number of frames considered for MSM counting)
-        for each shard.
-    tau
-        Lag time in frames.
-    count_mode
-        Counting strategy; ``"sliding"`` matches the default sliding window.
-
-    Returns
-    -------
-    int
-        Predicted number of transition pairs.
-    """
-
-    if tau < 0:
-        raise ValueError("tau must be non-negative")
-    if count_mode not in {"sliding", "strided"}:
-        raise ValueError(f"Unsupported count_mode: {count_mode}")
-
-    stride = 1 if count_mode == "sliding" else max(1, tau)
-    return expected_pairs(lengths, tau, stride)
 
 
 def compute_analysis_debug(
@@ -363,18 +329,8 @@ def export_analysis_debug(
         arrays_written.update(assignment_arrays)
         summary_payload["state_assignment_splits"] = assignment_splits
 
-    # Generate annotated plots with MSM metadata
-    plots_written = _generate_annotated_plots(
-        build_result=build_result,
-        output_dir=output_dir,
-        summary_payload=summary_payload,
-        config=config,
-    )
-    if plots_written:
-        summary_payload["plots"] = plots_written
-
     summary_path = _write_summary(output_dir, summary_payload)
-    return {"summary": summary_path, "arrays": arrays_written, "plots": plots_written}
+    return {"summary": summary_path, "arrays": arrays_written}
 
 
 # ---------------------------------------------------------------------------
@@ -923,18 +879,6 @@ def _make_json_ready(obj: Any) -> Any:
     if isinstance(obj, Path):
         return str(obj)
     return obj
-
-
-def _generate_annotated_plots(
-    *,
-    build_result: Any,
-    output_dir: Path,
-    summary_payload: Mapping[str, Any],
-    config: Mapping[str, Any] | None,
-) -> Dict[str, str]:
-    """Generate annotated plots with MSM metadata."""
-    # Placeholder implementation - extend as needed
-    return {}
 
 
 class _AnalysisJSONEncoder(json.JSONEncoder):

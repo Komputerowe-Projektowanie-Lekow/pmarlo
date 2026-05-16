@@ -157,7 +157,7 @@ class Conformation:
     """Single conformation with metadata.
 
     Attributes:
-        conformation_type: Type of conformation ('metastable', 'transition', 'tse', 'pathway')
+        conformation_type: Type of conformation ('metastable', 'transition', 'tse')
         state_id: Microstate ID in the MSM
         macrostate_id: Macrostate ID (if applicable)
         frame_index: Global frame index in concatenated trajectories
@@ -239,7 +239,7 @@ class ConformationSet:
         """Get all conformations of a specific type.
 
         Args:
-            conformation_type: 'metastable', 'transition', or 'pathway'
+            conformation_type: 'metastable', 'transition', or 'tse'
 
         Returns:
             List of matching conformations
@@ -259,11 +259,6 @@ class ConformationSet:
     def get_metastable_states(self) -> List[Conformation]:
         """Get all metastable state conformations."""
         return self.get_by_type("metastable")
-
-    def get_pathway_intermediates(self) -> List[Conformation]:
-        """Backward-compatible alias for reactive transition states."""
-        # Classification now treats all non-source/sink states as transition states.
-        return self.get_transition_states()
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""

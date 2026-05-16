@@ -15,7 +15,7 @@ from ..analysis import (
 )
 from ..reweight import AnalysisReweightMode, Reweighter
 
-DatasetLike = MutableMapping[str, Any] | Mapping[str, Any]
+DatasetLike = MutableMapping[str, Any]
 
 
 @dataclass(slots=True)
@@ -34,6 +34,14 @@ class AnalysisConfig:
     fes_min_count_per_bin: int = 1
     apply_whitening: bool = True
     collect_debug_data: bool = False
+
+    def __post_init__(self) -> None:
+        if self.lag_time < 1:
+            raise ValueError("lag_time must be >= 1")
+        if self.n_microstates < 2:
+            raise ValueError("n_microstates must be >= 2")
+        if self.temperature_ref_K <= 0:
+            raise ValueError("temperature_ref_K must be positive")
 
 
 def _format_debug_warning(entry: object) -> str:
@@ -54,11 +62,46 @@ def _normalise_reweight_mode(mode: str | None) -> str:
     return AnalysisReweightMode.normalise(mode)
 
 
+def _validate_debug_inputs(dataset: DatasetLike, cfg: AnalysisConfig) -> None:
+    if not cfg.collect_debug_data:
+        return
+
+    raw_dtrajs = dataset.get("dtrajs")
+    if not isinstance(raw_dtrajs, Sequence) or not raw_dtrajs:
+        raise ValueError(
+            "collect_debug_data requires 'dtrajs' sequences in the dataset"
+        )
+    if not any(np.asarray(traj).size > int(cfg.lag_time) for traj in raw_dtrajs):
+        raise ValueError(
+            "collect_debug_data requires at least one trajectory longer than lag"
+        )
+
+
+def _stationary_distribution(transition_matrix: np.ndarray) -> np.ndarray:
+    transition = np.asarray(transition_matrix, dtype=np.float64)
+    if transition.shape[0] == 0:
+        return np.asarray([], dtype=np.float64)
+
+    eigvals, eigvecs = np.linalg.eig(transition.T)
+    idx = int(np.argmin(np.abs(eigvals - 1.0)))
+    pi = np.real(eigvecs[:, idx]).astype(np.float64, copy=False)
+    if np.sum(pi) < 0:
+        pi = -pi
+    pi = np.clip(pi, 0.0, None)
+    total = float(np.sum(pi))
+    if total <= 0 or not np.isfinite(total):
+        raise ValueError(
+            "Unable to compute stationary distribution from transition matrix"
+        )
+    return pi / total
+
+
 def finalize_dataset(dataset: DatasetLike, cfg: AnalysisConfig) -> Dict[str, Any]:
     """Run MSM discretisation and FES estimation with optional reweighting."""
 
-    if not isinstance(dataset, (MutableMapping, dict)):
+    if not isinstance(dataset, MutableMapping):
         raise ValueError("Dataset must be a mutable mapping of splits and metadata")
+    _validate_debug_inputs(dataset, cfg)
 
     reweight_mode = _normalise_reweight_mode(cfg.reweight)
     weights: Dict[str, np.ndarray] | None = None
@@ -76,29 +119,23 @@ def finalize_dataset(dataset: DatasetLike, cfg: AnalysisConfig) -> Dict[str, Any
         lag_time=cfg.lag_time,
         frame_weights=weights,
         random_state=None,
-        apply_whitening=bool(cfg.apply_whitening),
+        apply_whitening=cfg.apply_whitening,
     )
 
     counts = np.asarray(msm.counts, dtype=np.float64)
-    row_sums = counts.sum(axis=1)
-    total = float(np.sum(row_sums))
-    if total > 0 and counts.shape[0] > 0:
-        pi = row_sums / total
-    elif counts.shape[0] > 0:
-        pi = np.full((counts.shape[0],), 1.0 / counts.shape[0], dtype=np.float64)
-    else:
-        pi = np.asarray([], dtype=np.float64)
+    pi = _stationary_distribution(msm.transition_matrix)
+    fes_weights = weights.get(cfg.fes_split) if weights is not None else None
 
     fes = compute_weighted_fes(
         dataset,
         split=cfg.fes_split,
-        weights=None,
+        weights=fes_weights,
         bins=cfg.fes_bins,
         temperature_K=cfg.temperature_ref_K,
         method=cfg.fes_method,
         bandwidth=cfg.fes_bandwidth,
         min_count_per_bin=cfg.fes_min_count_per_bin,
-        apply_whitening=bool(cfg.apply_whitening),
+        apply_whitening=cfg.apply_whitening,
     )
 
     diagnostics = compute_diagnostics(dataset, diag_mass=msm.diag_mass)
@@ -120,16 +157,6 @@ def finalize_dataset(dataset: DatasetLike, cfg: AnalysisConfig) -> Dict[str, Any
         result["warnings"] = diagnostics["warnings"]
 
     if cfg.collect_debug_data:
-        raw_dtrajs = dataset.get("dtrajs") if isinstance(dataset, Mapping) else None
-        if not isinstance(raw_dtrajs, Sequence) or not raw_dtrajs:
-            raise ValueError(
-                "collect_debug_data requires 'dtrajs' sequences in the dataset"
-            )
-        if not any(np.asarray(traj).size > int(cfg.lag_time) for traj in raw_dtrajs):
-            raise ValueError(
-                "collect_debug_data requires at least one trajectory longer than lag"
-            )
-
         debug_data = compute_analysis_debug(dataset, lag=cfg.lag_time)
         result["analysis_debug"] = debug_data
 

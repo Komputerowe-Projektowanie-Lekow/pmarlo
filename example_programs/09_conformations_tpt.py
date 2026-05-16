@@ -5,7 +5,7 @@ protein conformations using Transition Path Theory (TPT), including:
 - Auto-detection of source/sink states
 - TPT analysis (committors, reactive flux, pathways)
 - Kinetic Importance Score (KIS) computation
-- Identification of transition states, metastable states, and pathway intermediates
+- Identification of transition, transition-state-ensemble, and metastable states
 - Representative structure extraction and saving
 - Uncertainty quantification via bootstrap
 
@@ -115,7 +115,6 @@ def main():
         auto_detect_method="auto",
         find_transition_states=True,
         find_metastable_states=True,
-        find_pathway_intermediates=True,
         compute_kis=True,
         uncertainty_analysis=True,
         n_bootstrap=100,
@@ -162,11 +161,11 @@ def main():
     print(f"\n  Conformations found: {len(results.conformations)}")
     metastable = results.get_metastable_states()
     transition = results.get_transition_states()
-    pathway = results.get_pathway_intermediates()
+    tse = results.get_transition_state_ensemble()
 
     print(f"    Metastable states: {len(metastable)}")
     print(f"    Transition states: {len(transition)}")
-    print(f"    Pathway intermediates: {len(pathway)}")
+    print(f"    Transition state ensemble: {len(tse)}")
 
     # Uncertainty results
     if results.uncertainty_results:

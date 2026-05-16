@@ -198,5 +198,3 @@ def find_conformations(  # noqa: C901
 
     write_conformations_csv_json(str(out), items)
     return out
-
-

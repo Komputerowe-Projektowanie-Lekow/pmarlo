@@ -23,7 +23,7 @@ class DemuxWriterError(DemuxError):
     """Failure to write output trajectory frames or finalize writing."""
 
 
-class TemperatureConsistencyError(ValueError):
+class TemperatureConsistencyError(DemuxError, ValueError):
     """Raised when a dataset violates the temperature/demux contract.
 
     Contract summary:

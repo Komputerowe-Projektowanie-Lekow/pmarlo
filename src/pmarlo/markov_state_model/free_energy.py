@@ -743,7 +743,11 @@ def generate_2d_fes(  # noqa: C901
                 stacklevel=2,
             )
 
-    mode_cfg = fes_smoothing_mode if fes_smoothing_mode is not None else _config_get("fes_smoothing_mode", None)
+    mode_cfg = (
+        fes_smoothing_mode
+        if fes_smoothing_mode is not None
+        else _config_get("fes_smoothing_mode", None)
+    )
     mode = str(mode_cfg).lower() if mode_cfg is not None else "never"
     if mode not in {"never", "auto", "always"}:
         raise ValueError(f"Unknown fes_smoothing_mode={mode!r}")

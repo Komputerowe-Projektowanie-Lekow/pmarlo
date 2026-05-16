@@ -12,62 +12,21 @@ recorded into RunMetadata (when available) for end-to-end reproducibility.
 """
 
 from dataclasses import dataclass, replace
-from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, List, Mapping, Optional, Sequence, cast
+from typing import Any, List, Mapping, Sequence
 
 import numpy as np
 
 from pmarlo.data.shard import ShardDetails, read_shard
 from pmarlo.data.shard_schema import DemuxShard
+from pmarlo.transform.build import AppliedOpts, BuildOpts, BuildResult, build_result
 from pmarlo.transform.plan import TransformPlan
+from pmarlo.transform.progress import coerce_progress_callback
 from pmarlo.utils.errors import TemperatureConsistencyError
 from pmarlo.utils.path_utils import ensure_directory
 
 from .shard_io import load_shard_meta
-
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    from pmarlo.transform.build import AppliedOpts, BuildOpts, BuildResult
-
-
-@lru_cache(maxsize=1)
-def _transform_build_handles():
-    from pmarlo.transform.build import AppliedOpts as _AppliedOpts
-    from pmarlo.transform.build import BuildOpts as _BuildOpts
-    from pmarlo.transform.build import BuildResult as _BuildResult
-    from pmarlo.transform.build import build_result as _build_result
-
-    return _AppliedOpts, _BuildOpts, _BuildResult, _build_result
-
-
-_PROGRESS_ALIAS_KEYS = (
-    "progress_callback",
-    "callback",
-    "on_event",
-    "progress",
-    "reporter",
-)
-
-
-def coerce_progress_callback(
-    kwargs: dict[str, Any],
-) -> Optional[Callable[[str, Mapping[str, Any]], None]]:
-    cb: Optional[Callable[[str, Mapping[str, Any]], None]] = None
-    for key in _PROGRESS_ALIAS_KEYS:
-        value = kwargs.get(key)
-        if value is not None and callable(value):
-            cb = cast(Callable[[str, Mapping[str, Any]], None], value)
-            break
-    if cb is not None:
-        kwargs.setdefault("progress_callback", cb)
-    return cb
-
-
-def _unique_shard_uid(details: ShardDetails) -> str:
-    """Return the canonical shard identifier."""
-
-    return str(details.shard_id)
 
 
 @dataclass(slots=True)
@@ -227,7 +186,6 @@ def _build_shard_info(
     details: ShardDetails, path: Path, X_np: np.ndarray, dtraj: Any
 ) -> dict:
     bias_arr = _maybe_read_bias(path.with_name(f"{details.shard_id}.npz"))
-    uid = _unique_shard_uid(details)
     shard_dtraj = None if dtraj is None else np.asarray(dtraj, dtype=np.int32)
 
     source_dict = dict(details.source)
@@ -241,7 +199,7 @@ def _build_shard_info(
     ) = _compute_stride_metadata(details.meta, frames_loaded)
 
     info: dict[str, Any] = {
-        "id": str(uid),
+        "id": str(details.shard_id),
         "start": 0,
         "stop": frames_loaded,
         "dtraj": shard_dtraj,
@@ -374,12 +332,12 @@ def _dataset_hash(
 def aggregate_and_build(
     shard_jsons: Sequence[Path],
     *,
-    opts: "BuildOpts",
+    opts: BuildOpts,
     plan: TransformPlan,
-    applied: "AppliedOpts",
+    applied: AppliedOpts,
     out_bundle: Path,
     **kwargs,
-) -> tuple["BuildResult", str]:
+) -> tuple[BuildResult, str]:
     """Load shards, aggregate a dataset, build with the transform pipeline, and archive.
 
     Returns (BuildResult, dataset_hash_hex).
@@ -395,57 +353,36 @@ def aggregate_and_build(
 
     # Optional unified progress callback forwarding (aliases accepted)
     cb = coerce_progress_callback(kwargs)
-    _, _, _, build_result = _transform_build_handles()
 
     res = build_result(
         dataset, opts=opts, plan=plan, applied=applied, progress_callback=cb
     )
     # Attach shard usage into artifacts for downstream gating checks
-    try:
-        # Collect all shard IDs and deduplicate them
-        shard_ids = [str(s.get("id", "")) for s in shards_info]
-        unique_shard_ids = sorted(
-            set(shard_ids)
-        )  # Deduplicate and sort for consistency
+    shard_ids = [str(shard["id"]) for shard in shards_info]
+    unique_shard_ids = sorted(set(shard_ids))
+    if len(unique_shard_ids) != len(shard_ids):
+        duplicate_count = len(shard_ids) - len(unique_shard_ids)
+        raise ValueError(
+            "Duplicate shard IDs detected while aggregating shards: "
+            f"{duplicate_count} duplicate entries across {len(shard_ids)} shards"
+        )
 
-        art = dict(res.artifacts or {})
-        art.setdefault("shards_used", unique_shard_ids)
-        art.setdefault("shards_count", int(len(unique_shard_ids)))
+    art = dict(res.artifacts or {})
+    art.setdefault("shards_used", unique_shard_ids)
+    art.setdefault("shards_count", int(len(unique_shard_ids)))
+    res.artifacts = art  # type: ignore[assignment]
 
-        # Validate: ensure all shards are unique (no duplicates)
-        if len(unique_shard_ids) != len(shard_ids):
-            duplicate_count = len(shard_ids) - len(unique_shard_ids)
-            # This is a data integrity issue - log but don't fail the build
-            import logging
-
-            logger = logging.getLogger("pmarlo")
-            logger.warning(
-                f"Found {duplicate_count} duplicate shard IDs in shards_info. "
-                f"Original count: {len(shard_ids)}, unique count: {len(unique_shard_ids)}"
-            )
-
-        res.artifacts = art  # type: ignore[assignment]
-    except Exception:
-        pass
     # Optional: merge extra artifacts before writing
     extra_artifacts = kwargs.get("extra_artifacts")
     if isinstance(extra_artifacts, dict) and extra_artifacts:
-        try:
-            art = dict(res.artifacts or {})
-            art.update(extra_artifacts)
-            res.artifacts = art  # type: ignore[assignment]
-        except Exception:
-            pass
+        art = dict(res.artifacts or {})
+        art.update(extra_artifacts)
+        res.artifacts = art  # type: ignore[assignment]
 
     ds_hash = _dataset_hash(dtrajs, X_all, cv_names, dataset["periodic"])
-    try:
-        new_md = replace(res.metadata, dataset_hash=ds_hash, digest=ds_hash)
-        res.metadata = new_md  # type: ignore[assignment]
-    except Exception:
-        try:
-            res.messages.append(f"dataset_hash:{ds_hash}")  # type: ignore[attr-defined]
-        except Exception:
-            pass
+    if res.metadata is None:
+        raise ValueError("Build result metadata is required to record dataset hash")
+    res.metadata = replace(res.metadata, dataset_hash=ds_hash, digest=ds_hash)
 
     out_bundle = Path(out_bundle)
     ensure_directory(out_bundle.parent)

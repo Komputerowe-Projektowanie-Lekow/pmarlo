@@ -6,7 +6,7 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -14,13 +14,15 @@ from pmarlo import constants as const
 from pmarlo.markov_state_model.clustering import cluster_microstates
 from pmarlo.markov_state_model.msm_builder import MSMResult
 from pmarlo.markov_state_model.reweighter import Reweighter
-from pmarlo.replica_exchange.bias_hook import BiasHook
 from pmarlo.shards.assemble import load_shards, select_shards
 from pmarlo.shards.pair_builder import PairBuilder
 from pmarlo.shards.schema import Shard
-from pmarlo.validation.ck_rule import CKConfig, CKDecision, decide_ck
+from pmarlo.validation.ck_rule import CKConfig, CKDecision, Mode, decide_ck
 
 from .metrics import GuardrailReport, Metrics
+
+if TYPE_CHECKING:
+    from pmarlo.replica_exchange.bias_hook import BiasHook
 
 __all__ = ["WorkflowConfig", "JointWorkflow", "CKGuardrailError"]
 
@@ -83,6 +85,11 @@ class JointWorkflow:
     def bootstrap_cv(self) -> None:
         """Initialise or load the CV model prior to joint iterations (TODO)."""
 
+        if self.cv_model is not None or self.trainer is not None:
+            raise RuntimeError(
+                "CV model already initialized; call bootstrap_cv only before training."
+            )
+
         # TODO: integrate DeepTICA bootstrap (random/TICA @ T_ref)
         self.cv_model = None
         self.trainer = None
@@ -112,8 +119,14 @@ class JointWorkflow:
         shards: Sequence[Shard] = load_shards(shard_jsons)
         frame_weights = self._compute_frame_weights(shards)
 
-        # TODO: plug in real DeepTICA training once trainer integration is complete
-        metrics = Metrics(vamp2_val=0.0, its_val=0.0, ck_error=0.0, notes=f"iter {i}")
+        # BLOCKING TODO: plug in real DeepTICA training before treating iteration
+        # metrics or VAMP-2 guardrails as meaningful.
+        metrics = Metrics(
+            vamp2_val=0.0,
+            its_val=0.0,
+            ck_error=0.0,
+            notes=f"iter {i}; cv trainer metrics unavailable",
+        )
 
         if self.remd_callback is not None:
             bias_hook = self._build_bias_hook(shards, frame_weights)
@@ -287,7 +300,7 @@ class JointWorkflow:
                 raise ValueError(
                     "Frame weights must be finite and sum to a positive value"
                 )
-            weights.append((arr / total).astype(np.float64))
+            weights.append(arr.astype(np.float64))
         return weights
 
     def _build_bias_hook(
@@ -688,7 +701,11 @@ class JointWorkflow:
             return np.zeros((n_states, n_states), dtype=np.float64)
 
         counts = np.zeros((n_states, n_states), dtype=np.float64)
-        builder = PairBuilder(max(1, int(tau_steps)))
+        tau = max(1, int(tau_steps))
+        if tau == self.pair_builder.tau:
+            builder = self.pair_builder
+        else:
+            builder = PairBuilder(tau)
         for shard, clusters, weights in zip(
             shards, clusters_per_shard, weights_per_shard
         ):
@@ -698,9 +715,14 @@ class JointWorkflow:
             if pairs.size == 0:
                 continue
             w = np.asarray(weights, dtype=np.float64)
-            for i_idx, j_idx in pairs:
-                w_pair = float(np.sqrt(w[int(i_idx)] * w[int(j_idx)]))
-                counts[int(clusters[int(i_idx)]), int(clusters[int(j_idx)])] += w_pair
+            i_frame = pairs[:, 0].astype(np.int64, copy=False)
+            j_frame = pairs[:, 1].astype(np.int64, copy=False)
+            i_states = clusters[i_frame].astype(np.int64, copy=False)
+            j_states = clusters[j_frame].astype(np.int64, copy=False)
+            # Use symmetric geometric transition weights so exchanging pair
+            # endpoints preserves the same pair contribution.
+            pair_weights = np.sqrt(w[i_frame] * w[j_frame])
+            np.add.at(counts, (i_states, j_states), pair_weights)
         return counts
 
     def _normalize_counts(self, counts: np.ndarray) -> np.ndarray:
@@ -720,7 +742,7 @@ class JointWorkflow:
         if T.size == 0 or lag_time_ps <= 0:
             return np.empty((0,), dtype=np.float64)
 
-        eigvals = np.linalg.eigvals(T.T)
+        eigvals = np.linalg.eigvals(T)
         eigvals = sorted(eigvals, key=lambda x: -abs(x))
         its: List[float] = []
         for lam in eigvals[1:]:

@@ -69,8 +69,8 @@ def test_from_cv_ranges():
     assert len(sink) == 3
 
 
-def test_auto_detect_fallback():
-    """Test auto-detection with minimal data."""
+def test_auto_detect_uses_population_when_only_msm_data_is_available():
+    """Auto detection uses the population strategy when no FES or ITS is available."""
     detector = StateDetector()
 
     # Simple 3-state system
@@ -81,11 +81,33 @@ def test_auto_detect_fallback():
     pi = np.real(eigenvectors[:, idx])
     pi = pi / np.sum(pi)
 
-    # No FES or ITS, should fall back to population
     source, sink = detector.auto_detect(T, pi, fes=None, its=None, n_states=2)
 
     assert len(source) >= 1
     assert len(sink) >= 1
+
+
+def test_timescale_detection_requires_two_timescales() -> None:
+    """Explicit timescale detection fails instead of switching strategies."""
+
+    detector = StateDetector()
+    T = np.eye(3)
+    pi = np.array([0.5, 0.3, 0.2])
+
+    with pytest.raises(ValueError, match="At least two implied timescales"):
+        detector.detect_from_timescale_gap(T, pi, np.array([10.0]), n_states=2)
+
+
+def test_fes_detection_requires_two_basins() -> None:
+    """FES detection fails instead of returning placeholder states."""
+
+    detector = StateDetector()
+
+    class MockFES:
+        F = np.ones((3, 3))
+
+    with pytest.raises(ValueError, match="fewer than two basins"):
+        detector.detect_from_fes(MockFES(), n_basins=2, method="watershed")
 
 
 def test_detect_from_fes_local_minima():

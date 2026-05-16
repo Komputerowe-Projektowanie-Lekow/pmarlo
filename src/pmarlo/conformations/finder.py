@@ -13,7 +13,6 @@ from .kinetic_importance import KineticImportanceScore
 from .representative_picker import (
     RepresentativePicker,
     TrajectoryFrameLocator,
-    build_frame_index_lookup,
 )
 from .results import (
     Conformation,
@@ -93,7 +92,6 @@ def find_conformations(
     auto_detect_method: str = "auto",
     find_transition_states: bool = True,
     find_metastable_states: bool = True,
-    find_pathway_intermediates: bool = True,
     compute_kis: bool = True,
     uncertainty_analysis: bool = False,
     n_bootstrap: int = 100,
@@ -122,7 +120,6 @@ def find_conformations(
         auto_detect_method: Detection method ('auto', 'fes', 'timescale', 'population')
         find_transition_states: Include reactive states outside the source/sink sets
         find_metastable_states: Include source and sink states
-        find_pathway_intermediates: Alias for including reactive states (for backward compatibility)
         compute_kis: Compute Kinetic Importance Score
         uncertainty_analysis: Perform bootstrap uncertainty quantification
         n_bootstrap: Number of bootstrap samples
@@ -247,7 +244,7 @@ def find_conformations(
             )
             conformations.extend(metastable_conformations)
 
-        if find_transition_states or find_pathway_intermediates:
+        if find_transition_states:
             logger.info(
                 "Classifying reactive (transition) states "
                 f"(tolerance={tse_tolerance})"
@@ -326,11 +323,9 @@ def find_conformations(
         1 for c in conformations if c.conformation_type == "transition"
     )
     tse_count = sum(1 for c in conformations if c.conformation_type == "tse")
-    pathway_count = sum(1 for c in conformations if c.conformation_type == "pathway")
 
     metadata = {
         "n_conformations": len(conformations),
-        "n_pathway_intermediates": pathway_count,
         "auto_detected": auto_detect,
         "temperature_K": temperature_K,
         "uncertainty_analysis": uncertainty_analysis,
@@ -353,8 +348,7 @@ def find_conformations(
         f"Conformations finder complete: found {len(conformations)} conformations "
         f"({metastable_count} metastable, "
         f"{transition_count} transition, "
-        f"{tse_count} transition state ensemble, "
-        f"{pathway_count} pathway)"
+        f"{tse_count} transition state ensemble)"
     )
 
     return result
@@ -488,43 +482,7 @@ def _find_metastable_states(
 
 def _calculate_state_flux(flux_matrix: np.ndarray) -> np.ndarray:
     """Compute the total reactive flux through each state."""
-    return np.sum(flux_matrix, axis=1) + np.sum(flux_matrix, axis=0)
-
-
-def _assign_frame_indices(
-    conformations: List[Conformation],
-    dtrajs: List[np.ndarray],
-    features: np.ndarray,
-) -> None:
-    """Assign frame indices to conformations."""
-
-    lookup = build_frame_index_lookup(dtrajs)
-
-    if features.shape[0] != lookup.n_frames:
-        raise ValueError(
-            "Feature matrix row count does not match total number of frames "
-            f"({features.shape[0]} != {lookup.n_frames})."
-        )
-
-    for conf in conformations:
-        frames_in_state = lookup.frames_for_state(conf.state_id)
-
-        if frames_in_state.size == 0:
-            raise ValueError(
-                f"No frames available for conformation state {conf.state_id}"
-            )
-
-        state_features = features[frames_in_state]
-        centroid = np.mean(state_features, axis=0)
-        distances = np.linalg.norm(state_features - centroid, axis=1)
-        best_local_idx = int(np.argmin(distances))
-        global_frame = int(frames_in_state[best_local_idx])
-
-        traj_idx, local_idx = lookup.to_local_indices(global_frame)
-
-        conf.frame_index = global_frame
-        conf.trajectory_index = int(traj_idx)
-        conf.local_frame_index = int(local_idx)
+    return 0.5 * (np.sum(flux_matrix, axis=1) + np.sum(flux_matrix, axis=0))
 
 
 def _update_with_representatives(
@@ -558,7 +516,7 @@ def _extract_structures(
     picker = RepresentativePicker()
 
     # Group by conformation type
-    for conf_type in ["metastable", "transition", "pathway"]:
+    for conf_type in ["metastable", "transition", "tse"]:
         type_conformations = [
             c for c in conformations if c.conformation_type == conf_type
         ]

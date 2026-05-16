@@ -209,32 +209,7 @@ def analyze_msm(  # noqa: C901
                     its.shape,
                 )
 
-                # Use the new plateau detection method
-                from pmarlo.markov_state_model._msm_utils import (
-                    select_lag_from_its as detect_plateau,
-                )
-
-                chosen_lag = detect_plateau(
-                    lags, its, min_lag_idx=3, plateau_threshold=0.15
-                )
-                logger.info(
-                    "[msm] Selected lag_time=%d from ITS plateau detection", chosen_lag
-                )
-            elif hasattr(its_data, "__getitem__"):
-                # Fallback for dict-like interface
-                lags = np.array(its_data["lag_times"])  # type: ignore[index]
-                its = np.array(its_data["timescales"])  # type: ignore[index]
-                logger.debug(
-                    "[msm] ITS data extracted (dict interface): lags shape=%s, its shape=%s",
-                    lags.shape,
-                    its.shape,
-                )
-
-                from pmarlo.markov_state_model._msm_utils import (
-                    select_lag_from_its as detect_plateau,
-                )
-
-                chosen_lag = detect_plateau(
+                chosen_lag = select_lag_from_its(
                     lags, its, min_lag_idx=3, plateau_threshold=0.15
                 )
                 logger.info(

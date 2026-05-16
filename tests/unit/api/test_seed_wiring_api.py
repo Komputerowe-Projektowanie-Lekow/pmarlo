@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
@@ -7,6 +8,8 @@ from typing import Any
 def test_run_replica_exchange_propagates_seed(monkeypatch, tmp_path: Path):
     """Ensure api.run_replica_exchange passes seed into RemdConfig."""
     from pmarlo import api as _api
+
+    _remd_api = import_module("pmarlo.api.replica_exchange")
 
     captured: dict[str, Any] = {}
 
@@ -39,7 +42,7 @@ def test_run_replica_exchange_propagates_seed(monkeypatch, tmp_path: Path):
             captured["export_temperature"] = _k.get("temperature")
             return path
 
-    monkeypatch.setattr(_api, "ReplicaExchange", _FakeRemd)
+    monkeypatch.setattr(_remd_api, "ReplicaExchange", _FakeRemd)
 
     out = _api.run_replica_exchange(
         pdb_file=str(tmp_path / "model.pdb"),
@@ -55,6 +58,8 @@ def test_run_replica_exchange_propagates_seed(monkeypatch, tmp_path: Path):
 
 def test_run_replica_exchange_exports_restart_snapshot(monkeypatch, tmp_path: Path):
     from pmarlo import api as _api
+
+    _remd_api = import_module("pmarlo.api.replica_exchange")
 
     captured: dict[str, Any] = {}
 
@@ -94,7 +99,7 @@ def test_run_replica_exchange_exports_restart_snapshot(monkeypatch, tmp_path: Pa
             captured["destination"] = dest
             return dest
 
-    monkeypatch.setattr(_api, "ReplicaExchange", _FakeRemd)
+    monkeypatch.setattr(_remd_api, "ReplicaExchange", _FakeRemd)
 
     final_path = tmp_path / "out" / "snapshot.pdb"
     out = _api.run_replica_exchange(

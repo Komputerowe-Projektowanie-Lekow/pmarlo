@@ -13,7 +13,7 @@ def test_calculate_state_flux_averages_incoming_and_outgoing() -> None:
 
     flux_matrix = np.array([[0.0, 4.0, 0.0], [1.0, 0.0, 0.0], [0.0, 2.0, 0.0]])
     # Incoming + outgoing, divided by two to avoid double counting each edge.
-    expected = np.array([2.5, 2.0, 1.0])
+    expected = np.array([2.5, 3.5, 1.0])
 
     np.testing.assert_allclose(_calculate_state_flux(flux_matrix), expected)
 

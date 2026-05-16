@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from pmarlo.api import _build_opts
+from pmarlo.api.shards import _build_opts
 
 
 def test_build_opts_honours_microstate_request() -> None:

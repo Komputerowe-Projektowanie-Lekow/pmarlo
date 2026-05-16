@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -58,7 +58,6 @@ class StateDetector:
 
         Returns:
             Validated (source_states, sink_states), filtering out-of-bounds indices.
-            Returns (None, None) if validation fails completely.
         """
         # Filter out invalid indices
         valid_source = source_states[source_states < n_msm_states]
@@ -66,11 +65,10 @@ class StateDetector:
 
         # Check if we lost too many states
         if len(valid_source) == 0 or len(valid_sink) == 0:
-            logger.warning(
+            raise ValueError(
                 f"Detected states are out of bounds for MSM with {n_msm_states} states. "
-                f"Falling back to population-based detection."
+                f"source={source_states.tolist()}, sink={sink_states.tolist()}"
             )
-            return None, None
 
         if len(valid_source) < len(source_states) or len(valid_sink) < len(sink_states):
             logger.warning(
@@ -116,11 +114,7 @@ class StateDetector:
                     source, sink = self._validate_state_indices(
                         source, sink, n_msm_states
                     )
-                    if source is not None and sink is not None:
-                        return source, sink
-                    logger.debug(
-                        "FES detection produced out-of-bounds states, trying next method"
-                    )
+                    return source, sink
                 except Exception as e:
                     logger.debug(f"FES detection failed: {e}")
 
@@ -133,7 +127,6 @@ class StateDetector:
                 except Exception as e:
                     logger.debug(f"Timescale gap detection failed: {e}")
 
-            # Fall back to populations
             return self.detect_from_populations(pi, top_n=target_states)
 
         elif method == "fes":
@@ -233,9 +226,7 @@ class StateDetector:
         sorted_indices = np.argsort(minima_values)[: min(n_basins, len(minima_values))]
 
         if len(sorted_indices) < 2:
-            # Fall back to populations if not enough basins found
-            logger.warning("Watershed found < 2 basins, using placeholder states")
-            return np.array([0]), np.array([1])
+            raise ValueError("Watershed detection found fewer than two basins")
 
         # Return first as source, last as sink
         source_idx = sorted_indices[0]
@@ -280,7 +271,7 @@ class StateDetector:
                 selected.append(pos)
 
         if len(selected) < 2:
-            return np.array([0]), np.array([1])
+            raise ValueError("Local-minima detection found fewer than two basins")
 
         # Map back to state indices (first basin as source, last as sink)
         source_state = np.ravel_multi_index(selected[0], F.shape)
@@ -315,7 +306,7 @@ class StateDetector:
 
         labeled, n_labels = label(low_energy_mask)
         if n_labels < 2:
-            return np.array([0]), np.array([1])
+            raise ValueError("Threshold detection found fewer than two basins")
 
         # Take largest regions
         region_sizes = [(i, np.sum(labeled == i)) for i in range(1, n_labels + 1)]
@@ -354,8 +345,7 @@ class StateDetector:
         target_states = self._resolve_metastable_count(n_states)
 
         if len(its) < 2:
-            # No gap, use populations
-            return self.detect_from_populations(pi, top_n=target_states)
+            raise ValueError("At least two implied timescales are required")
 
         # Compute ratios
         ratios = its[:-1] / np.maximum(its[1:], 1e-10)
@@ -420,8 +410,7 @@ class StateDetector:
         top_states = sorted_indices[:n_states]
 
         if len(top_states) < 2:
-            # Fallback
-            return np.array([0]), np.array([min(1, len(pi) - 1)])
+            raise ValueError("At least two populated states are required")
 
         # First as source, last as sink
         source_states = np.array([top_states[0]])
