@@ -8,13 +8,8 @@ Try to avoid the complexity at all cost. It's currently overbloated and in a nee
 3. Make changes; all hooks should pass before pushing.
 
 
-## Developer utilities
-Helper helpers now live either in the top-level ``scripts`` package (structural utilities)
-or the ``example_programs`` package (benchmarks and diagnostics) and are executed
-directly with Python. They are not part of the distributed ``pmarlo`` package.
-
-* ``python -m example_programs.check_extras_parity`` verifies that the optional dependency
-  groups declared in ``[project.optional-dependencies]`` stay in sync with
-  ``[tool.poetry.extras]``.
-* ``python -m scripts.lines_report`` generates the language statistics report
-  based on ``pygount`` statistics.
+## Example programs
+Runnable examples live in ``example_programs`` and are numbered in the intended
+reading order. Execute them directly with Poetry, for example
+``poetry run python example_programs/01_verify_pmarlo.py``. Each example writes
+to the matching numbered directory under ``example_programs/programs_outputs``.

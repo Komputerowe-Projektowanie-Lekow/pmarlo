@@ -1,4 +1,4 @@
-"""Educational and diagnostic programs demonstrating how to drive pmarlo."""
+"""Numbered example programs demonstrating PMARLO API workflows."""
 
-# This module intentionally exposes no runtime helpers—individual programs
-# should be executed directly (e.g. `python example_programs/bench_openmm.py`).
+# Individual programs should be executed directly, for example:
+# `poetry run python example_programs/01_verify_pmarlo.py`.

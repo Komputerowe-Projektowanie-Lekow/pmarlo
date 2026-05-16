@@ -11,8 +11,7 @@ The `pmarlo` package supports **CV-informed sampling** using trained Deep-TICA m
 Train a Deep-TICA model on simulation data to learn collective variables:
 
 ```python
-# In the app: Model Training tab
-# or via API:
+# Train via API:
 from pmarlo.shards import build_from_shards
 
 result, ds_hash = build_from_shards(
@@ -30,7 +29,7 @@ result, ds_hash = build_from_shards(
 The model is automatically exported as a **TorchScript module** with embedded feature extraction:
 
 ```
-app_output/models/training-20250117-120000/
+workspace/models/training-20250117-120000/
 ├── deeptica_cv_bias.pt          # TorchScript module (positions+box → energy)
 ├── deeptica_cv_bias_scaler.npz  # Scaler parameters
 ├── deeptica_cv_bias_config.json # Configuration
@@ -136,10 +135,10 @@ Run the benchmark harness to measure performance on your hardware:
 
 ```bash
 # Unbiased baseline
-poetry run python example_programs/bench_openmm.py --platform CPU --with-bias no --steps 5000
+poetry run python example_programs/12_openmm_bias_benchmark.py --platform CPU --with-bias no --steps 5000
 
 # With CV bias
-poetry run python example_programs/bench_openmm.py --platform CPU --with-bias yes \
+poetry run python example_programs/12_openmm_bias_benchmark.py --platform CPU --with-bias yes \
     --model path/to/deeptica_cv_bias.pt --steps 5000 --torch-threads 4
 ```
 
@@ -180,7 +179,7 @@ EOF
 
 # Run a short simulation (5000 steps × 2 fs = 10 ps)
 export PMARLO_CONFIG_FILE=test_config.yaml
-poetry run python example_programs/bench_openmm.py --platform CPU --with-bias yes \
+poetry run python example_programs/12_openmm_bias_benchmark.py --platform CPU --with-bias yes \
     --model path/to/deeptica_cv_bias.pt --steps 5000 --torch-threads 4
 ```
 
@@ -448,7 +447,7 @@ OpenMM's `system_builder.py` validates these attributes at load time.
 ## Contact
 
 For questions about CV-informed sampling:
-- Check simulation logs in `app_output/sims/*/replica_exchange/`
-- Review training logs in `app_output/models/training-*/training.log`
+- Check simulation logs in `workspace/sims/*/replica_exchange/`
+- Review training logs in `workspace/models/training-*/training.log`
 - Consult `CV_REQUIREMENTS.md` for setup issues
 - Run the benchmark harness to diagnose performance problems

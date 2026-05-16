@@ -29,3 +29,129 @@
     * After the maintenance script runs, **DO** re-run the original `poetry run pytest ...` or `poetry run tox ...` command to verify the fix.
 21. Write clean and elegant code, without overcomplications, do not use emojis in the codebase.
 22. When you write in the changelog, only do the sections that are from those categories, do not come up with others. Those are the categories: "added", "fixed", "changed", "removed".
+
+# CLAUDE.md — 12-rule template
+
+These rules apply to every task in this project unless explicitly overridden.
+
+Bias: caution over speed on non-trivial work. Use judgment on trivial tasks.
+
+## Rule 1 — Think Before Coding
+
+State assumptions explicitly. If uncertain, ask rather than guess.
+Present multiple interpretations when ambiguity exists.
+Push back when a simpler approach exists.
+Stop when confused. Name what is unclear.
+
+## Rule 2 — Simplicity First
+
+Minimum code that solves the problem. Nothing speculative.
+No features beyond what was asked.
+No abstractions for single-use code.
+Test: would a senior engineer say this is overcomplicated? If yes, simplify.
+
+## Rule 3 — Surgical Changes
+
+Touch only what you must. Clean up only your own mess.
+Do not improve adjacent code, comments, or formatting.
+Do not refactor what is not broken.
+Match existing style.
+
+## Rule 4 — Goal-Driven Execution
+
+Define success criteria. Loop until verified.
+Do not follow steps blindly.
+Define success and iterate.
+Strong success criteria let you loop independently.
+
+## Rule 5 — Use the model only for judgment calls
+
+Use the model for:
+
+- classification
+- drafting
+- summarization
+- extraction from unstructured text
+
+Do not use the model for:
+
+- routing
+- retries
+- status-code handling
+- deterministic transforms
+
+If code can answer, code answers.
+
+## Rule 6 — Token budgets are not advisory
+
+Per-task budget: 4,000 tokens.
+Per-session budget: 30,000 tokens.
+
+If approaching budget, summarize and start fresh.
+Surface the breach. Do not silently overrun.
+
+## Rule 7 — Surface conflicts, do not average them
+
+If two patterns contradict, do not blend them.
+Pick one, preferably the more recent or more tested pattern.
+Explain why.
+Flag the other for cleanup.
+
+Average code that satisfies both conflicting patterns is usually the worst code.
+
+## Rule 8 — Read before you write
+
+Before adding code, read:
+
+- the file exports
+- the immediate caller
+- obvious shared utilities
+
+If you do not understand why existing code is structured the way it is, ask before adding to it.
+
+"Looks orthogonal" is dangerous.
+
+## Rule 9 — Tests verify intent, not just behavior
+
+Tests must encode why the behavior matters, not just what it does.
+
+A test like `expect(getUserName()).toBe("John")` is weak if the function can pass by returning a constant.
+
+If a test cannot fail when business logic changes, the test is wrong.
+
+## Rule 10 — Checkpoint after every significant step
+
+After each significant step in a multi-step task, summarize:
+
+- what was done
+- what was verified
+- what remains
+
+Do not continue from a state you cannot describe back clearly.
+If you lose track, stop and restate the current state.
+
+## Rule 11 — Match the codebase's conventions, even if you disagree
+
+Conformance is more important than taste inside an existing codebase.
+
+If the codebase uses snake_case, use snake_case.
+If the codebase uses class-based components, use class-based components.
+If the codebase uses a specific testing style, follow that style.
+
+If you genuinely think a convention is harmful, surface it.
+Do not fork the convention silently.
+
+## Rule 12 — Fail loud
+
+"Completed" is wrong if anything was skipped silently.
+"Tests pass" is wrong if any tests were skipped.
+"Feature works" is wrong if the requested edge case was not verified.
+
+If you cannot be sure something worked, say so explicitly.
+Default to surfacing uncertainty, not hiding it.
+
+---
+
+## Project-specific rules
+
+NOT YET DONE.

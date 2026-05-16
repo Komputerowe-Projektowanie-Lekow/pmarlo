@@ -134,7 +134,6 @@ if str(SRC_ROOT) not in sys.path:
 
 # Folder -> default markers that should apply to every test collected under it.
 FOLDER_MARKERS = {
-    "tests/unit/app/": ["unit", "workflow"],
     "tests/unit/api/": ["unit", "workflow"],
     "tests/unit/cv/": ["unit", "cv"],
     "tests/unit/data/": ["unit", "data"],

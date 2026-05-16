@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Optional
+from typing import Any, Callable, Iterable, Mapping, Sequence, Tuple
 
 import mdtraj as md
 import numpy as np
 
 from pmarlo import constants as const
+from pmarlo.api.features import compute_features
 from pmarlo.data.aggregate import aggregate_and_build as _aggregate_and_build
 from pmarlo.data.emit import emit_shards_from_trajectories
 from pmarlo.data.shard import read_shard, write_shard
@@ -41,7 +43,7 @@ def emit_shards_rg_rmsd(
 ) -> list[Path]:
     """Stream trajectories and emit shards with Rg and RMSD to a reference.
 
-    This is a convenience wrapper for UI apps. It handles quiet streaming via
+    This is a convenience wrapper for API and notebook workflows. It handles quiet streaming via
     pmarlo.io.trajectory.iterload, alignment to a global reference, and writes
     deterministic shards under ``out_dir``.
     """
@@ -275,6 +277,167 @@ def emit_shards_rg_rmsd_windowed(
         out_dir,
     )
     return shard_paths
+
+
+def extract_shards_with_features(
+    pdb_file: str | Path,
+    traj_files: Sequence[str | Path],
+    out_dir: str | Path,
+    feature_specs: Sequence[str],
+    *,
+    stride: int = 1,
+    temperature: float = 300.0,
+    seed_start: int = 0,
+    frames_per_shard: int = 5000,
+    hop_frames: int | None = None,
+    provenance: Mapping[str, Any] | None = None,
+) -> list[Path]:
+    """Extract shards from trajectories using arbitrary PMARLO feature specs.
+
+    This is the notebook/API entry point for configurable shard extraction
+    backend. It loads trajectories with ``mdtraj``, computes the requested
+    molecular features through :func:`pmarlo.api.compute_features`, and writes
+    canonical PMARLO shard JSON/NPZ pairs.
+    """
+
+    pdb_path = Path(pdb_file)
+    out_path = Path(out_dir)
+    ensure_directory(out_path)
+
+    if not feature_specs:
+        raise ValueError("feature_specs must contain at least one feature")
+    if not traj_files:
+        raise ValueError("traj_files must contain at least one trajectory")
+
+    stride_value = max(1, int(stride))
+    trajectories = [
+        md.load(str(traj_file), top=str(pdb_path), stride=stride_value)
+        for traj_file in traj_files
+    ]
+    full_traj = md.join(trajectories)
+    if full_traj.n_frames <= 0:
+        raise ValueError("No trajectory frames loaded")
+
+    feature_matrix, columns, periodic_flags = _compute_features_for_shards(
+        full_traj,
+        list(feature_specs),
+    )
+    total_frames = int(feature_matrix.shape[0])
+    window = max(1, int(frames_per_shard))
+    hop = max(1, int(hop_frames) if hop_frames is not None else window)
+
+    shard_paths: list[Path] = []
+    shard_idx = 0
+    for start in range(0, total_frames, hop):
+        stop = min(start + window, total_frames)
+        shard_data = feature_matrix[start:stop]
+        if shard_data.shape[0] == 0:
+            break
+        shard_paths.append(
+            _write_feature_shard(
+                out_dir=out_path,
+                shard_idx=shard_idx,
+                seed_start=seed_start,
+                data=shard_data,
+                columns=columns,
+                periodic_flags=periodic_flags,
+                temperature=temperature,
+                frame_range=(start * stride_value, stop * stride_value),
+                traj_files=traj_files,
+                provenance=provenance,
+                stride=stride_value,
+            )
+        )
+        shard_idx += 1
+        if stop >= total_frames and hop >= window:
+            break
+
+    return shard_paths
+
+
+def _compute_features_for_shards(
+    trajectory: md.Trajectory,
+    feature_specs: list[str],
+) -> tuple[np.ndarray, list[str], np.ndarray]:
+    feature_matrix, columns, periodic_flags = compute_features(
+        trajectory,
+        feature_specs,
+    )
+    return feature_matrix, list(columns), np.asarray(periodic_flags, dtype=bool)
+
+
+def _is_distance_column(name: str) -> bool:
+    lowered = name.lower()
+    return lowered.startswith("distance(") or lowered.startswith("dist:atoms:")
+
+
+def _validate_distance_periodicity(periodic: Mapping[str, bool]) -> None:
+    for column_name, is_periodic in periodic.items():
+        if is_periodic and _is_distance_column(column_name):
+            raise ValueError(
+                f"Distance column '{column_name}' cannot be marked as periodic"
+            )
+
+
+def _write_feature_shard(
+    *,
+    out_dir: Path,
+    shard_idx: int,
+    seed_start: int,
+    data: np.ndarray,
+    columns: list[str],
+    periodic_flags: np.ndarray,
+    temperature: float,
+    frame_range: tuple[int, int],
+    traj_files: Sequence[str | Path],
+    provenance: Mapping[str, Any] | None,
+    stride: int,
+) -> Path:
+    cvs = {column: data[:, idx] for idx, column in enumerate(columns)}
+    periodic = {
+        column: bool(periodic_flags[idx]) if idx < len(periodic_flags) else False
+        for idx, column in enumerate(columns)
+    }
+    _validate_distance_periodicity(periodic)
+
+    run_id = "shard_extraction"
+    if provenance and "run_id" in provenance:
+        run_id = str(provenance["run_id"])
+
+    source: dict[str, Any] = {
+        "created_at": datetime.now().isoformat(),
+        "kind": "demux",
+        "run_id": run_id,
+        "replica_id": 0,
+        "segment_id": int(shard_idx),
+        "range": [int(frame_range[0]), int(frame_range[1])],
+        "stride": int(stride),
+        "frame_stride": int(stride),
+        "n_frames": int(frame_range[1] - frame_range[0]),
+        "traj": str(traj_files[0]),
+        "traj_files": [str(path) for path in traj_files],
+        "temperature_K": float(temperature),
+        "columns": list(columns),
+        "periodic": periodic,
+    }
+    if provenance:
+        source.update(dict(provenance))
+
+    shard_id = "T{temp}K_{run}_seg{segment:04d}_rep000".format(
+        temp=int(round(float(temperature))),
+        run=str(run_id).replace("run_", "") if run_id else "default",
+        segment=int(shard_idx),
+    )
+    return write_shard(
+        out_dir=out_dir,
+        shard_id=shard_id,
+        cvs=cvs,
+        dtraj=None,
+        periodic=periodic,
+        seed=int(seed_start) + int(shard_idx),
+        temperature=float(temperature),
+        source=source,
+    )
 
 
 def _load_reference_and_selection(

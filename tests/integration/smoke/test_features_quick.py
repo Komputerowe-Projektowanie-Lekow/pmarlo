@@ -1,7 +1,5 @@
 """Quick smoke test for molecular features."""
 
-import pytest
-
 
 def test_feature_import():
     """Test that features module imports correctly."""
@@ -41,7 +39,7 @@ def test_feature_parsing():
 
 def test_profile_loading():
     """Test loading feature profile."""
-    from pmarlo_webapp.app.backend.feature_profiles import load_feature_profile
+    from pmarlo.api import load_feature_profile
 
     profile = load_feature_profile("molecular_cv_biasing")
     assert profile.name == "molecular_cv_biasing"

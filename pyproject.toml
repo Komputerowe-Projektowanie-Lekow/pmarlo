@@ -57,10 +57,9 @@ dependencies = [
 
 [project.optional-dependencies]
 mlcv = ["torch>=2.2", "lightning>=2.0", "deeptime>=0.4.5,<0.5"]
-app = ["streamlit>=1.31", "plotly>=5.15", "matplotlib>=3.8"]
-analysis = ["matplotlib>=3.8", "deeptime>=0.4.5,<0.5"]
+analysis = ["matplotlib>=3.8", "plotly>=5.15", "deeptime>=0.4.5,<0.5"]
 fixer = ["pdbfixer>=1.9; python_version < '3.12'", "black>=25.0", "isort>=5.10.1", "ruff>=0.5"]
-all = ["torch>=2.2", "lightning>=2.0", "deeptime>=0.4.5,<0.5", "streamlit>=1.31", "plotly>=5.15", "matplotlib>=3.8", "pdbfixer>=1.9; python_version < '3.12'", "black>=25.0", "isort>=5.10.1", "ruff>=0.5"]
+all = ["torch>=2.2", "lightning>=2.0", "deeptime>=0.4.5,<0.5", "matplotlib>=3.8", "plotly>=5.15", "pdbfixer>=1.9; python_version < '3.12'", "black>=25.0", "isort>=5.10.1", "ruff>=0.5"]
 
 # ───────────────────── URLs & entry-points / CLI ──────────────────────
 [project.urls]
@@ -122,7 +121,6 @@ typing-extensions = ">=4.8"
 pyyaml = ">=6.0,<7.0"
 # Optional dependencies (enabled via extras)
 plotly = {version = ">=5.15", optional = true}
-streamlit = {version = ">=1.31", optional = true}
 torch = {version = ">=2.2,<3.0", optional = true, source = "pytorch-cpu"}
 lightning = {version = ">=2.0,<3.0", optional = true}
 pdbfixer = {version = ">=1.9", optional = true, markers = "python_version < '3.12'"}
@@ -133,10 +131,9 @@ ruff = {version = ">=0.5", optional = true}
 # Keep these extras in sync with [project.optional-dependencies]
 [tool.poetry.extras]
 mlcv = ["torch", "lightning", "deeptime"]
-app = ["streamlit", "plotly", "matplotlib"]
-analysis = ["matplotlib", "deeptime"]
+analysis = ["matplotlib", "plotly", "deeptime"]
 fixer = ["pdbfixer", "black", "isort", "ruff"]
-all = ["torch", "lightning", "deeptime", "streamlit", "plotly", "matplotlib", "pdbfixer", "black", "isort", "ruff"]
+all = ["torch", "lightning", "deeptime", "matplotlib", "plotly", "pdbfixer", "black", "isort", "ruff"]
 
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^3.7"

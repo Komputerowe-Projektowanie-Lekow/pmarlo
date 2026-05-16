@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_EXAMPLES_DIR = _PROJECT_ROOT / "example_programs"
+_OUTPUTS_DIR = _EXAMPLES_DIR / "programs_outputs"
 _SRC_PATH = _PROJECT_ROOT / "src"
 _ASSETS_DIR = _PROJECT_ROOT / "tests" / "_assets"
 
@@ -36,3 +38,11 @@ def assets_path(*relative: str) -> Path:
     """Return a path under ``tests/_assets`` joined with ``relative`` parts."""
 
     return _ASSETS_DIR.joinpath(*relative)
+
+
+def example_output_dir(name: str) -> Path:
+    """Return and create a numbered output directory for an example program."""
+
+    path = _OUTPUTS_DIR / name
+    path.mkdir(parents=True, exist_ok=True)
+    return path

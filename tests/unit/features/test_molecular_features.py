@@ -115,7 +115,9 @@ def test_distance_feature_disallows_periodic_flags():
 
     try:
         traj = md.load("tests/_assets/traj.dcd", top="tests/data/3gd8-fixed.pdb")
-        with pytest.raises(ValueError, match="Distance features must not be flagged as periodic"):
+        with pytest.raises(
+            ValueError, match="Distance features must not be flagged as periodic"
+        ):
             compute_features(traj, ["distance([0, 1])"])
     finally:
         fc._periodic = original

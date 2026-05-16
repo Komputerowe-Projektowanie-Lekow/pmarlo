@@ -27,6 +27,13 @@ from .conformations import (
     sanitize_label_for_filename,
 )
 from .demux import demultiplex_run
+from .feature_profiles import (
+    FEATURE_PROFILES,
+    FeatureProfile,
+    get_feature_profile_info,
+    load_feature_profile,
+    validate_profile_for_cv_biasing,
+)
 from .features import (
     _fes_build_phi_psi_maps,
     _fes_pair_from_phi_psi_maps,
@@ -57,6 +64,7 @@ from .shards import (
     build_from_shards,
     emit_shards_rg_rmsd,
     emit_shards_rg_rmsd_windowed,
+    extract_shards_with_features,
     select_shard_paths,
 )
 from .single_temp_md import run_single_temperature_md
@@ -90,10 +98,15 @@ __all__ = [
     "extract_last_frame_to_pdb",
     "extract_random_highT_frame_to_pdb",
     "extract_seed",
+    "extract_shards_with_features",
+    "FEATURE_PROFILES",
+    "FeatureProfile",
     "find_conformations",
     "find_conformations_with_msm",
     "generate_free_energy_surface",
     "generate_fes_and_pick_minima",
+    "get_feature_profile_info",
+    "load_feature_profile",
     "macro_mfpt",
     "macro_transition_matrix",
     "macrostate_populations",
@@ -115,6 +128,7 @@ __all__ = [
     "slugify",
     "timestamp",
     "trig_expand_periodic",
+    "validate_profile_for_cv_biasing",
     "write_json",
     "_trig_expand_periodic",
     "_build_opts",

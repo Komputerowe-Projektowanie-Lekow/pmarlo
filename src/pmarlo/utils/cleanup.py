@@ -9,17 +9,17 @@ default; all functions support ``dry_run=True`` to list what would be removed.
 
 Typical usage
 -------------
-- After running the sharded app:
+- After running a sharded workflow:
 
     from pathlib import Path
     from pmarlo.utils.cleanup import prune_workspace
 
     # List candidates only (no deletion)
-    report = prune_workspace(Path("pmarlo_webapp/app_output"), mode="conservative", dry_run=True)
+    report = prune_workspace(Path("workspace"), mode="conservative", dry_run=True)
     print(report)
 
     # Delete large DCDs (per-replica + demux) and checkpoints, keep shards/bundles
-    report = prune_workspace(Path("pmarlo_webapp/app_output"), mode="conservative", dry_run=False)
+    report = prune_workspace(Path("workspace"), mode="conservative", dry_run=False)
 
 Policies
 --------
@@ -122,7 +122,7 @@ def prune_workspace(
     Parameters
     ----------
     root : Path
-        Workspace root, e.g., ``pmarlo_webapp/app_output``.
+        Workspace root, e.g., ``workspace``.
     mode : {"conservative", "aggressive"}
         - conservative: remove per-replica and demuxed DCDs, checkpoints, logs, feature_cache.
         - aggressive: also prune old model artifacts and keep only newest 3 bundles.

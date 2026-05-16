@@ -683,9 +683,7 @@ def select_lag_with_ck_validation(
             "splits": {"aggregate": {"X": X}},
         }
     )
-    autocorr_entry = (
-        diag_payload.get("autocorrelation", {}).get("aggregate", {}) or {}
-    )
+    autocorr_entry = diag_payload.get("autocorrelation", {}).get("aggregate", {}) or {}
     tau_int = autocorr_entry.get("tau_int")
     recommended_lags = autocorr_entry.get("recommended_ck_lags", [])
     lag_window = autocorr_entry.get("lag_window")
@@ -741,7 +739,9 @@ def select_lag_with_ck_validation(
 
     # Prepare discrete trajectories
     dtrajs = [discrete]
-    max_supported_lag = max((int(traj.size) for traj in dtrajs if traj.size > 0), default=0) - 1
+    max_supported_lag = (
+        max((int(traj.size) for traj in dtrajs if traj.size > 0), default=0) - 1
+    )
     max_supported_lag = max(0, max_supported_lag)
     requested_tau_candidates = list(tau_candidates)
 

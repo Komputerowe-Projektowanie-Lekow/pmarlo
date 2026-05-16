@@ -596,7 +596,9 @@ def test_tpt_comprehensive_drunkards_walk():
         np.testing.assert_allclose(
             flux.backward_committor, flux_deeptime.backward_committor, rtol=1e-10
         )
-        np.testing.assert_allclose(flux.gross_flux, flux_deeptime.gross_flux, rtol=1e-10)
+        np.testing.assert_allclose(
+            flux.gross_flux, flux_deeptime.gross_flux, rtol=1e-10
+        )
         np.testing.assert_allclose(flux.net_flux, flux_deeptime.net_flux, rtol=1e-10)
         assert flux.total_flux == pytest.approx(flux_deeptime.total_flux, rel=1e-10)
         assert flux.rate == pytest.approx(flux_deeptime.rate, rel=1e-10)
@@ -635,4 +637,3 @@ def test_tpt_comprehensive_drunkards_walk():
         np.testing.assert_allclose(
             cg_flux.net_flux, cg_flux_deeptime.net_flux, rtol=1e-10
         )
-

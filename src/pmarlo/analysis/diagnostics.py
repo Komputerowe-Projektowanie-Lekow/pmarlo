@@ -118,12 +118,7 @@ def _recommend_ck_lags(
     span = upper_bound - lower
     num_points = min(5, span + 1)
     raw = np.geomspace(lower, upper_bound, num=num_points)
-    candidates = sorted(
-        {
-            max(lower, min(upper_bound, int(round(val))))
-            for val in raw
-        }
-    )
+    candidates = sorted({max(lower, min(upper_bound, int(round(val)))) for val in raw})
     if candidates[0] > lower:
         candidates.insert(0, lower)
     if candidates[-1] < upper_bound:
@@ -288,7 +283,9 @@ def _autocorrelation_curve(
     tau_array = np.asarray(tau_grid, dtype=np.int32)
     numerator = np.zeros_like(tau_array, dtype=np.float64)
     denominator = np.zeros_like(tau_array, dtype=np.float64)
-    usable_lengths = [descriptor.length for descriptor in segments if descriptor.length > 1]
+    usable_lengths = [
+        descriptor.length for descriptor in segments if descriptor.length > 1
+    ]
     if usable_lengths:
         min_segment_length = min(usable_lengths)
     else:

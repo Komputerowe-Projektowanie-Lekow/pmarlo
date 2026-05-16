@@ -103,9 +103,9 @@ def _find_existing_cv_bundle_dir(checkpoint_path: Path) -> Path | None:
             except Exception:
                 metadata = {}
             history = metadata.get("history")
-            recorded_values = _collect_recorded_model_paths(metadata) + _collect_recorded_model_paths(
-                history
-            )
+            recorded_values = _collect_recorded_model_paths(
+                metadata
+            ) + _collect_recorded_model_paths(history)
             for raw in recorded_values:
                 normalised = _normalise_path_string(raw)
                 if normalised and base_norm and normalised == base_norm:
@@ -187,7 +187,9 @@ def _tensor_to_numpy(value):
     return np.asarray(value, dtype=np.float32)
 
 
-def _extract_scaler_from_script_module(module: torch.jit.ScriptModule) -> dict[str, Any]:
+def _extract_scaler_from_script_module(
+    module: torch.jit.ScriptModule,
+) -> dict[str, Any]:
     """Pull scaler statistics and feature names directly from a TorchScript bias module."""
     mean_tensor = _get_jit_attribute(module, "scaler_mean")
     scale_tensor = _get_jit_attribute(module, "scaler_scale")
@@ -201,9 +203,9 @@ def _extract_scaler_from_script_module(module: torch.jit.ScriptModule) -> dict[s
     return {
         "mean": _tensor_to_numpy(mean_tensor),
         "scale": _tensor_to_numpy(scale_tensor),
-        "feature_names": list(feature_names)
-        if hasattr(feature_names, "__iter__")
-        else [],
+        "feature_names": (
+            list(feature_names) if hasattr(feature_names, "__iter__") else []
+        ),
     }
 
 
@@ -263,7 +265,7 @@ def _load_model_bundle(
             raise RuntimeError(
                 "The provided CV model path appears to be a training checkpoint "
                 "rather than an exported TorchScript bundle. Export the CV bias files "
-                "with `python pmarlo_webapp/export_cv_bundle.py <model_base_path>` "
+                "with `pmarlo.features.deeptica.export_cv_model` "
                 "or pass the directory containing `deeptica_cv_model.pt`."
             ) from exc
         raise
@@ -340,8 +342,9 @@ def resolve_cv_model_torchscript_path(cv_model_path: str | Path) -> Path:
             base = path.with_suffix("")
             raise FileNotFoundError(
                 "No exported CV bundle could be located for checkpoint "
-                f"{path}. Run `python pmarlo_webapp/export_cv_bundle.py {base}` "
-                "or provide the directory that contains `deeptica_cv_model.pt`."
+                f"{path}. Export the model base {base} with "
+                "`pmarlo.features.deeptica.export_cv_model` or provide the directory "
+                "that contains `deeptica_cv_model.pt`."
             )
         candidate = bundle_dir / "deeptica_cv_model.pt"
 
@@ -520,8 +523,7 @@ def create_system(
 ) -> openmm.System:
     """Create an OpenMM system with optional TorchForce-based CV biasing.
 
-    See pmarlo_webapp/app/CV_INTEGRATION_GUIDE.md for usage guide.
-    See pmarlo_webapp/app/CV_REQUIREMENTS.md for technical details.
+    See ``mdfiles/cv_integration_sampling.md`` for usage guidance.
     """
 
     config = _load_bias_config()

@@ -75,7 +75,7 @@ def export_cv_bias_potential(
     """Export a Deep-TICA network wrapped with TorchScript feature extraction and bias.
 
     Creates a single TorchScript module: positions+box → features → CVs → bias energy.
-    See pmarlo_webapp/app/CV_INTEGRATION_GUIDE.md for usage.
+    See ``mdfiles/cv_integration_sampling.md`` for usage guidance.
     """
 
     from pmarlo.features.deeptica.cv_bias_potential import create_cv_bias_potential
@@ -300,7 +300,7 @@ def export_cv_model(
 
 
 def load_cv_model_info(
-        bundle_dir: str | Path, model_name: str = "deeptica_cv_model"
+    bundle_dir: str | Path, model_name: str = "deeptica_cv_model"
 ) -> dict[str, Any]:
     """Load configuration and metadata from an exported CV model bundle."""
 
@@ -373,29 +373,42 @@ def load_cv_model_info(
                     feature_names = getattr(scaler_data, "feature_names", [])
 
                 scaler_params = {
-                    "mean": np.array(mean_data)
-                    if not isinstance(mean_data, np.ndarray)
-                    else mean_data,
-                    "scale": np.array(scale_data)
-                    if not isinstance(scale_data, np.ndarray)
-                    else scale_data,
-                    "feature_names": list(feature_names)
-                    if hasattr(feature_names, "__iter__")
-                    else [],
+                    "mean": (
+                        np.array(mean_data)
+                        if not isinstance(mean_data, np.ndarray)
+                        else mean_data
+                    ),
+                    "scale": (
+                        np.array(scale_data)
+                        if not isinstance(scale_data, np.ndarray)
+                        else scale_data
+                    ),
+                    "feature_names": (
+                        list(feature_names)
+                        if hasattr(feature_names, "__iter__")
+                        else []
+                    ),
                 }
             else:
-                raise ValueError(f"Unsupported scaler file format: {scaler_path.suffix}")
+                raise ValueError(
+                    f"Unsupported scaler file format: {scaler_path.suffix}"
+                )
         except Exception as exc:  # pragma: no cover - hard to reproduce
-            raise RuntimeError(f"Failed to load scaler from {scaler_path}: {exc}") from exc
+            raise RuntimeError(
+                f"Failed to load scaler from {scaler_path}: {exc}"
+            ) from exc
     else:
-        logger.info("No scaler artifact found for %s; deriving from module when required.", model_path)
+        logger.info(
+            "No scaler artifact found for %s; deriving from module when required.",
+            model_path,
+        )
 
     # Try to extract feature_spec_sha256 from multiple sources
     feature_spec_sha256 = (
-            metadata.get("feature_spec_sha256")
-            or config.get("feature_spec_sha256")
-            or metadata.get("feature_spec_hash")  # Alternative key
-            or config.get("feature_spec_hash")  # Alternative key
+        metadata.get("feature_spec_sha256")
+        or config.get("feature_spec_sha256")
+        or metadata.get("feature_spec_hash")  # Alternative key
+        or config.get("feature_spec_hash")  # Alternative key
     )
 
     # If still not found, try to load from the TorchScript model itself
@@ -415,8 +428,12 @@ def load_cv_model_info(
 
     # If STILL not found, compute it from the feature_spec in metadata
     if not feature_spec_sha256 and "feature_spec" in metadata:
-        feature_spec_sha256 = _hash_feature_spec(_json_compatible(metadata["feature_spec"]))
-        logger.info(f"Computed feature_spec_sha256 from metadata: {feature_spec_sha256}")
+        feature_spec_sha256 = _hash_feature_spec(
+            _json_compatible(metadata["feature_spec"])
+        )
+        logger.info(
+            f"Computed feature_spec_sha256 from metadata: {feature_spec_sha256}"
+        )
 
     return {
         "model_path": str(model_path),

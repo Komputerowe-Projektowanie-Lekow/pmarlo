@@ -20,7 +20,6 @@ jobs:
             integration:
               - 'src/pmarlo/workflow/**'
               - 'src/pmarlo/replica_exchange/**'
-              - 'example_programs/app_usecase/**'
               - 'tests/integration/**'
 
   fast:
