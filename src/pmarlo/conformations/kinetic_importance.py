@@ -132,7 +132,9 @@ class KineticImportanceScore:
             k_slow = gap_idx + 1
             logger.debug(
                 "Timescale gap detected at index %d (ratio: %.2f), k_slow=%d",
-                gap_idx, ratios[gap_idx], k_slow,
+                gap_idx,
+                ratios[gap_idx],
+                k_slow,
             )
         else:
             k_slow = int(min(5, len(its)))
@@ -337,7 +339,8 @@ class KineticImportanceScore:
 
         logger.info(
             "Hyperparameter ensemble with %d lags and %d cluster sizes",
-            len(lag_times), len(n_clusters_list),
+            len(lag_times),
+            len(n_clusters_list),
         )
 
         original_result = self.compute(k_slow=k_slow)
@@ -351,7 +354,9 @@ class KineticImportanceScore:
         for lag in lag_times:
             for n_clusters in n_clusters_list:
                 try:
-                    dtrajs_new = self._recluster(features, n_clusters, traj_lengths=traj_lengths)
+                    dtrajs_new = self._recluster(
+                        features, n_clusters, traj_lengths=traj_lengths
+                    )
                     T_new, pi_new = self._rebuild_msm(dtrajs_new, lag=lag)
                     kis_calc = KineticImportanceScore(T_new, pi_new)
                     result = kis_calc.compute(k_slow=k_slow)
@@ -361,13 +366,16 @@ class KineticImportanceScore:
                     failed_count += 1
                     logger.debug(
                         "Ensemble member (lag=%d, n_clusters=%d) failed: %s",
-                        lag, n_clusters, exc,
+                        lag,
+                        n_clusters,
+                        exc,
                     )
 
         if failed_count > 0:
             logger.warning(
                 "%d/%d ensemble members failed and were excluded",
-                failed_count, len(lag_times) * len(n_clusters_list),
+                failed_count,
+                len(lag_times) * len(n_clusters_list),
             )
         if len(ensemble_kis) == 0:
             raise RuntimeError(
@@ -436,7 +444,9 @@ class KineticImportanceScore:
             k = self.select_k_slow()
 
         _, evecs1 = self._compute_eigenvectors(k + 1)
-        _, evecs2 = self._compute_eigenvectors_for(np.asarray(T_other, dtype=float), k + 1)
+        _, evecs2 = self._compute_eigenvectors_for(
+            np.asarray(T_other, dtype=float), k + 1
+        )
 
         # Skip the first (stationary) eigenvector; compare slow subspaces
         V1 = evecs1[1 : k + 1].T

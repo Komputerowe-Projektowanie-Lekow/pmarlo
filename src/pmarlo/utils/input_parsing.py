@@ -57,7 +57,9 @@ def parse_temperature_ladder(raw: str | Sequence[Number]) -> list[float]:
     return temps
 
 
-def parse_tau_schedule(raw: str | Sequence[Number], *, strict: bool = True) -> list[int]:
+def parse_tau_schedule(
+    raw: str | Sequence[Number], *, strict: bool = True
+) -> list[int]:
     """Parse a tau schedule specification into sorted unique integers.
 
     Args:
@@ -137,7 +139,9 @@ def parse_bins(
     return bins
 
 
-def parse_hidden_layers(raw: str | Sequence[Number], *, strict: bool = True) -> tuple[int, ...]:
+def parse_hidden_layers(
+    raw: str | Sequence[Number], *, strict: bool = True
+) -> tuple[int, ...]:
     """Parse hidden layer specification from various formats.
 
     Args:

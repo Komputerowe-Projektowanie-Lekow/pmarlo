@@ -194,7 +194,9 @@ class Conformation:
             "macrostate_id": (
                 int(self.macrostate_id) if self.macrostate_id is not None else None
             ),
-            "frame_index": int(self.frame_index) if self.frame_index is not None else None,
+            "frame_index": (
+                int(self.frame_index) if self.frame_index is not None else None
+            ),
             "trajectory_index": (
                 int(self.trajectory_index)
                 if self.trajectory_index is not None

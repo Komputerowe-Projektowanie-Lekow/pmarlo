@@ -162,8 +162,7 @@ def load_protein_metrics_config() -> Dict[str, Any]:
     missing = PROTEIN_METRICS_REQUIRED_KEYS - metrics.keys()
     if missing:
         raise ConfigurationError(
-            "protein_metrics missing required keys: "
-            + ", ".join(sorted(missing))
+            "protein_metrics missing required keys: " + ", ".join(sorted(missing))
         )
 
     def _coerce_residue_set(value: Any, key: str) -> set[str]:

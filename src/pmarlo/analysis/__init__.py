@@ -7,7 +7,6 @@ from .debug_export import (
     export_analysis_debug,
 )
 from .diagnostics import compute_diagnostics
-from .errors import CountingLogicError
 from .fes import compute_weighted_fes, ensure_fes_inputs_whitened
 from .msm import ensure_msm_inputs_whitened, prepare_msm_discretization
 from .project_cv import apply_whitening_from_metadata
@@ -26,5 +25,4 @@ __all__ = [
     "expected_pairs",
     "validate_features",
     "ValidationError",
-    "CountingLogicError",
 ]

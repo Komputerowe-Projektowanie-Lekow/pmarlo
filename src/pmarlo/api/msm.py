@@ -7,10 +7,10 @@ from typing import List, Literal, Optional, Sequence
 import matplotlib.pyplot as plt
 import numpy as np
 
+from pmarlo import constants as const
 from pmarlo.analysis import compute_diagnostics
 from pmarlo.api.features import compute_universal_embedding
 from pmarlo.api.fes import generate_free_energy_surface
-from pmarlo import constants as const
 from pmarlo.markov_state_model import MarkovStateModel
 from pmarlo.markov_state_model._msm_utils import (
     build_simple_msm,
@@ -586,5 +586,3 @@ def macro_mfpt(T_macro: np.ndarray) -> np.ndarray:
     result = compute_macro_mfpt(T_macro)
     logger.debug("[msm] MFPT matrix computed: shape=%s", result.shape)
     return result
-
-

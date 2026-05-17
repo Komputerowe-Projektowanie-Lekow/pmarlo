@@ -16,11 +16,9 @@ from pmarlo.utils.path_utils import ensure_directory
 from pmarlo.utils.scc import analyse_scc, compute_component_coverage
 
 from .counting import expected_pairs
-from .errors import CountingLogicError
 
 __all__ = [
     "AnalysisDebugData",
-    "CountingLogicError",
     "compute_analysis_debug",
     "export_analysis_debug",
 ]
@@ -161,7 +159,7 @@ def compute_analysis_debug(
     # Allow tolerance of one pair per segment to account for edge cases
     tolerance = len(valid_segment_lengths)
     if abs(expected_pair_count - total_pairs) > tolerance:
-        raise CountingLogicError(
+        raise ValueError(
             f"Pair counting mismatch: counted {total_pairs} pairs but expected "
             f"{expected_pair_count} pairs based on actual dtraj lengths (tolerance: {tolerance}). "
             f"Dtraj lengths: {dtraj_lengths}, lag: {lag}, stride: {stride_for_pairs}. "

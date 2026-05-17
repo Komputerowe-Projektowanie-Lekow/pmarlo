@@ -1,35 +1,31 @@
 # Copyright (c) 2025 PMARLO Development Team
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Main entry point for single-trajectory PMARLO analysis."""
+"""Public API for single-trajectory PMARLO analysis."""
 
-from ._version import __version__ as _PACKAGE_VERSION
-from .markov_state_model import MarkovStateModel
-from .markov_state_model.free_energy import FESResult, PMFResult
+from __future__ import annotations
 
-# Essential result classes
-from .markov_state_model.results import (
-    BaseResult,
-    CKResult,
-    ClusteringResult,
-    ITSResult,
-    MSMResult,
-)
-from .protein.protein import Protein
+from typing import TYPE_CHECKING, Any
 
-# Error classes
-from .utils.errors import (
-    TemperatureConsistencyError,
-)
+from ._version import __version__
 
-# Essential utilities
-from .utils.seed import set_global_seed
+if TYPE_CHECKING:
+    from .markov_state_model import MarkovStateModel
+    from .markov_state_model.free_energy import FESResult, PMFResult
+    from .markov_state_model.results import (
+        BaseResult,
+        CKResult,
+        ClusteringResult,
+        ITSResult,
+        MSMResult,
+    )
+    from .protein.protein import Protein
+    from .utils.errors import TemperatureConsistencyError
+    from .utils.seed import set_global_seed
 
 __all__ = [
-    # Main API
     "Protein",
     "MarkovStateModel",
-    # Result classes
     "BaseResult",
     "ClusteringResult",
     "MSMResult",
@@ -37,22 +33,79 @@ __all__ = [
     "ITSResult",
     "FESResult",
     "PMFResult",
-    # Errors
     "TemperatureConsistencyError",
-    # Utils
     "set_global_seed",
+    "get_version",
+    "get_info",
+    "__version__",
 ]
 
+
+def __getattr__(name: str) -> Any:
+    """Lazily import public objects from PMARLO submodules."""
+    if name == "Protein":
+        from .protein.protein import Protein
+
+        return Protein
+
+    if name == "MarkovStateModel":
+        from .markov_state_model import MarkovStateModel
+
+        return MarkovStateModel
+
+    if name in {"FESResult", "PMFResult"}:
+        from .markov_state_model.free_energy import FESResult, PMFResult
+
+        return {
+            "FESResult": FESResult,
+            "PMFResult": PMFResult,
+        }[name]
+
+    if name in {
+        "BaseResult",
+        "ClusteringResult",
+        "MSMResult",
+        "CKResult",
+        "ITSResult",
+    }:
+        from .markov_state_model.results import (
+            BaseResult,
+            CKResult,
+            ClusteringResult,
+            ITSResult,
+            MSMResult,
+        )
+
+        return {
+            "BaseResult": BaseResult,
+            "ClusteringResult": ClusteringResult,
+            "MSMResult": MSMResult,
+            "CKResult": CKResult,
+            "ITSResult": ITSResult,
+        }[name]
+
+    if name == "TemperatureConsistencyError":
+        from .utils.errors import TemperatureConsistencyError
+
+        return TemperatureConsistencyError
+
+    if name == "set_global_seed":
+        from .utils.seed import set_global_seed
+
+        return set_global_seed
+
+    raise AttributeError(f"module 'pmarlo' has no attribute {name!r}")
+
+
 def get_version() -> str:
-    """Get the PMARLO version string."""
-    return _PACKAGE_VERSION
+    """Return the PMARLO version string."""
+    return __version__
 
 
-def get_info() -> dict:
-    """Get information about the PMARLO installation."""
+def get_info() -> dict[str, str]:
+    """Return basic information about the PMARLO installation."""
     return {
-        "version": get_version(),
+        "version": __version__,
         "package": "pmarlo",
         "description": "Protein Markov State Model analysis for one trajectory",
     }
-

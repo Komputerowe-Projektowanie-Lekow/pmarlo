@@ -14,3 +14,7 @@ Removed 10 example programs that became non-functional after deletion of `replic
 - `12_openmm_bias_benchmark.py` — imported `pmarlo.replica_exchange.system_builder`
 
 Retained `10_tpt_basic.py`, `11_tpt_drunkards_walk.py`, and `_example_support.py`; these depend only on active `pmarlo.markov_state_model` code.
+
+## added
+
+Added `example_programs/13_adaptive_retraining_colab.ipynb`, a Google Colab notebook for the mdshare-based offline replay experiment comparing retraining triggers, training-data policies, and training-budget policies for adaptive CV workflows.

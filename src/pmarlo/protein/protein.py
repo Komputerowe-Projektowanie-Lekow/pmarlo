@@ -448,9 +448,7 @@ class Protein:
                 raise RuntimeError("PDBFixer object is not initialized")
             self._validate_coordinates(self.fixer.positions)
             with io.StringIO() as pdb_handle:
-                PDBFile.writeFile(
-                    self.fixer.topology, self.fixer.positions, pdb_handle
-                )
+                PDBFile.writeFile(self.fixer.topology, self.fixer.positions, pdb_handle)
                 pdb_block = pdb_handle.getvalue()
             self.rdkit_mol = Chem.MolFromPDBBlock(pdb_block)
         else:

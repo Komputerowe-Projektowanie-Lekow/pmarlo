@@ -44,7 +44,9 @@ def train_cv_model(
 
         estimator = TICA(lagtime=lag_time, dim=n_components, **kwargs)
         model = estimator.fit(features).fetch_model()
-        logger.info("TICA trained: %d components, lag=%d frames", n_components, lag_time)
+        logger.info(
+            "TICA trained: %d components, lag=%d frames", n_components, lag_time
+        )
         return model
 
     if method == "deeptica":
@@ -56,7 +58,9 @@ def train_cv_model(
             **kwargs,
         )
         model = train_deeptica(features, config)
-        logger.info("DeepTICA trained: %d components, lag=%d frames", n_components, lag_time)
+        logger.info(
+            "DeepTICA trained: %d components, lag=%d frames", n_components, lag_time
+        )
         return model
 
     raise ValueError(f"Unknown CV method {method!r}. Choose 'tica' or 'deeptica'.")

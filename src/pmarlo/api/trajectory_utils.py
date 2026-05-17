@@ -67,5 +67,3 @@ def extract_last_frame_to_pdb(
 
     logger.info("[trajectory_utils] Last frame saved to: %s", out_p)
     return out_p
-
-

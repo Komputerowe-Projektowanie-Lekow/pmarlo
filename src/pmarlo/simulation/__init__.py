@@ -78,7 +78,9 @@ def run_segment(
 
     try:
         platform = openmm.Platform.getPlatformByName(platform_name)
-        properties: dict = {"Precision": "mixed"} if platform_name in ("CUDA", "OpenCL") else {}
+        properties: dict = (
+            {"Precision": "mixed"} if platform_name in ("CUDA", "OpenCL") else {}
+        )
     except Exception:
         logger.warning("Platform %s unavailable, falling back to CPU.", platform_name)
         platform = openmm.Platform.getPlatformByName("CPU")
@@ -99,7 +101,10 @@ def run_segment(
     simulation.reporters.append(app.DCDReporter(str(dcd_path), report_interval))
     logger.info(
         "Running %d steps at %.1f K on %s (dt=%.1f fs)",
-        n_steps, temperature_K, platform_name, timestep_fs,
+        n_steps,
+        temperature_K,
+        platform_name,
+        timestep_fs,
     )
     simulation.step(n_steps)
     logger.info("Segment done → %s", dcd_path)

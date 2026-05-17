@@ -226,4 +226,3 @@ class LoadingMixin:
         if joined is None:
             logger.warning(f"No frames loaded from {traj_file}")
         return joined
-

@@ -10,7 +10,6 @@ import numpy as np
 from sklearn.cluster import KMeans, MiniBatchKMeans
 
 from .counting import expected_pairs
-from .errors import CountingLogicError, PruningFailedError
 from .validation import validate_features
 
 logger = logging.getLogger("pmarlo")
@@ -44,27 +43,7 @@ class MSMDiscretizationResult:
     pruned_state_indices: np.ndarray | None = None
 
 
-class FeatureMismatchError(ValueError):
-    """Raised when feature schemas between splits are incompatible."""
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        differences: Sequence[str] | None = None,
-        expected: Mapping[str, Any] | None = None,
-        actual: Mapping[str, Any] | None = None,
-    ) -> None:
-        self.differences = list(differences or [])
-        self.expected_schema = dict(expected or {})
-        self.actual_schema = dict(actual or {})
-        if self.differences:
-            diff_text = "\n".join(f"- {item}" for item in self.differences)
-            message = f"{message}\n{diff_text}"
-        super().__init__(message)
-
-
-class NoAssignmentsError(RuntimeError):
+class NoAssignmentsError(ValueError):
     """Raised when no frames receive a valid state assignment."""
 
     def __init__(
@@ -242,7 +221,7 @@ def _validate_feature_schema(
         differences.extend(_diff_feature_names(expected_names, actual_names))
 
     if differences:
-        raise FeatureMismatchError(
+        raise ValueError(
             f"Feature schema mismatch for split '{split_name}'",
             differences=differences,
             expected=reference,
@@ -815,11 +794,7 @@ def _process_split_assignment(
             if centers is None
             else np.linalg.norm(np.asarray(centers, dtype=np.float64), axis=1)
         )
-        raise NoAssignmentsError(
-            split_name,
-            preview=preview,
-            center_norms=center_norms,
-        )
+        raise ValueError(f"No valid assignments found for split '{split_name}'")
 
     return (
         labels,
@@ -844,11 +819,7 @@ def _ensure_train_assignments(
         if centers is None
         else np.linalg.norm(np.asarray(centers, dtype=np.float64), axis=1)
     )
-    raise NoAssignmentsError(
-        train_key,
-        preview=preview,
-        center_norms=center_norms,
-    )
+    raise ValueError(f"No valid assignments found for split '{train_key}'")
 
 
 def _prune_zero_rows_if_needed(
@@ -1067,7 +1038,7 @@ def discretize_dataset(
     )
 
     if expected_pairs_train > 0 and counted_pairs_train == 0:
-        raise CountingLogicError(
+        raise ValueError(
             f"No transition pairs counted for split '{train_key}' "
             f"despite expected {expected_pairs_train} pairs"
         )

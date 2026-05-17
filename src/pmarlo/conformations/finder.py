@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+from numbers import Integral
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
-from scipy import constants
+
+from pmarlo.utils.thermodynamics import kT_kJ_per_mol
 
 from .kinetic_importance import KineticImportanceScore
 from .representative_picker import (
@@ -40,60 +42,179 @@ def _resolve_n_metastable(requested: Optional[int], n_states: int) -> int:
     return resolved
 
 
-def _kj_per_mol(temperature_K: float) -> float:
-    """Return thermal energy kT in kJ/mol."""
-    return constants.k * temperature_K * constants.Avogadro / 1e3
-
-
-def _free_energy(population: float, kT: float, state_id: int) -> float:
-    """Compute free energy from population; returns np.inf for near-zero populations."""
-    if population < 1e-300:
-        logger.warning(
-            "State %d has near-zero population; free energy set to inf", state_id
-        )
-        return np.inf
-    return -kT * np.log(population)
-
-
 def _compute_macrostate_memberships(
     T: np.ndarray,
     pi: np.ndarray,
     n_metastable: int,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Compute PCCA+ memberships and canonical macrostate labels."""
-    if T.ndim != 2 or T.shape[0] != T.shape[1]:
-        raise ValueError("Transition matrix must be square to compute macrostates")
-    if n_metastable > T.shape[0]:
+    *,
+    atol: float = 1e-8,
+    rtol: float = 1e-7,
+    stationary_atol: float = 1e-6,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute PCCA+ memberships and canonical macrostate labels.
+
+    The returned memberships are ordered by decreasing stationary macrostate
+    population, so macrostate label 0 corresponds to the most populated
+    macrostate.
+
+    Parameters
+    ----------
+    T:
+        Row-stochastic transition matrix of shape ``(n_microstates, n_microstates)``.
+    pi:
+        Stationary distribution over microstates of shape ``(n_microstates,)``.
+    n_metastable:
+        Number of metastable macrostates requested.
+    atol:
+        Absolute tolerance for probability and row-stochasticity checks.
+    rtol:
+        Relative tolerance for probability and row-stochasticity checks.
+    stationary_atol:
+        Absolute tolerance for checking ``pi @ T == pi``.
+
+    Returns
+    -------
+    memberships:
+        Array of shape ``(n_microstates, n_metastable)``. Each row contains
+        fuzzy membership probabilities over macrostates.
+    macrostate_labels:
+        Hard macrostate labels obtained by ``argmax`` over canonicalized
+        memberships.
+    """
+    T_arr = np.asarray(T, dtype=float)
+
+    if T_arr.ndim != 2 or T_arr.shape[0] != T_arr.shape[1]:
+        raise ValueError("Transition matrix must be square to compute macrostates.")
+
+    n_states = T_arr.shape[0]
+
+    if not isinstance(n_metastable, Integral):
+        raise TypeError("n_metastable must be an integer.")
+
+    n_metastable = int(n_metastable)
+
+    if n_metastable < 1:
+        raise ValueError("n_metastable must be at least 1.")
+
+    if n_metastable > n_states:
         raise ValueError(
-            f"Requested {n_metastable} macrostates but only {T.shape[0]} microstates available"
+            f"Requested {n_metastable} macrostates, but only {n_states} "
+            "microstates are available."
+        )
+
+    if not np.all(np.isfinite(T_arr)):
+        raise ValueError("Transition matrix contains NaN or infinite values.")
+
+    if np.any(T_arr < -atol):
+        min_value = float(np.min(T_arr))
+        raise ValueError(
+            f"Transition matrix contains negative probabilities. "
+            f"Minimum value: {min_value:.3e}."
+        )
+
+    row_sums = T_arr.sum(axis=1)
+
+    if not np.allclose(row_sums, 1.0, atol=atol, rtol=rtol):
+        max_deviation = float(np.max(np.abs(row_sums - 1.0)))
+        raise ValueError(
+            "Transition matrix must be row-stochastic. "
+            f"Maximum row-sum deviation from 1: {max_deviation:.3e}."
+        )
+
+    pi_vec = np.asarray(pi, dtype=float).reshape(-1)
+
+    if pi_vec.shape[0] != n_states:
+        raise ValueError(
+            "Stationary distribution size must match the transition matrix. "
+            f"Expected {n_states}, got {pi_vec.shape[0]}."
+        )
+
+    if not np.all(np.isfinite(pi_vec)):
+        raise ValueError("Stationary distribution contains NaN or infinite values.")
+
+    if np.any(pi_vec < -atol):
+        min_value = float(np.min(pi_vec))
+        raise ValueError(
+            f"Stationary distribution contains negative probabilities. "
+            f"Minimum value: {min_value:.3e}."
+        )
+
+    pi_sum = float(pi_vec.sum())
+
+    if not np.isclose(pi_sum, 1.0, atol=atol, rtol=rtol):
+        raise ValueError(
+            "Stationary distribution must sum to 1. " f"Observed sum: {pi_sum:.12g}."
+        )
+
+    stationary_residual = pi_vec @ T_arr - pi_vec
+
+    if not np.allclose(
+        pi_vec @ T_arr,
+        pi_vec,
+        atol=stationary_atol,
+        rtol=rtol,
+    ):
+        max_residual = float(np.max(np.abs(stationary_residual)))
+        raise ValueError(
+            "Provided pi is not stationary for the transition matrix. "
+            f"Maximum absolute residual in pi @ T - pi: {max_residual:.3e}."
         )
 
     try:
         from deeptime.markov import pcca
     except ImportError as exc:  # pragma: no cover - optional dependency guard
         raise ImportError(
-            "PCCA+ membership computation requires the 'deeptime' package"
+            "PCCA+ membership computation requires the 'deeptime' package."
         ) from exc
 
-    model = pcca(np.asarray(T, dtype=float), n_metastable)
-    memberships = np.asarray(model.memberships, dtype=float)
-    if memberships.ndim != 2 or memberships.shape[0] != T.shape[0]:
-        raise ValueError("PCCA+ returned memberships with unexpected shape")
+    model = pcca(
+        T_arr,
+        n_metastable,
+        stationary_distribution=pi_vec,
+    )
 
-    # Canonicalize macrostate order by stationary population to ensure consistent labeling.
-    pi_vec = np.asarray(pi, dtype=float).reshape(-1)
-    if pi_vec.shape[0] != T.shape[0]:
+    memberships = np.asarray(model.memberships, dtype=float)
+
+    expected_shape = (n_states, n_metastable)
+
+    if memberships.shape != expected_shape:
         raise ValueError(
-            "Stationary distribution size must match the transition matrix"
+            "PCCA+ returned memberships with unexpected shape. "
+            f"Expected {expected_shape}, got {memberships.shape}."
         )
 
-    macro_weights = np.dot(pi_vec, memberships)
-    order = np.argsort(-macro_weights)
-    memberships = memberships[:, order]
-    remap = {int(old_idx): int(new_idx) for new_idx, old_idx in enumerate(order)}
+    if not np.all(np.isfinite(memberships)):
+        raise ValueError("PCCA+ returned NaN or infinite membership values.")
 
-    raw_labels = np.argmax(np.asarray(model.memberships, dtype=float), axis=1)
-    macrostate_labels = np.asarray([remap[int(lbl)] for lbl in raw_labels], dtype=int)
+    if np.any(memberships < -atol):
+        min_value = float(np.min(memberships))
+        raise ValueError(
+            "PCCA+ returned negative membership probabilities. "
+            f"Minimum value: {min_value:.3e}."
+        )
+
+    membership_row_sums = memberships.sum(axis=1)
+
+    if not np.allclose(membership_row_sums, 1.0, atol=atol, rtol=rtol):
+        max_deviation = float(np.max(np.abs(membership_row_sums - 1.0)))
+        raise ValueError(
+            "PCCA+ memberships must sum to 1 for each microstate. "
+            f"Maximum row-sum deviation from 1: {max_deviation:.3e}."
+        )
+
+    # Canonicalize macrostate order by stationary macrostate population.
+    # This makes label 0 the most populated macrostate, label 1 the second most
+    # populated, etc.
+    macro_weights = pi_vec @ memberships
+
+    # Deterministic tie-breaking:
+    # primary key: decreasing macrostate weight
+    # secondary key: original macrostate index
+    order = np.lexsort((np.arange(n_metastable), -macro_weights))
+
+    memberships = memberships[:, order]
+
+    macrostate_labels = np.argmax(memberships, axis=1).astype(int)
 
     return memberships, macrostate_labels
 
@@ -110,7 +231,7 @@ def find_conformations(
     compute_kis: bool = True,
     uncertainty_analysis: bool = False,
     n_bootstrap: int = 100,
-    representative_selection: str = "medoid",
+    representative_selection: str = "closest_to_centroid",
     output_dir: Optional[str] = None,
     save_structures: bool = False,
     tse_tolerance: float = 0.05,
@@ -145,7 +266,8 @@ def find_conformations(
         compute_kis: Compute Kinetic Importance Score
         uncertainty_analysis: Perform bootstrap uncertainty quantification
         n_bootstrap: Number of bootstrap samples
-        representative_selection: Method for picking representatives ('medoid', 'centroid', 'diverse')
+        representative_selection: Method for picking representatives ('closest_to_centroid',
+            'centroid', 'true_medoid', 'diverse')
         output_dir: Directory for saving structures
         save_structures: Save representative structures as PDB files
         tse_tolerance: Committor tolerance from 0.5 used to classify transition state ensemble members
@@ -162,8 +284,11 @@ def find_conformations(
         ConformationSet with all identified conformations
 
     Example:
+        >>> from pmarlo.api import find_conformations_from_msm
         >>> msm_data = {'T': T, 'pi': pi, 'dtrajs': dtrajs, 'features': features}
-        >>> results = find_conformations(msm_data, trajectories=traj, compute_kis=True)
+        >>> results = find_conformations_from_msm(
+        ...     msm_data, trajectories=traj, compute_kis=True
+        ... )
         >>> ts_conformations = results.get_transition_states()
         >>> print(f"Found {len(ts_conformations)} transition states")
     """
@@ -243,8 +368,11 @@ def find_conformations(
         if uncertainty_analysis and dtrajs is not None:
             logger.info("Computing KIS stability")
             stability, boot_std = kis_calc.bootstrap_stability(
-                dtrajs, n_boot=n_bootstrap // 2, top_n=10,
-                random_seed=random_seed, lag=lag,
+                dtrajs,
+                n_boot=n_bootstrap // 2,
+                top_n=10,
+                random_seed=random_seed,
+                lag=lag,
             )
             kis_result = KISResult(
                 kis_scores=kis_result.kis_scores,
@@ -274,8 +402,7 @@ def find_conformations(
 
     if find_transition_states:
         logger.info(
-            "Classifying reactive (transition) states "
-            f"(tolerance={tse_tolerance})"
+            "Classifying reactive (transition) states " f"(tolerance={tse_tolerance})"
         )
         transition_conformations = _find_transition_states(
             tpt_result,
@@ -376,7 +503,8 @@ def _find_transition_states(
     tse_tolerance: float = 0.05,
 ) -> List[Conformation]:
     """Identify all reactive (non-source/sink) states."""
-    kT = _kj_per_mol(temperature_K)
+
+    kT = kT_kJ_per_mol(temperature_K)
     source_states = set(int(s) for s in np.asarray(tpt_result.source_states))
     sink_states = set(int(s) for s in np.asarray(tpt_result.sink_states))
 
@@ -407,7 +535,7 @@ def _find_transition_states(
                 conformation_type="tse" if is_tse else "transition",
                 state_id=int(state_id),
                 population=population,
-                free_energy=_free_energy(population, kT, state_id),
+                free_energy=-kT * np.log(population) if population > 0 else np.inf,
                 committor=committor,
                 kis_score=kis_score,
                 flux=flux,
@@ -428,7 +556,7 @@ def _find_metastable_states(
     macrostate_memberships: Optional[np.ndarray] = None,
 ) -> List[Conformation]:
     """Identify metastable states as source and sink sets from TPT results."""
-    kT = _kj_per_mol(temperature_K)
+    kT = kT_kJ_per_mol(temperature_K)
 
     if flux_by_state is None:
         flux_by_state = _calculate_state_flux(tpt_result.flux_matrix)
@@ -455,7 +583,10 @@ def _find_metastable_states(
         conf_metadata: Dict[str, Any] = {
             "role": "source" if state_id in source_states else "sink"
         }
-        if macrostate_memberships is not None and state_id < macrostate_memberships.shape[0]:
+        if (
+            macrostate_memberships is not None
+            and state_id < macrostate_memberships.shape[0]
+        ):
             conf_metadata["macrostate_members"] = macrostate_memberships[state_id]
 
         conformations.append(
@@ -463,7 +594,7 @@ def _find_metastable_states(
                 conformation_type="metastable",
                 state_id=int(state_id),
                 population=population,
-                free_energy=_free_energy(population, kT, state_id),
+                free_energy=-kT * np.log(population) if population > 0 else np.inf,
                 committor=committor,
                 kis_score=kis_score,
                 flux=flux,

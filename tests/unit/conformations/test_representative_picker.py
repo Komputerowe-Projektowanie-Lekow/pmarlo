@@ -2,7 +2,9 @@
 
 from pathlib import Path
 
+import mdtraj as md
 import numpy as np
+import pytest
 
 from pmarlo.conformations.representative_picker import (
     RepresentativePicker,
@@ -10,6 +12,22 @@ from pmarlo.conformations.representative_picker import (
     TrajectorySegment,
     build_frame_index_lookup,
 )
+
+
+def _load_test_trajectory() -> md.Trajectory:
+    topology = Path("tests/_assets/3gd8-fixed.pdb").resolve()
+    trajectory = Path("tests/_assets/traj.dcd").resolve()
+    return md.load(str(trajectory), top=str(topology))
+
+
+def _build_distance_features(traj: md.Trajectory) -> np.ndarray:
+    distances = np.linalg.norm(traj.xyz[:, 0, :] - traj.xyz[:, 1, :], axis=1)
+    return distances.reshape(-1, 1)
+
+
+def _build_state_assignments(features: np.ndarray) -> np.ndarray:
+    threshold = float(np.median(features[:, 0]))
+    return np.where(features[:, 0] <= threshold, 0, 1).astype(int)
 
 
 def test_build_frame_index_lookup_maps_global_to_local() -> None:
@@ -53,10 +71,84 @@ def test_pick_representatives_returns_local_indices() -> None:
         state_ids=[1],
         weights=weights,
         n_reps=1,
-        method="medoid",
+        method="closest_to_centroid",
     )
 
     assert representatives == [(1, 1, 0, 1)]
+
+
+def test_pick_true_medoid_minimizes_total_distance() -> None:
+    traj = _load_test_trajectory()
+    features = _build_distance_features(traj)
+    dtrajs = [_build_state_assignments(features)]
+
+    picker = RepresentativePicker()
+    representatives = picker.pick_representatives(
+        features=features,
+        dtrajs=dtrajs,
+        state_ids=[0],
+        n_reps=1,
+        method="true_medoid",
+    )
+
+    frames_in_state = np.where(dtrajs[0] == 0)[0]
+    state_features = features[frames_in_state]
+    distance_sums = np.array(
+        [
+            np.sum(np.linalg.norm(state_features - state_features[idx], axis=1))
+            for idx in range(len(state_features))
+        ]
+    )
+    expected_local = int(np.argmin(distance_sums))
+    expected_global = int(frames_in_state[expected_local])
+
+    assert representatives == [(0, expected_global, 0, expected_global)]
+
+
+def test_diverse_selection_avoids_duplicate_frames() -> None:
+    traj = _load_test_trajectory()
+    n_frames = traj.n_frames
+    assert n_frames >= 2
+
+    constant_value = float(np.mean(traj.xyz))
+    features = np.full((n_frames, 1), constant_value)
+    dtrajs = [np.zeros(n_frames, dtype=int)]
+
+    picker = RepresentativePicker()
+    n_reps = min(3, n_frames)
+    representatives = picker.pick_representatives(
+        features=features,
+        dtrajs=dtrajs,
+        state_ids=[0],
+        n_reps=n_reps,
+        method="diverse",
+    )
+
+    global_frames = [rep[1] for rep in representatives]
+    assert len(global_frames) == len(set(global_frames))
+
+
+def test_diverse_rejects_non_finite_weights() -> None:
+    traj = _load_test_trajectory()
+    features = _build_distance_features(traj)
+    dtrajs = [_build_state_assignments(features)]
+    weights = features[:, 0].copy()
+
+    frames_in_state = np.where(dtrajs[0] == 0)[0]
+    assert frames_in_state.size > 0
+    weights[frames_in_state[0]] = np.nan
+
+    picker = RepresentativePicker()
+
+    with pytest.raises(ValueError, match="Non-finite weights"):
+        picker.pick_representatives(
+            features=features,
+            dtrajs=dtrajs,
+            state_ids=[0],
+            weights=weights,
+            n_reps=1,
+            method="diverse",
+        )
 
 
 class _PdbFrame:
@@ -103,8 +195,6 @@ def test_extract_structures_uses_local_indices(tmp_path: Path) -> None:
 
 
 def test_extract_structures_with_locator(tmp_path: Path) -> None:
-    import mdtraj as md
-
     topology = Path("tests/_assets/3gd8-fixed.pdb").resolve()
     trajectory = Path("tests/_assets/traj.dcd").resolve()
 

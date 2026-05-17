@@ -9,6 +9,9 @@ import mdtraj as md
 import numpy as np
 
 from pmarlo import constants as const
+from pmarlo.conformations.finder import (
+    find_conformations as _find_conformations_from_msm,
+)
 from pmarlo.io import trajectory as traj_io
 from pmarlo.utils.json_io import normalize_for_json_row
 from pmarlo.utils.mdtraj import load_mdtraj_topology, resolve_atom_selection
@@ -26,6 +29,8 @@ from .msm import (
 )
 
 logger = logging.getLogger("pmarlo")
+
+find_conformations_from_msm = _find_conformations_from_msm
 
 
 def _write_conformations_csv_json(

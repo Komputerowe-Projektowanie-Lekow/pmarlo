@@ -16,6 +16,7 @@ from pmarlo.utils.seed import choose_sim_seed, extract_seed
 from .clustering import cluster_microstates
 from .conformations import (
     find_conformations,
+    find_conformations_from_msm,
     sanitize_label_for_filename,
 )
 from .feature_profiles import (
@@ -66,6 +67,7 @@ __all__ = [
     "FEATURE_PROFILES",
     "FeatureProfile",
     "find_conformations",
+    "find_conformations_from_msm",
     "generate_free_energy_surface",
     "generate_fes_and_pick_minima",
     "get_feature_profile_info",

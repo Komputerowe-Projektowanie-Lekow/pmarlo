@@ -117,6 +117,30 @@ class RepresentativePicker:
 
         pass
 
+    @staticmethod
+    def _normalize_state_weights(state_weights: np.ndarray, state: int) -> np.ndarray:
+        weights_array = np.asarray(state_weights, dtype=float)
+        if weights_array.ndim != 1:
+            raise ValueError("State weights must be one-dimensional")
+        if not np.all(np.isfinite(weights_array)):
+            raise ValueError(f"Non-finite weights for state {state}")
+        if np.any(weights_array < 0.0):
+            raise ValueError(f"Negative weights for state {state}")
+        weight_sum = float(np.sum(weights_array))
+        if weight_sum <= 0.0:
+            raise ValueError(f"Non-positive weight sum for state {state}: {weight_sum}")
+        return weights_array / weight_sum
+
+    def _resolve_state_weights(
+        self,
+        weights: Optional[np.ndarray],
+        frames_in_state: np.ndarray,
+        state: int,
+    ) -> np.ndarray:
+        if weights is None:
+            return np.full(len(frames_in_state), 1.0 / len(frames_in_state))
+        return self._normalize_state_weights(weights[frames_in_state], state)
+
     def pick_representatives(
         self,
         features: np.ndarray,
@@ -124,7 +148,7 @@ class RepresentativePicker:
         state_ids: Sequence[int],
         weights: Optional[np.ndarray] = None,
         n_reps: int = 1,
-        method: str = "medoid",
+        method: str = "closest_to_centroid",
     ) -> List[RepresentativeFrame]:
         """Pick representative frames for given states.
 
@@ -134,7 +158,8 @@ class RepresentativePicker:
             state_ids: States to pick representatives for
             Optional per-frame weights for representative selection.
             n_reps: Number of representatives per state
-            method: Selection method ('medoid', 'centroid', 'diverse')
+            method: Selection method ('closest_to_centroid', 'centroid', 'true_medoid',
+                'diverse')
 
         Returns:
             List of ``(state_id, global_frame_index, trajectory_index, local_frame_index)``
@@ -156,15 +181,24 @@ class RepresentativePicker:
             )
 
         if method == "medoid":
-            return self._pick_medoids(features, lookup, state_ids, weights, n_reps)
+            raise ValueError(
+                "Method 'medoid' has been renamed. Use 'closest_to_centroid' for the "
+                "previous behavior or 'true_medoid' for medoid selection."
+            )
+        if method == "closest_to_centroid":
+            return self._pick_closest_to_centroid(
+                features, lookup, state_ids, weights, n_reps
+            )
         if method == "centroid":
             return self._pick_centroids(features, lookup, state_ids, weights, n_reps)
+        if method == "true_medoid":
+            return self._pick_true_medoids(features, lookup, state_ids, weights, n_reps)
         if method == "diverse":
             return self._pick_diverse(features, lookup, state_ids, weights, n_reps)
 
         raise ValueError(f"Unknown method: {method}")
 
-    def _pick_medoids(
+    def _pick_closest_to_centroid(
         self,
         features: np.ndarray,
         lookup: FrameIndexLookup,
@@ -172,7 +206,7 @@ class RepresentativePicker:
         weights: Optional[np.ndarray],
         n_reps: int,
     ) -> List[RepresentativeFrame]:
-        """Pick representatives using weighted k-medoids."""
+        """Pick representatives closest to a weighted centroid."""
 
         representatives: List[RepresentativeFrame] = []
 
@@ -183,18 +217,7 @@ class RepresentativePicker:
 
             state_features = features[frames_in_state]
 
-            if weights is not None:
-                state_weights = weights[frames_in_state]
-                weight_sum = float(np.sum(state_weights))
-                if weight_sum <= 0.0:
-                    raise ValueError(
-                        f"Non-positive weight sum for state {state}: {weight_sum}"
-                    )
-                state_weights = state_weights / weight_sum
-            else:
-                state_weights = np.full(
-                    len(frames_in_state), 1.0 / len(frames_in_state)
-                )
+            state_weights = self._resolve_state_weights(weights, frames_in_state, state)
 
             centroid = np.average(state_features, axis=0, weights=state_weights)
 
@@ -217,6 +240,52 @@ class RepresentativePicker:
 
         return representatives
 
+    def _pick_true_medoids(
+        self,
+        features: np.ndarray,
+        lookup: FrameIndexLookup,
+        state_ids: Sequence[int],
+        weights: Optional[np.ndarray],
+        n_reps: int,
+    ) -> List[RepresentativeFrame]:
+        """Pick representatives minimizing total distance to other frames."""
+
+        representatives: List[RepresentativeFrame] = []
+
+        for state in state_ids:
+            frames_in_state = lookup.frames_for_state(int(state))
+            if frames_in_state.size == 0:
+                raise ValueError(f"No frames found for state {state}")
+
+            state_features = features[frames_in_state]
+            state_weights = self._resolve_state_weights(weights, frames_in_state, state)
+
+            n_select = min(n_reps, len(frames_in_state))
+            if n_select <= 0:
+                continue
+
+            medoid_scores = np.empty(len(frames_in_state), dtype=float)
+            for local_idx in range(len(frames_in_state)):
+                distances = np.linalg.norm(
+                    state_features - state_features[local_idx], axis=1
+                )
+                medoid_scores[local_idx] = float(np.sum(state_weights * distances))
+
+            selected_local_indices = np.argpartition(medoid_scores, n_select - 1)[
+                :n_select
+            ]
+
+            for local_idx in selected_local_indices:
+                global_frame = int(frames_in_state[local_idx])
+                traj_idx, local_frame = lookup.to_local_indices(global_frame)
+                representatives.append(
+                    (int(state), global_frame, int(traj_idx), int(local_frame))
+                )
+
+        logger.info(f"Selected {len(representatives)} representatives")
+
+        return representatives
+
     def _pick_centroids(
         self,
         features: np.ndarray,
@@ -227,7 +296,9 @@ class RepresentativePicker:
     ) -> List[RepresentativeFrame]:
         """Pick frames closest to weighted centroid."""
 
-        return self._pick_medoids(features, lookup, state_ids, weights, n_reps)
+        return self._pick_closest_to_centroid(
+            features, lookup, state_ids, weights, n_reps
+        )
 
     def _pick_diverse(
         self,
@@ -252,16 +323,15 @@ class RepresentativePicker:
                 continue
 
             selected_indices: List[int] = []
+            selected_mask = np.zeros(len(state_features), dtype=bool)
 
-            if weights is not None:
-                state_weights = weights[frames_in_state]
-                centroid = np.average(state_features, axis=0, weights=state_weights)
-            else:
-                centroid = np.mean(state_features, axis=0)
+            state_weights = self._resolve_state_weights(weights, frames_in_state, state)
+            centroid = np.average(state_features, axis=0, weights=state_weights)
 
             distances_to_centroid = np.linalg.norm(state_features - centroid, axis=1)
             first_idx = int(np.argmin(distances_to_centroid))
             selected_indices.append(first_idx)
+            selected_mask[first_idx] = True
 
             for _ in range(n_select - 1):
                 min_distances = np.full(len(state_features), np.inf)
@@ -272,8 +342,10 @@ class RepresentativePicker:
                     )
                     min_distances = np.minimum(min_distances, distances)
 
+                min_distances[selected_mask] = -np.inf
                 next_idx = int(np.argmax(min_distances))
                 selected_indices.append(next_idx)
+                selected_mask[next_idx] = True
 
             for local_idx in selected_indices:
                 global_frame = int(frames_in_state[local_idx])
@@ -342,7 +414,7 @@ class RepresentativePicker:
             bottleneck_states,
             weights=weights,
             n_reps=n_reps_per_state,
-            method="medoid",
+            method="closest_to_centroid",
         )
 
     def extract_structures(

@@ -11,8 +11,8 @@ Key Features:
 - Representative structure extraction for multiple conformation types
 
 Usage:
-    >>> from pmarlo.conformations import find_conformations
-    >>> results = find_conformations(
+    >>> from pmarlo.api import find_conformations_from_msm
+    >>> results = find_conformations_from_msm(
     ...     msm_data={'T': T, 'pi': pi, 'dtrajs': dtrajs, 'features': features},
     ...     trajectories=trajectories,
     ...     auto_detect=True,

@@ -184,4 +184,3 @@ FES_SPARSITY_WARNING_THRESHOLD: Final[float] = 0.30
 
 FES_PERCENTAGE_SCALE: Final[float] = 100.0
 """Scale factor for converting fractions to percentages in FES diagnostics."""
-

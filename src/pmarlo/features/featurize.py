@@ -47,7 +47,9 @@ def featurize_trajectory(
         ca = traj.topology.select("name CA")
         if len(ca) < 2:
             raise ValueError("Topology has fewer than 2 Cα atoms.")
-        pairs = np.array([(ca[i], ca[j]) for i in range(len(ca)) for j in range(i + 1, len(ca))])
+        pairs = np.array(
+            [(ca[i], ca[j]) for i in range(len(ca)) for j in range(i + 1, len(ca))]
+        )
         return mdtraj.compute_distances(traj, pairs)
 
     if feature_type == "backbone_torsions":
