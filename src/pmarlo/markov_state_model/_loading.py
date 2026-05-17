@@ -14,7 +14,6 @@ class LoadingMixin:
     trajectory_files: list[str]
     trajectories: list[md.Trajectory]
     topology_file: str | None
-    demux_metadata: object | None
     frame_stride: int | None
     time_per_frame_ps: float | None
     _update_total_frames: Callable[[], None]
@@ -45,12 +44,11 @@ class LoadingMixin:
         self.trajectories = []
         ignore_errors = getattr(self, "ignore_trajectory_errors", False)
 
-        # Initialize counters for tracking skipped shards
-        skipped_shard_count = 0
-        empty_shard_count = 0
-        first_skipped_shards = []
-        first_empty_shards = []
-        total_shards_processed = len(self.trajectory_files)
+        skipped_count = 0
+        empty_count = 0
+        first_skipped = []
+        first_empty = []
+        total_trajectories = len(self.trajectory_files)
         MAX_DETAILED_LOGS = 5
 
         for i, traj_file in enumerate(self.trajectory_files):
@@ -64,9 +62,8 @@ class LoadingMixin:
                 ),
             )
             if joined is None:
-                skipped_shard_count += 1
-                # Only log details for first few skipped shards
-                if skipped_shard_count <= MAX_DETAILED_LOGS:
+                skipped_count += 1
+                if skipped_count <= MAX_DETAILED_LOGS:
                     logger.info(
                         "Trajectory %d (%s): SKIPPED - Loading failed or returned None",
                         i + 1,
@@ -76,14 +73,13 @@ class LoadingMixin:
                     print(
                         f"DEBUG_CHECK: Logger name='{logger.name}', Effective level={logger.getEffectiveLevel()}, Handler count={len(logger.handlers)}, Root handler count={len(__import__('logging').getLogger().handlers)}"
                     )
-                    first_skipped_shards.append(f"{i + 1} ({traj_file})")
+                    first_skipped.append(f"{i + 1} ({traj_file})")
                 continue
 
             # Check if trajectory is empty (0 frames)
             if joined.n_frames == 0:
-                empty_shard_count += 1
-                # Only log details for first few empty shards
-                if empty_shard_count <= MAX_DETAILED_LOGS:
+                empty_count += 1
+                if empty_count <= MAX_DETAILED_LOGS:
                     logger.info(
                         "Trajectory %d (%s): SKIPPED - Empty trajectory (0 frames)",
                         i + 1,
@@ -93,7 +89,7 @@ class LoadingMixin:
                     print(
                         f"DEBUG_CHECK: Logger name='{logger.name}', Effective level={logger.getEffectiveLevel()}, Handler count={len(logger.handlers)}, Root handler count={len(__import__('logging').getLogger().handlers)}"
                     )
-                    first_empty_shards.append(f"{i + 1} ({traj_file})")
+                    first_empty.append(f"{i + 1} ({traj_file})")
                 continue
 
             # Log shape immediately after loading
@@ -107,35 +103,33 @@ class LoadingMixin:
 
             self.trajectories.append(joined)
             logger.info("Loaded trajectory %d: %d frames", i + 1, joined.n_frames)
-            self._maybe_load_demux_metadata(Path(traj_file))
 
-        # Log summary of skipped shards
-        if skipped_shard_count > 0 or empty_shard_count > 0:
+        if skipped_count > 0 or empty_count > 0:
             logger.warning(
-                "Shard loading summary: %d total shards processed, %d skipped (failed/None), %d empty (0 frames)",
-                total_shards_processed,
-                skipped_shard_count,
-                empty_shard_count,
+                "Trajectory loading summary: %d total trajectories processed, %d skipped (failed/None), %d empty (0 frames)",
+                total_trajectories,
+                skipped_count,
+                empty_count,
             )
-            if skipped_shard_count > MAX_DETAILED_LOGS:
+            if skipped_count > MAX_DETAILED_LOGS:
                 logger.warning(
-                    "First %d skipped shards: %s (... and %d more)",
+                    "First %d skipped trajectories: %s (... and %d more)",
                     MAX_DETAILED_LOGS,
-                    first_skipped_shards,
-                    skipped_shard_count - MAX_DETAILED_LOGS,
+                    first_skipped,
+                    skipped_count - MAX_DETAILED_LOGS,
                 )
-            elif first_skipped_shards:
-                logger.warning("Skipped shards: %s", first_skipped_shards)
+            elif first_skipped:
+                logger.warning("Skipped trajectories: %s", first_skipped)
 
-            if empty_shard_count > MAX_DETAILED_LOGS:
+            if empty_count > MAX_DETAILED_LOGS:
                 logger.warning(
-                    "First %d empty shards: %s (... and %d more)",
+                    "First %d empty trajectories: %s (... and %d more)",
                     MAX_DETAILED_LOGS,
-                    first_empty_shards,
-                    empty_shard_count - MAX_DETAILED_LOGS,
+                    first_empty,
+                    empty_count - MAX_DETAILED_LOGS,
                 )
-            elif first_empty_shards:
-                logger.warning("Empty shards: %s", first_empty_shards)
+            elif first_empty:
+                logger.warning("Empty trajectories: %s", first_empty)
 
         if not self.trajectories:
             if ignore_errors:
@@ -221,42 +215,15 @@ class LoadingMixin:
         # Log shape immediately after loading completes
         if joined is not None:
             logger.info(
-                "Loaded shard %s: %d frames, %d atoms",
+                "Loaded trajectory %s: %d frames, %d atoms",
                 traj_file,
                 joined.n_frames,
                 joined.n_atoms,
             )
         else:
-            logger.info("Loaded shard %s: No frames (None returned)", traj_file)
+            logger.info("Loaded trajectory %s: No frames (None returned)", traj_file)
 
         if joined is None:
             logger.warning(f"No frames loaded from {traj_file}")
         return joined
 
-    def _maybe_load_demux_metadata(self, traj_path: Path) -> None:
-        if getattr(self, "demux_metadata", None) is not None:
-            return
-        meta_path = traj_path.with_suffix(".meta.json")
-        if not meta_path.exists():
-            return
-        try:
-            from pmarlo.demultiplexing.demux_metadata import DemuxMetadata
-
-            meta = DemuxMetadata.from_json(meta_path)
-            self.demux_metadata = meta
-            stride_frames = meta.exchange_frequency_steps // meta.frames_per_segment
-            self.frame_stride = stride_frames
-            self.time_per_frame_ps = meta.integration_timestep_ps * stride_frames
-            import logging as _logging
-
-            _logging.getLogger("pmarlo").info(
-                "Loaded demux metadata: stride=%d, dt=%.4f ps",
-                stride_frames,
-                self.time_per_frame_ps,
-            )
-        except Exception as exc:  # pragma: no cover - defensive
-            import logging as _logging
-
-            _logging.getLogger("pmarlo").warning(
-                f"Failed to parse metadata {meta_path}: {exc}"
-            )

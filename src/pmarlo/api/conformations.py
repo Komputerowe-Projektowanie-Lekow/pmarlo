@@ -1,13 +1,16 @@
+import csv
+import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+import matplotlib.pyplot as plt
 import mdtraj as md
 import numpy as np
 
+from pmarlo import constants as const
 from pmarlo.io import trajectory as traj_io
-from pmarlo.reporting.export import write_conformations_csv_json
-from pmarlo.reporting.plots import save_fes_contour, save_transition_matrix_heatmap
+from pmarlo.utils.json_io import normalize_for_json_row
 from pmarlo.utils.mdtraj import load_mdtraj_topology, resolve_atom_selection
 from pmarlo.utils.path_utils import ensure_directory
 
@@ -23,6 +26,86 @@ from .msm import (
 )
 
 logger = logging.getLogger("pmarlo")
+
+
+def _write_conformations_csv_json(
+    output_dir: str | Path,
+    items: List[Dict[str, Any]],
+    csv_name: str = "conformations_summary.csv",
+    json_name: str = "states.json",
+) -> None:
+    out = Path(output_dir)
+    ensure_directory(out)
+    normalized_items = [normalize_for_json_row(item) for item in items]
+    if normalized_items:
+        keys = sorted({key for item in normalized_items for key in item.keys()})
+        with (out / csv_name).open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=keys)
+            writer.writeheader()
+            writer.writerows(normalized_items)
+    with (out / json_name).open("w", encoding="utf-8") as handle:
+        json.dump(normalized_items, handle, indent=2)
+
+
+def _save_transition_matrix_heatmap(
+    T: np.ndarray,
+    output_dir: str | Path,
+    name: str = "transition_matrix.png",
+) -> str | None:
+    out = Path(output_dir)
+    ensure_directory(out)
+    fig, ax = plt.subplots(figsize=const.PLOT_FIGURE_SIZE_HEATMAP)
+    image = ax.imshow(np.asarray(T, dtype=float), cmap="viridis", origin="lower")
+    fig.colorbar(image, ax=ax, label="Transition Probability")
+    ax.set_xlabel("Target State j")
+    ax.set_ylabel("Source State i")
+    ax.set_title("MSM Transition Matrix")
+    fig.tight_layout()
+    path = out / name
+    fig.savefig(path, dpi=const.PLOT_DPI)
+    plt.close(fig)
+    return str(path) if path.exists() else None
+
+
+def _save_fes_contour(
+    F: np.ndarray,
+    xedges: np.ndarray,
+    yedges: np.ndarray,
+    xlabel: str,
+    ylabel: str,
+    output_dir: str | Path,
+    filename: str,
+    mask: np.ndarray | None = None,
+) -> str | None:
+    out = Path(output_dir)
+    ensure_directory(out)
+    x_centers = 0.5 * (np.asarray(xedges)[:-1] + np.asarray(xedges)[1:])
+    y_centers = 0.5 * (np.asarray(yedges)[:-1] + np.asarray(yedges)[1:])
+    values = np.asarray(F, dtype=float)
+    if values.size == 0 or not np.isfinite(values).any():
+        raise ValueError("FES contains no finite values")
+
+    fig, ax = plt.subplots(figsize=const.PLOT_FIGURE_SIZE_FES_CONTOUR)
+    contour = ax.contourf(x_centers, y_centers, values.T, levels=25, cmap="viridis")
+    fig.colorbar(contour, ax=ax, label="Free Energy (kJ/mol)")
+    if mask is not None:
+        mask_arr = np.asarray(mask, dtype=bool)
+        ax.contourf(
+            x_centers,
+            y_centers,
+            np.ma.masked_where(~mask_arr.T, mask_arr.T),
+            levels=[0.5, 1.5],
+            colors="none",
+            hatches=["////"],
+        )
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_title(f"Free Energy Surface: {xlabel} vs {ylabel}")
+    fig.tight_layout()
+    path = out / filename
+    fig.savefig(path, dpi=const.PLOT_DPI)
+    plt.close(fig)
+    return str(path) if path.exists() else None
 
 
 def sanitize_label_for_filename(name: str) -> str:
@@ -111,7 +194,7 @@ def find_conformations(  # noqa: C901
     observed_states = int(np.max(labels)) + 1 if labels.size else 0
     T, pi = build_msm_from_labels(dtrajs, n_states=observed_states, lag=10)
     macrostates = compute_macrostates(T, n_macrostates=4)
-    _ = save_transition_matrix_heatmap(T, str(out), name="transition_matrix.png")
+    _ = _save_transition_matrix_heatmap(T, str(out), name="transition_matrix.png")
 
     items: List[dict] = []
     if macrostates is not None:
@@ -167,7 +250,7 @@ def find_conformations(  # noqa: C901
     minima = fes_info["minima"]
     fname = f"fes_{sanitize_label_for_filename(names[0])}_vs_{sanitize_label_for_filename(names[1])}.png"
     if fes is not None:
-        _ = save_fes_contour(
+        _ = _save_fes_contour(
             fes.F,
             fes.xedges,
             fes.yedges,
@@ -196,5 +279,5 @@ def find_conformations(  # noqa: C901
             }
         )
 
-    write_conformations_csv_json(str(out), items)
+    _write_conformations_csv_json(str(out), items)
     return out

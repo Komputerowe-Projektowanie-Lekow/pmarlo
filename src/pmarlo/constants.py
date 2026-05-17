@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from typing import Final
 
-import numpy as np
-
 # ---------------------------------------------------------------------------
 # Physical constants
 # ---------------------------------------------------------------------------
@@ -123,13 +121,6 @@ DEEPTICA_CONDITION_NUMBER_WARN: Final[float] = 1e6
 """Condition number threshold beyond which DeeptiCA raises warnings."""
 
 # ---------------------------------------------------------------------------
-# Replica-exchange configuration defaults
-# ---------------------------------------------------------------------------
-
-REPLICA_EXCHANGE_EWALD_TOLERANCE: Final[float] = 1e-4
-"""Default OpenMM Ewald error tolerance for replica-exchange simulations."""
-
-# ---------------------------------------------------------------------------
 # MSM visualisation defaults
 # ---------------------------------------------------------------------------
 
@@ -138,16 +129,6 @@ MSM_RATE_DISPLAY_SCALE: Final[float] = 1e-3
 
 MSM_RATE_INVERSE_SCALE: Final[float] = 1e3
 """Inverse of MSM rate scale to convert seconds^-1 to milliseconds^-1."""
-
-# ---------------------------------------------------------------------------
-# Metadata / schema versions
-# ---------------------------------------------------------------------------
-
-SHARD_INDEX_VERSION: Final[int] = 2
-"""Current version of the shard index schema."""
-
-SHARD_SCHEMA_VERSION: Final[str] = "2.0"
-"""Version of the on-disk shard schema definition."""
 
 # ---------------------------------------------------------------------------
 # Plotting and visualization defaults
@@ -204,33 +185,3 @@ FES_SPARSITY_WARNING_THRESHOLD: Final[float] = 0.30
 FES_PERCENTAGE_SCALE: Final[float] = 100.0
 """Scale factor for converting fractions to percentages in FES diagnostics."""
 
-# ---------------------------------------------------------------------------
-# Sampler / balanced defaults
-# ---------------------------------------------------------------------------
-
-# Default rare-boost factor used by balanced samplers when no explicit value is
-# provided. This controls the strength of upweighting for rare regions; kept
-# small by default to avoid extreme sampling skew.
-BALANCED_DEFAULT_RARE_BOOST: Final[float] = 0.2
-"""Default rare_boost value for BalancedTempSampler."""
-
-# Precision used when storing / hashing CV embeddings and when converting
-# embedding vectors to tuples for occupancy tracking.
-BALANCED_EMBEDDING_DTYPE = np.float32
-"""NumPy dtype used for CV embeddings in samplers."""
-
-# Precision used for frame weights and internal weight arithmetic.
-BALANCED_FRAME_WEIGHTS_DTYPE = np.float64
-"""NumPy dtype used for frame weights and internal weight math in samplers."""
-
-# Default increment added to occupancy counts per selected frame when explicit
-# frame weights are not available.
-BALANCED_OCCUPANCY_INCREMENT: Final[float] = 1.0
-"""Default occupancy increment applied per selected frame when no frame
-weights are present."""
-
-# Number of decimals to round embeddings to when creating hash keys for
-# occupancy tracking. Small values reduce key variety and thus increase
-# occupancy sharing across nearby embeddings.
-BALANCED_EMBEDDING_HASH_DECIMALS: Final[int] = 1
-"""Decimals used when hashing CV embeddings for occupancy bookkeeping."""

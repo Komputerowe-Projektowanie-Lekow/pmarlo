@@ -13,6 +13,7 @@ from .loader import (
     ensure_scaler_finite,
     load_defaults,
     load_feature_spec,
+    load_protein_metrics_config,
     resolve_feature_spec_path,
 )
 
@@ -21,6 +22,7 @@ __all__ = [
     "REQUIRED_CONFIG_KEYS",
     "load_defaults",
     "load_feature_spec",
+    "load_protein_metrics_config",
     "resolve_feature_spec_path",
     "ensure_scaler_finite",
 ]

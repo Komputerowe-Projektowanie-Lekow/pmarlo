@@ -177,7 +177,6 @@ class DeepTICAConfig:
     seed: int = 0
     device: str = "cpu"
     trainer_backend: str = "lightning"
-    reweight_mode: str = "scaled_time"  # or "none"
     # New knobs for loaders and validation split
     val_frac: float = 0.1
     num_workers: int = 2
@@ -191,7 +190,6 @@ class DeepTICAConfig:
     layer_norm_hidden: bool = False
     linear_head: bool = False
     # Dataset splitting/loader control
-    val_split: str = "by_shard"  # "by_shard" | "random"
     batches_per_epoch: int = 200
     gradient_clip_val: float = 1.0
     gradient_clip_algorithm: str = "norm"

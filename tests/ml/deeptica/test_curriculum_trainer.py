@@ -37,10 +37,10 @@ def _ar1_process(rho: float, length: int, rng: np.random.Generator) -> np.ndarra
 
 
 def _make_sequences(
-    n_shards: int, length: int, rng: np.random.Generator
+    n_sequences: int, length: int, rng: np.random.Generator
 ) -> list[np.ndarray]:
     sequences: list[np.ndarray] = []
-    for _ in range(n_shards):
+    for _ in range(n_sequences):
         slow = _ar1_process(0.995, length, rng)
         fast = _ar1_process(0.3, length, rng)
         stacked = np.stack([slow, fast], axis=1).astype(np.float32)
@@ -54,7 +54,7 @@ def _copy_state_dict(state: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
 
 def test_curriculum_outperforms_single_tau(tmp_path, caplog):
     rng = np.random.default_rng(12345)
-    sequences = _make_sequences(n_shards=4, length=400, rng=rng)
+    sequences = _make_sequences(n_sequences=4, length=400, rng=rng)
 
     torch.manual_seed(2024)
     base_state = _copy_state_dict(TinyNet().state_dict())

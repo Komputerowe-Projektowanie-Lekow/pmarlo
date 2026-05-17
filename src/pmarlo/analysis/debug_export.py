@@ -12,7 +12,6 @@ from typing import Any, Dict, Iterable, Iterator, List, Mapping, Sequence, cast
 import numpy as np
 
 from pmarlo.markov_state_model.free_energy import FESResult
-from pmarlo.utils.coercion import coerce_finite_float
 from pmarlo.utils.path_utils import ensure_directory
 from pmarlo.utils.scc import analyse_scc, compute_component_coverage
 
@@ -62,19 +61,15 @@ def compute_analysis_debug(
     Raises an error if dtrajs are missing or empty.
     """
 
-    shards_raw = _normalise_shard_info(dataset.get("__shards__", ()))
-    shard_lengths = [int(entry["length"]) for entry in shards_raw]
-    # total_frames from metadata - keep for reference but don't use for accounting
-    total_frames_metadata = sum(shard_lengths)
-
     dtrajs = _coerce_dtrajs(dataset.get("dtrajs", ()))
+    total_frames_metadata = sum(int(dtraj.size) for dtraj in dtrajs)
 
     # Enforce that dtrajs must exist - no silent fallbacks
     if not dtrajs or all(d.size == 0 for d in dtrajs):
         raise ValueError(
             "Cannot compute analysis debug statistics: dataset has no discrete trajectories (dtrajs). "
             "The dataset must be discretized (clustered) before transition counts can be computed. "
-            f"Dataset contains {total_frames_metadata} frames across {len(shard_lengths)} shards, "
+            f"Dataset contains {total_frames_metadata} assigned frames, "
             "but no state assignments are present. Run discretization first."
         )
 
@@ -84,7 +79,7 @@ def compute_analysis_debug(
     if n_states == 0:
         raise ValueError(
             "Cannot compute MSM statistics: no valid states detected in discrete trajectories. "
-            f"Dataset contains {total_frames_metadata} frames across {len(shard_lengths)} shards, "
+            f"Dataset contains {total_frames_metadata} assigned frames, "
             f"but all discrete trajectory values are negative or empty. "
             "This may indicate clustering failed or produced invalid state assignments. "
             "Check your clustering configuration and ensure valid state labels are generated."
@@ -94,23 +89,9 @@ def compute_analysis_debug(
     state_counts = _count_state_visits(dtrajs, n_states)
     total_frames_state = int(state_counts.sum())
 
-    # FIX: Compute total_frames_declared from actual dtraj lengths, not shard metadata
     dtraj_lengths = [len(dtraj) for dtraj in dtrajs]
     total_frames = sum(dtraj_lengths)
     valid_segment_lengths = _valid_dtraj_segment_lengths(dtrajs)
-
-    frames_declared_all = [int(entry.get("frames_declared", 0)) for entry in shards_raw]
-    frames_loaded_all = [
-        int(entry.get("frames_loaded", entry.get("length", 0))) for entry in shards_raw
-    ]
-    effective_stride_raw = [entry.get("effective_frame_stride") for entry in shards_raw]
-    stride_values = [int(s) for s in effective_stride_raw if s and s > 0]
-    max_stride = max(stride_values) if stride_values else 1
-    preview_truncated_ids = [
-        str(entry.get("id", idx))
-        for idx, entry in enumerate(shards_raw)
-        if entry.get("preview_truncated")
-    ]
 
     zero_rows = _count_zero_rows(counts)
     scc = analyse_scc(counts)
@@ -172,53 +153,7 @@ def compute_analysis_debug(
                 ),
             }
         )
-    if stride_values and max_stride > 1:
-        warnings.append(
-            {
-                "code": "EFFECTIVE_STRIDE_GT_1",
-                "message": (
-                    "Loaded shard data appears subsampled; "
-                    f"effective stride values detected: {stride_values}"
-                ),
-            }
-        )
-    if preview_truncated_ids:
-        warnings.append(
-            {
-                "code": "SHARD_PREVIEW_TRUNCATION",
-                "message": (
-                    "Shards truncated relative to declared frame count: "
-                    f"{preview_truncated_ids}"
-                ),
-            }
-        )
-
-    temperatures = sorted(
-        {float(entry["temperature"]) for entry in shards_raw if entry["temperature"]}
-    )
-
-    # Build complete stride map covering ALL unique shards
-    # Include shards even if effective_frame_stride is None (default to 1)
-    stride_map = {}
-    for idx, entry in enumerate(shards_raw):
-        shard_id = str(entry.get("id", str(idx)))
-        stride_value = entry.get("effective_frame_stride")
-        # Always include the shard in the map, even if stride is None
-        stride_map[shard_id] = stride_value if stride_value is not None else 1
-
-    first_timestamps = [
-        entry.get("first_timestamp")
-        for entry in shards_raw
-        if entry.get("first_timestamp") is not None
-    ]
-    last_timestamps = [
-        entry.get("last_timestamp")
-        for entry in shards_raw
-        if entry.get("last_timestamp") is not None
-    ]
-    effective_tau_frames = int(lag * max_stride) if lag > 0 else 0
     stride_for_pairs = 1 if count_mode == "sliding" else max(1, lag)
-    # FIX: Compute expected_pairs from actual dtraj segments instead of shard metadata
     expected_pair_count = expected_pairs(valid_segment_lengths, lag, stride_for_pairs)
     total_pairs_predicted = expected_pair_count
 
@@ -253,20 +188,7 @@ def compute_analysis_debug(
         "stride": int(stride_for_pairs),
         "expected_pairs": int(expected_pair_count),
         "counted_pairs": int(total_pairs),
-        "per_shard_lengths": shard_lengths,
-        "shards": shards_raw,
-        "frames_declared": frames_declared_all,
-        "frames_loaded": frames_loaded_all,
-        "effective_strides": stride_values,
-        "per_shard_effective_strides": effective_stride_raw,
-        "effective_stride_map": stride_map,
-        "effective_stride_max": int(max_stride),
-        "preview_truncated": preview_truncated_ids,
-        "effective_tau_frames": effective_tau_frames,
         "total_pairs_predicted": int(total_pairs_predicted),
-        "first_timestamps": first_timestamps,
-        "last_timestamps": last_timestamps,
-        "temperatures": temperatures,
         "diag_mass": float(diag_mass_val),
         "warnings": warnings,
         "dwell_time_stats": dwell_stats,
@@ -429,50 +351,6 @@ def _write_summary(output_dir: Path, summary_payload: Mapping[str, Any]) -> Path
         json.dumps(summary_payload, cls=_AnalysisJSONEncoder, indent=2)
     )
     return summary_path
-
-
-def _normalise_shard_info(shards: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
-    normalised: List[Dict[str, Any]] = []
-    for raw in shards:
-        if not isinstance(raw, Mapping):
-            continue
-        start = int(raw.get("start", 0))
-        stop = int(raw.get("stop", start))
-        length = max(0, stop - start)
-        if "id" not in raw:
-            raise ValueError("Shard metadata is missing required 'id' field")
-        entry = {
-            "id": str(raw["id"]),
-            "start": start,
-            "stop": stop,
-            "length": length,
-            "temperature": coerce_finite_float(raw.get("temperature")),
-        }
-        for key in (
-            "frames_declared",
-            "frames_loaded",
-            "effective_frame_stride",
-            "preview_truncated",
-            "time_metadata",
-            "notes",
-            "first_timestamp",
-            "last_timestamp",
-        ):
-            if key in raw:
-                entry[key] = raw[key]
-        if "source" in raw:
-            entry["source"] = raw["source"]
-        source_path = raw.get("source_path")
-        if source_path:
-            try:
-                entry["source_path"] = str(Path(source_path))
-            except Exception:
-                entry["source_path"] = str(source_path)
-        run_uid = raw.get("run_uid")
-        if run_uid:
-            entry["run_uid"] = str(run_uid)
-        normalised.append(entry)
-    return normalised
 
 
 def _coerce_dtrajs(
@@ -744,7 +622,6 @@ def _maybe_export_fes(
 def _collect_result_summary(build_result: Any) -> Dict[str, Any]:
     summary: Dict[str, Any] = {
         "n_frames": int(getattr(build_result, "n_frames", 0)),
-        "n_shards": int(getattr(build_result, "n_shards", 0)),
         "feature_names": list(getattr(build_result, "feature_names", []) or []),
         "messages": list(getattr(build_result, "messages", []) or []),
     }

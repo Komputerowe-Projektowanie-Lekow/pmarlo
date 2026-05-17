@@ -85,7 +85,6 @@ class MSMBase:
 
         # Metadata
         self.time_per_frame_ps: Optional[float] = None
-        self.demux_metadata: Optional[Any] = None
         self.total_frames: Optional[int] = None
 
         # IO behaviour controls
@@ -95,8 +94,6 @@ class MSMBase:
         self.estimator_backend: str = "deeptime"
         self.count_mode: str = "sliding"
 
-        # TRAM
-        self.tram_weights: Optional[np.ndarray] = None
         self.multi_temp_counts: Dict[float, Dict[Tuple[int, int], float]] = {}
 
         # Analysis results containers

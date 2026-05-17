@@ -9,7 +9,7 @@ from pmarlo.utils.json_io import load_json_file
 
 
 def test_load_json_file_reads_payload(tmp_path: Path) -> None:
-    path = tmp_path / "shard_meta.json"
+    path = tmp_path / "trajectory_meta.json"
     path.write_text('{"schema_version": "1.0", "value": 42}')
 
     data = load_json_file(path)

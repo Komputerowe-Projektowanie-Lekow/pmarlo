@@ -174,10 +174,10 @@ class Conformation:
 
     conformation_type: str
     state_id: int
-    frame_index: int
     population: float
     free_energy: float
     macrostate_id: Optional[int] = None
+    frame_index: Optional[int] = None
     trajectory_index: Optional[int] = None
     local_frame_index: Optional[int] = None
     committor: Optional[float] = None
@@ -194,7 +194,7 @@ class Conformation:
             "macrostate_id": (
                 int(self.macrostate_id) if self.macrostate_id is not None else None
             ),
-            "frame_index": int(self.frame_index),
+            "frame_index": int(self.frame_index) if self.frame_index is not None else None,
             "trajectory_index": (
                 int(self.trajectory_index)
                 if self.trajectory_index is not None

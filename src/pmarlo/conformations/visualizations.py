@@ -13,8 +13,57 @@ import matplotlib.pyplot as plt
 import numpy as np
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-from pmarlo.reporting.plots import plot_free_energy_2d
 from pmarlo.utils.thermodynamics import kT_kJ_per_mol
+
+
+def plot_free_energy_2d(
+    grid: List[np.ndarray],
+    fes: np.ndarray,
+    ax: Optional[plt.Axes] = None,
+    cmap: str = "viridis",
+    levels: int = 25,
+    max_energy_kt: float = 7.0,
+    add_contour_lines: bool = True,
+    line_color: str = "black",
+    line_width: float = 0.5,
+    line_alpha: float = 0.6,
+) -> plt.Figure:
+    """Plot a 2D free energy surface on a coordinate grid."""
+
+    if len(grid) < 2:
+        raise ValueError("grid must contain two coordinate arrays")
+    xx = np.asarray(grid[0], dtype=float)
+    yy = np.asarray(grid[1], dtype=float)
+    values = np.asarray(fes, dtype=float)
+    if xx.shape != yy.shape or values.shape != xx.shape:
+        raise ValueError("grid arrays and FES values must have matching shapes")
+    finite_mask = np.isfinite(values)
+    if not finite_mask.any():
+        raise ValueError("FES contains no finite values")
+
+    finite_min = float(values[finite_mask].min())
+    capped = np.clip(values, a_min=finite_min, a_max=float(max_energy_kt))
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(8, 6))
+    else:
+        fig = ax.get_figure()
+    contour = ax.contourf(xx, yy, capped.T, levels=levels, cmap=cmap, extend="max")
+    fig.colorbar(contour, ax=ax).set_label("Free Energy ($k_B T$)")
+    if add_contour_lines:
+        ax.contour(
+            xx,
+            yy,
+            capped.T,
+            levels=levels,
+            colors=line_color,
+            linewidths=line_width,
+            alpha=line_alpha,
+        )
+    ax.set_xlabel("TICA Component 1")
+    ax.set_ylabel("TICA Component 2")
+    ax.set_title("Free Energy Surface")
+    fig.tight_layout()
+    return fig
 
 
 def plot_committors(

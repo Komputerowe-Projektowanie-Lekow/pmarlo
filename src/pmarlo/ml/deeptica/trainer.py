@@ -524,7 +524,7 @@ class _LaggedPairDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         ]
         self._tau = 1
         self._pairs = torch.zeros((0, 3), dtype=torch.int64)
-        self._pairs_per_shard: List[int] = []
+        self._pairs_per_sequence: List[int] = []
         self._total_possible = 0
         self._short: List[int] = []
         self.set_tau(tau)
@@ -542,24 +542,24 @@ class _LaggedPairDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         counts: List[int] = []
         total_possible = 0
         short: List[int] = []
-        for shard_idx, seq in enumerate(self._tensors):
+        for sequence_idx, seq in enumerate(self._tensors):
             n_frames = int(seq.shape[0])
             possible = max(0, n_frames - tau_int)
             counts.append(possible)
             total_possible += possible
             if possible <= 0:
                 if n_frames <= tau_int:
-                    short.append(shard_idx)
+                    short.append(sequence_idx)
                 continue
             idx0 = torch.arange(0, possible, dtype=torch.int64)
             idx1 = idx0 + tau_int
-            shard_ids = torch.full_like(idx0, shard_idx)
-            pairs.append(torch.stack((shard_ids, idx0, idx1), dim=1))
+            sequence_ids = torch.full_like(idx0, sequence_idx)
+            pairs.append(torch.stack((sequence_ids, idx0, idx1), dim=1))
         if pairs:
             self._pairs = torch.cat(pairs, dim=0)
         else:
             self._pairs = torch.zeros((0, 3), dtype=torch.int64)
-        self._pairs_per_shard = counts
+        self._pairs_per_sequence = counts
         self._total_possible = total_possible
         self._short = short
 
@@ -572,17 +572,17 @@ class _LaggedPairDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
             "usable_pairs": int(len(self)),
             "total_possible_pairs": int(self._total_possible),
             "pair_coverage": coverage,
-            "pairs_per_shard": list(self._pairs_per_shard),
-            "short_shards": list(self._short),
+            "pairs_per_sequence": list(self._pairs_per_sequence),
+            "short_sequences": list(self._short),
         }
 
     def __len__(self) -> int:
         return int(self._pairs.shape[0])
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
-        shard_idx, i, j = self._pairs[index].tolist()
-        shard_tensor = self._tensors[int(shard_idx)]
-        return shard_tensor[int(i)], shard_tensor[int(j)]
+        sequence_idx, i, j = self._pairs[index].tolist()
+        sequence_tensor = self._tensors[int(sequence_idx)]
+        return sequence_tensor[int(i)], sequence_tensor[int(j)]
 
 
 @dataclass(frozen=True)

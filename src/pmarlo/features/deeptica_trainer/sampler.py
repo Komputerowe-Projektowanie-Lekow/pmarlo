@@ -6,10 +6,9 @@ from typing import Iterator
 
 import numpy as np
 
-from pmarlo.pairs.core import PairInfo
-from pmarlo.samplers import BalancedTempSampler
+from pmarlo.features.deeptica.core.pairs import PairInfo
 
-__all__ = ["BalancedTempSampler", "iter_pair_batches"]
+__all__ = ["iter_pair_batches"]
 
 
 def iter_pair_batches(
@@ -19,12 +18,7 @@ def iter_pair_batches(
     shuffle: bool = True,
     seed: int | None = None,
 ) -> Iterator[np.ndarray]:
-    """Yield index batches for a ``PairInfo`` structure.
-
-    This preserves the lightweight batch iteration helper that previously lived
-    in the feature-level trainer while delegating full sampler logic to
-    :mod:`pmarlo.samplers`.
-    """
+    """Yield index batches for a ``PairInfo`` structure."""
 
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")

@@ -27,8 +27,6 @@ class _HasEstimationAttrs(Protocol):
 
     def _maybe_apply_tica(self, n_components: int, lag: int) -> None: ...
 
-    def _build_tram_msm(self, lag_time: int) -> None: ...
-
     # Internal helpers used by EstimationMixin
     def _build_standard_msm(
         self, lag_time: int, count_mode: str = "sliding"
@@ -74,13 +72,9 @@ class EstimationMixin:
                 # _maybe_apply_tica is provided by FeaturesMixin
                 self._maybe_apply_tica(3, getattr(self, "tica_lag", 0) or lag_time)
 
-        if method == "standard":
-            self._build_standard_msm(lag_time, count_mode=self.count_mode)
-        elif method == "tram":
-            # Provided by TRAMMixin
-            self._build_tram_msm(lag_time)
-        else:
+        if method != "standard":
             raise ValueError(f"Unknown MSM method: {method}")
+        self._build_standard_msm(lag_time, count_mode=self.count_mode)
 
         # Compute free energies
         self._compute_free_energies()

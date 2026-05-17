@@ -45,13 +45,13 @@ class MSMBuilder:
 
         features, weights_coll = self._prepare_features(Y_list, weights_list)
 
-        # Log projection shapes for each shard after dimension reduction/preparation
+        # Log projection shapes for each trajectory after dimension reduction/preparation
         import logging as _logging
 
         logger = _logging.getLogger("pmarlo")
         for i, projected_array in enumerate(features):
             logger.info(
-                f"Projected shard {i}: projection shape={projected_array.shape}"
+                f"Projected trajectory {i}: projection shape={projected_array.shape}"
             )
 
         concatenated, concatenated_weights = self._concatenate_data(
@@ -102,9 +102,9 @@ class MSMBuilder:
         for idx, arr in enumerate(Y_list):
             feature_matrix = np.asarray(arr)
 
-            # Log shape immediately after obtaining the feature array for this shard
+            # Log shape immediately after obtaining the feature array for this trajectory
             logger.debug(
-                f"Featurized shard {idx}: features shape={feature_matrix.shape}"
+                f"Featurized trajectory {idx}: features shape={feature_matrix.shape}"
             )
 
             self._validate_feature_matrix(feature_matrix)

@@ -23,6 +23,7 @@ from .base import (
 __all__ = ["FEATURE_REGISTRY", "get_feature", "register_feature"]
 
 _OPTIONAL_EXPORTS: Dict[str, Tuple[str, str]] = {
+    "featurize_trajectory": ("pmarlo.features.featurize", "featurize_trajectory"),
     "CVModel": ("pmarlo.features.collective_variables", "CVModel"),
     "LaggedPairs": ("pmarlo.features.data_loaders", "LaggedPairs"),
     "make_loaders": ("pmarlo.features.data_loaders", "make_loaders"),
@@ -35,11 +36,11 @@ _OPTIONAL_EXPORTS: Dict[str, Tuple[str, str]] = {
         "pmarlo.features.diagnostics",
         "diagnose_deeptica_pairs",
     ),
-    "make_training_pairs_from_shards": (
+    "lagged_time_pairs": ("pmarlo.features.pairs", "lagged_time_pairs"),
+    "make_training_pairs_from_trajectory": (
         "pmarlo.features.pairs",
-        "make_training_pairs_from_shards",
+        "make_training_pairs_from_trajectory",
     ),
-    "scaled_time_pairs": ("pmarlo.features.pairs", "scaled_time_pairs"),
     "RamachandranResult": ("pmarlo.features.ramachandran", "RamachandranResult"),
     "compute_ramachandran": ("pmarlo.features.ramachandran", "compute_ramachandran"),
     "compute_ramachandran_fes": (

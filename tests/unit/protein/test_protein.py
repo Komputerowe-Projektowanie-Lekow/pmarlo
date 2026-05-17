@@ -11,6 +11,7 @@ import pytest
 from openmm.app import PDBFile
 
 from pmarlo.protein.protein import HAS_PDBFIXER, Protein
+from pmarlo.settings import load_protein_metrics_config
 
 
 class TestProtein:
@@ -343,9 +344,20 @@ class TestProteinMetrics:
         seq = "ACDEFGHIKLMNPQRSTVWY"  # 20 amino acids, 10 hydrophobic, 3 aromatic
         metrics = Protein._compute_protein_metrics(protein, seq)
 
-        assert metrics["hydrophobic_fraction"] == pytest.approx(0.5)
-        assert metrics["aromatic_residues"] == 3
-        assert 0.0 <= metrics["isoelectric_point"] <= 14.0
+        metrics_config = load_protein_metrics_config()
+        hydrophobic = metrics_config["hydrophobic_residues"]
+        aromatic = metrics_config["aromatic_residues"]
+        hydrophobic_count = sum(1 for aa in seq if aa in hydrophobic)
+        aromatic_count = sum(1 for aa in seq if aa in aromatic)
+        expected_fraction = hydrophobic_count / len(seq)
+
+        assert metrics["hydrophobic_fraction"] == pytest.approx(expected_fraction)
+        assert metrics["aromatic_residues"] == aromatic_count
+        assert (
+            metrics_config["ph_lower"]
+            <= metrics["isoelectric_point"]
+            <= metrics_config["ph_upper"]
+        )
         assert isinstance(metrics["charge"], float)
 
     def test_chain_terminal_charge_scales_with_chain_count(self):
@@ -359,17 +371,12 @@ class TestProteinMetrics:
         metrics = Protein._compute_protein_metrics(protein, sequence)
 
         counts = {aa: sequence.count(aa) for aa in set(sequence)}
-        pka_side = {
-            "C": 8.3,
-            "D": 3.9,
-            "E": 4.1,
-            "H": 6.0,
-            "K": 10.5,
-            "R": 12.5,
-            "Y": 10.1,
-        }
-        pka_n = 9.69
-        pka_c = 2.34
+        metrics_config = load_protein_metrics_config()
+        pka_side = metrics_config["pka_side"]
+        pka_n = metrics_config["pka_n_terminus"]
+        pka_c = metrics_config["pka_c_terminus"]
+        basic_residues = metrics_config["basic_residues"]
+        acidic_residues = metrics_config["acidic_residues"]
 
         def charge_at_ph(ph: float, chains: int) -> float:
             pos_term = chains * (10 ** (pka_n - ph) / (1 + 10 ** (pka_n - ph)))
@@ -377,10 +384,10 @@ class TestProteinMetrics:
             pos = pos_term
             neg = neg_term
             for aa, count in counts.items():
-                if aa in {"K", "R", "H"}:
+                if aa in basic_residues:
                     pk = pka_side[aa]
                     pos += count * (10 ** (pk - ph) / (1 + 10 ** (pk - ph)))
-                elif aa in {"D", "E", "C", "Y"}:
+                elif aa in acidic_residues:
                     pk = pka_side[aa]
                     neg += count * (10 ** (ph - pk) / (1 + 10 ** (ph - pk)))
             return pos - neg

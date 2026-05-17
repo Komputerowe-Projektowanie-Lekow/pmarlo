@@ -3,3 +3,29 @@ bias_mode: harmonic
 torch_threads: 4
 precision: single
 feature_spec_path: feature_spec.yaml
+protein_metrics:
+	hydrophobic_residues: "AVILMFYWPG"
+	aromatic_residues: "FYW"
+	basic_residues:
+		- K
+		- R
+		- H
+	acidic_residues:
+		- D
+		- E
+		- C
+		- Y
+	pka_side:
+		C: 8.3
+		D: 3.9
+		E: 4.1
+		H: 6.0
+		K: 10.5
+		R: 12.5
+		Y: 10.1
+	pka_n_terminus: 9.69
+	pka_c_terminus: 2.34
+	ph_lower: 0.0
+	ph_upper: 14.0
+	pi_max_iterations: 60
+	pi_tolerance: 1e-4

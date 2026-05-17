@@ -19,10 +19,3 @@ FES_EMPTY_BIN_RATIO_LOW: Final[float] = 0.1
 
 FES_MIN_ENERGY_RANGE_KT: Final[float] = 1.0
 """Minimum useful FES energy range in kT before sampling is suspicious."""
-
-# ---------------------------------------------------------------------------
-# REMD sampling thresholds
-# ---------------------------------------------------------------------------
-
-REMD_MIN_TEMPERATURE_RANGE_K: Final[float] = 100.0
-"""Minimum temperature span in K expected for useful REMD sampling."""

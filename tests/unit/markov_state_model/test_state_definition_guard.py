@@ -46,9 +46,6 @@ class _DummyEstimator(EstimationMixin):
     ) -> None:  # pragma: no cover - stub
         return None
 
-    def _build_tram_msm(self, lag_time: int) -> None:  # pragma: no cover - stub
-        raise AssertionError("TRAM path should not be invoked in this test")
-
     def _build_standard_msm(
         self, lag_time: int, count_mode: str = "sliding"
     ) -> None:  # pragma: no cover - stub

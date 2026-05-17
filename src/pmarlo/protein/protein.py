@@ -1,6 +1,7 @@
 # Copyright (c) 2025 PMARLO Development Team
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+import io
 import math
 import os
 from pathlib import Path
@@ -21,6 +22,7 @@ from rdkit import Chem
 from rdkit.Chem import Descriptors
 from rdkit.Chem.rdMolDescriptors import CalcExactMolWt
 
+from pmarlo.settings import load_protein_metrics_config
 from pmarlo.utils.path_utils import ensure_directory
 
 _STANDARD_RESIDUES = {
@@ -441,42 +443,29 @@ class Protein:
 
     def _calculate_rdkit_properties(self) -> Dict[str, Any]:
         """Calculate properties using RDKit for accurate molecular analysis."""
-        tmp_pdb = self._create_temp_pdb()
-        try:
-            self.rdkit_mol = Chem.MolFromPDBFile(tmp_pdb)
-            if self.rdkit_mol is None:
-                raise ValueError(
-                    "RDKit could not parse the generated PDB file for descriptor "
-                    "calculation. Ensure the input structure is valid."
+        if self.prepared:
+            if not HAS_PDBFIXER or self.fixer is None:
+                raise RuntimeError("PDBFixer object is not initialized")
+            self._validate_coordinates(self.fixer.positions)
+            with io.StringIO() as pdb_handle:
+                PDBFile.writeFile(
+                    self.fixer.topology, self.fixer.positions, pdb_handle
                 )
+                pdb_block = pdb_handle.getvalue()
+            self.rdkit_mol = Chem.MolFromPDBBlock(pdb_block)
+        else:
+            self.rdkit_mol = Chem.MolFromPDBFile(self.pdb_file)
 
-            props = self._compute_rdkit_descriptors()
-        finally:
-            self._cleanup_temp_file(tmp_pdb)
+        if self.rdkit_mol is None:
+            raise ValueError(
+                "RDKit could not parse the generated PDB file for descriptor "
+                "calculation. Ensure the input structure is valid."
+            )
+
+        props = self._compute_rdkit_descriptors()
 
         self._rdkit_properties = props
         return props
-
-    def _create_temp_pdb(self) -> str:
-        """Create a temporary PDB file for RDKit processing."""
-        import shutil
-        import tempfile
-
-        with tempfile.NamedTemporaryFile(suffix=".pdb", delete=False) as tmp_file:
-            tmp_pdb = tmp_file.name
-
-        if self.prepared and HAS_PDBFIXER and self.fixer is not None:
-            self.save_prepared_pdb(tmp_pdb)
-        else:
-            shutil.copy2(self.pdb_file, tmp_pdb)
-        return tmp_pdb
-
-    def _cleanup_temp_file(self, tmp_file: str):
-        """Clean up temporary file."""
-        try:
-            os.unlink(tmp_file)
-        except Exception:
-            pass
 
     # --- Protein-specific descriptor helpers ---
 
@@ -539,63 +528,53 @@ class Protein:
                 chains_int = 1
             if chains_int > 0:
                 chain_count = chains_int
-
-        # BUGFIX: include terminal charges for every chain, not just once.
-        # Multi-chain proteins have an independent N- and C-terminus per chain;
-        # ignoring this underestimates the total charge and skews the pI.
         chain_count = max(chain_count, 1)
-
-        hydrophobic = set("AVILMFYWPG")
-        aromatic = set("FYW")
+        metrics_config = load_protein_metrics_config()
+        hydrophobic = metrics_config["hydrophobic_residues"]
+        aromatic = metrics_config["aromatic_residues"]
+        basic_residues = metrics_config["basic_residues"]
+        acidic_residues = metrics_config["acidic_residues"]
+        pka_side = metrics_config["pka_side"]
+        pka_n = metrics_config["pka_n_terminus"]
+        pka_c = metrics_config["pka_c_terminus"]
+        ph_lower = metrics_config["ph_lower"]
+        ph_upper = metrics_config["ph_upper"]
+        max_iterations = metrics_config["pi_max_iterations"]
+        tolerance = metrics_config["pi_tolerance"]
 
         num_hydrophobic = sum(counts.get(aa, 0) for aa in hydrophobic)
         num_aromatic = sum(counts.get(aa, 0) for aa in aromatic)
 
         hydrophobic_fraction = num_hydrophobic / n_res if n_res else 0.0
 
-        # pKa values for side chains, N-terminus, C-terminus
-        pka_side = {
-            "C": 8.3,
-            "D": 3.9,
-            "E": 4.1,
-            "H": 6.0,
-            "K": 10.5,
-            "R": 12.5,
-            "Y": 10.1,
-        }
-        pka_n = 9.69
-        pka_c = 2.34
-
         def charge_at_ph(ph: float) -> float:
             pos = chain_count * (10 ** (pka_n - ph) / (1 + 10 ** (pka_n - ph)))
             neg = chain_count * (10 ** (ph - pka_c) / (1 + 10 ** (ph - pka_c)))
             for aa, count in counts.items():
-                if aa in ["K", "R", "H"]:
+                if aa in basic_residues:
                     pk = pka_side[aa]
                     pos += count * (10 ** (pk - ph) / (1 + 10 ** (pk - ph)))
-                elif aa in ["D", "E", "C", "Y"]:
+                elif aa in acidic_residues:
                     pk = pka_side[aa]
                     neg += count * (10 ** (ph - pk) / (1 + 10 ** (ph - pk)))
             return pos - neg
 
         # Estimate pI using a bisection search to find the zero-charge pH.
-        lower, upper = 0.0, 14.0
+        lower, upper = ph_lower, ph_upper
         lower_charge = charge_at_ph(lower)
         upper_charge = charge_at_ph(upper)
 
-        if math.isclose(lower_charge, 0.0, abs_tol=1e-6):
+        if math.isclose(lower_charge, 0.0, abs_tol=tolerance):
             pI = lower
-        elif math.isclose(upper_charge, 0.0, abs_tol=1e-6):
+        elif math.isclose(upper_charge, 0.0, abs_tol=tolerance):
             pI = upper
         else:
             if lower_charge * upper_charge > 0:
                 raise ValueError(
-                    "Protein net charge does not cross zero between pH 0 and 14; "
-                    "cannot compute isoelectric point."
+                    "Protein net charge does not cross zero between pH "
+                    f"{ph_lower} and {ph_upper}; cannot compute isoelectric point."
                 )
 
-            max_iterations = 60
-            tolerance = 1e-4
             for _ in range(max_iterations):
                 mid = 0.5 * (lower + upper)
                 mid_charge = charge_at_ph(mid)
@@ -613,7 +592,7 @@ class Protein:
             else:
                 raise ValueError(
                     "Bisection search for the protein isoelectric point did not "
-                    "converge within 60 iterations."
+                    f"converge within {max_iterations} iterations."
                 )
 
         charge = charge_at_ph(self.ph)

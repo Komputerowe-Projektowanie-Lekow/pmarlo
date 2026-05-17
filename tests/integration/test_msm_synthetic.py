@@ -43,15 +43,7 @@ def diagonal_mass(counts: np.ndarray) -> float:
 
 
 def _make_dataset(z: np.ndarray) -> dict[str, object]:
-    length = int(z.shape[0])
-    shard = {
-        "id": "synthetic",
-        "start": 0,
-        "stop": length,
-        "length": length,
-        "temperature": 300.0,
-    }
-    return {"__shards__": [shard], "dtrajs": [z.astype(int)]}
+    return {"dtrajs": [z.astype(int)]}
 
 
 def test_diag_mass_decreases_with_lag():

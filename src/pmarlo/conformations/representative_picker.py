@@ -110,10 +110,7 @@ RepresentativeFrame = Tuple[int, int, int, int]
 
 
 class RepresentativePicker:
-    """Picker for selecting representative structures from conformational states.
-
-    Uses statistically correct weighting with TRAM/MBAR weights (not double-weighted).
-    """
+    """Picker for selecting representative structures from conformational states."""
 
     def __init__(self) -> None:
         """Initialize representative picker."""
@@ -135,7 +132,7 @@ class RepresentativePicker:
             features: Feature matrix (n_frames x n_features)
             dtrajs: Discrete trajectories
             state_ids: States to pick representatives for
-            weights: Per-frame weights from TRAM/MBAR (NOT multiplied by pi)
+            Optional per-frame weights for representative selection.
             n_reps: Number of representatives per state
             method: Selection method ('medoid', 'centroid', 'diverse')
 

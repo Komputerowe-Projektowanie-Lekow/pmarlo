@@ -1,1 +1,0 @@
-{"fes": {"version": "2.0", "free_energy": {"shape": [2, 2], "dtype": "float64"}, "xedges": {"shape": [3], "dtype": "float64"}, "yedges": {"shape": [3], "dtype": "float64"}, "temperature": 300.0, "cv1_name": "x", "cv2_name": "y"}}

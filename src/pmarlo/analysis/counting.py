@@ -12,17 +12,17 @@ def expected_pairs(
     tau: int,
     stride: int | Iterable[int] | Sequence[int] = 1,
 ) -> int:
-    """Return the expected number of (t, t+tau) pairs for each shard.
+    """Return the expected number of (t, t+tau) pairs for each segment.
 
     Parameters
     ----------
     lengths
-        Iterable with the number of frames in each shard/segment.
+        Iterable with the number of frames in each segment.
     tau
         Lag time (number of frames separating source and destination).
     stride
         Step size between successive pair starts. Either a single integer applied
-        to every shard or an iterable providing a stride per shard.
+        to every segment or an iterable providing a stride per segment.
 
     Returns
     -------

@@ -1,12 +1,7 @@
 # Copyright (c) 2025 PMARLO Development Team
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""
-PMARLO: Protein Markov State Model Analysis with Replica Exchange
-
-A Python package for protein simulation and Markov state model chain generation,
-providing an OpenMM-like interface for molecular dynamics simulations.
-"""
+"""PMARLO: Protein Markov State Model analysis for single-trajectory workflows."""
 
 from __future__ import annotations
 
@@ -24,32 +19,10 @@ __author__ = "PMARLO Development Team"
 
 _MANDATORY_EXPORTS: Dict[str, Tuple[str, str]] = {
     "Protein": ("pmarlo.protein.protein", "Protein"),
-    "ReplicaExchange": ("pmarlo.replica_exchange.replica_exchange", "ReplicaExchange"),
-    "RemdConfig": ("pmarlo.replica_exchange.config", "RemdConfig"),
-    "Simulation": ("pmarlo.replica_exchange.simulation", "Simulation"),
-    "BuildOpts": ("pmarlo.transform.build", "BuildOpts"),
-    "AppliedOpts": ("pmarlo.transform.build", "AppliedOpts"),
-    "build_result": ("pmarlo.transform.build", "build_result"),
-    "ShardMeta": ("pmarlo.data.shard", "ShardMeta"),
-    "write_shard": ("pmarlo.data.shard", "write_shard"),
-    "read_shard": ("pmarlo.data.shard", "read_shard"),
-    "emit_shards_from_trajectories": (
-        "pmarlo.data.emit",
-        "emit_shards_from_trajectories",
-    ),
-    "aggregate_and_build": ("pmarlo.data.aggregate", "aggregate_and_build"),
-    "DemuxDataset": ("pmarlo.data.demux_dataset", "DemuxDataset"),
-    "build_demux_dataset": ("pmarlo.data.demux_dataset", "build_demux_dataset"),
-    "power_of_two_temperature_ladder": (
-        "pmarlo.utils.replica_utils",
-        "power_of_two_temperature_ladder",
-    ),
     "candidate_lag_ladder": (
         "pmarlo.markov_state_model._msm_utils",
         "candidate_lag_ladder",
     ),
-    "pm_get_plan": ("pmarlo.transform", "pm_get_plan"),
-    "pm_apply_plan": ("pmarlo.transform", "pm_apply_plan"),
 }
 
 _MODULE_EXPORTS: Dict[str, str] = {
@@ -58,7 +31,6 @@ _MODULE_EXPORTS: Dict[str, str] = {
 }
 
 _OPTIONAL_EXPORTS: Dict[str, Tuple[str, str]] = {
-    "Pipeline": ("pmarlo.transform.pipeline", "Pipeline"),
     "MarkovStateModel": ("pmarlo.markov_state_model.enhanced_msm", "EnhancedMSM"),
     "FESResult": ("pmarlo.markov_state_model.free_energy", "FESResult"),
     "PMFResult": ("pmarlo.markov_state_model.free_energy", "PMFResult"),
@@ -69,7 +41,6 @@ _OPTIONAL_EXPORTS: Dict[str, Tuple[str, str]] = {
 _ANALYSIS_HINT = "Install with `pip install 'pmarlo[analysis]'`."
 _OPTIONAL_HINTS: Dict[str, str] = {
     "api": _ANALYSIS_HINT,
-    "Pipeline": _ANALYSIS_HINT,
     "MarkovStateModel": _ANALYSIS_HINT,
     "FESResult": _ANALYSIS_HINT,
     "PMFResult": _ANALYSIS_HINT,

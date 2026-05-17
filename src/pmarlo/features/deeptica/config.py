@@ -69,22 +69,6 @@ def sanitize_deeptica_payload(raw: Mapping[str, Any]) -> Dict[str, Any]:
         if trimmed:
             summary["attempts"] = trimmed
 
-    per_shard = raw.get("per_shard")
-    if isinstance(per_shard, list):
-        trimmed_shards: list[Dict[str, Any]] = []
-        for shard_info in per_shard:
-            if not isinstance(shard_info, Mapping):
-                continue
-            trimmed_shards.append(
-                {
-                    "shard_id": shard_info.get("shard_id") or shard_info.get("id"),
-                    "pairs": shard_info.get("pairs"),
-                    "frames": shard_info.get("frames"),
-                }
-            )
-        if trimmed_shards:
-            summary["per_shard"] = trimmed_shards
-
     training_metrics = raw.get("training_metrics")
     if isinstance(training_metrics, Mapping):
         summary["training_metrics"] = {

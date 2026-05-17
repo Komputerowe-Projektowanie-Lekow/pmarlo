@@ -12,7 +12,7 @@ from pmarlo import constants as const
 from .discretize import (
     _coerce_array,
     _normalise_splits,
-    _resolve_shard_segments_for_split,
+    _resolve_segments_for_split,
 )
 from .project_cv import apply_whitening_from_metadata
 
@@ -31,17 +31,11 @@ class _SegmentDescriptor:
 
 
 def _segment_descriptors_for_split(
-    dataset: DatasetLike,
     split_name: str,
     split: Any,
     total_frames: int,
 ) -> list[_SegmentDescriptor]:
-    lengths, strides = _resolve_shard_segments_for_split(
-        dataset,
-        split_name,
-        split,
-        total_frames,
-    )
+    lengths, strides = _resolve_segments_for_split(split_name, split, total_frames)
     descriptors: list[_SegmentDescriptor] = []
     for length, stride in zip(lengths, strides):
         descriptors.append(
@@ -54,7 +48,7 @@ def _segment_descriptors_for_split(
             f"but split contains {total_frames} frames"
         )
     if not descriptors:
-        raise ValueError(f"No shard descriptors available for split '{split_name}'")
+        raise ValueError(f"No segment descriptors available for split '{split_name}'")
     return descriptors
 
 
@@ -255,7 +249,7 @@ def _autocorrelation_curve(
     taus: Sequence[int],
     segments: Sequence[_SegmentDescriptor],
 ) -> Dict[str, Any]:
-    """Compute shard-wise autocorrelation and summary statistics."""
+    """Compute segment-wise autocorrelation and summary statistics."""
 
     Xc = _validate_autocorr_input(X)
     tau_grid = _prepare_tau_grid(taus)
@@ -303,19 +297,19 @@ def _autocorrelation_curve(
         normalised = centered[:, valid_mask] / np.sqrt(variance[valid_mask])
         for idx, tau in enumerate(tau_array):
             if tau == 0:
-                shard_value = 1.0
+                segment_value = 1.0
             elif tau >= seg_len:
                 continue
             else:
                 head = normalised[: seg_len - tau]
                 tail = normalised[tau:]
-                shard_value = float(np.mean(np.mean(head * tail, axis=0)))
-            if not np.isfinite(shard_value):
+                segment_value = float(np.mean(np.mean(head * tail, axis=0)))
+            if not np.isfinite(segment_value):
                 continue
             weight = seg_len - tau
             if weight <= 0:
                 continue
-            numerator[idx] += weight * shard_value
+            numerator[idx] += weight * segment_value
             denominator[idx] += weight
     if cursor != Xc.shape[0]:
         raise ValueError(
@@ -476,11 +470,8 @@ def _collect_tau_lengths(
             except Exception as exc:  # pragma: no cover - defensive
                 logger.debug("Skipping split during tau derivation: %s", exc)
                 continue
-            split_lengths, split_strides = _resolve_shard_segments_for_split(
-                dataset,
-                str(name),
-                value,
-                arr.shape[0],
+            split_lengths, split_strides = _resolve_segments_for_split(
+                str(name), value, arr.shape[0]
             )
             lengths.extend(int(length) for length in split_lengths)
             strides.extend(max(1, int(stride)) for stride in split_strides)
@@ -630,7 +621,7 @@ def compute_diagnostics(
     warnings: list[str] = []
 
     for name, split in splits.items():
-        processed = _compute_split_diagnostics(name, split, taus_used, dataset)
+        processed = _compute_split_diagnostics(name, split, taus_used)
         if processed is None:
             continue
         split_canonical, split_autocorr, split_warnings = processed
@@ -657,7 +648,6 @@ def _compute_split_diagnostics(
     name: str,
     split: Any,
     taus: Sequence[int],
-    dataset: DatasetLike,
 ) -> tuple[list[float] | None, Dict[str, Any], list[str]] | None:
     """Gather canonical correlations and autocorrelation curve for one split.
 
@@ -710,12 +700,7 @@ def _compute_split_diagnostics(
                     warnings.append(msg)
                     logger.warning(msg)
 
-    descriptors = _segment_descriptors_for_split(
-        dataset,
-        name,
-        split,
-        whitened_full.shape[0],
-    )
+    descriptors = _segment_descriptors_for_split(name, split, whitened_full.shape[0])
     autocorr = _autocorrelation_curve(whitened_full, taus, descriptors)
     values = autocorr.get("values", [])
     if len(values) >= 4 and np.isfinite(values[1]) and np.isfinite(values[3]):

@@ -50,3 +50,15 @@
 - Removed the duplicate progress-callback alias helper and lazy transform-build import wrapper from `data.aggregate`.
 - Removed unused conformation frame-assignment code and a trivial shard ID wrapper from aggregation.
 - Removed the lenient `coerce_tau_schedule` API; use `parse_tau_schedule(..., strict=False)` for explicit invalid-token skipping.
+- Removed the `demultiplexing`, `replica_exchange`, `reweight`, `samplers`, `experiments`, `workflow`, `shards`, `reporting`, `transform`, and top-level `pairs` packages because they serve multi-simulation, multi-temperature, progress-reporting, or orchestration workflows outside the single-trajectory core.
+- Removed shard/demux/transform facade modules from `api`, `data`, `io`, `utils`, and `markov_state_model` along with tests that imported those removed surfaces.
+- Removed remaining scaled-time reweight pair construction, `__shards__` analysis compatibility, shard schema constants, and shard frame histogram APIs from the retained single-trajectory modules.
+
+### changed
+
+- Moved DeepTICA lagged pair construction into `pmarlo.features.deeptica.core.pairs` so the single-trajectory ML path no longer depends on the removed top-level `pairs` package.
+- Replaced reporting-package plot/export imports in the retained API and visualization modules with local single-trajectory plotting/export helpers.
+- Narrowed public package exports to protein, API, visualization, MSM, FES/PMF, and single-trajectory analysis utilities.
+- Renamed remaining DeepTICA/MSM diagnostics from shard-oriented wording to trajectory or segment wording, and kept lagged-pair diagnostics limited to uniform single-trajectory timing.
+- RDKit protein descriptor calculation now uses in-memory PDB blocks instead of temporary PDB files.
+- Protein metric residue sets and pKa values now load from the runtime configuration file.

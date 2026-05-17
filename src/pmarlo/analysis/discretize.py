@@ -356,37 +356,6 @@ def _segments_from_split_metadata(
     return lengths, strides
 
 
-def _segments_from_dataset_shards(
-    dataset: DatasetLike, split_name: str
-) -> tuple[list[int], list[int]]:
-    lengths: list[int] = []
-    strides: list[int] = []
-
-    shards = dataset.get("__shards__") if isinstance(dataset, Mapping) else None
-    if not isinstance(shards, Iterable):
-        return lengths, strides
-
-    for entry in shards:
-        if not isinstance(entry, Mapping):
-            continue
-        split_label = entry.get("split")
-        if split_label is not None and str(split_label) != split_name:
-            continue
-        length_val = entry.get("length")
-        if length_val is None:
-            start = entry.get("start")
-            stop = entry.get("stop")
-            if start is not None and stop is not None:
-                try:
-                    length_val = int(stop) - int(start)
-                except Exception:
-                    length_val = None
-        stride_val = entry.get("effective_frame_stride")
-        if length_val is not None:
-            _append_segment(lengths, strides, length_val, stride_val)
-    return lengths, strides
-
-
 def _truncate_segments(
     lengths: Sequence[int],
     strides: Sequence[int],
@@ -411,8 +380,7 @@ def _truncate_segments(
     return sanitised_lengths, sanitised_strides
 
 
-def _resolve_shard_segments_for_split(
-    dataset: DatasetLike,
+def _resolve_segments_for_split(
     split_name: str,
     split: Any,
     total_frames: int,
@@ -424,13 +392,6 @@ def _resolve_shard_segments_for_split(
         meta_lengths, meta_strides = _segments_from_split_metadata(split)
         lengths.extend(meta_lengths)
         strides.extend(meta_strides)
-
-    if not lengths:
-        shard_lengths, shard_strides = _segments_from_dataset_shards(
-            dataset, split_name
-        )
-        lengths.extend(shard_lengths)
-        strides.extend(shard_strides)
 
     return _truncate_segments(lengths, strides, total_frames)
 
@@ -809,8 +770,8 @@ def _process_split_assignment(
     stats["feature_names"] = split_names
     stats["n_features"] = int(split_schema.get("n_features", X.shape[1]))
 
-    split_lengths, split_strides = _resolve_shard_segments_for_split(
-        dataset, split_name, split, X.shape[0]
+    split_lengths, split_strides = _resolve_segments_for_split(
+        split_name, split, X.shape[0]
     )
     stats["segment_lengths"] = list(split_lengths)
     stride_for_pairs: Sequence[int] | int

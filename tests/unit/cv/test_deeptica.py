@@ -21,16 +21,16 @@ def test_deeptica_config_linear_head_flag():
 
 def test_deeptica_train_transform_export_and_snippet(tmp_path: Path):
     from pmarlo.features.deeptica import DeepTICAConfig, train_deeptica
-    from pmarlo.features.pairs import scaled_time_pairs
+    from pmarlo.features.pairs import lagged_time_pairs
 
     rng = np.random.default_rng(0)
-    # Tiny synthetic dataset: two shards emulated by two arrays
+    # Tiny synthetic dataset split into two time-contiguous segments.
     X1 = rng.normal(size=(64, 3))
     X2 = rng.normal(size=(48, 3))
     X_list = [X1, X2]
     # Uniform-time pairs
-    i1, j1 = scaled_time_pairs(len(X1), None, tau_scaled=3.0)
-    i2, j2 = scaled_time_pairs(len(X2), None, tau_scaled=3.0)
+    i1, j1 = lagged_time_pairs(len(X1), lag=3)
+    i2, j2 = lagged_time_pairs(len(X2), lag=3)
     idx_t = np.concatenate([i1, len(X1) + i2])
     idx_tlag = np.concatenate([j1, len(X1) + j2])
 

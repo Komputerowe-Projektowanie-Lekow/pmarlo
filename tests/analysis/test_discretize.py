@@ -19,9 +19,7 @@ def test_prepare_msm_discretization_kmeans_assigns_all_splits():
     val = np.array([[0.05, 0.05], [4.1, 4.1]])
     test = np.array([[0.2, -0.05], [4.05, 4.02]])
     dataset = _make_dataset(train, val=val, test=test)
-    dataset["__shards__"] = [
-        {"id": "s0", "split": "train", "length": train.shape[0]},
-    ]
+    dataset["splits"]["train"]["segments"] = [{"length": train.shape[0]}]
 
     result = prepare_msm_discretization(
         dataset,
@@ -69,12 +67,10 @@ def test_prepare_msm_discretization_kmeans_assigns_all_splits():
 def test_prepare_msm_expected_pairs_use_segment_stride_metadata():
     train = np.array([[0.0, 0.0], [0.1, -0.1], [0.2, 0.05], [0.3, -0.2]])
     dataset = _make_dataset(train)
-    dataset["__shards__"] = [
+    dataset["splits"]["train"]["segments"] = [
         {
-            "id": "s0",
-            "split": "train",
             "length": train.shape[0],
-            "effective_frame_stride": 2,
+            "stride": 2,
         }
     ]
     dataset["splits"]["train"]["feature_schema"] = {

@@ -16,6 +16,19 @@ ALLOWED_PRECISIONS = {"single", "double"}
 DEFAULT_CONFIG_FILENAME = "defaults.yaml"
 DEFAULT_SPEC_FILENAME = "feature_spec.yaml"
 CONFIG_ENV_VAR = "PMARLO_CONFIG_FILE"
+PROTEIN_METRICS_REQUIRED_KEYS = {
+    "hydrophobic_residues",
+    "aromatic_residues",
+    "basic_residues",
+    "acidic_residues",
+    "pka_side",
+    "pka_n_terminus",
+    "pka_c_terminus",
+    "ph_lower",
+    "ph_upper",
+    "pi_max_iterations",
+    "pi_tolerance",
+}
 
 
 class ConfigurationError(RuntimeError):
@@ -136,6 +149,148 @@ def _load_defaults_from_path(config_path_str: str) -> Dict[str, Any]:
 
 load_defaults.cache_clear = _load_defaults_from_path.cache_clear  # type: ignore[attr-defined]
 load_defaults.cache_info = _load_defaults_from_path.cache_info  # type: ignore[attr-defined]
+
+
+def load_protein_metrics_config() -> Dict[str, Any]:
+    """Load and validate protein metric configuration values."""
+
+    cfg = load_defaults()
+    metrics = cfg.get("protein_metrics")
+    if not isinstance(metrics, dict):
+        raise ConfigurationError("Configuration missing 'protein_metrics' mapping.")
+
+    missing = PROTEIN_METRICS_REQUIRED_KEYS - metrics.keys()
+    if missing:
+        raise ConfigurationError(
+            "protein_metrics missing required keys: "
+            + ", ".join(sorted(missing))
+        )
+
+    def _coerce_residue_set(value: Any, key: str) -> set[str]:
+        if isinstance(value, str):
+            entries = [char for char in value.replace(" ", "") if char]
+        elif isinstance(value, list) and all(isinstance(item, str) for item in value):
+            entries = [item.strip() for item in value if item.strip()]
+        else:
+            raise ConfigurationError(
+                f"{key} must be a string or list of residue codes."
+            )
+
+        residues: set[str] = set()
+        for entry in entries:
+            if len(entry) != 1:
+                raise ConfigurationError(
+                    f"{key} entries must be single-letter residue codes."
+                )
+            residues.add(entry.upper())
+
+        if not residues:
+            raise ConfigurationError(f"{key} must not be empty.")
+        return residues
+
+    def _coerce_float(value: Any, key: str) -> float:
+        if isinstance(value, bool):
+            raise ConfigurationError(f"{key} must be a float.")
+        try:
+            return float(value)
+        except (TypeError, ValueError) as exc:
+            raise ConfigurationError(f"{key} must be a float.") from exc
+
+    def _coerce_int(value: Any, key: str) -> int:
+        if isinstance(value, bool):
+            raise ConfigurationError(f"{key} must be an integer.")
+        try:
+            return int(value)
+        except (TypeError, ValueError) as exc:
+            raise ConfigurationError(f"{key} must be an integer.") from exc
+
+    hydrophobic_residues = _coerce_residue_set(
+        metrics["hydrophobic_residues"], "protein_metrics.hydrophobic_residues"
+    )
+    aromatic_residues = _coerce_residue_set(
+        metrics["aromatic_residues"], "protein_metrics.aromatic_residues"
+    )
+    basic_residues = _coerce_residue_set(
+        metrics["basic_residues"], "protein_metrics.basic_residues"
+    )
+    acidic_residues = _coerce_residue_set(
+        metrics["acidic_residues"], "protein_metrics.acidic_residues"
+    )
+
+    overlap = basic_residues & acidic_residues
+    if overlap:
+        raise ConfigurationError(
+            "protein_metrics basic_residues and acidic_residues must be disjoint: "
+            + ", ".join(sorted(overlap))
+        )
+
+    pka_side_raw = metrics["pka_side"]
+    if not isinstance(pka_side_raw, dict):
+        raise ConfigurationError("protein_metrics.pka_side must be a mapping.")
+
+    pka_side: Dict[str, float] = {}
+    for residue, value in pka_side_raw.items():
+        if not isinstance(residue, str):
+            raise ConfigurationError(
+                "protein_metrics.pka_side keys must be residue codes."
+            )
+        key = residue.strip().upper()
+        if len(key) != 1:
+            raise ConfigurationError(
+                "protein_metrics.pka_side keys must be single-letter residue codes."
+            )
+        pka_side[key] = _coerce_float(value, f"protein_metrics.pka_side.{key}")
+
+    if not pka_side:
+        raise ConfigurationError("protein_metrics.pka_side must not be empty.")
+
+    missing_pka = (basic_residues | acidic_residues) - set(pka_side)
+    if missing_pka:
+        raise ConfigurationError(
+            "protein_metrics.pka_side missing entries for: "
+            + ", ".join(sorted(missing_pka))
+        )
+
+    pka_n_terminus = _coerce_float(
+        metrics["pka_n_terminus"], "protein_metrics.pka_n_terminus"
+    )
+    pka_c_terminus = _coerce_float(
+        metrics["pka_c_terminus"], "protein_metrics.pka_c_terminus"
+    )
+    ph_lower = _coerce_float(metrics["ph_lower"], "protein_metrics.ph_lower")
+    ph_upper = _coerce_float(metrics["ph_upper"], "protein_metrics.ph_upper")
+    if ph_lower >= ph_upper:
+        raise ConfigurationError(
+            "protein_metrics ph bounds must satisfy ph_lower < ph_upper."
+        )
+
+    pi_max_iterations = _coerce_int(
+        metrics["pi_max_iterations"], "protein_metrics.pi_max_iterations"
+    )
+    if pi_max_iterations <= 0:
+        raise ConfigurationError(
+            "protein_metrics.pi_max_iterations must be a positive integer."
+        )
+
+    pi_tolerance = _coerce_float(
+        metrics["pi_tolerance"], "protein_metrics.pi_tolerance"
+    )
+    if pi_tolerance <= 0.0:
+        raise ConfigurationError("protein_metrics.pi_tolerance must be positive.")
+
+    return {
+        "hydrophobic_residues": hydrophobic_residues,
+        "aromatic_residues": aromatic_residues,
+        "basic_residues": basic_residues,
+        "acidic_residues": acidic_residues,
+        "pka_side": pka_side,
+        "pka_n_terminus": pka_n_terminus,
+        "pka_c_terminus": pka_c_terminus,
+        "ph_lower": ph_lower,
+        "ph_upper": ph_upper,
+        "pi_max_iterations": pi_max_iterations,
+        "pi_tolerance": pi_tolerance,
+    }
 
 
 def resolve_feature_spec_path() -> Path:

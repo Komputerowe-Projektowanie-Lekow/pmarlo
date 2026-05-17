@@ -74,7 +74,7 @@ class _TrainingPrep:
     requested_lag: int
     usable_pairs: int
     coverage: float
-    short_shards: list[int]
+    short_trajectories: list[int]
     total_possible: int
     lag_used: int
     summary_dir: Optional[Path]
@@ -124,7 +124,7 @@ def _prepare_training_prep(
     pair_diagnostics = dict(pair_info.diagnostics)
 
     requested_lag = int(prep.tau_schedule[-1])
-    usable_pairs, coverage, short_shards, total_possible, lag_used = (
+    usable_pairs, coverage, short_trajectories, total_possible, lag_used = (
         _log_pair_diagnostics(pair_diagnostics, len(arrays), requested_lag)
     )
 
@@ -151,7 +151,7 @@ def _prepare_training_prep(
         requested_lag=requested_lag,
         usable_pairs=usable_pairs,
         coverage=coverage,
-        short_shards=short_shards,
+        short_trajectories=short_trajectories,
         total_possible=total_possible,
         lag_used=lag_used,
         summary_dir=None,
@@ -286,8 +286,10 @@ def _finalize_training_artifacts(
         coverage_capped = 0.0
     history["usable_pairs"] = usable_pairs_capped
     history["pair_coverage"] = coverage_capped
-    history["pairs_by_shard"] = prep.pair_diagnostics.get("pairs_by_shard", [])
-    history["short_shards"] = prep.short_shards
+    history["pairs_by_trajectory"] = prep.pair_diagnostics.get(
+        "pairs_by_trajectory", []
+    )
+    history["short_trajectories"] = prep.short_trajectories
     history["total_possible_pairs"] = prep.total_possible
     history["lag_used"] = prep.lag_used
     history["weights_mean"] = float(np.mean(prep.weights)) if prep.weights.size else 0.0
@@ -499,20 +501,20 @@ def _forward_to_numpy(net: nn.Module, data: np.ndarray) -> np.ndarray:
 
 def _log_pair_diagnostics(
     diagnostics: dict[str, Any],
-    n_shards: int,
+    n_trajectories: int,
     requested_lag: int,
 ) -> tuple[int, float, list[int], int, int]:
     usable_pairs = int(diagnostics.get("usable_pairs", 0))
     coverage = float(diagnostics.get("pair_coverage", 0.0))
-    short_shards = list(diagnostics.get("short_shards", []))
+    short_trajectories = list(diagnostics.get("short_trajectories", []))
     total_possible = int(diagnostics.get("total_possible_pairs", 0))
     lag_used = int(diagnostics.get("lag_used", requested_lag))
 
-    if short_shards:
+    if short_trajectories:
         logger.warning(
-            "%d/%d shards too short for lag %d",
-            len(short_shards),
-            n_shards,
+            "%d/%d trajectories too short for lag %d",
+            len(short_trajectories),
+            n_trajectories,
             lag_used,
         )
     if usable_pairs == 0:
@@ -529,13 +531,13 @@ def _log_pair_diagnostics(
         )
     else:
         logger.info(
-            "Lagged pair diagnostics: usable=%d coverage=%.1f%% short_shards=%s",
+            "Lagged pair diagnostics: usable=%d coverage=%.1f%% short_trajectories=%s",
             usable_pairs,
             coverage * 100.0,
-            short_shards,
+            short_trajectories,
         )
 
-    return usable_pairs, coverage, short_shards, total_possible, lag_used
+    return usable_pairs, coverage, short_trajectories, total_possible, lag_used
 
 
 def _build_curriculum_config(

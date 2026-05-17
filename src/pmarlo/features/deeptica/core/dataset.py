@@ -85,7 +85,7 @@ def create_loaders(dataset: Any, cfg: Any) -> DatasetBundle:
 
 
 def split_sequences(Z: np.ndarray, lengths: Sequence[int]) -> list[np.ndarray]:
-    """Slice the normalized feature matrix into per-shard sequences."""
+    """Slice the normalized feature matrix into time-contiguous sequences."""
 
     sequences: list[np.ndarray] = []
     offset = 0

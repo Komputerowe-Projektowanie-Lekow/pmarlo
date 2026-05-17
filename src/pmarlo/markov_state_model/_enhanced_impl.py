@@ -25,7 +25,6 @@ from ._loading import LoadingMixin
 from ._plots import PlotsMixin
 from ._states import StatesMixin
 from ._tpt import TPTMixin
-from ._tram import TRAMMixin
 
 if TYPE_CHECKING:  # pragma: no cover - import for type checking only
     from .enhanced_msm import EnhancedMSMProtocol
@@ -42,7 +41,6 @@ class EnhancedMSM(
     TPTMixin,
     PlotsMixin,
     StatesMixin,
-    TRAMMixin,
     ExportMixin,
     MSMBase,
 ):
@@ -81,9 +79,7 @@ def run_complete_msm_analysis(
         ignore_trajectory_errors=ignore_trajectory_errors,
     )
 
-    _build_and_analyze_msm(
-        msm=msm_protocol, lag_time=lag_time, temperatures=temperatures
-    )
+    _build_and_analyze_msm(msm=msm_protocol, lag_time=lag_time)
 
     _compute_optional_fes(msm=msm_protocol)
     _finalize_and_export(msm=msm_protocol)
@@ -133,17 +129,9 @@ def _build_and_analyze_msm(
     *,
     msm: "EnhancedMSMProtocol",
     lag_time: int,
-    temperatures: Optional[List[float]],
 ) -> None:
-    method = _select_estimation_method(temperatures)
-    msm.build_msm(lag_time=lag_time, method=method)
+    msm.build_msm(lag_time=lag_time, method="standard")
     msm.compute_implied_timescales()
-
-
-def _select_estimation_method(temperatures: Optional[List[float]]) -> str:
-    if temperatures is not None and len(temperatures) > 1:
-        return "tram"
-    return "standard"
 
 
 def _compute_optional_fes(*, msm: "EnhancedMSMProtocol") -> None:

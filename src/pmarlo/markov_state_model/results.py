@@ -102,34 +102,6 @@ class BaseResult:
 
 
 @dataclass
-class REMDResult(BaseResult):
-    """Result container for REMD simulations."""
-
-    temperatures: np.ndarray
-    n_replicas: int
-    exchange_frequency: int
-    exchange_attempts: int
-    exchanges_accepted: int
-    final_acceptance_rate: float
-    replica_states: List[int]
-    state_replicas: List[int]
-    exchange_history: List[List[int]]
-    trajectory_files: List[str]
-    acceptance_matrix: Optional[np.ndarray] = None
-    replica_visitation_histogram: Optional[np.ndarray] = None
-    frames_per_replica: List[int] = field(default_factory=list)
-    effective_sample_size: Optional[float] = None
-
-
-@dataclass
-class DemuxResult(BaseResult):
-    """Result of demultiplexing trajectories."""
-
-    trajectory_file: str
-    frames: int
-
-
-@dataclass
 class ClusteringResult(BaseResult):
     """Clustering assignments and centers."""
 

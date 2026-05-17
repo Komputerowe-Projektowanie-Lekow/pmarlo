@@ -39,7 +39,7 @@ def run_complete_msm_analysis(
         n_states,
         ignore_trajectory_errors,
     )
-    _build_and_analyze(msm_pipeline, temperatures, lag_time)
+    _build_and_analyze(msm_pipeline, lag_time)
     _emit_plots(msm_pipeline)
     return msm
 
@@ -79,13 +79,9 @@ def _load_and_featurize(
 
 def _build_and_analyze(
     msm: SupportsMSMPipeline,
-    temperatures: Optional[List[float]],
     lag_time: int,
 ) -> None:
-    method = (
-        "tram" if temperatures is not None and len(temperatures) > 1 else "standard"
-    )
-    msm.build_msm(lag_time=lag_time, method=method)
+    msm.build_msm(lag_time=lag_time, method="standard")
     msm.compute_implied_timescales()
     msm.generate_free_energy_surface(cv1_name="CV1", cv2_name="CV2")
     msm.create_state_table()

@@ -3,7 +3,7 @@
 """Performance benchmarks for Free Energy Surface (FES) computation.
 
 These benchmarks measure FES computation performance which is critical for:
-- Histogram computation with reweighting
+- Histogram computation with frame weights
 - Gaussian smoothing
 - Free energy conversion from probabilities
 - Large dataset handling

@@ -1,11 +1,6 @@
 from __future__ import annotations
 
-"""Reusable diagnostics visualisations for sampling and free-energy validation.
-
-These helpers are UI-agnostic wrappers around :mod:`pmarlo.reporting.plots`
-that expose a concise, data-oriented API for downstream consumers (CLI
-workflows, notebooks, or the Streamlit web app).
-"""
+"""Reusable diagnostics visualisations for sampling and free-energy validation."""
 
 from dataclasses import dataclass
 from typing import Iterable, List, Sequence
@@ -14,12 +9,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.figure import Figure
 
-from pmarlo.reporting import plots as reporting_plots
-
 __all__ = [
     "create_sampling_validation_plot",
     "create_fes_validation_plot",
-    "create_shard_frame_histogram",
+    "create_trajectory_frame_histogram",
 ]
 
 
@@ -45,30 +38,30 @@ def _ensure_figsize(name: str, value: tuple[float, float]) -> tuple[float, float
     return float(width), float(height)
 
 
-def create_shard_frame_histogram(
+def create_trajectory_frame_histogram(
     frame_counts: Sequence[int | float],
-    shard_labels: Sequence[str] | None = None,
+    trajectory_labels: Sequence[str] | None = None,
     *,
     max_label_count: int = 24,
     figsize: tuple[float, float] | None = None,
     color: str = "#4a90e2",
 ) -> Figure:
-    """Render a histogram showing the number of frames per shard.
+    """Render a histogram showing the number of frames per trajectory.
 
     Parameters
     ----------
     frame_counts
-        Iterable of per-shard frame counts. All values must be finite and
+        Iterable of per-trajectory frame counts. All values must be finite and
         non-negative.
-    shard_labels
+    trajectory_labels
         Optional labels aligned with ``frame_counts`` that annotate each bar on
         the x-axis. When omitted, bars are labelled by ordinal index.
     max_label_count
-        Maximum number of shard labels to display before falling back to ordinal
+        Maximum number of trajectory labels to display before falling back to ordinal
         numbering. Helps keep large selections legible.
     figsize
         Optional ``(width, height)`` hint for the Matplotlib canvas. When not
-        provided, the width automatically scales with the number of shards while
+        provided, the width automatically scales with the number of trajectories while
         the height defaults to 4 inches.
     color
         Matplotlib-compatible colour specification for the bar fill.
@@ -88,10 +81,10 @@ def create_shard_frame_histogram(
         raise ValueError("frame_counts must be non-negative")
 
     resolved_labels: list[str] | None = None
-    if shard_labels is not None:
-        resolved_labels = [str(label) for label in shard_labels]
+    if trajectory_labels is not None:
+        resolved_labels = [str(label) for label in trajectory_labels]
         if len(resolved_labels) != values.size:
-            raise ValueError("shard_labels length must match frame_counts length")
+            raise ValueError("trajectory_labels length must match frame_counts length")
 
     _validate_positive("max_label_count", int(max_label_count))
     if figsize is None:
@@ -102,9 +95,9 @@ def create_shard_frame_histogram(
     positions = np.arange(values.size)
     fig, ax = plt.subplots(figsize=figsize)
     ax.bar(positions, values, color=color)
-    ax.set_title("Frames per shard")
+    ax.set_title("Frames per trajectory")
     ax.set_ylabel("Frames")
-    ax.set_xlabel("Shard")
+    ax.set_xlabel("Trajectory")
     ax.set_xticks(positions)
 
     if resolved_labels is not None and values.size <= max_label_count:
@@ -374,16 +367,52 @@ def create_sampling_validation_plot(
     )
 
     fig, ax = plt.subplots(figsize=figsize)
-    fig = reporting_plots.plot_sampling_validation(
-        projected_data_1d=inputs.projected_data_1d,
-        max_traj_length_plot=int(max_length),
-        bins=int(hist_bins),
-        stride=int(stride),
-        trajectory_labels=inputs.trajectory_labels,
-        discrete_data_1d=inputs.discrete_overlay,
-        metabiased_flags=inputs.metabiased_flags,
-        ax=ax,
-    )
+    all_data = np.concatenate(inputs.projected_data_1d)
+    ax.hist(all_data, bins=int(hist_bins), alpha=0.15, density=True, color="grey")
+    y_min, y_max = ax.get_ylim()
+    colors = plt.get_cmap("tab20")(np.linspace(0.0, 1.0, len(inputs.projected_data_1d)))
+    max_labels = min(8, len(inputs.projected_data_1d))
+    for idx, trajectory in enumerate(inputs.projected_data_1d):
+        segment = trajectory[: int(max_length) : int(stride)]
+        if segment.size <= 1:
+            continue
+        y_time = np.linspace(y_min, y_max * 0.9, segment.size)
+        label = (
+            inputs.trajectory_labels[idx]
+            if inputs.trajectory_labels is not None and idx < max_labels
+            else (f"Trajectory {idx}" if idx < max_labels else None)
+        )
+        dashed = (
+            inputs.metabiased_flags is not None
+            and idx < len(inputs.metabiased_flags)
+            and inputs.metabiased_flags[idx]
+        )
+        ax.plot(
+            segment,
+            y_time,
+            linestyle="--" if dashed else "-",
+            linewidth=1.6 if dashed else 0.8,
+            alpha=0.75,
+            color=colors[idx],
+            label=label,
+        )
+        if inputs.discrete_overlay is not None and idx < len(inputs.discrete_overlay):
+            overlay = inputs.discrete_overlay[idx][: segment.size]
+            if overlay.size == segment.size:
+                ax.scatter(
+                    overlay,
+                    y_time,
+                    s=8,
+                    color=colors[idx],
+                    alpha=0.35,
+                    marker="o",
+                )
+    ax.set_xlabel("TICA Component 1")
+    ax.set_ylabel("Density / trajectory progress")
+    ax.set_title("Sampling Connectivity")
+    if ax.get_legend_handles_labels()[0]:
+        ax.legend(loc="best", fontsize=8)
+    fig.tight_layout()
     return fig
 
 
@@ -467,13 +496,28 @@ def create_fes_validation_plot(
         )
 
     fig, ax = plt.subplots(figsize=figsize)
-    fig = reporting_plots.plot_free_energy_2d(
-        grid=[xx, yy],
-        fes=fes_array,
-        cmap=cmap,
+    capped_fes = np.clip(fes_array, a_min=finite_min, a_max=max_kt)
+    contour = ax.contourf(
+        xx,
+        yy,
+        capped_fes.T,
         levels=int(levels),
-        max_energy_kt=max_kt,
-        add_contour_lines=bool(show_lines),
-        ax=ax,
+        cmap=cmap,
+        extend="max",
     )
+    fig.colorbar(contour, ax=ax).set_label("Free Energy ($k_B T$)")
+    if show_lines:
+        ax.contour(
+            xx,
+            yy,
+            capped_fes.T,
+            levels=int(levels),
+            colors="black",
+            linewidths=0.5,
+            alpha=0.6,
+        )
+    ax.set_xlabel("TICA Component 1")
+    ax.set_ylabel("TICA Component 2")
+    ax.set_title("Free Energy Surface")
+    fig.tight_layout()
     return fig

@@ -50,9 +50,9 @@ class FeaturesMixin:
                 traj, feature_type, n_features
             )
 
-            # Log shape immediately after featurizing this shard
+            # Log shape immediately after featurizing this trajectory
             logger.debug(
-                "Shard %d featurized: shape = (%d frames, %d features)",
+                "Trajectory %d featurized: shape = (%d frames, %d features)",
                 i + 1,
                 traj_features.shape[0],
                 traj_features.shape[1],
@@ -201,10 +201,10 @@ class FeaturesMixin:
         tica_model = tica.fit(Xs).fetch_model()
         Ys = [tica_model.transform(x) for x in Xs]
 
-        # Log shapes after dimension reduction for each shard
+        # Log shapes after dimension reduction for each trajectory
         for idx, projected_array in enumerate(Ys):
             logger.info(
-                "Shard %d after TICA projection: shape = %s",
+                "Trajectory %d after TICA projection: shape = %s",
                 idx,
                 projected_array.shape,
             )

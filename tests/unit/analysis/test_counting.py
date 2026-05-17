@@ -40,7 +40,7 @@ def test_expected_pairs_matches_simulation(
     st.lists(st.integers(min_value=1, max_value=10), min_size=1, max_size=5),
 )
 @settings(suppress_health_check=[HealthCheck.too_slow])
-def test_expected_pairs_supports_per_shard_stride(
+def test_expected_pairs_supports_per_segment_stride(
     lengths: List[int],
     tau: int,
     strides: List[int],

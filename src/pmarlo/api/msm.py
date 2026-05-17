@@ -4,12 +4,13 @@ import logging
 from pathlib import Path
 from typing import List, Literal, Optional, Sequence
 
+import matplotlib.pyplot as plt
 import numpy as np
 
 from pmarlo.analysis import compute_diagnostics
 from pmarlo.api.features import compute_universal_embedding
 from pmarlo.api.fes import generate_free_energy_surface
-from pmarlo.data.aggregate import load_shards_as_dataset
+from pmarlo import constants as const
 from pmarlo.markov_state_model import MarkovStateModel
 from pmarlo.markov_state_model._msm_utils import (
     build_simple_msm,
@@ -24,10 +25,79 @@ from pmarlo.markov_state_model.ck_its_selector import select_optimal_lag_ck_its
 from pmarlo.markov_state_model.ck_runner import run_ck
 from pmarlo.markov_state_model.free_energy import generate_1d_pmf
 from pmarlo.markov_state_model.results import CKITSSelectionResult
-from pmarlo.reporting.plots import save_fes_contour, save_pmf_line
 from pmarlo.utils.path_utils import ensure_directory
 
 logger = logging.getLogger("pmarlo")
+
+
+def _save_fes_contour(
+    F: np.ndarray,
+    xedges: np.ndarray,
+    yedges: np.ndarray,
+    xlabel: str,
+    ylabel: str,
+    output_dir: str,
+    filename: str,
+    mask: np.ndarray | None = None,
+) -> str | None:
+    out_dir = Path(output_dir)
+    ensure_directory(out_dir)
+
+    x_centers = 0.5 * (np.asarray(xedges)[:-1] + np.asarray(xedges)[1:])
+    y_centers = 0.5 * (np.asarray(yedges)[:-1] + np.asarray(yedges)[1:])
+    values = np.asarray(F, dtype=float)
+    if values.size == 0 or not np.isfinite(values).any():
+        raise ValueError("FES contains no finite values")
+
+    fig, ax = plt.subplots(figsize=const.PLOT_FIGURE_SIZE_FES_CONTOUR)
+    contour = ax.contourf(x_centers, y_centers, values.T, levels=25, cmap="viridis")
+    fig.colorbar(contour, ax=ax, label="Free Energy (kJ/mol)")
+    if mask is not None:
+        mask_arr = np.asarray(mask, dtype=bool)
+        ax.contourf(
+            x_centers,
+            y_centers,
+            np.ma.masked_where(~mask_arr.T, mask_arr.T),
+            levels=[0.5, 1.5],
+            colors="none",
+            hatches=["////"],
+        )
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_title(f"Free Energy Surface: {xlabel} vs {ylabel}")
+    fig.tight_layout()
+
+    path = out_dir / filename
+    fig.savefig(path, dpi=const.PLOT_DPI)
+    plt.close(fig)
+    return str(path) if path.exists() else None
+
+
+def _save_pmf_line(
+    F: np.ndarray,
+    edges: np.ndarray,
+    xlabel: str,
+    output_dir: str,
+    filename: str,
+) -> str | None:
+    out_dir = Path(output_dir)
+    ensure_directory(out_dir)
+    centers = 0.5 * (np.asarray(edges)[:-1] + np.asarray(edges)[1:])
+    values = np.asarray(F, dtype=float)
+    if values.size == 0 or not np.isfinite(values).any():
+        raise ValueError("PMF contains no finite values")
+
+    fig, ax = plt.subplots(figsize=const.PLOT_FIGURE_SIZE_PMF_LINE)
+    ax.plot(centers, values, marker="o", linewidth=1.5)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("Free Energy (kJ/mol)")
+    ax.set_title(f"PMF: {xlabel}")
+    fig.tight_layout()
+
+    path = out_dir / filename
+    fig.savefig(path, dpi=const.PLOT_DPI)
+    plt.close(fig)
+    return str(path) if path.exists() else None
 
 
 def analyze_msm(  # noqa: C901
@@ -143,14 +213,7 @@ def analyze_msm(  # noqa: C901
     else:
         logger.warning("[msm] MSM object does not support cluster_features method")
 
-    # Method selection
-    method = (
-        "tram"
-        if analysis_temperatures
-        and len(analysis_temperatures) > 1
-        and len(trajectory_files) > 1
-        else "standard"
-    )
+    method = "standard"
     logger.info("[msm] Selected MSM estimation method: %s", method)
 
     # ITS and lag selection
@@ -324,7 +387,7 @@ def analyze_msm(  # noqa: C901
                 pmf = generate_1d_pmf(
                     Y2[:, 0], bins=int(max(30, adaptive_bins)), temperature=300.0
                 )
-                _ = save_pmf_line(
+                _ = _save_pmf_line(
                     pmf.F,
                     pmf.edges,
                     xlabel="universal IC1",
@@ -344,7 +407,7 @@ def analyze_msm(  # noqa: C901
                     fes_smoothing_mode="always",
                     min_count=1,
                 )
-                _ = save_fes_contour(
+                _ = _save_fes_contour(
                     fes2.F,
                     fes2.xedges,
                     fes2.yedges,
@@ -525,288 +588,3 @@ def macro_mfpt(T_macro: np.ndarray) -> np.ndarray:
     return result
 
 
-def select_lag_with_ck_validation(
-    shard_paths: List[Path | str],
-    topology_path: Path | str,
-    feature_spec_path: Path | str,
-    n_clusters: int,
-    tica_dim: int,
-    tau_candidates: Optional[List[int]] = None,
-    horizons: Optional[List[int]] = None,
-    ck_threshold: float = 0.15,
-    coverage_threshold: float = 0.98,
-    min_median_count: int = 100,
-    tica_lag: int = 10,
-    diag_mass_threshold: float = 0.6,
-) -> CKITSSelectionResult:
-    """Select optimal lag using CK+ITS analysis on shard data.
-
-    This function combines Chapman-Kolmogorov (CK) validation with Implied
-    Timescales (ITS) analysis to automatically select the smallest lag time
-    that passes validation criteria.
-
-    The algorithm:
-    1. Loads and aggregates shards
-    2. Computes features and applies TICA reduction
-    3. Clusters into microstates
-    4. For each candidate lag:
-       - Builds MSM at lag τ
-       - Determines macrostates via PCCA+ (eigenvalue gap)
-       - Predicts macro kinetics T^k
-       - Observes macro kinetics at horizons kτ
-       - Computes CK error
-       - Checks sanity criteria (coverage, counts)
-    5. Selects smallest lag passing all criteria
-
-    Parameters
-    ----------
-    shard_paths : List[Path | str]
-        List of shard JSON file paths.
-    topology_path : Path | str
-        Path to topology PDB file (for validation).
-    feature_spec_path : Path | str
-        Path to feature specification YAML file (for validation).
-    n_clusters : int
-        Number of microstates for clustering.
-    tica_dim : int
-        Number of TICA components to retain.
-    tau_candidates : Optional[List[int]]
-        Candidate lag times to evaluate. If None, uses [25, 50, 75, 100].
-    horizons : Optional[List[int]]
-        CK test horizons k. If None, uses [1, 2, 3, 4, 5].
-    ck_threshold : float
-        Maximum acceptable CK error (default: 0.15 = 15%).
-    coverage_threshold : float
-        Minimum coverage fraction (default: 0.98 = 98%).
-    min_median_count : int
-        Minimum median microstate count (default: 100).
-    tica_lag : int
-        Lag time for TICA dimensionality reduction (default: 10).
-    diag_mass_threshold : float
-        Minimum acceptable MSM diagonal mass (default: 0.6).
-
-    Returns
-    -------
-    CKITSSelectionResult
-        Result object containing:
-        - selected_lag: The optimal lag time
-        - ck_errors: CK error for each candidate lag
-        - its_timescales: ITS data for plotting
-        - coverage_fractions: Coverage for each lag
-        - median_counts: Median counts for each lag
-        - macrostate_counts: Number of macrostates for each lag
-        - passed_sanity: Whether each lag passed sanity checks
-        - diagnostics: Additional diagnostic information
-
-    Raises
-    ------
-    FileNotFoundError
-        If topology or feature spec files do not exist.
-    ValueError
-        If no shard files are provided or if data is insufficient.
-
-    Examples
-    --------
-    >>> result = select_lag_with_ck_validation(
-    ...     shard_paths=["shard1.json", "shard2.json"],
-    ...     topology_path="protein.pdb",
-    ...     feature_spec_path="features.yaml",
-    ...     n_clusters=200,
-    ...     tica_dim=10,
-    ... )
-    >>> print(f"Selected lag: {result.selected_lag}")
-    """
-    logger.info(
-        "[CK-ITS API] Starting lag selection with %d shards, %d clusters, TICA dim %d",
-        len(shard_paths),
-        n_clusters,
-        tica_dim,
-    )
-
-    # Validate inputs
-    topo_path = Path(topology_path).expanduser().resolve()
-    if not topo_path.exists():
-        raise FileNotFoundError(f"Topology file not found: {topo_path}")
-
-    spec_path = Path(feature_spec_path).expanduser().resolve()
-    if not spec_path.exists():
-        raise FileNotFoundError(f"Feature specification not found: {spec_path}")
-
-    if not shard_paths:
-        raise ValueError("No shard files provided")
-
-    resolved_shards = [Path(p).expanduser().resolve() for p in shard_paths]
-
-    # Load shards
-    logger.info("[CK-ITS API] Loading %d shard files", len(resolved_shards))
-    dataset = load_shards_as_dataset(resolved_shards)
-
-    features = dataset.get("X")
-    if features is None:
-        raise ValueError("Aggregated shards did not contain feature matrix 'X'")
-
-    X = np.asarray(features, dtype=float)
-    if X.ndim != 2 or X.shape[0] == 0:
-        raise ValueError("Feature matrix must be 2D with at least one frame")
-
-    n_frames, n_features = X.shape
-    logger.info("[CK-ITS API] Loaded %d frames with %d features", n_frames, n_features)
-
-    diag_payload = compute_diagnostics(
-        {
-            "__shards__": dataset.get("__shards__", []),
-            "splits": {"aggregate": {"X": X}},
-        }
-    )
-    autocorr_entry = diag_payload.get("autocorrelation", {}).get("aggregate", {}) or {}
-    tau_int = autocorr_entry.get("tau_int")
-    recommended_lags = autocorr_entry.get("recommended_ck_lags", [])
-    lag_window = autocorr_entry.get("lag_window")
-    derived_taus = diag_payload.get("taus", [])
-    autocorr_curve = {
-        "taus": autocorr_entry.get("taus"),
-        "values": autocorr_entry.get("values"),
-    }
-    if not tau_candidates:
-        tau_candidates = recommended_lags or derived_taus or [25, 50, 75, 100]
-        logger.info(
-            "[CK-ITS API] Tau candidates derived from autocorrelation: %s",
-            tau_candidates,
-        )
-
-    # Apply TICA reduction
-    from pmarlo.markov_state_model.reduction import reduce_features
-
-    tica_components = min(tica_dim, X.shape[1])
-    logger.info(
-        "[CK-ITS API] Applying TICA reduction (lag=%d, components=%d)",
-        tica_lag,
-        tica_components,
-    )
-    Y = reduce_features(
-        X,
-        method="tica",
-        lag=tica_lag,
-        n_components=tica_components,
-    )
-
-    # Cluster into microstates
-    from pmarlo.markov_state_model.clustering import cluster_microstates
-
-    logger.info("[CK-ITS API] Clustering into %d microstates", n_clusters)
-    clustering = cluster_microstates(
-        Y,
-        method="kmeans",
-        n_states=n_clusters,
-        random_state=42,
-    )
-
-    discrete = np.asarray(clustering.labels, dtype=np.int32)
-    if discrete.size == 0:
-        raise ValueError("Clustering produced no discrete states")
-
-    unique_states = np.unique(discrete)
-    logger.info(
-        "[CK-ITS API] Clustered into %d unique states (requested %d)",
-        unique_states.size,
-        n_clusters,
-    )
-
-    # Prepare discrete trajectories
-    dtrajs = [discrete]
-    max_supported_lag = (
-        max((int(traj.size) for traj in dtrajs if traj.size > 0), default=0) - 1
-    )
-    max_supported_lag = max(0, max_supported_lag)
-    requested_tau_candidates = list(tau_candidates)
-
-    # Run CK+ITS selection
-    selected_lag, evaluations = select_optimal_lag_ck_its(
-        dtrajs=dtrajs,
-        tau_candidates=tau_candidates,
-        horizons=horizons,
-        ck_threshold=ck_threshold,
-        coverage_threshold=coverage_threshold,
-        min_median_count=min_median_count,
-        diag_mass_threshold=diag_mass_threshold,
-    )
-
-    evaluated_lags = sorted({e.lag for e in evaluations})
-    evaluated_set = set(evaluated_lags)
-    ignored_tau_candidates = [
-        tau for tau in requested_tau_candidates if tau not in evaluated_set
-    ]
-
-    # Collect ITS timescales from evaluations
-    its_lags = []
-    its_times = []
-    for eval_result in evaluations:
-        if eval_result.timescales is not None and eval_result.timescales.size > 0:
-            its_lags.append(eval_result.lag)
-            its_times.append(eval_result.timescales)
-
-    # Pad timescales to same length for array conversion
-    if its_times:
-        max_len = max(ts.size for ts in its_times)
-        padded_times = []
-        for ts in its_times:
-            if ts.size < max_len:
-                padded = np.full(max_len, np.nan, dtype=float)
-                padded[: ts.size] = ts
-                padded_times.append(padded)
-            else:
-                padded_times.append(ts)
-        its_timescales = np.array(padded_times)
-    else:
-        its_timescales = np.empty((0, 0), dtype=float)
-
-    # Build result
-    result = CKITSSelectionResult(
-        selected_lag=selected_lag,
-        ck_errors={e.lag: e.ck_error for e in evaluations},
-        its_timescales=its_timescales,
-        its_lag_times=np.array(its_lags, dtype=int),
-        coverage_fractions={e.lag: e.coverage_fraction for e in evaluations},
-        median_counts={e.lag: e.median_count for e in evaluations},
-        macrostate_counts={e.lag: e.n_macrostates for e in evaluations},
-        passed_sanity={e.lag: e.passed_sanity for e in evaluations},
-        diagnostics={
-            "n_frames": n_frames,
-            "n_features": n_features,
-            "n_clusters": n_clusters,
-            "tica_dim": tica_components,
-            "tica_lag": tica_lag,
-            "n_unique_states": int(unique_states.size),
-            "tau_int": tau_int,
-            "recommended_tau_candidates": recommended_lags,
-            "lag_window": lag_window,
-            "autocorr_curve": autocorr_curve,
-            "derived_tau_grid": derived_taus,
-            "tau_candidates": requested_tau_candidates,
-            "evaluated_tau_candidates": evaluated_lags,
-            "ignored_tau_candidates": ignored_tau_candidates,
-            "max_supported_lag": max_supported_lag,
-            "ck_threshold": ck_threshold,
-            "coverage_threshold": coverage_threshold,
-            "min_median_count": min_median_count,
-            "diag_mass_threshold": diag_mass_threshold,
-            "evaluations": [
-                {
-                    "lag": e.lag,
-                    "ck_error": e.ck_error,
-                    "coverage": e.coverage_fraction,
-                    "median_count": e.median_count,
-                    "n_macrostates": e.n_macrostates,
-                    "passed_sanity": e.passed_sanity,
-                    "failure_reason": e.failure_reason,
-                    "eigenvalue_gap": e.eigenvalue_gap,
-                    "diag_mass": getattr(e, "diag_mass", None),
-                }
-                for e in evaluations
-            ],
-        },
-    )
-
-    logger.info("[CK-ITS API] Selection complete: selected_lag=%d", result.selected_lag)
-
-    return result
