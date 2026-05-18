@@ -1,0 +1,8 @@
+{
+  "plumed_frames": 2501,
+  "numpy_frames": 2500,
+  "plumed_kl_ref_raw": 3.6542954553960816,
+  "numpy_kl_ref_raw": 3.51240412546165,
+  "plumed_numpy_l1_hist": 0.6003800079952654,
+  "plumed_hills": 50
+}

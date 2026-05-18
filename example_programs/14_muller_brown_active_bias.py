@@ -40,10 +40,9 @@ LANGEVIN_GAMMA = 5.0
 LANGEVIN_KT = 15.0
 LANGEVIN_MASS = 1.0
 
-HILL_HEIGHT = 0.5
+HILL_HEIGHT = 1.0
 HILL_SIGMA = 0.1
 HILL_STRIDE = 500
-WELL_TEMPERED_BIAS_FACTOR = 10.0
 
 MB_INIT_BASIN = np.array([-0.55, 1.45], dtype=np.float64)
 REFERENCE_GRID_BINS = 80
@@ -81,6 +80,9 @@ class ExperimentConfig:
     early_stopping_patience: int
     early_stopping_eps: float
     on_retrain_policy: str
+    hill_height: float
+    hill_sigma: float
+    hill_stride: int
     trigger_policies: tuple[str, ...]
     data_policies: tuple[str, ...]
     training_policies: dict[str, dict[str, int | bool]]
@@ -665,7 +667,7 @@ def run_mb_condition_replica(
     init_xy = run_unbiased_initialization(seed + 1_000)
     model = fit_linear_cv_model(init_xy, None, condition.training_policy, cfg)
     total_train_seconds = model.train_seconds
-    ledger = ActiveBiasLedger(HILL_SIGMA, HILL_HEIGHT)
+    ledger = ActiveBiasLedger(cfg.hill_sigma, cfg.hill_height)
     bias_force_fn = make_bias_force_fn(ledger, model)
 
     trajectory_xy = np.empty((cfg.budget_frames, 2), dtype=np.float64)
@@ -690,7 +692,7 @@ def run_mb_condition_replica(
         cv_value_buffer.append(cv)
         bias_value_buffer[frame] = ledger.potential_in_cv(cv)
 
-        if frame % HILL_STRIDE == 0:
+        if frame % cfg.hill_stride == 0:
             ledger.add_hill(xy, model)
 
         basin = assign_basin(xy)
@@ -726,7 +728,7 @@ def run_mb_condition_replica(
                 )
                 total_train_seconds += model.train_seconds
                 if cfg.on_retrain_policy == "reset_ledger":
-                    ledger = ActiveBiasLedger(HILL_SIGMA, HILL_HEIGHT)
+                    ledger = ActiveBiasLedger(cfg.hill_sigma, cfg.hill_height)
                 elif cfg.on_retrain_policy == "reproject_centers":
                     ledger.reproject_to(model)
                 else:
@@ -868,10 +870,10 @@ def write_protocol(
             "mass": LANGEVIN_MASS,
         },
         "bias": {
-            "height": HILL_HEIGHT,
-            "sigma": HILL_SIGMA,
-            "stride": HILL_STRIDE,
-            "well_tempered_bias_factor": WELL_TEMPERED_BIAS_FACTOR,
+            "height": cfg.hill_height,
+            "sigma": cfg.hill_sigma,
+            "stride": cfg.hill_stride,
+            "mode": "classical",
             "on_retrain_policy": cfg.on_retrain_policy,
         },
         "training_policies": cfg.training_policies,
@@ -890,9 +892,10 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     if args.quick:
+        hill_height = args.hill_height if args.hill_height is not None else 2.0
         training_policies: dict[str, dict[str, int | bool]] = {
-            "Fixed-50ep": {"max_epochs": 10, "early_stopping": False},
-            "EarlyStopping": {"max_epochs": 20, "early_stopping": True},
+            "Fixed-10ep": {"max_epochs": 10, "early_stopping": False},
+            "EarlyStopping-20ep": {"max_epochs": 20, "early_stopping": True},
         }
         return ExperimentConfig(
             budget_frames=args.budget_frames or 6_000,
@@ -911,12 +914,16 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
             early_stopping_patience=8,
             early_stopping_eps=1.0e-4,
             on_retrain_policy=args.on_retrain_policy,
+            hill_height=hill_height,
+            hill_sigma=args.hill_sigma,
+            hill_stride=args.hill_stride,
             trigger_policies=("Fixed-T", "ADWIN"),
             data_policies=("Window-W", "Reweighted-Window"),
             training_policies=training_policies,
             output_dir=output_dir,
         )
 
+    hill_height = args.hill_height if args.hill_height is not None else HILL_HEIGHT
     training_policies = {
         "Fixed-50ep": {"max_epochs": 50, "early_stopping": False},
         "Fixed-200ep": {"max_epochs": 200, "early_stopping": False},
@@ -939,6 +946,9 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         early_stopping_patience=8,
         early_stopping_eps=1.0e-4,
         on_retrain_policy=args.on_retrain_policy,
+        hill_height=hill_height,
+        hill_sigma=args.hill_sigma,
+        hill_stride=args.hill_stride,
         trigger_policies=("Fixed-T", "Threshold-delta", "ADWIN"),
         data_policies=("Full", "Window-W", "Reweighted-Full", "Reweighted-Window"),
         training_policies=training_policies,
@@ -948,6 +958,12 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
 
 def run_experiment(cfg: ExperimentConfig) -> tuple[pd.DataFrame, pd.DataFrame, Path]:
     assert_muller_brown_stationary_energies()
+    if cfg.hill_height <= 0.0:
+        raise ValueError("hill_height must be positive")
+    if cfg.hill_sigma <= 0.0:
+        raise ValueError("hill_sigma must be positive")
+    if cfg.hill_stride <= 0:
+        raise ValueError("hill_stride must be positive")
     reference_probability, xedges, yedges = mb_reference_probability()
     conditions = [
         Condition(trigger, data_policy, training_policy)
@@ -1011,6 +1027,17 @@ def parse_args() -> argparse.Namespace:
         default="reset_ledger",
     )
     parser.add_argument(
+        "--hill-height",
+        type=float,
+        default=None,
+        help=(
+            "Metadynamics hill height. Defaults to 2.0 in quick mode and 1.0 "
+            "in the full Muller-Brown protocol."
+        ),
+    )
+    parser.add_argument("--hill-sigma", type=float, default=HILL_SIGMA)
+    parser.add_argument("--hill-stride", type=int, default=HILL_STRIDE)
+    parser.add_argument(
         "--output-dir",
         default=(
             Path("example_programs")
@@ -1030,6 +1057,12 @@ def main() -> None:
         "x",
         cfg.replicates_per_condition,
         "replicas",
+    )
+    expected_hills = math.ceil(cfg.budget_frames / cfg.hill_stride)
+    print(
+        "Bias budget:",
+        f"{expected_hills} hills x {cfg.hill_height} =",
+        f"{expected_hills * cfg.hill_height:.1f} energy units",
     )
     run_experiment(cfg)
 

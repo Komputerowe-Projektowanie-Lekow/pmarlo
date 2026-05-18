@@ -30,3 +30,11 @@ Updated the adaptive retraining Colab setup to install only notebook runtime dep
 Updated the PLUMED `pesmd` validation notebook to install PLUMED through `micromamba` and `conda-forge` instead of unavailable Colab apt packages.
 
 Updated the PLUMED validation notebook to execute PLUMED through `micromamba run`, ensuring conda-provided shared libraries are available in Colab.
+
+Updated the Muller-Brown Colab commands to write reset-ledger and reproject-centers runs to separate output directories, preventing accidental result overwrites.
+
+Changed the active Muller-Brown protocol to use a production hill height of `1.0`, expose hill height/sigma/stride as command-line parameters, and reserve stronger `2.0` hills for short smoke runs.
+
+Renamed quick-mode Muller-Brown training labels to `Fixed-10ep` and `EarlyStopping-20ep` so they no longer imply the full-protocol epoch counts.
+
+Clarified that the mdshare retraining notebook is a stationary-stream sanity check rather than a strategy ranking, exposed the full `reproject_centers` Muller-Brown run as an executable notebook cell, and removed the unused well-tempered bias factor from the classical Muller-Brown protocol metadata.

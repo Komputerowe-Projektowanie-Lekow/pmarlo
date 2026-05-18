@@ -1,0 +1,86 @@
+{
+  "source": "analytic Muller-Brown potential with active metadynamics-like bias",
+  "scope": "active feedback test: bias force enters the Langevin BAOAB integrator",
+  "budget_frames": 6000,
+  "replicates_per_condition": 2,
+  "lag": 10,
+  "monitor_window": 800,
+  "monitor_stride": 500,
+  "train_window": 2000,
+  "fixed_trigger_period": 1500,
+  "threshold_delta": 0.08,
+  "adwin_delta": 0.01,
+  "muller_brown": {
+    "A": [
+      -200.0,
+      -100.0,
+      -170.0,
+      15.0
+    ],
+    "a": [
+      -1.0,
+      -1.0,
+      -6.5,
+      0.7
+    ],
+    "b": [
+      0.0,
+      0.0,
+      11.0,
+      0.6
+    ],
+    "c": [
+      -10.0,
+      -10.0,
+      -6.5,
+      0.7
+    ],
+    "x0": [
+      1.0,
+      0.0,
+      -0.5,
+      -1.0
+    ],
+    "y0": [
+      0.0,
+      0.5,
+      1.5,
+      1.0
+    ]
+  },
+  "walls": {
+    "x_min": -1.5,
+    "x_max": 1.5,
+    "y_min": -0.5,
+    "y_max": 2.5,
+    "k": 1000.0
+  },
+  "langevin": {
+    "dt": 0.001,
+    "gamma": 5.0,
+    "kT": 15.0,
+    "mass": 1.0
+  },
+  "bias": {
+    "height": 0.5,
+    "sigma": 0.1,
+    "stride": 500,
+    "well_tempered_bias_factor": 10.0,
+    "on_retrain_policy": "reproject_centers"
+  },
+  "training_policies": {
+    "Fixed-50ep": {
+      "max_epochs": 10,
+      "early_stopping": false
+    },
+    "EarlyStopping": {
+      "max_epochs": 20,
+      "early_stopping": true
+    }
+  },
+  "outputs": {
+    "raw_results": "example_programs/programs_outputs/muller_brown_active_bias_colab/muller_brown_active_bias_results.csv",
+    "summary": "example_programs/programs_outputs/muller_brown_active_bias_colab/muller_brown_active_bias_summary.csv",
+    "plot": "example_programs/programs_outputs/muller_brown_active_bias_colab/muller_brown_active_bias_plots.png"
+  }
+}
