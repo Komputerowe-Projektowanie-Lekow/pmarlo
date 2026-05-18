@@ -28,3 +28,5 @@ Added `example_programs/15_plumed_pesmd_validation_colab.ipynb` for a PLUMED `pe
 Updated the adaptive retraining Colab setup to install only notebook runtime dependencies with `pip`, avoiding Poetry-driven downgrades of preinstalled Colab packages.
 
 Updated the PLUMED `pesmd` validation notebook to install PLUMED through `micromamba` and `conda-forge` instead of unavailable Colab apt packages.
+
+Updated the PLUMED validation notebook to execute PLUMED through `micromamba run`, ensuring conda-provided shared libraries are available in Colab.
