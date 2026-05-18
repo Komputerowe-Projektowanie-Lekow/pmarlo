@@ -190,14 +190,3 @@ def reduce_features(
     else:
         raise ValueError(f"Unknown reduction method: {method}")
 
-
-def get_available_methods() -> List[str]:
-    """Get list of available reduction methods.
-
-    Returns
-    -------
-    List[str]
-        List of available methods: ['pca', 'tica', 'vamp'].
-        Note: TICA and VAMP require deeptime library.
-    """
-    return ["pca", "tica", "vamp"]

@@ -21,6 +21,8 @@ Added `example_programs/13_adaptive_retraining_colab.ipynb`, a Google Colab note
 
 Added `example_programs/14_muller_brown_active_bias.py` and `example_programs/14_muller_brown_active_bias_colab.ipynb` for an active-feedback Muller-Brown retraining experiment where the bias force enters the Langevin integrator.
 
+Added `example_programs/15_plumed_pesmd_validation_colab.ipynb` for a PLUMED `pesmd` sanity check that compares fixed-CV Muller-Brown metadynamics against the local NumPy bias implementation.
+
 ## fixed
 
 Updated the adaptive retraining Colab setup to install only notebook runtime dependencies with `pip`, avoiding Poetry-driven downgrades of preinstalled Colab packages.
