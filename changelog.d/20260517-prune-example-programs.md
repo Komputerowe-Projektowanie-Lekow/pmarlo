@@ -19,6 +19,8 @@ Retained `10_tpt_basic.py`, `11_tpt_drunkards_walk.py`, and `_example_support.py
 
 Added `example_programs/13_adaptive_retraining_colab.ipynb`, a Google Colab notebook for the mdshare-based offline replay experiment comparing retraining triggers, training-data policies, and training-budget policies for adaptive CV workflows.
 
+Added `example_programs/14_muller_brown_active_bias.py` and `example_programs/14_muller_brown_active_bias_colab.ipynb` for an active-feedback Muller-Brown retraining experiment where the bias force enters the Langevin integrator.
+
 ## fixed
 
 Updated the adaptive retraining Colab setup to install only notebook runtime dependencies with `pip`, avoiding Poetry-driven downgrades of preinstalled Colab packages.

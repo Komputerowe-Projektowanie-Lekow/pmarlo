@@ -1,0 +1,37 @@
+{
+  "source": "mdshare alanine-dipeptide-3x250ns-backbone-dihedrals.npz",
+  "scope": "offline replay trigger/data/training-budget experiment; not biased MD",
+  "budget_frames": 25000,
+  "replicates_per_condition": 10,
+  "lag": 10,
+  "bins": 48,
+  "monitor_window": 2000,
+  "monitor_stride": 500,
+  "train_window": 8000,
+  "fixed_trigger_period": 5000,
+  "threshold_delta": 0.08,
+  "adwin_delta": 0.01,
+  "hill_stride": 250,
+  "hill_height_kbt": 0.04,
+  "hill_sigma_rad": 0.25,
+  "training_policies": {
+    "Fixed-50ep": {
+      "max_epochs": 50,
+      "early_stopping": false
+    },
+    "Fixed-200ep": {
+      "max_epochs": 200,
+      "early_stopping": false
+    },
+    "EarlyStopping": {
+      "max_epochs": 200,
+      "early_stopping": true
+    }
+  },
+  "replay_seconds_per_frame": 4.0747798999996124e-05,
+  "outputs": {
+    "raw_results": "/content/pmarlo/example_programs/programs_outputs/adaptive_retraining_colab/adaptive_retraining_replay_results.csv",
+    "summary": "/content/pmarlo/example_programs/programs_outputs/adaptive_retraining_colab/adaptive_retraining_replay_summary.csv",
+    "plot": "/content/pmarlo/example_programs/programs_outputs/adaptive_retraining_colab/adaptive_retraining_replay_plots.png"
+  }
+}
