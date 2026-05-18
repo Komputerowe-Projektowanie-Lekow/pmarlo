@@ -38,3 +38,5 @@ Changed the active Muller-Brown protocol to use a production hill height of `1.0
 Renamed quick-mode Muller-Brown training labels to `Fixed-10ep` and `EarlyStopping-20ep` so they no longer imply the full-protocol epoch counts.
 
 Clarified that the mdshare retraining notebook is a stationary-stream sanity check rather than a strategy ranking, exposed the full `reproject_centers` Muller-Brown run as an executable notebook cell, and removed the unused well-tempered bias factor from the classical Muller-Brown protocol metadata.
+
+Updated the Muller-Brown Colab setup to pull the latest checkout and verify that the runner supports `--hill-height` before executing experiment cells.
